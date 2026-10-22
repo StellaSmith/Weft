@@ -38,7 +38,9 @@ pub struct EntityRenderer {
     buffers: Vec<(BufferId, u32)>,
     views: Vec<BufferId>,
     overlay_views: Vec<BufferId>,
-    skins: FxHashMap<String, Option<(TextureId, u32)>>,
+    preview: Vec<(BufferId, BufferId)>,
+    /// Texture, bindless index and size, by name.
+    skins: FxHashMap<String, Option<(TextureId, u32, [u32; 2])>>,
     pub fog: ([f32; 4], f32, f32),
 }
 
@@ -60,7 +62,23 @@ impl EntityRenderer {
         let frames = gpu.frames_in_flight();
         let views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "entity view")).collect();
         let overlay_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "overlay view")).collect();
-        Ok(EntityRenderer { pipeline, overlay, buffers: Vec::new(), views, overlay_views, skins: FxHashMap::default(), fog: ([0.0; 4], 0.0, 1.0) })
+        let preview = (0..frames)
+            .map(|_| {
+                let b = gpu.create_buffer(128 * 64, usage::STORAGE | usage::HOST, "preview boxes");
+                let v = gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "preview view");
+                (b, v)
+            })
+            .collect();
+        Ok(EntityRenderer {
+            pipeline,
+            overlay,
+            buffers: Vec::new(),
+            views,
+            overlay_views,
+            preview,
+            skins: FxHashMap::default(),
+            fog: ([0.0; 4], 0.0, 1.0),
+        })
     }
 
     fn pipelines(gpu: &mut dyn Backend) -> Result<(PipelineId, PipelineId), String> {
@@ -110,7 +128,8 @@ impl EntityRenderer {
         for (b, _) in self.buffers.drain(..) {
             gpu.destroy_buffer(b);
         }
-        for b in self.views.drain(..).chain(self.overlay_views.drain(..)) {
+        let preview: Vec<BufferId> = self.preview.drain(..).flat_map(|(a, b)| [a, b]).collect();
+        for b in self.views.drain(..).chain(self.overlay_views.drain(..)).chain(preview) {
             gpu.destroy_buffer(b);
         }
         for t in self.skins.drain().filter_map(|(_, v)| v) {
@@ -120,27 +139,121 @@ impl EntityRenderer {
         gpu.destroy_pipeline(self.overlay);
     }
 
-    /// Loads entity skins the first time an entity of that kind becomes visible.
-    pub fn preload(&mut self, gpu: &mut dyn Backend, assets: &Assets, entities: &FxHashMap<u64, ClientEntity>) {
+    /// Loads skins and worn textures the first time something visible uses them; `worn` is what
+    /// the local player wears.
+    pub fn preload(&mut self, gpu: &mut dyn Backend, assets: &Assets, entities: &FxHashMap<u64, ClientEntity>, worn: &[u32]) {
         let c = content();
         for e in entities.values() {
-            let k = &c.game.entities[e.kind as usize];
-            if k.texture.is_empty() || self.skins.contains_key(&k.texture) {
-                continue;
+            self.load(gpu, assets, &c.game.entities[e.kind as usize].texture);
+            for &i in &e.worn {
+                if let Some((_, t)) = c.worn(i) {
+                    self.load(gpu, assets, t);
+                }
             }
-            let loaded = assets.read(&k.texture, "textures", "png").and_then(|b| decode_png(&b)).map(|img| {
-                let t = gpu.create_texture(
-                    &TextureDesc { width: img.width, height: img.height, layers: None, mips: 1, format: Format::Rgba8Srgb, render_target: false },
-                    &k.texture,
-                );
-                gpu.write_texture(t, 0, &img.rgba);
-                (t, gpu.texture_index(t))
-            });
-            if loaded.is_none() {
-                log::warn!("missing entity texture {}", k.texture);
-            }
-            self.skins.insert(k.texture.clone(), loaded);
         }
+        self.load(gpu, assets, &c.game.entities[c.game.player_kind as usize].texture);
+        for &i in worn {
+            if let Some((_, t)) = c.worn(i) {
+                self.load(gpu, assets, t);
+            }
+        }
+    }
+
+    fn load(&mut self, gpu: &mut dyn Backend, assets: &Assets, name: &str) {
+        if name.is_empty() || self.skins.contains_key(name) {
+            return;
+        }
+        let loaded = assets.read(name, "textures", "png").and_then(|b| decode_png(&b)).map(|img| {
+            let t = gpu.create_texture(
+                &TextureDesc { width: img.width, height: img.height, layers: None, mips: 1, format: Format::Rgba8Srgb, render_target: false },
+                name,
+            );
+            gpu.write_texture(t, 0, &img.rgba);
+            (t, gpu.texture_index(t), [img.width, img.height])
+        });
+        if loaded.is_none() {
+            log::warn!("missing entity texture {name}");
+        }
+        self.skins.insert(name.to_string(), loaded);
+    }
+
+    /// Boxes of a model posed at `body` (blocks, camera relative), plus the layers it wears.
+    #[allow(clippy::too_many_arguments)]
+    fn model(&self, out: &mut Vec<GpuBox>, kind: u32, body: Mat4, pitch: f32, swing: f32, color: Vec4, worn: &[u32]) {
+        let c = content();
+        let k = &c.game.entities[kind as usize];
+        let Some(Some((_, skin, _))) = self.skins.get(&k.texture) else { return };
+        let mut layers = vec![(*skin, Vec4::new(0.0, 0.0, k.texture_size[0] as f32, k.texture_size[1] as f32), u32::MAX, 0.0)];
+        for &i in worn {
+            if let Some((w, t)) = c.worn(i) {
+                if let Some(Some((_, idx, size))) = self.skins.get(t) {
+                    layers.push((*idx, Vec4::new(0.0, 0.0, size[0] as f32, size[1] as f32), w.roles, w.inflate));
+                }
+            }
+        }
+        let body = body * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+        for part in &k.parts {
+            let angle = match part.role {
+                role::HEAD => Quat::from_rotation_x(-pitch),
+                role::ARM_LEFT | role::LEG_RIGHT | role::LEG_FRONT_LEFT => Quat::from_rotation_x(swing),
+                role::ARM_RIGHT | role::LEG_LEFT | role::LEG_FRONT_RIGHT => Quat::from_rotation_x(-swing),
+                role::ARM_FORWARD_LEFT => Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2 + swing * 0.2),
+                role::ARM_FORWARD_RIGHT => Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2 - swing * 0.2),
+                _ => Quat::IDENTITY,
+            };
+            let part_m = body * Mat4::from_translation(Vec3::from_array(part.pivot)) * Mat4::from_quat(angle);
+            for &(tex, size, roles, extra) in &layers {
+                if roles & (1 << part.role) == 0 {
+                    continue;
+                }
+                for cu in &part.cuboids {
+                    let inflate = cu.inflate + extra;
+                    let o = Vec3::from_array(cu.origin) - Vec3::splat(inflate);
+                    let s = Vec3::from_array(cu.size) + Vec3::splat(inflate * 2.0);
+                    let m = part_m * Mat4::from_translation(o) * Mat4::from_scale(s);
+                    out.push(GpuBox {
+                        rows: rows(m),
+                        dims: [cu.size[0], cu.size[1], cu.size[2], 0.0],
+                        uvo: [cu.uv[0], cu.uv[1], size.z, size.w],
+                        color: color.to_array(),
+                        ids: [tex, 0, 0, 0],
+                        ids2: [0; 4],
+                    });
+                }
+            }
+        }
+    }
+
+    /// The local player's model inside `rect` (physical pixels) on top of the UI, turned towards
+    /// `look` like the inventory figure. Needs its own pass with a cleared depth buffer.
+    pub fn draw_preview(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, rect: [f32; 4], look: glam::Vec2, worn: &[u32]) {
+        let c = content();
+        let [x, y, w, h] = rect;
+        let (sw, sh) = (frame.width as f32, frame.height as f32);
+        let s = h / 2.4;
+        let (cx, feet) = (x + w / 2.0, y + h - h * 0.08);
+        let head = feet - 1.5 * s;
+        let yaw = std::f32::consts::PI - ((look.x - cx) / (s * 1.6)).atan() * 0.7;
+        let pitch = ((head - look.y) / (s * 1.6)).atan() * 0.5;
+        let proj = Mat4::from_cols(
+            Vec4::new(2.0 * s / sw, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0 * s / sh, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.1, 0.0),
+            Vec4::new(2.0 * cx / sw - 1.0, 1.0 - 2.0 * feet / sh, 0.5, 1.0),
+        );
+        let mut boxes = Vec::new();
+        self.model(&mut boxes, c.game.player_kind, Mat4::from_rotation_y(yaw), pitch, 0.0, Vec4::new(1.0, 1.0, 1.0, 0.0), worn);
+        if boxes.is_empty() || boxes.len() > 64 {
+            return;
+        }
+        let (buf, vb) = self.preview[frame.slot];
+        gpu.mapped(buf)[..boxes.len() * 128].copy_from_slice(bytemuck::cast_slice(&boxes));
+        let v = View { view_proj: proj.to_cols_array_2d(), fog_color: [0.0; 4], fog: [1e9, 2e9, 0.0, 0.0] };
+        gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
+        list.pipeline(self.pipeline);
+        list.bind(0, buf);
+        list.bind(1, vb);
+        list.draw(boxes.len() as u32 * 36, 1);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -170,7 +283,6 @@ impl EntityRenderer {
         };
 
         for e in entities.values() {
-            let k = &c.game.entities[e.kind as usize];
             let base = rel(e.pos);
             if base.length_squared() > 160.0 * 160.0 {
                 continue;
@@ -180,35 +292,9 @@ impl EntityRenderer {
                 item_boxes(&mut boxes, textures, base, e.age, e.item.item, color);
                 continue;
             }
-            let Some(Some((_, skin))) = self.skins.get(&k.texture) else { continue };
-            let tex_size = Vec4::new(0.0, 0.0, k.texture_size[0] as f32, k.texture_size[1] as f32);
-            let body = Mat4::from_translation(base) * Mat4::from_rotation_y(e.yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+            let body = Mat4::from_translation(base) * Mat4::from_rotation_y(e.yaw);
             let swing = (e.walk * 6.0).sin() * 0.9 * e.swing;
-            for part in &k.parts {
-                let angle = match part.role {
-                    role::HEAD => Quat::from_rotation_x(-e.pitch),
-                    role::ARM_LEFT | role::LEG_RIGHT | role::LEG_FRONT_LEFT => Quat::from_rotation_x(swing),
-                    role::ARM_RIGHT | role::LEG_LEFT | role::LEG_FRONT_RIGHT => Quat::from_rotation_x(-swing),
-                    role::ARM_FORWARD_LEFT => Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2 + swing * 0.2),
-                    role::ARM_FORWARD_RIGHT => Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2 - swing * 0.2),
-                    _ => Quat::IDENTITY,
-                };
-                let pivot = Vec3::from_array(part.pivot);
-                let part_m = body * Mat4::from_translation(pivot) * Mat4::from_quat(angle);
-                for cu in &part.cuboids {
-                    let o = Vec3::from_array(cu.origin) - Vec3::splat(cu.inflate);
-                    let s = Vec3::from_array(cu.size) + Vec3::splat(cu.inflate * 2.0);
-                    let m = part_m * Mat4::from_translation(o) * Mat4::from_scale(s);
-                    boxes.push(GpuBox {
-                        rows: rows(m),
-                        dims: [cu.size[0], cu.size[1], cu.size[2], 0.0],
-                        uvo: [cu.uv[0], cu.uv[1], tex_size.z, tex_size.w],
-                        color: color.to_array(),
-                        ids: [*skin, 0, 0, 0],
-                        ids2: [0; 4],
-                    });
-                }
-            }
+            self.model(&mut boxes, e.kind, body, e.pitch, swing, color, &e.worn);
         }
 
         // Selection outline: twelve thin dark boxes along the edges of the target's shape.

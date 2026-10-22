@@ -5,7 +5,7 @@ use voxide_abi::ItemStack;
 
 use crate::app::Ctx;
 use crate::client::Client;
-use crate::client::modui::{self, TAG_SLOT};
+use crate::client::modui::{self, TAG_ENTITY, TAG_SLOT};
 use crate::client::textures::GameTextures;
 use crate::content::content;
 use crate::ui::lang::Lang;
@@ -39,7 +39,9 @@ impl Hud {
         let ui = &mut self.ui;
         ui.clear();
         ui.root_style(Style::default().stretch());
-        ui.container(Style::default().grow().pad(4.0).gap(1.0).align(Align::Start), |ui| {
+        // Both halves start at zero height and split the rest evenly, so the crosshair sits at the
+        // exact screen centre whatever they contain.
+        ui.container(Style::default().h(0.0).grow().pad(4.0).gap(1.0).align(Align::Start), |ui| {
             if debug {
                 for (key, f) in DEBUG_LINES {
                     let key = key.to_string();
@@ -49,7 +51,7 @@ impl Hud {
             }
         });
         ui.add(Kind::Custom { tag: TAG_CROSSHAIR, data: 0 }, Style::default().size(9.0, 9.0).self_align(Align::Center));
-        ui.container(Style::default().grow().justify(Justify::End).align(Align::Center).pad(2.0).gap(1.0), |ui| {
+        ui.container(Style::default().h(0.0).grow().justify(Justify::End).align(Align::Center).pad(2.0).gap(1.0), |ui| {
             ui.container(Style::default().gap(1.0).pad(2.0).align(Align::Start).self_align(Align::Start), |ui| {
                 let now = std::time::Instant::now();
                 for (line, at) in client.chat.iter().rev().take(10).rev() {
@@ -141,6 +143,12 @@ pub fn draw_custom(
             slot_background(ren, theme, r, selected, scale);
             let stack = client.inventory.get(data as usize).copied().unwrap_or_default();
             stack_icon(ren, textures, r, stack, scale, text_unit);
+        }
+        TAG_ENTITY => {
+            // Inset frame; the model itself is drawn in a later pass.
+            ren.rect(r, 0x373737FF);
+            ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - scale, h: r.h - scale }, 0xFFFFFFFF);
+            ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, 0x000000FF);
         }
         TAG_SLOT => {
             let Some(client) = client else { return };

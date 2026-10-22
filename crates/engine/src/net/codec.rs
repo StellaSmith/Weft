@@ -168,6 +168,10 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.f32(e.pitch);
                 w.stack(e.item);
                 w.f32(e.health);
+                w.len(e.worn.len());
+                for i in &e.worn {
+                    w.u32(*i);
+                }
             }
         }
         ToClient::Moves(list) => {
@@ -252,6 +256,17 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.u8(20);
             w.str(t);
         }
+        ToClient::Worn(list) => {
+            w.u8(21);
+            w.len(list.len());
+            for (id, items) in list {
+                w.u64(*id);
+                w.len(items.len());
+                for i in items {
+                    w.u32(*i);
+                }
+            }
+        }
     }
     w.0
 }
@@ -284,7 +299,11 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
-                list.push(EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()?, health: r.f32()? });
+                let mut e = EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()?, health: r.f32()?, worn: Vec::new() };
+                for _ in 0..r.len()? {
+                    e.worn.push(r.u32()?);
+                }
+                list.push(e);
             }
             ToClient::Spawn(list)
         }
@@ -351,6 +370,19 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
         18 => ToClient::Died,
         19 => ToClient::Chat(r.str()?),
         20 => ToClient::Disconnect(r.str()?),
+        21 => {
+            let n = r.len()?;
+            let mut list = Vec::with_capacity(n);
+            for _ in 0..n {
+                let id = r.u64()?;
+                let mut items = Vec::new();
+                for _ in 0..r.len()? {
+                    items.push(r.u32()?);
+                }
+                list.push((id, items));
+            }
+            ToClient::Worn(list)
+        }
         _ => return None,
     })
 }

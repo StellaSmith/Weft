@@ -129,7 +129,7 @@ impl UiRenderer {
         self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv: [0.0; 4], color, mode: 0, ..Default::default() });
     }
 
-    fn image(&mut self, r: Rect, tex: u32, uv: [f32; 4], color: u32) {
+    pub fn image(&mut self, r: Rect, tex: u32, uv: [f32; 4], color: u32) {
         self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv, color, tex, mode: 1, ..Default::default() });
     }
 

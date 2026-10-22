@@ -29,7 +29,7 @@ pub fn join(ticket: &str, settings: &crate::settings::Settings) -> Result<Client
     p2p::join(ticket, settings)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct EntityView {
     pub id: u64,
     pub kind: u32,
@@ -38,6 +38,7 @@ pub struct EntityView {
     pub pitch: f32,
     pub item: ItemStack,
     pub health: f32,
+    pub worn: Vec<u32>,
 }
 
 #[derive(Clone)]
@@ -53,6 +54,7 @@ pub enum ToClient {
     Moves(Vec<(u64, DVec3, f32, f32)>),
     Despawn(Vec<u64>),
     Hurt(Vec<(u64, f32)>),
+    Worn(Vec<(u64, Vec<u32>)>),
     /// Own inventory: (slot, stack) for changed slots.
     Inventory(Vec<(u32, ItemStack)>),
     /// Own synced components: (component id, bytes).

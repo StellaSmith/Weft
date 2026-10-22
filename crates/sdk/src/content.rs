@@ -681,6 +681,15 @@ impl ItemBuilder<'_> {
         self.props.push((key.to_string(), pod_bytes(&value)));
         self
     }
+    /// Shown on the wearer's model while in an equipment slot: `parts` from `worn_parts`, `texture`
+    /// in the wearer's skin layout.
+    pub fn worn(mut self, parts: u32, inflate: f32, texture: &str) -> Self {
+        let mut bytes = pod_bytes(&abi::Worn { roles: parts, inflate });
+        bytes.extend_from_slice(qualify(self.ns, texture).as_bytes());
+        self.props.push((abi::WORN.to_string(), bytes));
+        self
+    }
+
     pub fn on_use(mut self, f: impl Fn(&mut ItemUse) -> bool + Send + Sync + 'static) -> Self {
         self.on_use = callback(move |a: &mut abi::ItemUseArgs| {
             let handled = f(ItemUse::wrap(a));

@@ -459,7 +459,8 @@ impl Ui {
         let (mut pos, spacing) = match style.justify {
             Justify::Start => (0.0, style.gap),
             Justify::Center => (free.max(0.0) / 2.0, style.gap),
-            Justify::End => (free.max(0.0), style.gap),
+            // Overflowing content sticks out at the start, the end edge stays put.
+            Justify::End => (free, style.gap),
             Justify::Between if children.len() > 1 => (0.0, style.gap + free.max(0.0) / (children.len() - 1) as f32),
             Justify::Between => (free.max(0.0) / 2.0, style.gap),
         };

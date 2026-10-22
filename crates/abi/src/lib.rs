@@ -600,6 +600,27 @@ pub struct ClientCtx {
     _p: [u8; 0],
 }
 
+/// Item prop: the item shows on an entity model while worn. Bytes are `Worn` followed by the
+/// UTF-8 name of a texture laid out like the wearer's skin.
+pub const WORN: &str = "core:worn";
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Worn {
+    /// Bit `1 << role` for every model part role it covers, see `worn_parts`.
+    pub roles: u32,
+    /// Model pixels added on every side, so layers sit above the skin and each other.
+    pub inflate: f32,
+}
+
+pub mod worn_parts {
+    use super::part_role as r;
+    pub const HEAD: u32 = 1 << r::HEAD;
+    pub const BODY: u32 = 1 << r::STATIC;
+    pub const ARMS: u32 = 1 << r::ARM_LEFT | 1 << r::ARM_RIGHT | 1 << r::ARM_FORWARD_LEFT | 1 << r::ARM_FORWARD_RIGHT;
+    pub const LEGS: u32 = 1 << r::LEG_LEFT | 1 << r::LEG_RIGHT | 1 << r::LEG_FRONT_LEFT | 1 << r::LEG_FRONT_RIGHT;
+}
+
 pub mod ui_kind {
     pub const CONTAINER: u32 = 0;
     pub const PANEL: u32 = 1;
@@ -613,6 +634,8 @@ pub mod ui_kind {
     pub const SPACER: u32 = 7;
     /// Row of `count` icons (full/half/empty textures from the theme `class`) driven by `bind`.
     pub const ICONS: u32 = 8;
+    /// The local player's model with what it wears, turning towards the mouse.
+    pub const ENTITY: u32 = 9;
 }
 
 #[repr(C)]

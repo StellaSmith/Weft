@@ -653,6 +653,10 @@ impl Server {
         for (k, v) in comps {
             r.entities.comps.insert((id, k), v);
         }
+        let worn = worn_of(c, &r.entities, id);
+        if let Some(e) = r.entities.get_mut(id) {
+            e.worn = worn;
+        }
         let health = r.entities.get(id).map_or(kind.max_health, |e| e.health);
         let p = &mut self.players[pi];
         p.name = name;
@@ -885,11 +889,21 @@ impl Server {
     }
 
     fn sync_players(&mut self, c: &'static Content) {
-        // Entities that moved since last tick, per dimension (all regions).
+        // Entities that moved since last tick and changed equipment, per dimension (all regions).
         let mut moved: Vec<Vec<(u64, DVec3, f32, f32)>> = Vec::with_capacity(self.dims.len());
+        let mut worn: Vec<Vec<(u64, Vec<u32>)>> = Vec::with_capacity(self.dims.len());
         for d in &mut self.dims {
             let mut m = Vec::new();
+            let mut w = Vec::new();
             for r in &mut d.regions {
+                let changed: Vec<u64> = r.entities.dirty_inv.iter().copied().collect();
+                for id in changed {
+                    let now = worn_of(c, &r.entities, id);
+                    if let Some(e) = r.entities.get_mut(id).filter(|e| e.worn != now) {
+                        e.worn = now.clone();
+                        w.push((id, now));
+                    }
+                }
                 for e in r.entities.list.iter_mut().filter(|e| !e.removed && e.anchor.is_none()) {
                     let now = (e.pos, e.yaw, e.pitch);
                     if e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01) {
@@ -901,6 +915,7 @@ impl Server {
                 }
             }
             moved.push(m);
+            worn.push(w);
         }
 
         for pi in 0..self.players.len() {
@@ -942,7 +957,8 @@ impl Server {
                     }
                     visible.insert(e.id);
                     if !p.known.contains(&e.id) {
-                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: e.item, health: e.health });
+                        let worn = e.worn.clone();
+                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: e.item, health: e.health, worn });
                     }
                 }
             }
@@ -956,6 +972,10 @@ impl Server {
             let moves: Vec<(u64, DVec3, f32, f32)> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
             if !moves.is_empty() {
                 p.conn.send(ToClient::Moves(moves));
+            }
+            let worn: Vec<(u64, Vec<u32>)> = worn[p.dim as usize].iter().filter(|w| p.known.contains(&w.0) && visible.contains(&w.0)).cloned().collect();
+            if !worn.is_empty() {
+                p.conn.send(ToClient::Worn(worn));
             }
             p.known = visible;
             for reg in &dim.regions {
@@ -1112,6 +1132,12 @@ impl Server {
             d.dirty = true;
         }
     }
+}
+
+/// Items in a player's equipment slots that show on the model.
+fn worn_of(c: &Content, ents: &entity::Entities, id: u64) -> Vec<u32> {
+    let Some(inv) = ents.inventories.get(&id).filter(|i| i.len() == entity::PLAYER_SLOTS as usize) else { return Vec::new() };
+    inv[entity::PLAYER_WORN].iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()
 }
 
 fn within(player: DVec3, block: IVec3) -> bool {

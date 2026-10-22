@@ -96,7 +96,12 @@ pub fn register(r: &mut Registry) {
         for (slot, piece, points, dur) in [(0, "helmet", 1, 11), (1, "chestplate", 3, 16), (2, "leggings", 2, 15), (3, "boots", 1, 13)] {
             let points = points + mult * (if slot == 1 { 3 } else { 1 });
             let tag = ["armor/head", "armor/chest", "armor/legs", "armor/feet"][slot as usize];
-            r.item(&format!("{mat}_{piece}"), leak()).durability(durability * dur).prop(ARMOR, Armor { slot, points }).tag(tag);
+            let (parts, inflate, layer) = [(worn_parts::HEAD, 1.0, 1), (worn_parts::BODY | worn_parts::ARMS, 1.0, 1), (worn_parts::BODY | worn_parts::LEGS, 0.5, 2), (worn_parts::LEGS, 1.0, 1)][slot as usize];
+            r.item(&format!("{mat}_{piece}"), leak())
+                .durability(durability * dur)
+                .prop(ARMOR, Armor { slot, points })
+                .tag(tag)
+                .worn(parts, inflate, &format!("armor/{mat}_{layer}"));
         }
     }
 }

@@ -90,6 +90,7 @@ pub fn register(r: &mut Registry) {
                             ui.slot(i);
                         }
                     });
+                    ui.player_model(52.0, 72.0);
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
                         ui.text("container.crafting");

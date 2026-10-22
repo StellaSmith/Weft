@@ -260,6 +260,11 @@ impl Ui {
         self.leaf(n)
     }
 
+    /// The local player's model with what it wears.
+    pub fn player_model(&mut self, w: f32, h: f32) {
+        self.leaf(node(k::ENTITY, S::default().size(w, h)))
+    }
+
     pub fn spacer(&mut self) {
         self.leaf(node(k::SPACER, S::default().grow()))
     }

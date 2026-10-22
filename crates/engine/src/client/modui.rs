@@ -13,6 +13,7 @@ use crate::ui::text::{self, Arg};
 use crate::ui::{Align, Justify, Kind, Len, Style, Ui};
 
 pub const TAG_SLOT: u32 = 10;
+pub const TAG_ENTITY: u32 = 11;
 
 #[repr(C)]
 struct UiBuild<'a> {
@@ -174,6 +175,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 b.ui.open(Kind::Icons { class, count: n.count, bind, value: -1.0 }, style)
             }
             uk::IMAGE => b.ui.open(Kind::Image { texture: n.text.as_str().to_string(), color: 0xFFFFFFFF }, style),
+            uk::ENTITY => b.ui.open(Kind::Custom { tag: TAG_ENTITY, data: 0 }, style),
             uk::SPACER => b.ui.open(Kind::Container { class: None }, Style { grow: n.grow.max(1.0), ..style }),
             uk::PANEL => b.ui.open(Kind::Container { class: Some(if class.is_empty() { "panel".into() } else { class }) }, style),
             _ => b.ui.open(Kind::Container { class: (!class.is_empty()).then_some(class) }, style),

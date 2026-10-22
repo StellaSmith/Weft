@@ -32,6 +32,8 @@ pub struct Entity {
     pub selected: u32,
     pub anchor: Option<IVec3>,
     pub sent: Option<(DVec3, f32, f32)>,
+    /// Worn items as last sent to clients.
+    pub worn: Vec<u32>,
 }
 
 impl Entity {
@@ -58,6 +60,7 @@ impl Entity {
             selected: 0,
             anchor: None,
             sent: None,
+            worn: Vec::new(),
         }
     }
 
@@ -96,6 +99,8 @@ pub struct Entities {
 }
 
 pub const PLAYER_SLOTS: u32 = 40;
+/// Player slots 36..40 are equipment: never filled by pickups, shown on the model.
+pub const PLAYER_WORN: std::ops::Range<usize> = 36..40;
 
 impl Entities {
     pub fn get(&self, id: u64) -> Option<&Entity> {
@@ -186,7 +191,7 @@ impl Entities {
     pub fn insert_item(&mut self, c: &Content, owner: u64, mut stack: ItemStack) -> ItemStack {
         let max = c.max_stack(stack.item);
         let Some(inv) = self.inventories.get_mut(&owner) else { return stack };
-        let limit = if inv.len() == PLAYER_SLOTS as usize { 36 } else { inv.len() };
+        let limit = if inv.len() == PLAYER_SLOTS as usize { PLAYER_WORN.start } else { inv.len() };
         for s in inv[..limit].iter_mut() {
             if stack.count == 0 {
                 break;

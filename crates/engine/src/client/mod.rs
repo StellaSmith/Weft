@@ -41,6 +41,7 @@ pub struct ClientEntity {
     pub item: ItemStack,
     pub health: f32,
     pub hurt: f32,
+    pub worn: Vec<u32>,
     /// Accumulated walk distance and current swing amplitude, for limb animation.
     pub walk: f32,
     pub swing: f32,
@@ -88,6 +89,8 @@ pub struct Client {
     pub inventory: Vec<ItemStack>,
     pub health: f32,
     pub max_health: f32,
+    /// Seconds left of the red screen flash after taking damage.
+    pub hurt_flash: f32,
     pub dead: bool,
     pub components: FxHashMap<u32, Vec<u8>>,
     pub menu: Option<ClientMenu>,
@@ -135,6 +138,7 @@ impl Client {
             inventory: vec![ItemStack::EMPTY; 40],
             health: 20.0,
             max_health: 20.0,
+            hurt_flash: 0.0,
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -201,6 +205,7 @@ impl Client {
                                 item: e.item,
                                 health: e.health,
                                 hurt: 0.0,
+                                worn: e.worn,
                                 walk: 0.0,
                                 swing: 0.0,
                                 age: 0.0,
@@ -230,6 +235,13 @@ impl Client {
                         }
                     }
                 }
+                ToClient::Worn(list) => {
+                    for (id, items) in list {
+                        if let Some(e) = self.entities.get_mut(&id) {
+                            e.worn = items;
+                        }
+                    }
+                }
                 ToClient::Inventory(slots) => {
                     for (i, s) in slots {
                         if let Some(dst) = self.inventory.get_mut(i as usize) {
@@ -245,6 +257,7 @@ impl Client {
                 ToClient::Health { health, max } => {
                     if health < self.health {
                         self.player.vel.y = self.player.vel.y.max(2.0);
+                        self.hurt_flash = 0.5;
                     }
                     self.health = health;
                     self.max_health = max;
@@ -441,6 +454,7 @@ impl Client {
             e.hurt = (e.hurt - dt as f32).max(0.0);
             e.age += dt as f32;
         }
+        self.hurt_flash = (self.hurt_flash - dt as f32).max(0.0);
         self.hotbar = self.inventory[..9].iter().map(|s| if s.is_empty() { 0 } else { s.item | (s.count.min(255) << 24) }).collect();
 
         let center = (self.player.pos.floor().as_ivec3()) >> 4;
@@ -467,6 +481,13 @@ impl Client {
             }
         }
         best.map(|b| b.1)
+    }
+
+    /// Items the local player wears.
+    pub fn worn(&self) -> Vec<u32> {
+        let c = content();
+        let slots = self.inventory.get(crate::server::entity::PLAYER_WORN).unwrap_or_default();
+        slots.iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()
     }
 
     pub fn camera(&self) -> Camera {

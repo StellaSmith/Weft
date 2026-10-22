@@ -118,6 +118,8 @@ struct Running {
     quit: bool,
     mods: Vec<LoadedMod>,
     client_hash: u64,
+    /// Where UI asked for the player model, physical pixels.
+    previews: Vec<[f32; 4]>,
     autopilot: Option<crate::autopilot::Autopilot>,
     shot_path: Option<PathBuf>,
     ticket_file: Option<PathBuf>,
@@ -214,6 +216,7 @@ impl App {
             quit: false,
             mods,
             client_hash: 0,
+            previews: Vec::new(),
             autopilot: self.opts.script.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| crate::autopilot::Autopilot::load(&s)),
             shot_path: None,
             ticket_file: None,
@@ -977,6 +980,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         for s in g.client.inventory.iter().chain(g.client.menu.iter().flat_map(|m| m.slots.iter().chain([&m.cursor]))) {
             h = crate::world::mix(h ^ ((s.item as u64) << 32 | s.count as u64) ^ (s.damage as u64) << 48);
         }
+        h = crate::world::mix(h ^ (g.client.hurt_flash * 60.0) as u64);
         if h != r.client_hash {
             r.client_hash = h;
             r.quads_dirty = true;
@@ -1012,16 +1016,28 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let mut all = Vec::new();
         let game = r.game.as_ref().map(|_| (content(), &r.textures));
         let client = r.game.as_ref().map(|g| &g.client);
+        let mut previews = Vec::new();
         let mut layers: Vec<&Ui> = Vec::new();
         if r.game.is_some() {
             layers.push(&r.hud.ui);
         }
         layers.extend(r.screens.iter().map(|(_, u)| u));
+        if let Some(flash) = client.map(|c| c.hurt_flash).filter(|&f| f > 0.0) {
+            r.ui.quads.clear();
+            if let Some((tex, _, _)) = r.ui.texture(&mut *r.gpu, &r.assets, "core:gui/vignette") {
+                let a = (flash / 0.5 * 200.0) as u32;
+                r.ui.image(crate::ui::Rect { x: 0.0, y: 0.0, w: surface.0 as f32, h: surface.1 as f32 }, tex, [0.0, 0.0, 1.0, 1.0], 0xD0101000 | a);
+            }
+            all.append(&mut r.ui.quads);
+        }
         for ui in layers {
             let theme = &r.theme;
             let textures = &r.textures;
             let unit = ui.text_unit;
             let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool| {
+                if tag == crate::client::modui::TAG_ENTITY {
+                    previews.push([rect.x + scale, rect.y + scale, rect.w - 2.0 * scale, rect.h - 2.0 * scale]);
+                }
                 crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, scale, unit);
             };
             r.ui.build(&mut *r.gpu, &r.assets, ui, &r.theme, scale, game, &mut custom);
@@ -1036,17 +1052,27 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             all.append(&mut r.ui.quads);
         }
         r.ui.quads = all;
+        r.previews = previews;
     }
 
     r.list.clear();
     let clear = r.game.as_ref().map_or([0.02, 0.02, 0.03, 1.0], |g| g.client.fog_color());
     r.list.push(Cmd::BeginPass { color: Some((Target::Surface, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
     if let Some(g) = &mut r.game {
-        g.client.entity_render.preload(&mut *r.gpu, &r.assets, &g.client.entities);
+        let worn = g.client.worn();
+        g.client.entity_render.preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn);
         g.client.render(&mut *r.gpu, &mut r.list, &info, &r.textures);
     }
     r.ui.draw(&mut *r.gpu, &mut r.list, &info);
     r.list.push(Cmd::EndPass);
+    if let Some(g) = r.game.as_mut().filter(|_| !r.previews.is_empty() && !r.screens.is_empty()) {
+        r.list.push(Cmd::BeginPass { color: Some((Target::Surface, None)), depth: Some((r.depth.0, Some(0.0))) });
+        let worn = g.client.worn();
+        for rect in &r.previews {
+            g.client.entity_render.draw_preview(&mut *r.gpu, &mut r.list, &info, *rect, r.input.cursor, &worn);
+        }
+        r.list.push(Cmd::EndPass);
+    }
 
     let capture_now = r.shot_pending;
     if opts.shot.is_some() && opts.script.is_none() && !r.shot_pending {

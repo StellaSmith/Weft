@@ -175,6 +175,17 @@ impl Content {
             || self.items.get(item as usize).and_then(|d| d.block).is_some_and(|s| self.block_of(s).tags.iter().any(|t| t == tag))
     }
 
+    /// Worn look of an item: covered part roles, inflation and texture.
+    pub fn worn(&self, item: u32) -> Option<(abi::Worn, &str)> {
+        let b = self.item_prop(item, abi::WORN)?;
+        let n = size_of::<abi::Worn>();
+        if b.len() <= n {
+            return None;
+        }
+        let w = abi::Worn { roles: u32::from_le_bytes(b[0..4].try_into().ok()?), inflate: f32::from_le_bytes(b[4..8].try_into().ok()?) };
+        Some((w, std::str::from_utf8(&b[n..]).ok()?))
+    }
+
     pub fn item_prop(&self, item: u32, key: &str) -> Option<&[u8]> {
         let d = self.items.get(item as usize)?;
         d.props.iter().find(|p| p.0 == key).map(|p| p.1.as_slice()).or_else(|| {

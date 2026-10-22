@@ -7,7 +7,7 @@ mod game;
 mod ui;
 mod world;
 
-pub use abi::ItemStack;
+pub use abi::{ItemStack, worn_parts};
 pub use content::*;
 pub use game::*;
 pub use ui::*;

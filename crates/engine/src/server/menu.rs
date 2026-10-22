@@ -218,7 +218,17 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
                 i != slot && s.flags & sf::OUTPUT == 0 && (s.owner == Owner::Player) != from_player && armor_ok(c, s.flags, cur.item)
             })
             .collect();
-        let targets = if targets.is_empty() && from_player {
+        // Slots made for this item (armour) win over generic ones.
+        const FITTED: u32 = sf::ARMOR_HEAD | sf::ARMOR_CHEST | sf::ARMOR_LEGS | sf::ARMOR_FEET;
+        let fitted: Vec<u32> = (0..m.slots.len() as u32)
+            .filter(|&i| {
+                let s = m.slots[i as usize];
+                s.flags & FITTED != 0 && armor_ok(c, s.flags, cur.item) && get(m, dim, player, i).is_empty()
+            })
+            .collect();
+        let targets = if r.flags & FITTED == 0 && !fitted.is_empty() {
+            fitted
+        } else if targets.is_empty() && from_player {
             // Inventory screen: hotbar <-> main.
             let hotbar = r.index < 9;
             (0..m.slots.len() as u32)

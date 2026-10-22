@@ -41,6 +41,7 @@ pub struct Dim {
     pub entities: Entities,
     pub events: Vec<DimEvent>,
     next_id: Arc<AtomicU64>,
+    pub grid: super::energy::Grid,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -111,6 +112,7 @@ impl Dim {
             entities: Entities::default(),
             events: Vec::new(),
             next_id,
+            grid: Default::default(),
         }
     }
 
@@ -131,6 +133,7 @@ impl Dim {
         if self.cubes.contains_key(&pos) {
             return;
         }
+        self.grid.cube_loaded(c, pos, &cube);
         self.cubes.insert(pos, Arc::new(cube));
         let def = &c.dims[self.id as usize];
         let open_above = pos.y + 1 >= def.sky_cube_y || pos.y + 1 > def.max_cube_y;
@@ -157,6 +160,7 @@ impl Dim {
                 .map(|e| e.id)
                 .collect();
             let cube = self.cubes.remove(&pos).unwrap();
+            self.grid.cube_unloaded(pos);
             if self.modified.remove(&pos) || !inside.is_empty() {
                 out.push((pos, cube, inside));
             }
@@ -206,6 +210,7 @@ impl Dim {
         for d in DIRS {
             self.neighbor_queue.push_back((p + d, p));
         }
+        self.grid.block_changed(c, p, old, state);
         let (ob, nb) = (c.states[old as usize].block, c.states[state as usize].block);
         if ob != nb {
             if let Some(&id) = self.entities.anchors.get(&p) {
@@ -357,6 +362,7 @@ impl Dim {
         }
 
         self.tick_entities(c);
+        self.grid.tick(&mut self.entities, c);
         self.flush_neighbors(c);
         self.entities.compact();
         self.finish_tick();

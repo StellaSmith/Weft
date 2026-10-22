@@ -118,6 +118,9 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
         let lang = b.lang;
         let spans = |key: Str, a: abi::Slice<abi::UiArg>| {
             let mut out = Vec::new();
+            if key.len == 0 {
+                return out;
+            }
             let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
             let cx = text::Ctx { lang, input: None, item_name: &items };
             text::format(lang.get(key.as_str()), &args(a), &cx, &mut out);

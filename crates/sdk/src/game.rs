@@ -5,7 +5,19 @@ use crate::abi::{self, ItemStack, Slice, Str};
 use crate::ui::{Ui, ui_callback};
 use crate::{Registry, World, callback, host, qualify};
 
-pub use abi::{EntityState, component_flags, damage, entity_flags, part_role, slot_flags};
+pub use abi::{Energy, EntityState, component_flags, damage, entity_flags, part_role, slot_flags};
+
+/// The engine's energy component (`core:energy`), shared by every mod.
+pub fn energy_component() -> u32 {
+    static ID: AtomicU32 = AtomicU32::new(u32::MAX);
+    let id = ID.load(Ordering::Relaxed);
+    if id != u32::MAX {
+        return id;
+    }
+    let id = unsafe { (host().find_component)(Str::new("core:energy")) };
+    ID.store(id, Ordering::Relaxed);
+    id
+}
 
 /// Typed handle to a component; the value type must be plain old data (`Copy`, `repr(C)`).
 pub struct Component<T: Copy> {
@@ -85,6 +97,21 @@ impl World {
         let p = unsafe { (host().component)(self.raw(), id, c.id()) };
         (!p.is_null()).then(|| unsafe { &mut *(p as *mut T) })
     }
+    /// The entity's `core:energy` state, if it takes part in the energy contract.
+    pub fn energy(&self, id: u64) -> Option<&mut Energy> {
+        let p = unsafe { (host().component)(self.raw(), id, energy_component()) };
+        (!p.is_null()).then(|| unsafe { &mut *(p as *mut Energy) })
+    }
+
+    /// Accepts up to `amount`, respecting capacity and input rate. Returns what was accepted.
+    pub fn energy_insert(&self, id: u64, amount: i64, simulate: bool) -> i64 {
+        unsafe { (host().energy_insert)(self.raw(), id, amount, simulate as u32) }
+    }
+
+    pub fn energy_extract(&self, id: u64, amount: i64, simulate: bool) -> i64 {
+        unsafe { (host().energy_extract)(self.raw(), id, amount, simulate as u32) }
+    }
+
     pub fn players(&self) -> Vec<u64> {
         let n = unsafe { (host().player_count)(self.raw()) };
         (0..n).map(|i| unsafe { (host().player_at)(self.raw(), i) }).collect()
@@ -284,9 +311,15 @@ pub struct EntityBuilder<'a> {
     on_hurt: abi::Callback,
     on_death: abi::Callback,
     on_interact: abi::Callback,
+    replace: bool,
 }
 
 impl EntityBuilder<'_> {
+    /// Replaces the entity kind with this name from a mod listed in `deps`.
+    pub fn replace(mut self) -> Self {
+        self.replace = true;
+        self
+    }
     pub fn size(mut self, width: f32, height: f32) -> Self {
         self.width = width;
         self.height = height;
@@ -366,6 +399,7 @@ impl Drop for EntityBuilder<'_> {
             on_hurt: self.on_hurt,
             on_death: self.on_death,
             on_interact: self.on_interact,
+            replace: self.replace as u32,
         };
         unsafe { (host().reg_entity)(self.reg.raw, &desc) }
     }
@@ -481,6 +515,7 @@ impl Registry {
             on_hurt: abi::Callback::NONE,
             on_death: abi::Callback::NONE,
             on_interact: abi::Callback::NONE,
+            replace: false,
         }
     }
 
@@ -544,6 +579,12 @@ impl Registry {
     pub fn block_entity(&mut self, block: &str, entity: &str, slots: u32) {
         let (b, e) = (qualify(self.ns, block), qualify(self.ns, entity));
         unsafe { (host().set_block_entity)(self.raw, Str::new(&b), Str::new(&e), slots) }
+    }
+
+    /// Attaches a component (by full name, e.g. "core:energy") to an entity kind.
+    pub fn attach(&mut self, kind: &str, component: &str) {
+        let k = qualify(self.ns, kind);
+        unsafe { (host().reg_attach)(self.raw, Str::new(&k), Str::new(component)) }
     }
 
     pub fn hud(&mut self, f: impl Fn(&mut Ui) + Send + Sync + 'static) {

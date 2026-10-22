@@ -229,6 +229,8 @@ pub struct BlockDesc {
     pub on_scheduled: Callback,
     /// `PlaceArgs`: choose the state from the player's facing/hit face.
     pub placement: Callback,
+    /// Non-zero: replaces a block of the same name registered by a mod this one depends on.
+    pub replace: u32,
 }
 
 #[repr(C)]
@@ -443,6 +445,8 @@ pub struct EntityDesc {
     pub on_hurt: Callback,
     pub on_death: Callback,
     pub on_interact: Callback,
+    /// Non-zero: replaces an entity kind of the same name from a mod this one depends on.
+    pub replace: u32,
 }
 
 #[repr(C)]
@@ -764,4 +768,26 @@ pub struct Host {
     pub client_component: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, comp: u32) -> *const u8,
     pub client_entity: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, out: *mut EntityState) -> u32,
     pub client_menu_data: unsafe extern "C" fn(client: *mut ClientCtx, index: u32) -> i32,
+
+    /// Component id by full name ("core:energy"), u32::MAX if missing.
+    pub find_component: unsafe extern "C" fn(name: Str) -> u32,
+    /// Energy contract (`core:energy` component): returns how much was (or would be, when
+    /// `simulate` is non-zero) accepted / taken, respecting capacity and rate limits.
+    pub energy_insert: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
+    pub energy_extract: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
+    /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at spawn.
+    pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str),
+}
+
+/// Layout of the engine's `core:energy` component. Blocks tagged `core:conductor` connect the
+/// block entities next to them into a network the engine balances every tick.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Energy {
+    pub stored: i64,
+    pub capacity: i64,
+    /// Rate limits per tick; a network pulls from entities with `max_out > 0` and feeds entities
+    /// with `max_in > 0`.
+    pub max_in: i64,
+    pub max_out: i64,
 }

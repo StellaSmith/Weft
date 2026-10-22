@@ -1,0 +1,7 @@
+language.name = English
+block.testmod.generator = Generator
+block.testmod.electric_furnace = Electric Furnace
+block.testmod.cable = Cable
+testmod.generator = Generator
+testmod.electric_furnace = Electric Furnace
+testmod.energy = {#ffe070}{0}{/} / {1} FE

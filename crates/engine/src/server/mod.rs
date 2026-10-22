@@ -2,6 +2,7 @@
 //! in-process transport.
 
 mod dim;
+pub mod energy;
 pub mod entity;
 pub mod menu;
 pub mod persist;
@@ -720,6 +721,42 @@ impl Server {
                     None => format!("unknown entity {full}"),
                 }
             }
+            ["setblock", x, y, z, name] => {
+                let full = if name.contains(':') { name.to_string() } else { format!("base:{name}") };
+                match (x.parse(), y.parse(), z.parse(), c.state_by_name(&full)) {
+                    (Ok(x), Ok(y), Ok(z), Some(state)) => {
+                        let d = &mut self.dims[p.dim as usize];
+                        d.set(c, IVec3::new(x, y, z), state);
+                        d.flush_neighbors(c);
+                        d.finish_tick();
+                        format!("set {full}")
+                    }
+                    _ => "usage: /setblock x y z block".into(),
+                }
+            }
+            ["insert", x, y, z, item, rest @ ..] => {
+                let full = if item.contains(':') { item.to_string() } else { format!("base:{item}") };
+                let count = rest.first().and_then(|n| n.parse().ok()).unwrap_or(1);
+                let d = &mut self.dims[p.dim as usize];
+                match (x.parse(), y.parse(), z.parse(), c.item_names.get(&full)) {
+                    (Ok(x), Ok(y), Ok(z), Some(&i)) => match d.entities.anchors.get(&IVec3::new(x, y, z)).copied() {
+                        Some(owner) => {
+                            let left = d.entities.insert_item(c, owner, ItemStack::new(i, count));
+                            format!("inserted {} x {full}", count - left.count)
+                        }
+                        None => "no block entity there".into(),
+                    },
+                    _ => "usage: /insert x y z item [count]".into(),
+                }
+            }
+            ["block", x, y, z] => match (x.parse(), y.parse(), z.parse()) {
+                (Ok(x), Ok(y), Ok(z)) => {
+                    let d = &self.dims[p.dim as usize];
+                    let s = d.get(IVec3::new(x, y, z));
+                    format!("{} in {}", s.map_or("unloaded".into(), |s| c.state_name(s)), c.dims[d.id as usize].name)
+                }
+                _ => "usage: /block x y z".into(),
+            },
             ["heal"] => {
                 let max = c.game.entities[c.game.player_kind as usize].max_health;
                 if let Some(e) = self.dims[p.dim as usize].entities.get_mut(p.entity) {

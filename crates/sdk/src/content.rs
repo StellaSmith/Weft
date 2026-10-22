@@ -84,6 +84,7 @@ impl Registry {
             item: true,
             item_handle: None,
             callbacks: BlockCallbacks::default(),
+            replace: false,
         }
     }
 
@@ -411,6 +412,7 @@ pub struct BlockBuilder<'a> {
     item: bool,
     item_handle: Option<&'static Item>,
     callbacks: BlockCallbacks,
+    replace: bool,
 }
 
 impl<'a> BlockBuilder<'a> {
@@ -464,6 +466,13 @@ impl<'a> BlockBuilder<'a> {
     }
 
     pub fn no_item(mut self) -> Self {
+        self.item = false;
+        self
+    }
+
+    /// Replaces the block with this name from a mod listed in `deps` (its item stays).
+    pub fn replace(mut self) -> Self {
+        self.replace = true;
         self.item = false;
         self
     }
@@ -581,6 +590,7 @@ impl Drop for BlockBuilder<'_> {
             on_neighbor: cb.on_neighbor.unwrap_or(abi::Callback::NONE),
             on_scheduled: cb.on_scheduled.unwrap_or(abi::Callback::NONE),
             placement: cb.placement.unwrap_or(abi::Callback::NONE),
+            replace: self.replace as u32,
         };
         self.handle.count.store(self.states.len() as u32, Ordering::Relaxed);
         unsafe { (host().reg_block)(self.reg.raw, &desc) };

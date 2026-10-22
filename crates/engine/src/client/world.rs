@@ -24,6 +24,7 @@ pub struct ClientWorld {
     tx: Sender<MeshResult>,
     rx: Receiver<MeshResult>,
     pub removed: Vec<IVec3>,
+    next_version: u32,
 }
 
 impl ClientWorld {
@@ -39,6 +40,7 @@ impl ClientWorld {
             tx,
             rx,
             removed: Vec::new(),
+            next_version: 0,
         }
     }
 
@@ -49,8 +51,15 @@ impl ClientWorld {
         self.versions.clear();
     }
 
+    /// Versions come from one counter so a mesh job of a removed cube can never match a new cube
+    /// at the same position (dimension change).
+    fn bump(&mut self, pos: IVec3) {
+        self.next_version += 1;
+        self.versions.insert(pos, self.next_version);
+    }
+
     fn touch(&mut self, pos: IVec3, neighbours: bool) {
-        *self.versions.entry(pos).or_insert(0) += 1;
+        self.bump(pos);
         self.dirty.insert(pos);
         if neighbours {
             for dz in -1..=1 {
@@ -58,7 +67,7 @@ impl ClientWorld {
                     for dx in -1..=1 {
                         let n = pos + IVec3::new(dx, dy, dz);
                         if n != pos && self.cubes.contains_key(&n) {
-                            *self.versions.entry(n).or_insert(0) += 1;
+                            self.bump(n);
                             self.dirty.insert(n);
                         }
                     }

@@ -115,6 +115,7 @@ pub struct Game {
     pub block_entities: FxHashMap<u32, u32>,
     pub player_kind: u32,
     pub item_kind: u32,
+    pub energy: u32,
 }
 
 // ---------------------------------------------------------------- raw registration
@@ -123,6 +124,7 @@ pub struct RawEntity {
     pub name: String,
     pub cell: usize,
     pub desc: EntityKind,
+    pub replace: bool,
 }
 
 pub struct RawComponent {
@@ -151,6 +153,7 @@ pub struct RawGame {
     pub huds: Vec<(ModId, Callback)>,
     pub player_menu: Option<String>,
     pub block_entities: Vec<(String, String, u32)>,
+    pub attach: Vec<(String, String)>,
 }
 
 fn opt(c: Callback) -> Option<Callback> {
@@ -178,6 +181,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
         RawEntity {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
+            replace: d.replace != 0,
             desc: EntityKind {
                 name: d.name.as_str().to_string(),
                 owner,
@@ -296,6 +300,8 @@ pub fn freeze(
     let mut menus = Vec::new();
     let mut player_menu = None;
     let mut block_entities = Vec::new();
+    let mut replaced_cells: Vec<(usize, String)> = Vec::new();
+    let mut attach: Vec<(String, String)> = Vec::new();
     for r in raws {
         entities.extend(r.entities);
         components.extend(r.components);
@@ -307,27 +313,54 @@ pub fn freeze(
             player_menu = r.player_menu;
         }
         block_entities.extend(r.block_entities);
+        attach.extend(r.attach);
     }
     let mut player = builtin(PLAYER, 0.3, 1.8, ef::FALL_DAMAGE | ef::PUSHABLE);
     player.eye = 1.62;
     player.texture = "core:entity/player".into();
     player.parts = player_parts();
-    entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player });
-    entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE) });
-    entities.sort_by(|a, b| a.name.cmp(&b.name));
-    for w in entities.windows(2) {
-        if w[0].name == w[1].name {
-            errors.push(format!("entity {} registered twice", w[0].name));
+    entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false });
+    entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE), replace: false });
+    entities.sort_by(|a, b| a.name.cmp(&b.name).then(a.replace.cmp(&b.replace)));
+    let mut kept: Vec<RawEntity> = Vec::with_capacity(entities.len());
+    for e in entities {
+        match kept.last() {
+            Some(prev) if prev.name == e.name && e.replace => {
+                // The replaced kind's handle must resolve to the replacement too.
+                if prev.cell != 0 {
+                    replaced_cells.push((prev.cell, e.name.clone()));
+                }
+                kept.pop();
+                kept.push(e);
+            }
+            Some(prev) if prev.name == e.name => {
+                errors.push(format!("entity {} registered twice", e.name));
+            }
+            _ => kept.push(e),
         }
     }
+    let entities = kept;
     for (i, e) in entities.into_iter().enumerate() {
         write_cell(e.cell, i as u32);
         g.entity_names.insert(e.name.clone(), i as u32);
         g.entities.push(e.desc);
     }
+    for (cell, name) in replaced_cells {
+        write_cell(cell, g.entity_names[&name]);
+    }
     g.player_kind = g.entity_names[PLAYER];
     g.item_kind = g.entity_names[ITEM];
 
+    components.push(RawComponent {
+        cell: 0,
+        def: ComponentDef {
+            name: "core:energy".into(),
+            size: size_of::<voxide_abi::Energy>() as u32,
+            flags: voxide_abi::component_flags::SAVE,
+            default: vec![0; size_of::<voxide_abi::Energy>()],
+        },
+        attach_to: Vec::new(),
+    });
     components.sort_by(|a, b| a.def.name.cmp(&b.def.name));
     for (i, c) in components.into_iter().enumerate() {
         write_cell(c.cell, i as u32);
@@ -339,6 +372,13 @@ pub fn freeze(
         }
         g.component_names.insert(c.def.name.clone(), i as u32);
         g.components.push(c.def);
+    }
+    g.energy = g.component_names["core:energy"];
+    for (kind, comp) in attach {
+        match (g.entity_names.get(&kind), g.component_names.get(&comp)) {
+            (Some(&k), Some(&cid)) => g.entities[k as usize].components.push(cid),
+            _ => errors.push(format!("cannot attach {comp} to {kind}: unknown entity or component")),
+        }
     }
 
     // Hooks run after the kind's own callback, in mod order.

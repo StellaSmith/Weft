@@ -36,6 +36,8 @@ pub struct StateInfo {
     pub hardness: f32,
     pub friction: f32,
     pub drag: f32,
+    /// Block is tagged `core:conductor` (part of energy networks).
+    pub conductor: bool,
 }
 
 impl StateInfo {
@@ -248,6 +250,9 @@ pub struct RawBlock {
     pub drop: String,
     pub drop_count: u32,
     pub cb: BlockCallbacks,
+    pub replace: bool,
+    /// Handles of blocks this one replaced; they resolve to this block.
+    pub extra_cells: Vec<usize>,
 }
 
 pub struct RawItem {
@@ -340,6 +345,8 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 on_scheduled: cb(d.on_scheduled),
                 placement: cb(d.placement),
             },
+            replace: d.replace != 0,
+            extra_cells: Vec::new(),
         }
     }
 }
@@ -411,8 +418,28 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         biomes.extend(r.biomes);
         dims.extend(r.dims);
     }
-    blocks.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    blocks.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.1.replace.cmp(&b.1.replace)));
     items.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    // A replacement wins over the original if its mod depends on the original's mod. The
+    // original's item stays (it already points at the block by name).
+    let depends = |m: ModId, on: ModId| mods[m.0 as usize].deps.contains(&mods[on.0 as usize].id);
+    let mut kept: Vec<(ModId, RawBlock)> = Vec::with_capacity(blocks.len());
+    for (owner, b) in blocks {
+        match kept.last() {
+            Some((prev_owner, prev)) if prev.name == b.name && b.replace && depends(owner, *prev_owner) => {
+                log::info!("{} replaces block {}", mods[owner.0 as usize].id, b.name);
+                let (_, old) = kept.pop().unwrap();
+                let mut b = b;
+                b.extra_cells.push(old.cell);
+                b.extra_cells.extend(old.extra_cells);
+                kept.push((owner, b));
+            }
+            _ => kept.push((owner, b)),
+        }
+    }
+    let blocks = kept;
+    let mut seen = rustc_hash::FxHashSet::default();
+    items.retain(|(_, i)| seen.insert(i.name.clone()));
     biomes.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     dims.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     let mod_name = |m: ModId| mods[m.0 as usize].id.clone();
@@ -463,6 +490,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         hardness: -1.0,
         friction: 0.6,
         drag: 1.0,
+        conductor: false,
     }];
     let mut block_defs = vec![BlockDef {
         name: "core:air".into(),
@@ -482,6 +510,9 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         let index = block_defs.len() as u32;
         let first = states.len() as u32;
         write_cell(b.cell, first);
+        for &cell in &b.extra_cells {
+            write_cell(cell, first);
+        }
         for s in &b.states {
             let mut boxes: Vec<ModelBox> = s
                 .boxes
@@ -526,6 +557,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
                 hardness: s.hardness,
                 friction: s.friction,
                 drag: s.drag,
+                conductor: b.tags.iter().any(|t| t == "core:conductor"),
             });
         }
         let drop = if b.drop.is_empty() { b.name.clone() } else { b.drop.clone() };

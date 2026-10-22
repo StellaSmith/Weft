@@ -1,0 +1,2 @@
+energy.background = testmod:gui/energy_bg
+energy.fill_texture = testmod:gui/energy_fill

@@ -73,6 +73,10 @@ pub static HOST: Host = Host {
     client_component: crate::client::modui::client_component,
     client_entity: crate::client::modui::client_entity,
     client_menu_data: crate::client::modui::client_menu_data,
+    find_component,
+    energy_insert,
+    energy_extract,
+    reg_attach,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -285,6 +289,19 @@ unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, ow
     unsafe { dim(w).events.push(crate::server::DimEvent::OpenMenu { player, menu, owner }) }
 }
 
+unsafe extern "C" fn find_component(name: Str) -> u32 {
+    let name = unsafe { name.as_str() };
+    try_content().and_then(|c| c.game.component(name)).unwrap_or(u32::MAX)
+}
+
+unsafe extern "C" fn energy_insert(w: *mut abi::WorldCtx, id: u64, amount: i64, simulate: u32) -> i64 {
+    unsafe { crate::server::energy::insert(&mut dim(w).entities, content(), id, amount, simulate != 0) }
+}
+
+unsafe extern "C" fn energy_extract(w: *mut abi::WorldCtx, id: u64, amount: i64, simulate: u32) -> i64 {
+    unsafe { crate::server::energy::extract(&mut dim(w).entities, content(), id, amount, simulate != 0) }
+}
+
 // ---------------------------------------------------------------- menus
 
 unsafe fn menu<'a>(m: *mut abi::MenuCtx) -> &'a mut MenuCall {
@@ -495,6 +512,10 @@ unsafe extern "C" fn reg_hud(r: *mut abi::Registrar, cb: Callback) {
 
 unsafe extern "C" fn set_player_menu(r: *mut abi::Registrar, menu: Str) {
     unsafe { reg(r).game.player_menu = Some(menu.as_str().to_string()) }
+}
+
+unsafe extern "C" fn reg_attach(r: *mut abi::Registrar, kind: Str, component: Str) {
+    unsafe { reg(r).game.attach.push((kind.as_str().to_string(), component.as_str().to_string())) }
 }
 
 unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str, slots: u32) {

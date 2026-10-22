@@ -128,6 +128,7 @@ pub struct WorldRenderer {
     indirect: Vec<(BufferId, u32)>,
     biomes: BufferId,
     tex_info: BufferId,
+    anim: BufferId,
     block_index: u32,
     pub drawn: u32,
     pub faces_drawn: u64,
@@ -148,13 +149,28 @@ impl WorldRenderer {
         let shader = world_shader().map_err(|e| e.0)?;
         let (face_pipes, quad_pipes) = Self::pipelines(gpu, &shader)?;
 
-        let info: Vec<u32> = textures
-            .block_layers
-            .iter()
-            .map(|&(first, frames)| first | frames.min(255) << 16 | 2 << 24)
-            .collect();
+        // Two words per texture name: static -> (layer, 0); animated -> (offset into the frame
+        // list, count | total ticks << 16 | interpolate << 31).
+        let mut info: Vec<u32> = Vec::with_capacity(textures.block_layers.len() * 2);
+        let mut frames: Vec<u32> = vec![0];
+        for (i, &(first, _)) in textures.block_layers.iter().enumerate() {
+            match textures.block_anims.get(i).cloned().flatten() {
+                Some(a) if !a.frames.is_empty() => {
+                    let total: u32 = a.frames.iter().map(|f| f.1).sum::<u32>().min(0x7FFF);
+                    info.push(frames.len() as u32);
+                    info.push(a.frames.len() as u32 | total << 16 | (a.interpolate as u32) << 31);
+                    frames.extend(a.frames.iter().map(|&(layer, ticks)| layer | ticks.min(0xFFFF) << 16));
+                }
+                _ => {
+                    info.push(first);
+                    info.push(0);
+                }
+            }
+        }
         let tex_info = gpu.create_buffer((info.len() * 4) as u64, usage::STORAGE, "texture info");
         gpu.write_buffer(tex_info, 0, bytemuck::cast_slice(&info));
+        let anim = gpu.create_buffer((frames.len() * 4) as u64, usage::STORAGE, "texture frames");
+        gpu.write_buffer(anim, 0, bytemuck::cast_slice(&frames));
 
         let biome_data: Vec<[u32; 4]> = if c.biomes.is_empty() {
             vec![[0x7fb238, 0x48b518, 0x3f76e4, 0]]
@@ -177,6 +193,7 @@ impl WorldRenderer {
             indirect: Vec::new(),
             biomes,
             tex_info,
+            anim,
             block_index: textures.block_index,
             drawn: 0,
             faces_drawn: 0,
@@ -244,7 +261,7 @@ impl WorldRenderer {
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
-        for b in self.globals.drain(..).chain([self.biomes, self.tex_info]) {
+        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim]) {
             gpu.destroy_buffer(b);
         }
         for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)) {
@@ -409,6 +426,7 @@ impl WorldRenderer {
             list.bind(2, buf);
             list.bind(3, self.biomes);
             list.bind(4, self.tex_info);
+            list.bind(5, self.anim);
             list.push(Cmd::DrawIndirect { buffer: ibuf, offset: k as u64 * 16, count: (end - k) as u32 });
             k = end;
         }

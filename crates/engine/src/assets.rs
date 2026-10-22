@@ -137,6 +137,50 @@ pub struct TextureArray {
     pub mips: Vec<Vec<u8>>,
     /// Per input texture: (first layer, frame count).
     pub entries: Vec<(u32, u32)>,
+    /// Per input texture: animation, if it has more than one frame.
+    pub anims: Vec<Option<Anim>>,
+}
+
+/// Frame sequence of an animated texture: (absolute layer, ticks shown).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Anim {
+    pub frames: Vec<(u32, u32)>,
+    pub interpolate: bool,
+}
+
+/// `<texture>.anim` next to the png, same `key = value` style as other data files:
+///
+/// ```text
+/// frametime = 2          # ticks per frame (default 1)
+/// interpolate = true     # blend towards the next frame
+/// frames = 0 1 2 3*5 2 1 # order; `3*5` shows frame 3 for 5 ticks
+/// ```
+pub fn parse_anim(src: &str, frame_count: u32, first: u32) -> Anim {
+    let mut frametime = 1u32;
+    let mut interpolate = false;
+    let mut order: Option<Vec<(u32, Option<u32>)>> = None;
+    for line in src.lines() {
+        let line = line.split('#').next().unwrap_or("");
+        let Some((k, v)) = line.split_once('=') else { continue };
+        match k.trim() {
+            "frametime" => frametime = v.trim().parse().unwrap_or(1).max(1),
+            "interpolate" => interpolate = v.trim() == "true",
+            "frames" => {
+                order = Some(
+                    v.split_whitespace()
+                        .filter_map(|t| match t.split_once('*') {
+                            Some((i, d)) => Some((i.parse().ok()?, d.parse().ok())),
+                            None => Some((t.parse().ok()?, None)),
+                        })
+                        .filter(|(i, _)| *i < frame_count)
+                        .collect(),
+                )
+            }
+            _ => {}
+        }
+    }
+    let order = order.filter(|o| !o.is_empty()).unwrap_or_else(|| (0..frame_count).map(|i| (i, None)).collect());
+    Anim { frames: order.into_iter().map(|(i, d)| (first + i, d.unwrap_or(frametime).max(1))).collect(), interpolate }
 }
 
 /// Animated textures are vertical strips of square frames.
@@ -157,7 +201,16 @@ pub fn build_array(assets: &Assets, names: &[String]) -> TextureArray {
     let size = images.iter().flatten().map(|i| i.width).max().unwrap_or(16).max(1).next_power_of_two();
     let mut layers: Vec<Vec<u8>> = Vec::new();
     let mut entries = Vec::new();
-    for img in &images {
+    let mut anims = Vec::new();
+    for (img, name) in images.iter().zip(names) {
+        let first_layer = layers.len() as u32;
+        let frame_count = img.as_ref().map_or(1, |i| if i.height >= i.width && i.height % i.width == 0 { i.height / i.width } else { 1 });
+        let meta = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
+        anims.push(if frame_count > 1 || meta.is_some() {
+            Some(parse_anim(meta.as_deref().unwrap_or(""), frame_count, first_layer))
+        } else {
+            None
+        });
         let first = layers.len() as u32;
         match img {
             Some(img) if img.height >= img.width && img.height % img.width == 0 => {
@@ -191,7 +244,7 @@ pub fn build_array(assets: &Assets, names: &[String]) -> TextureArray {
         current = current.iter().map(|l| downsample(l, s)).collect();
         s /= 2;
     }
-    TextureArray { size, layers: entries.last().map_or(0, |e| e.0 + e.1), mips, entries }
+    TextureArray { size, layers: entries.last().map_or(0, |e| e.0 + e.1), mips, entries, anims }
 }
 
 fn scale_nearest(src: &[u8], from: u32, to: u32) -> Vec<u8> {
@@ -238,4 +291,20 @@ fn downsample(src: &[u8], size: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anim_order_and_durations() {
+        let a = parse_anim("frametime = 2\ninterpolate = true\nframes = 0 2*5 1 9", 3, 10);
+        assert!(a.interpolate);
+        // Frame 9 does not exist and is dropped.
+        assert_eq!(a.frames, vec![(10, 2), (12, 5), (11, 2)]);
+        let d = parse_anim("", 4, 0);
+        assert_eq!(d.frames.len(), 4);
+        assert!(d.frames.iter().all(|f| f.1 == 1));
+    }
 }

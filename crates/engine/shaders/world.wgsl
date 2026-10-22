@@ -15,8 +15,10 @@ struct Globals {
 @group(1) @binding(2) var<storage, read> records: array<u32>;
 // Per biome: grass, foliage, water as 0xRRGGBB.
 @group(1) @binding(3) var<storage, read> biomes: array<vec4<u32>>;
-// Per texture name: first layer | frames << 16 | ticks per frame << 24.
+// Two words per texture name, see world_render.rs.
 @group(1) @binding(4) var<storage, read> tex_info: array<u32>;
+// Animated frames: layer | ticks << 16.
+@group(1) @binding(5) var<storage, read> frames: array<u32>;
 
 var<private> CORNERS: array<vec3<f32>, 24> = array<vec3<f32>, 24>(
     vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
@@ -39,6 +41,8 @@ struct VOut {
     @location(2) color: vec3<f32>,
     @location(3) light: vec4<f32>,
     @location(4) dist: f32,
+    @location(5) @interpolate(flat) layer2: u32,
+    @location(6) @interpolate(flat) blend: f32,
 }
 
 fn unpack_rgb(c: u32) -> vec3<f32> {
@@ -60,12 +64,37 @@ fn tint_color(word: u32) -> vec3<f32> {
     return unpack_rgb(b.z);
 }
 
-fn texture_layer(name: u32) -> u32 {
-    let info = tex_info[name];
-    let frames = max((info >> 16u) & 255u, 1u);
-    let ticks = max(info >> 24u, 1u);
-    let frame = (u32(g.params.w * 20.0) / ticks) % frames;
-    return (info & 65535u) + frame;
+struct Frame {
+    a: u32,
+    b: u32,
+    blend: f32,
+}
+
+fn texture_frame(name: u32) -> Frame {
+    let base = tex_info[name * 2u];
+    let info = tex_info[name * 2u + 1u];
+    if info == 0u {
+        return Frame(base, base, 0.0);
+    }
+    let count = info & 65535u;
+    let total = f32((info >> 16u) & 32767u);
+    let ticks = g.params.w * 20.0;
+    let t = ticks - floor(ticks / total) * total;
+    var acc = 0.0;
+    for (var i = 0u; i < count; i++) {
+        let e = frames[base + i];
+        let d = f32(e >> 16u);
+        if t < acc + d || i + 1u == count {
+            let next = frames[base + (i + 1u) % count];
+            var f = 0.0;
+            if (info >> 31u) == 1u {
+                f = (t - acc) / d;
+            }
+            return Frame(e & 65535u, next & 65535u, f);
+        }
+        acc += d;
+    }
+    return Frame(base, base, 0.0);
 }
 
 fn unpack_light(l: u32) -> vec4<f32> {
@@ -98,7 +127,10 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.clip = g.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = UVS[c];
-    out.layer = texture_layer(w1 & 65535u);
+    let fr = texture_frame(w1 & 65535u);
+    out.layer = fr.a;
+    out.layer2 = fr.b;
+    out.blend = fr.blend;
     var lw = w2;
     if c >= 2u {
         lw = w3;
@@ -141,7 +173,10 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.clip = g.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = uvs[c];
-    out.layer = texture_layer(w4 & 65535u);
+    let fr = texture_frame(w4 & 65535u);
+    out.layer = fr.a;
+    out.layer2 = fr.b;
+    out.blend = fr.blend;
     out.light = unpack_light(l);
     out.color = tint_color(w4) * shade;
     return out;
@@ -165,15 +200,24 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
     return vec4(rgb, albedo.a);
 }
 
+fn sample(in: VOut) -> vec4<f32> {
+    let a = textureSample(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer);
+    if in.blend <= 0.0 {
+        return a;
+    }
+    let b = textureSample(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer2);
+    return mix(a, b, in.blend);
+}
+
 @fragment
 fn fs_opaque(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = textureSample(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer);
+    let albedo = sample(in);
     return vec4(shade(in, albedo).rgb, 1.0);
 }
 
 @fragment
 fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = textureSample(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer);
+    let albedo = sample(in);
     if albedo.a < 0.5 {
         discard;
     }
@@ -182,6 +226,6 @@ fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_translucent(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = textureSample(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer);
+    let albedo = sample(in);
     return shade(in, albedo);
 }

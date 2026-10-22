@@ -1,11 +1,12 @@
 //! Authoritative simulation. Runs on its own thread; single player talks to it through the
-//! in-process transport.
+//! in-process transport. Each dimension is a set of regions ticked in parallel.
 
 mod dim;
 pub mod energy;
 pub mod entity;
 pub mod menu;
 pub mod persist;
+pub mod regions;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -20,12 +21,13 @@ use voxide_abi::{self as abi, ItemStack, component_flags as cf, damage};
 
 pub use dim::{Dim, DimEvent, break_time};
 
-use crate::content::{Content, content};
+use crate::content::{Content, DimensionDef, content};
 use crate::net::{EntityView, ServerConn, ToClient, ToServer};
 use crate::saves::Storage;
 use crate::world::{Cube, cube_of};
 use entity::Entity;
 use menu::OpenMenu;
+use regions::DimSet;
 
 pub const TPS: u32 = 20;
 const AUTOSAVE_TICKS: u64 = 20 * 30;
@@ -72,11 +74,12 @@ pub struct Shared {
     pub hosting: AtomicBool,
     pub tick_us: AtomicU64,
     pub view: AtomicI32,
+    pub regions: AtomicU64,
 }
 
 pub struct Server {
     pub cfg: ServerConfig,
-    pub dims: Vec<Dim>,
+    pub dims: Vec<DimSet>,
     pub players: Vec<Player>,
     pub tick: u64,
     gen_tx: Sender<Generated>,
@@ -115,6 +118,10 @@ impl ServerHandle {
 
     pub fn tick_ms(&self) -> f32 {
         self.shared.tick_us.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    pub fn regions(&self) -> u32 {
+        self.shared.regions.load(Ordering::Relaxed) as u32
     }
 
     pub fn set_view(&self, radius: i32) {
@@ -164,19 +171,25 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
     ServerHandle { connect, shared, stop, thread: Some(thread) }
 }
 
-fn view(e: &EntityView) -> EntityView {
-    *e
+/// Cubes kept loaded around a view: the visible range plus, above it, the column up to where the
+/// generator guarantees open sky (capped), so sky light reaches the visible cubes without having
+/// to send or render those extra cubes.
+fn loaded_y_range(def: &DimensionDef, center_y: i32, h: i32) -> (i32, i32) {
+    let lo = (center_y - h).max(def.min_cube_y);
+    let top = center_y + h;
+    let hi = if def.sky_light && def.sky_cube_y != i32::MAX { top.max((def.sky_cube_y - 1).min(top + 12)) } else { top };
+    (lo, hi.min(def.max_cube_y))
 }
 
 impl Server {
     pub fn new(cfg: ServerConfig, incoming: Receiver<ServerConn>, storage: Option<Storage>, shared: Arc<Shared>) -> Server {
         let c = content();
         let next_id = Arc::new(AtomicU64::new(storage.as_ref().map_or(1, |s| s.meta.next_entity.max(1))));
-        let mut dims: Vec<Dim> = (0..c.dims.len() as u32).map(|i| Dim::new(i, cfg.seed, next_id.clone())).collect();
+        let mut dims: Vec<DimSet> = (0..c.dims.len() as u32).map(|i| DimSet::new(i, cfg.seed, next_id.clone())).collect();
         if let Some(s) = &storage {
             for (name, t) in &s.meta.times {
                 if let Some(&i) = c.dim_names.get(name) {
-                    dims[i as usize].time = *t;
+                    dims[i as usize].set_time(*t);
                 }
             }
         }
@@ -241,18 +254,36 @@ impl Server {
         self.receive_generated(c);
         self.handle_messages(c);
 
-        self.dims.par_iter_mut().for_each(|d| d.tick(c));
+        // Every region of every dimension is independent: tick them all in parallel.
+        for d in &mut self.dims {
+            let t = d.time;
+            for r in &mut d.regions {
+                r.time = t;
+            }
+            d.time += 1;
+        }
+        self.dims.par_iter_mut().flat_map(|d| d.regions.par_iter_mut()).for_each(|r| r.tick(c));
 
         self.dim_events(c);
         for pi in 0..self.players.len() {
-            let p = &mut self.players[pi];
-            if let Some(m) = &mut p.menu {
-                menu::tick(m, &mut self.dims[p.dim as usize], c, p.entity);
+            let Server { players, dims, .. } = self;
+            let p = &mut players[pi];
+            if let (Some(m), Some(r)) = (&mut p.menu, dims[p.dim as usize].entity_region(p.entity)) {
+                menu::tick(m, r, c, p.entity);
             }
         }
         self.request_generation(c);
         self.sync_players(c);
         self.players.retain(|p| !p.conn.is_closed());
+        if self.tick % 10 == 0 {
+            for d in &mut self.dims {
+                if d.dirty || self.tick % 100 == 0 {
+                    d.regionize(c);
+                }
+            }
+            let n: usize = self.dims.iter().map(|d| d.regions.len()).sum();
+            self.shared.regions.store(n as u64, Ordering::Relaxed);
+        }
         self.tick += 1;
         if self.tick % AUTOSAVE_TICKS == 0 {
             self.save_all(false);
@@ -261,25 +292,30 @@ impl Server {
     }
 
     fn dim_events(&mut self, c: &'static Content) {
-        for di in 0..self.dims.len() {
-            for ev in std::mem::take(&mut self.dims[di].events) {
-                match ev {
-                    DimEvent::OpenMenu { player, menu, owner } => {
-                        if let Some(pi) = self.players.iter().position(|p| p.entity == player) {
-                            self.open_menu(c, pi, menu, owner);
-                        }
+        let mut events = Vec::new();
+        for d in &mut self.dims {
+            for r in &mut d.regions {
+                events.append(&mut r.events);
+            }
+        }
+        for ev in events {
+            match ev {
+                DimEvent::OpenMenu { player, menu, owner } => {
+                    if let Some(pi) = self.players.iter().position(|p| p.entity == player) {
+                        self.open_menu(c, pi, menu, owner);
                     }
-                    DimEvent::Died { player } => {
-                        if let Some(p) = self.players.iter_mut().find(|p| p.entity == player) {
-                            p.dead = true;
-                            if let Some(m) = p.menu.take() {
-                                menu::close(m, &mut self.dims[p.dim as usize], c, player);
-                                p.conn.send(ToClient::CloseMenu);
-                            }
-                            p.conn.send(ToClient::Health { health: 0.0, max: c.game.entities[c.game.player_kind as usize].max_health });
-                            p.conn.send(ToClient::Died);
-                            log::info!("{} died", p.name);
+                }
+                DimEvent::Died { player } => {
+                    let Server { players, dims, .. } = self;
+                    if let Some(p) = players.iter_mut().find(|p| p.entity == player) {
+                        p.dead = true;
+                        if let (Some(m), Some(r)) = (p.menu.take(), dims[p.dim as usize].entity_region(player)) {
+                            menu::close(m, r, c, player);
+                            p.conn.send(ToClient::CloseMenu);
                         }
+                        p.conn.send(ToClient::Health { health: 0.0, max: c.game.entities[c.game.player_kind as usize].max_health });
+                        p.conn.send(ToClient::Died);
+                        log::info!("{} died", p.name);
                     }
                 }
             }
@@ -290,13 +326,14 @@ impl Server {
         if kind as usize >= c.game.menus.len() {
             return;
         }
-        let p = &mut self.players[pi];
-        let d = &mut self.dims[p.dim as usize];
+        let Server { players, dims, .. } = self;
+        let p = &mut players[pi];
+        let Some(r) = dims[p.dim as usize].entity_region(p.entity) else { return };
         if let Some(m) = p.menu.take() {
-            menu::close(m, d, c, p.entity);
+            menu::close(m, r, c, p.entity);
         }
         p.window += 1;
-        let m = menu::open(d, c, p.entity, kind, owner, p.window);
+        let m = menu::open(r, c, p.entity, kind, owner, p.window);
         p.conn.send(ToClient::OpenMenu { kind, window: p.window, slots: m.slots.len() as u32 });
         p.menu = Some(m);
     }
@@ -308,20 +345,13 @@ impl Server {
         let mut s = storage.lock();
         let mut n = 0;
         for d in &mut self.dims {
-            // Cubes whose block entities changed inventory count as modified.
-            let anchored: Vec<IVec3> = d
-                .entities
-                .list
-                .iter()
-                .filter(|e| e.anchor.is_some() && d.entities.dirty_inv.contains(&e.id))
-                .map(|e| cube_of(e.pos.floor().as_ivec3()))
-                .collect();
-            d.modified.extend(anchored);
-            for pos in std::mem::take(&mut d.modified) {
-                if let Some(cube) = d.cubes.get(&pos) {
-                    let bytes = entities_in(c, d, pos);
-                    s.save(c, d.id, pos, cube, &bytes);
-                    n += 1;
+            for r in &mut d.regions {
+                for pos in std::mem::take(&mut r.modified) {
+                    if let Some(cube) = r.cubes.get(&pos) {
+                        let bytes = entities_in(c, r, pos);
+                        s.save(c, r.id, pos, cube, &bytes);
+                        n += 1;
+                    }
                 }
             }
         }
@@ -329,7 +359,9 @@ impl Server {
         s.meta.next_entity = self.next_id.load(Ordering::Relaxed);
         for p in &self.players {
             if p.joined || players {
-                save_player(&s, p, &self.dims[p.dim as usize]);
+                if let Some(r) = self.dims[p.dim as usize].entity_region_ref(p.entity) {
+                    save_player(&s, p, r);
+                }
             }
         }
         s.flush();
@@ -349,27 +381,8 @@ impl Server {
                 self.backlog.push_front(g);
                 break;
             }
-            let d = &mut self.dims[g.dim as usize];
-            d.insert(c, g.pos, g.cube);
-            for (e, inv, comps) in persist::read(c, &g.entities) {
-                let id = e.id;
-                if d.entities.get(id).is_some() {
-                    continue;
-                }
-                d.entities.insert(c, e);
-                if let Some(inv) = inv {
-                    d.entities.inventories.insert(id, inv);
-                }
-                for (k, v) in comps {
-                    d.entities.comps.insert((id, k), v);
-                }
-            }
+            self.dims[g.dim as usize].insert(c, g.pos, g.cube, &g.entities);
         }
-    }
-
-    fn player_entity(&mut self, c: &'static Content, pi: usize) -> Option<&mut Entity> {
-        let p = &self.players[pi];
-        self.dims[p.dim as usize].entities.get_mut(p.entity).filter(|_| c.game.player_kind != u32::MAX)
     }
 
     fn handle_messages(&mut self, c: &'static Content) {
@@ -380,6 +393,13 @@ impl Server {
         }
     }
 
+    /// The region holding player `pi`'s entity, with the entity id.
+    fn region(&mut self, pi: usize) -> Option<(&mut Dim, u64)> {
+        let p = &self.players[pi];
+        let id = p.entity;
+        self.dims[p.dim as usize].entity_region(id).map(|r| (r, id))
+    }
+
     fn handle(&mut self, c: &'static Content, pi: usize, msg: ToServer) {
         match msg {
             ToServer::Join { name, key } => self.join(c, pi, name, key),
@@ -387,7 +407,6 @@ impl Server {
                 if !pos.is_finite() || self.players[pi].dead {
                     return;
                 }
-                let (entity, dim) = (self.players[pi].entity, self.players[pi].dim as usize);
                 let p = &mut self.players[pi];
                 let dy = pos.y - p.last_y;
                 p.last_y = pos.y;
@@ -400,15 +419,13 @@ impl Server {
                 } else if dy < 0.0 {
                     p.fall += (-dy) as f32;
                 }
-                let d = &mut self.dims[dim];
-                let in_liquid = d.get(pos.floor().as_ivec3()).is_some_and(|s| c.states[s as usize].flags & abi::block_flags::LIQUID != 0);
+                let Some((r, entity)) = self.region(pi) else { return };
+                let in_liquid = r.get(pos.floor().as_ivec3()).is_some_and(|s| c.states[s as usize].flags & abi::block_flags::LIQUID != 0);
                 if in_liquid {
-                    self.players[pi].fall = 0.0;
                     land = None;
                 }
-                if let Some(e) = d.entities.get_mut(entity) {
-                    let moved = ((pos.x - e.pos.x).powi(2) + (pos.z - e.pos.z).powi(2)).sqrt() as f32;
-                    e.moved = moved;
+                if let Some(e) = r.entities.get_mut(entity) {
+                    e.moved = ((pos.x - e.pos.x).powi(2) + (pos.z - e.pos.z).powi(2)).sqrt() as f32;
                     e.pos = pos;
                     e.yaw = yaw;
                     e.pitch = pitch;
@@ -416,39 +433,39 @@ impl Server {
                     e.in_liquid = in_liquid;
                 }
                 if let Some(amount) = land {
-                    d.damage(c, entity, amount, 0, damage::FALL);
+                    r.damage(c, entity, amount, 0, damage::FALL);
+                }
+                if in_liquid {
+                    self.players[pi].fall = 0.0;
                 }
             }
             ToServer::Break { pos } => {
-                let (entity, dim) = (self.players[pi].entity, self.players[pi].dim as usize);
-                let d = &mut self.dims[dim];
-                let Some(e) = d.entities.get(entity) else { return };
+                let Some((r, entity)) = self.region(pi) else { return };
+                let Some(e) = r.entities.get(entity) else { return };
                 if !within(e.pos, pos) {
                     return;
                 }
-                let held = d.entities.inventories.get(&entity).and_then(|i| i.get(e.selected as usize)).copied().unwrap_or_default();
-                if d.player_break(c, pos, entity, held.item) {
-                    wear(c, d, entity, e_selected(d, entity), 1);
+                let sel = e.selected;
+                let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
+                if r.player_break(c, pos, entity, held.item) {
+                    wear(c, r, entity, sel, 1);
                 }
             }
             ToServer::Use { pos, face, look, sneak } => {
-                let (entity, dim) = (self.players[pi].entity, self.players[pi].dim as usize);
-                let d = &mut self.dims[dim];
-                let Some(e) = d.entities.get(entity) else { return };
+                let Some((r, entity)) = self.region(pi) else { return };
+                let Some(e) = r.entities.get(entity) else { return };
                 if !within(e.pos, pos) {
-                    log::debug!("use at {pos} out of reach from {:.2?}", e.pos);
                     return;
                 }
                 let (sel, epos) = (e.selected, e.pos);
-                log::debug!("use at {pos} face {face} held slot {sel}: {}", d.get(pos).map(|s| c.state_name(s)).unwrap_or_default());
-                if !sneak && d.player_use(c, pos, face, entity) {
+                if !sneak && r.player_use(c, pos, face, entity) {
                     self.dim_events(c);
                     return;
                 }
-                let held = d.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
+                let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 match c.items.get(held.item as usize).and_then(|i| i.block) {
                     Some(state) if !held.is_empty() => {
-                        let target = if d.get(pos).is_some_and(|s| c.states[s as usize].flags & abi::block_flags::REPLACEABLE != 0) {
+                        let target = if r.get(pos).is_some_and(|s| c.states[s as usize].flags & abi::block_flags::REPLACEABLE != 0) {
                             pos
                         } else {
                             pos + crate::world::DIRS[face as usize]
@@ -456,23 +473,21 @@ impl Server {
                         let player_box = crate::physics::Aabb::around(epos, 0.3, 1.8);
                         let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
                         let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
-                        log::debug!("place {} at {target}: blocked {}", c.state_name(state), solid && player_box.intersects(&block_box));
-                        if (!solid || !player_box.intersects(&block_box)) && d.place(c, target, face, state, look, entity) {
-                            d.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
+                        if (!solid || !player_box.intersects(&block_box)) && r.place(c, target, face, state, look, entity) {
+                            r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
                         }
                     }
                     _ => self.handle(c, pi, ToServer::UseItem { target: Some((pos, face)) }),
                 }
             }
             ToServer::UseItem { target } => {
-                let (entity, dim) = (self.players[pi].entity, self.players[pi].dim as usize);
-                let d = &mut self.dims[dim];
-                let Some(sel) = d.entities.get(entity).map(|e| e.selected) else { return };
-                let held = d.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
+                let Some((r, entity)) = self.region(pi) else { return };
+                let Some(sel) = r.entities.get(entity).map(|e| e.selected) else { return };
+                let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 let Some(def) = c.items.get(held.item as usize) else { return };
                 if let Some(cb) = def.on_use {
                     let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
-                    let a = d.call(def.owner, cb, |w| abi::ItemUseArgs {
+                    let a = r.call(def.owner, cb, |w| abi::ItemUseArgs {
                         world: w,
                         player: entity,
                         stack: held,
@@ -482,40 +497,40 @@ impl Server {
                         handled: 0,
                     });
                     if a.handled != 0 && a.stack != held {
-                        d.entities.set_slot(entity, sel, a.stack);
+                        r.entities.set_slot(entity, sel, a.stack);
                     }
                 }
-                d.flush_neighbors(c);
-                d.finish_tick();
+                r.flush_neighbors(c);
+                r.finish_tick();
             }
             ToServer::Select(slot) => {
                 if slot < 9 {
-                    if let Some(e) = self.player_entity(c, pi) {
-                        e.selected = slot;
+                    if let Some((r, entity)) = self.region(pi) {
+                        if let Some(e) = r.entities.get_mut(entity) {
+                            e.selected = slot;
+                        }
                     }
                 }
             }
             ToServer::Attack(target) => {
-                let (entity, dim) = (self.players[pi].entity, self.players[pi].dim as usize);
-                let d = &mut self.dims[dim];
-                let (Some(me), Some(t)) = (d.entities.get(entity), d.entities.get(target)) else { return };
+                let Some((r, entity)) = self.region(pi) else { return };
+                let (Some(me), Some(t)) = (r.entities.get(entity), r.entities.get(target)) else { return };
                 if (me.pos - t.pos).length_squared() > REACH * REACH || target == entity || !t.item.is_empty() || t.anchor.is_some() {
                     return;
                 }
                 let sel = me.selected;
-                let held = d.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
+                let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 let dmg = c.items.get(held.item as usize).filter(|_| held.item != 0).map_or(1.0, |i| i.attack);
-                if d.damage(c, target, dmg, entity, damage::ATTACK) {
+                if r.damage(c, target, dmg, entity, damage::ATTACK) {
                     let tool = c.items.get(held.item as usize).map_or("", |i| i.tool.as_str());
-                    wear(c, d, entity, sel, if tool == "sword" { 1 } else { 2 });
+                    wear(c, r, entity, sel, if tool == "sword" { 1 } else { 2 });
                 }
             }
             ToServer::Interact(target) => {
-                let (entity, dim) = (self.players[pi].entity, self.players[pi].dim as usize);
-                let d = &mut self.dims[dim];
-                let Some(kind) = d.entities.get(target).map(|e| e.kind) else { return };
+                let Some((r, entity)) = self.region(pi) else { return };
+                let Some(kind) = r.entities.get(target).map(|e| e.kind) else { return };
                 for &(owner, cb) in &c.game.entities[kind as usize].on_interact {
-                    d.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: target, other: entity, amount: 0.0, cause: 0, handled: 0 });
+                    r.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: target, other: entity, amount: 0.0, cause: 0, handled: 0 });
                 }
             }
             ToServer::OpenInventory => {
@@ -524,30 +539,31 @@ impl Server {
                 }
             }
             ToServer::Click { slot, button, shift } => {
-                let p = &mut self.players[pi];
-                if let Some(m) = &mut p.menu {
-                    menu::click(m, &mut self.dims[p.dim as usize], c, p.entity, slot, button, shift);
+                let Server { players, dims, .. } = self;
+                let p = &mut players[pi];
+                if let (Some(m), Some(r)) = (&mut p.menu, dims[p.dim as usize].entity_region(p.entity)) {
+                    menu::click(m, r, c, p.entity, slot, button, shift);
                 }
             }
             ToServer::CloseMenu => {
-                let p = &mut self.players[pi];
-                if let Some(m) = p.menu.take() {
-                    menu::close(m, &mut self.dims[p.dim as usize], c, p.entity);
+                let Server { players, dims, .. } = self;
+                let p = &mut players[pi];
+                if let (Some(m), Some(r)) = (p.menu.take(), dims[p.dim as usize].entity_region(p.entity)) {
+                    menu::close(m, r, c, p.entity);
                 }
             }
             ToServer::Drop { all } => {
-                let (entity, dim) = (self.players[pi].entity, self.players[pi].dim as usize);
-                let d = &mut self.dims[dim];
-                let Some(e) = d.entities.get(entity) else { return };
+                let Some((r, entity)) = self.region(pi) else { return };
+                let Some(e) = r.entities.get(entity) else { return };
                 let (sel, pos, yaw, pitch) = (e.selected, e.pos, e.yaw, e.pitch);
-                let held = d.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
+                let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 if held.is_empty() {
                     return;
                 }
                 let n = if all { held.count } else { 1 };
-                d.entities.set_slot(entity, sel, ItemStack { count: held.count - n, ..held });
-                let id = d.spawn_item(c, pos + DVec3::Y * 1.3, ItemStack { count: n, ..held });
-                if let Some(it) = d.entities.get_mut(id) {
+                r.entities.set_slot(entity, sel, ItemStack { count: held.count - n, ..held });
+                let id = r.spawn_item(c, pos + DVec3::Y * 1.3, ItemStack { count: n, ..held });
+                if let Some(it) = r.entities.get_mut(id) {
                     let (sy, cy) = (yaw as f64).sin_cos();
                     let (sp, cp) = (pitch as f64).sin_cos();
                     it.vel = DVec3::new(-sy * cp, sp + 0.2, -cy * cp) * 6.0;
@@ -555,28 +571,28 @@ impl Server {
                 }
             }
             ToServer::Respawn => {
-                let p = &mut self.players[pi];
-                if !p.dead {
+                if !self.players[pi].dead {
                     return;
                 }
-                p.dead = false;
-                p.fall = 0.0;
+                self.players[pi].dead = false;
+                self.players[pi].fall = 0.0;
                 let overworld = c.dim_names.get("base:overworld").copied().unwrap_or(0);
                 let spawn = self.dims[overworld as usize].spawn_point(c);
                 let max = c.game.entities[c.game.player_kind as usize].max_health;
                 self.change_dim(c, pi, overworld, spawn);
-                let p = &mut self.players[pi];
-                if let Some(e) = self.dims[p.dim as usize].entities.get_mut(p.entity) {
-                    e.health = max;
-                }
-                let ents = &mut self.dims[p.dim as usize].entities;
-                for ((id, comp), bytes) in ents.comps.iter_mut() {
-                    if *id == p.entity {
-                        bytes.copy_from_slice(&c.game.components[*comp as usize].default);
-                        ents.dirty_comp.insert((*id, *comp));
+                if let Some((r, entity)) = self.region(pi) {
+                    if let Some(e) = r.entities.get_mut(entity) {
+                        e.health = max;
+                    }
+                    let ents = &mut r.entities;
+                    for ((id, comp), bytes) in ents.comps.iter_mut() {
+                        if *id == entity {
+                            bytes.copy_from_slice(&c.game.components[*comp as usize].default);
+                            ents.dirty_comp.insert((*id, *comp));
+                        }
                     }
                 }
-                p.conn.send(ToClient::Health { health: max, max });
+                self.players[pi].conn.send(ToClient::Health { health: max, max });
             }
             ToServer::Chat(text) => {
                 let name = self.players[pi].name.clone();
@@ -591,15 +607,21 @@ impl Server {
                 }
             }
             ToServer::Leave => {
-                let p = &mut self.players[pi];
-                log::info!("{} left", p.name);
-                if let Some(m) = p.menu.take() {
-                    menu::close(m, &mut self.dims[p.dim as usize], c, p.entity);
+                if !self.players[pi].joined {
+                    return;
                 }
-                if let Some(s) = &self.storage {
-                    save_player(&s.lock(), p, &self.dims[p.dim as usize]);
+                log::info!("{} left", self.players[pi].name);
+                let Server { players, dims, storage, .. } = self;
+                let p = &mut players[pi];
+                if let Some(r) = dims[p.dim as usize].entity_region(p.entity) {
+                    if let Some(m) = p.menu.take() {
+                        menu::close(m, r, c, p.entity);
+                    }
+                    if let Some(s) = storage {
+                        save_player(&s.lock(), p, r);
+                    }
+                    r.entities.remove(p.entity);
                 }
-                self.dims[p.dim as usize].entities.remove(p.entity);
                 p.conn.send(ToClient::Disconnect("bye".into()));
                 p.joined = false;
             }
@@ -618,18 +640,20 @@ impl Server {
             Some(s) => s,
             None => (overworld, self.dims[overworld as usize].spawn_point(c), -1.0, None, Vec::new()),
         };
-        let d = &mut self.dims[dim as usize];
-        let id = d.new_id();
+        let time = self.dims[dim as usize].time;
+        let r = self.dims[dim as usize].ensure_region(c, pos);
+        let id = r.new_id();
         let kind = &c.game.entities[c.game.player_kind as usize];
         let mut e = Entity::new(id, c.game.player_kind, pos, if health > 0.0 { health } else { kind.max_health });
         e.player = true;
-        d.entities.insert(c, e);
+        r.entities.insert(c, e);
         if let Some(inv) = inv {
-            d.entities.inventories.insert(id, inv);
+            r.entities.inventories.insert(id, inv);
         }
         for (k, v) in comps {
-            d.entities.comps.insert((id, k), v);
+            r.entities.comps.insert((id, k), v);
         }
+        let health = r.entities.get(id).map_or(kind.max_health, |e| e.health);
         let p = &mut self.players[pi];
         p.name = name;
         p.key = key;
@@ -640,141 +664,165 @@ impl Server {
         p.first_sync = true;
         log::info!("{} joined", p.name);
         p.conn.send(ToClient::Welcome { player: id, dim, pos, seed: self.cfg.seed });
-        p.conn.send(ToClient::Time { dim, time: d.time });
-        let health = d.entities.get(id).map_or(kind.max_health, |e| e.health);
+        p.conn.send(ToClient::Time { dim, time });
         p.conn.send(ToClient::Health { health, max: kind.max_health });
     }
 
-    /// Moves a player (with inventory and components) to another dimension without reloading.
+    /// Moves a player (with inventory and components) to a position, possibly in another
+    /// dimension or region, without reloading anything.
     pub fn change_dim(&mut self, c: &'static Content, pi: usize, to: u32, pos: DVec3) {
-        let p = &mut self.players[pi];
-        if let Some(m) = p.menu.take() {
-            menu::close(m, &mut self.dims[p.dim as usize], c, p.entity);
-            p.conn.send(ToClient::CloseMenu);
+        let Server { players, dims, .. } = self;
+        let p = &mut players[pi];
+        let from = p.dim as usize;
+        if let Some(r) = dims[from].entity_region(p.entity) {
+            if let Some(m) = p.menu.take() {
+                menu::close(m, r, c, p.entity);
+                p.conn.send(ToClient::CloseMenu);
+            }
+        }
+        let taken = dims[from].entity_region(p.entity).and_then(|r| r.entities.take(p.entity));
+        if let Some((mut e, inv, comps)) = taken {
+            e.pos = pos;
+            let id = e.id;
+            let r = dims[to as usize].ensure_region(c, pos);
+            r.entities.insert(c, e);
+            if let Some(inv) = inv {
+                r.entities.inventories.insert(id, inv);
+                r.entities.dirty_inv.insert(id);
+            }
+            for (k, v) in comps {
+                r.entities.comps.insert((id, k), v);
+                r.entities.dirty_comp.insert((id, k));
+            }
         }
         if p.dim != to {
-            let taken = self.dims[p.dim as usize].entities.take(p.entity);
-            if let Some((mut e, inv, comps)) = taken {
-                e.pos = pos;
-                let d = &mut self.dims[to as usize];
-                let id = e.id;
-                d.entities.insert(c, e);
-                if let Some(inv) = inv {
-                    d.entities.inventories.insert(id, inv);
-                    d.entities.dirty_inv.insert(id);
-                }
-                for (k, v) in comps {
-                    d.entities.comps.insert((id, k), v);
-                    d.entities.dirty_comp.insert((id, k));
-                }
-            }
             p.dim = to;
             p.sent.clear();
             p.known.clear();
-        } else if let Some(e) = self.dims[to as usize].entities.get_mut(p.entity) {
-            e.pos = pos;
         }
         p.last_y = pos.y;
         p.fall = 0.0;
         p.conn.send(ToClient::Teleport { dim: to, pos });
-        p.conn.send(ToClient::Time { dim: to, time: self.dims[to as usize].time });
+        p.conn.send(ToClient::Time { dim: to, time: dims[to as usize].time });
     }
 
     fn command(&mut self, c: &'static Content, pi: usize, cmd: &str) -> String {
         let args: Vec<&str> = cmd.split_whitespace().collect();
-        let p = &self.players[pi];
-        let here = self.dims[p.dim as usize].entities.get(p.entity).map_or(DVec3::ZERO, |e| e.pos);
+        let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
+        let (here, yaw) = self.dims[dim as usize].entity_region_ref(entity).and_then(|r| r.entities.get(entity)).map_or((DVec3::ZERO, 0.0), |e| (e.pos, e.yaw));
+        let full = |n: &str| if n.contains(':') { n.to_string() } else { format!("base:{n}") };
         match args.as_slice() {
             ["tp", x, y, z] => match (x.parse(), y.parse(), z.parse()) {
                 (Ok(x), Ok(y), Ok(z)) => {
-                    let dim = p.dim;
                     self.change_dim(c, pi, dim, DVec3::new(x, y, z));
                     format!("teleported to {x} {y} {z}")
                 }
                 _ => "usage: /tp x y z".into(),
             },
-            ["dim", name] => {
-                let full = if name.contains(':') { name.to_string() } else { format!("base:{name}") };
-                match c.dim_names.get(&full) {
-                    Some(&d) => {
-                        let spawn = self.dims[d as usize].spawn_point(c);
-                        self.change_dim(c, pi, d, spawn);
-                        format!("now in {full}")
+            ["tp", name] => {
+                let target = self.players.iter().find(|p| p.joined && p.name == *name).map(|p| (p.dim, p.entity));
+                let pos = target.and_then(|(d, e)| self.dims[d as usize].entity_region_ref(e)?.entities.get(e).map(|e| (d, e.pos)));
+                match pos {
+                    Some((d, pos)) => {
+                        self.change_dim(c, pi, d, pos);
+                        format!("teleported to {name}")
                     }
-                    None => format!("unknown dimension {full}"),
+                    None => format!("no player {name}"),
                 }
             }
+            ["dim", name] => match c.dim_names.get(&full(name)) {
+                Some(&d) => {
+                    let spawn = self.dims[d as usize].spawn_point(c);
+                    self.change_dim(c, pi, d, spawn);
+                    format!("now in {}", full(name))
+                }
+                None => format!("unknown dimension {}", full(name)),
+            },
             ["give", item, rest @ ..] => {
-                let full = if item.contains(':') { item.to_string() } else { format!("base:{item}") };
                 let count = rest.first().and_then(|n| n.parse().ok()).unwrap_or(1);
-                match c.item_names.get(&full) {
-                    Some(&i) => {
-                        let left = self.dims[p.dim as usize].entities.insert_item(c, p.entity, ItemStack::new(i, count));
-                        format!("gave {} x {full}", count - left.count)
+                match (c.item_names.get(&full(item)), self.region(pi)) {
+                    (Some(&i), Some((r, e))) => {
+                        let left = r.entities.insert_item(c, e, ItemStack::new(i, count));
+                        format!("gave {} x {}", count - left.count, full(item))
                     }
-                    None => format!("unknown item {full}"),
+                    _ => format!("unknown item {}", full(item)),
                 }
             }
             ["time", "set", t] => match t.parse::<u64>() {
                 Ok(t) => {
-                    let d = &mut self.dims[p.dim as usize];
+                    let d = &mut self.dims[dim as usize];
                     let len = c.dims[d.id as usize].day_length.max(1) as u64;
-                    d.time = d.time - d.time % len + t;
+                    let now = d.time - d.time % len + t;
+                    d.set_time(now);
                     format!("time set to {t}")
                 }
                 Err(_) => "usage: /time set ticks".into(),
             },
-            ["summon", kind] => {
-                let full = if kind.contains(':') { kind.to_string() } else { format!("base:{kind}") };
-                match c.game.entity_names.get(&full) {
-                    Some(&k) => {
-                        let (sy, cy) = (self.dims[p.dim as usize].entities.get(p.entity).map_or(0.0, |e| e.yaw) as f64).sin_cos();
-                        self.dims[p.dim as usize].spawn(c, k, here + DVec3::new(-sy, 0.0, -cy) * 3.0);
-                        format!("summoned {full}")
-                    }
-                    None => format!("unknown entity {full}"),
+            ["summon", kind] => match (c.game.entity_names.get(&full(kind)), self.region(pi)) {
+                (Some(&k), Some((r, _))) => {
+                    let (sy, cy) = (yaw as f64).sin_cos();
+                    r.spawn(c, k, here + DVec3::new(-sy, 0.0, -cy) * 3.0);
+                    format!("summoned {}", full(kind))
                 }
-            }
-            ["setblock", x, y, z, name] => {
-                let full = if name.contains(':') { name.to_string() } else { format!("base:{name}") };
-                match (x.parse(), y.parse(), z.parse(), c.state_by_name(&full)) {
-                    (Ok(x), Ok(y), Ok(z), Some(state)) => {
-                        let d = &mut self.dims[p.dim as usize];
-                        d.set(c, IVec3::new(x, y, z), state);
-                        d.flush_neighbors(c);
-                        d.finish_tick();
-                        format!("set {full}")
+                _ => format!("unknown entity {}", full(kind)),
+            },
+            ["setblock", x, y, z, name] => match (x.parse(), y.parse(), z.parse(), c.state_by_name(&full(name))) {
+                (Ok(x), Ok(y), Ok(z), Some(state)) => match self.dims[dim as usize].region_at(IVec3::new(x, y, z)) {
+                    Some(r) => {
+                        r.set(c, IVec3::new(x, y, z), state);
+                        r.flush_neighbors(c);
+                        r.finish_tick();
+                        format!("set {}", full(name))
                     }
-                    _ => "usage: /setblock x y z block".into(),
-                }
-            }
+                    None => "not loaded".into(),
+                },
+                _ => "usage: /setblock x y z block".into(),
+            },
             ["insert", x, y, z, item, rest @ ..] => {
-                let full = if item.contains(':') { item.to_string() } else { format!("base:{item}") };
                 let count = rest.first().and_then(|n| n.parse().ok()).unwrap_or(1);
-                let d = &mut self.dims[p.dim as usize];
-                match (x.parse(), y.parse(), z.parse(), c.item_names.get(&full)) {
-                    (Ok(x), Ok(y), Ok(z), Some(&i)) => match d.entities.anchors.get(&IVec3::new(x, y, z)).copied() {
-                        Some(owner) => {
-                            let left = d.entities.insert_item(c, owner, ItemStack::new(i, count));
-                            format!("inserted {} x {full}", count - left.count)
+                match (x.parse(), y.parse(), z.parse(), c.item_names.get(&full(item))) {
+                    (Ok(x), Ok(y), Ok(z), Some(&i)) => {
+                        let p = IVec3::new(x, y, z);
+                        match self.dims[dim as usize].region_at(p) {
+                            Some(r) => match r.entities.anchors.get(&p).copied() {
+                                Some(owner) => {
+                                    let left = r.entities.insert_item(c, owner, ItemStack::new(i, count));
+                                    format!("inserted {} x {}", count - left.count, full(item))
+                                }
+                                None => "no block entity there".into(),
+                            },
+                            None => "not loaded".into(),
                         }
-                        None => "no block entity there".into(),
-                    },
+                    }
                     _ => "usage: /insert x y z item [count]".into(),
                 }
             }
             ["block", x, y, z] => match (x.parse(), y.parse(), z.parse()) {
                 (Ok(x), Ok(y), Ok(z)) => {
-                    let d = &self.dims[p.dim as usize];
+                    let d = &self.dims[dim as usize];
                     let s = d.get(IVec3::new(x, y, z));
                     format!("{} in {}", s.map_or("unloaded".into(), |s| c.state_name(s)), c.dims[d.id as usize].name)
                 }
                 _ => "usage: /block x y z".into(),
             },
+            ["regions"] => {
+                let parts: Vec<String> = self
+                    .dims
+                    .iter()
+                    .filter(|d| !d.regions.is_empty())
+                    .map(|d| {
+                        let sizes: Vec<String> = d.regions.iter().map(|r| format!("{}/{}", r.cubes.len(), r.entities.list.len())).collect();
+                        format!("{}: {} ({})", c.dims[d.id as usize].name, d.regions.len(), sizes.join(" "))
+                    })
+                    .collect();
+                format!("regions {}", parts.join(", "))
+            }
             ["heal"] => {
                 let max = c.game.entities[c.game.player_kind as usize].max_health;
-                if let Some(e) = self.dims[p.dim as usize].entities.get_mut(p.entity) {
-                    e.health = max;
+                if let Some((r, e)) = self.region(pi) {
+                    if let Some(e) = r.entities.get_mut(e) {
+                        e.health = max;
+                    }
                 }
                 self.players[pi].conn.send(ToClient::Health { health: max, max });
                 "healed".into()
@@ -784,18 +832,20 @@ impl Server {
     }
 
     fn view(&self, p: &Player) -> (IVec3, i32, i32) {
-        let pos = self.dims[p.dim as usize].entities.get(p.entity).map_or(DVec3::ZERO, |e| e.pos);
+        let pos = self.dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
         let center = (pos.floor().as_ivec3()) >> 4;
         (center, self.cfg.view_radius, self.cfg.view_height)
     }
 
-    /// Cubes players need, nearest first; loading/generation runs on the rayon pool.
+    /// Cubes players need, nearest columns first and each column top-down; loading and
+    /// generation run on the rayon pool.
     fn request_generation(&mut self, c: &'static Content) {
         let budget = rayon::current_num_threads() * 4;
         let in_flight: usize = self.dims.iter().map(|d| d.generating.len()).sum();
         if in_flight >= budget {
             return;
         }
+        let queued: FxHashSet<(u32, IVec3)> = self.backlog.iter().map(|g| (g.dim, g.pos)).collect();
         let mut wanted: Vec<(i32, u32, IVec3)> = Vec::new();
         for p in self.players.iter().filter(|p| p.joined) {
             let (center, r, h) = self.view(p);
@@ -809,8 +859,7 @@ impl Server {
                             continue;
                         }
                         let pos = IVec3::new(center.x + dx, y, center.z + dz);
-                        if !dim.has(pos) && !dim.generating.contains(&pos) && !self.backlog.iter().any(|g| g.pos == pos && g.dim == p.dim) {
-                            // Nearest columns first, each column from the top down.
+                        if !dim.has(pos) && !dim.generating.contains(&pos) && !queued.contains(&(p.dim, pos)) {
                             wanted.push(((dx * dx + dz * dz) * 64 - y, p.dim, pos));
                         }
                     }
@@ -836,17 +885,19 @@ impl Server {
     }
 
     fn sync_players(&mut self, c: &'static Content) {
-        // Entities that moved since last tick, per dimension.
+        // Entities that moved since last tick, per dimension (all regions).
         let mut moved: Vec<Vec<(u64, DVec3, f32, f32)>> = Vec::with_capacity(self.dims.len());
         for d in &mut self.dims {
             let mut m = Vec::new();
-            for e in d.entities.list.iter_mut().filter(|e| !e.removed && e.anchor.is_none()) {
-                let now = (e.pos, e.yaw, e.pitch);
-                if e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01) {
-                    if e.sent.is_some() {
-                        m.push((e.id, e.pos, e.yaw, e.pitch));
+            for r in &mut d.regions {
+                for e in r.entities.list.iter_mut().filter(|e| !e.removed && e.anchor.is_none()) {
+                    let now = (e.pos, e.yaw, e.pitch);
+                    if e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01) {
+                        if e.sent.is_some() {
+                            m.push((e.id, e.pos, e.yaw, e.pitch));
+                        }
+                        e.sent = Some(now);
                     }
-                    e.sent = Some(now);
                 }
             }
             moved.push(m);
@@ -857,37 +908,42 @@ impl Server {
                 continue;
             }
             let (center, r, h) = self.view(&self.players[pi]);
-            let p = &mut self.players[pi];
-            let dim = &mut self.dims[p.dim as usize];
+            let Server { players, dims, tick, .. } = self;
+            let p = &mut players[pi];
+            let dim = &mut dims[p.dim as usize];
             let def = &c.dims[p.dim as usize];
 
-            for (pos, cube) in &dim.resend {
-                if p.sent.contains(pos) {
-                    p.conn.send(ToClient::Cube { dim: p.dim, pos: *pos, cube: cube.clone() });
+            for reg in &dim.regions {
+                for (pos, cube) in &reg.resend {
+                    if p.sent.contains(pos) {
+                        p.conn.send(ToClient::Cube { dim: p.dim, pos: *pos, cube: cube.clone() });
+                    }
+                }
+                if !reg.changes.is_empty() {
+                    let changes: Vec<(IVec3, u32)> = reg.changes.iter().filter(|(b, _)| p.sent.contains(&(*b >> 4))).copied().collect();
+                    if !changes.is_empty() {
+                        p.conn.send(ToClient::Blocks { dim: p.dim, changes });
+                    }
                 }
             }
-            if !dim.changes.is_empty() {
-                let changes: Vec<(IVec3, u32)> = dim.changes.iter().filter(|(b, _)| p.sent.contains(&(*b >> 4))).copied().collect();
-                if !changes.is_empty() {
-                    p.conn.send(ToClient::Blocks { dim: p.dim, changes });
-                }
-            }
-            if self.tick % 20 == 0 {
+            if *tick % 20 == 0 {
                 p.conn.send(ToClient::Time { dim: p.dim, time: dim.time });
             }
 
             // Entities in range: spawn new ones, despawn gone ones, stream movement.
-            let me = dim.entities.get(p.entity).map_or(DVec3::ZERO, |e| e.pos);
+            let me = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
             let range2 = ((r * 16) as f64).powi(2);
             let mut spawn = Vec::new();
             let mut visible = FxHashSet::default();
-            for e in dim.entities.list.iter().filter(|e| !e.removed && e.id != p.entity && e.anchor.is_none()) {
-                if (e.pos - me).length_squared() > range2 {
-                    continue;
-                }
-                visible.insert(e.id);
-                if !p.known.contains(&e.id) {
-                    spawn.push(view(&EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: e.item, health: e.health }));
+            for reg in &dim.regions {
+                for e in reg.entities.list.iter().filter(|e| !e.removed && e.id != p.entity && e.anchor.is_none()) {
+                    if (e.pos - me).length_squared() > range2 {
+                        continue;
+                    }
+                    visible.insert(e.id);
+                    if !p.known.contains(&e.id) {
+                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: e.item, health: e.health });
+                    }
                 }
             }
             let gone: Vec<u64> = p.known.iter().copied().filter(|id| !visible.contains(id)).collect();
@@ -897,54 +953,56 @@ impl Server {
             if !spawn.is_empty() {
                 p.conn.send(ToClient::Spawn(spawn));
             }
-            let moves: Vec<(u64, DVec3, f32, f32)> =
-                moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
+            let moves: Vec<(u64, DVec3, f32, f32)> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
             if !moves.is_empty() {
                 p.conn.send(ToClient::Moves(moves));
             }
             p.known = visible;
-            let hurt: Vec<(u64, f32)> = dim.entities.hurt.iter().filter(|h| p.known.contains(&h.0)).copied().collect();
-            if !hurt.is_empty() {
-                p.conn.send(ToClient::Hurt(hurt));
-            }
-            if let Some(&(_, hp)) = dim.entities.hurt.iter().rev().find(|h| h.0 == p.entity) {
-                if !p.dead {
-                    p.conn.send(ToClient::Health { health: hp, max: c.game.entities[c.game.player_kind as usize].max_health });
+            for reg in &dim.regions {
+                let hurt: Vec<(u64, f32)> = reg.entities.hurt.iter().filter(|h| p.known.contains(&h.0)).copied().collect();
+                if !hurt.is_empty() {
+                    p.conn.send(ToClient::Hurt(hurt));
                 }
             }
 
-            // Own inventory and synced components.
-            if p.first_sync || dim.entities.dirty_inv.contains(&p.entity) {
-                if let Some(inv) = dim.entities.inventories.get(&p.entity) {
-                    p.conn.send(ToClient::Inventory(inv.iter().enumerate().map(|(i, s)| (i as u32, *s)).collect()));
+            if let Some(reg) = dim.entity_region(p.entity) {
+                if let Some(&(_, hp)) = reg.entities.hurt.iter().rev().find(|h| h.0 == p.entity) {
+                    if !p.dead {
+                        p.conn.send(ToClient::Health { health: hp, max: c.game.entities[c.game.player_kind as usize].max_health });
+                    }
                 }
-            }
-            let comps: Vec<(u32, Vec<u8>)> = dim
-                .entities
-                .comps
-                .iter()
-                .filter(|((id, comp), _)| {
-                    *id == p.entity
-                        && c.game.components[*comp as usize].flags & cf::SYNC_OWNER != 0
-                        && (p.first_sync || dim.entities.dirty_comp.contains(&(*id, *comp)))
-                })
-                .map(|((_, comp), b)| (*comp, b.to_vec()))
-                .collect();
-            if !comps.is_empty() {
-                p.conn.send(ToClient::Components(comps));
-            }
-            p.first_sync = false;
-
-            if let Some(m) = &mut p.menu {
-                let (slots, data, cursor) = menu::changes(m, dim, p.entity);
-                if !slots.is_empty() {
-                    p.conn.send(ToClient::MenuSlots(slots));
+                // Own inventory and synced components.
+                if p.first_sync || reg.entities.dirty_inv.contains(&p.entity) {
+                    if let Some(inv) = reg.entities.inventories.get(&p.entity) {
+                        p.conn.send(ToClient::Inventory(inv.iter().enumerate().map(|(i, s)| (i as u32, *s)).collect()));
+                    }
                 }
-                if !data.is_empty() {
-                    p.conn.send(ToClient::MenuData(data));
+                let comps: Vec<(u32, Vec<u8>)> = reg
+                    .entities
+                    .comps
+                    .iter()
+                    .filter(|((id, comp), _)| {
+                        *id == p.entity
+                            && c.game.components[*comp as usize].flags & cf::SYNC_OWNER != 0
+                            && (p.first_sync || reg.entities.dirty_comp.contains(&(*id, *comp)))
+                    })
+                    .map(|((_, comp), b)| (*comp, b.to_vec()))
+                    .collect();
+                if !comps.is_empty() {
+                    p.conn.send(ToClient::Components(comps));
                 }
-                if let Some(cur) = cursor {
-                    p.conn.send(ToClient::Cursor(cur));
+                p.first_sync = false;
+                if let Some(m) = &mut p.menu {
+                    let (slots, data, cursor) = menu::changes(m, reg, p.entity);
+                    if !slots.is_empty() {
+                        p.conn.send(ToClient::MenuSlots(slots));
+                    }
+                    if !data.is_empty() {
+                        p.conn.send(ToClient::MenuData(data));
+                    }
+                    if let Some(cur) = cursor {
+                        p.conn.send(ToClient::Cursor(cur));
+                    }
                 }
             }
 
@@ -952,13 +1010,13 @@ impl Server {
                 let d = pos - center;
                 d.x * d.x + d.z * d.z <= r * r && d.y.abs() <= h && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
             };
-            // Send a cube once its neighbours exist, so its light is final when it arrives.
+            // Send a cube once its neighbours exist and its sky light is final.
             let mut to_send: Vec<(i32, IVec3)> = Vec::new();
             for dy in -h..=h {
                 for dz in -r..=r {
                     for dx in -r..=r {
                         let pos = center + IVec3::new(dx, dy, dz);
-                        if !in_range(pos) || p.sent.contains(&pos) || !dim.has(pos) || !dim.settled.contains(&pos) {
+                        if !in_range(pos) || p.sent.contains(&pos) || !dim.settled(pos) {
                             continue;
                         }
                         let ready = crate::world::DIRS.iter().all(|d| {
@@ -993,22 +1051,24 @@ impl Server {
             }
         }
         for d in &mut self.dims {
-            d.resend.clear();
-            d.changes.clear();
-            d.entities.hurt.clear();
-            d.entities.dirty_comp.clear();
-            // Block entity inventory changes must reach the save.
-            let anchored: Vec<IVec3> = d
-                .entities
-                .list
-                .iter()
-                .filter(|e| e.anchor.is_some() && d.entities.dirty_inv.contains(&e.id))
-                .map(|e| cube_of(e.pos.floor().as_ivec3()))
-                .collect();
-            d.modified.extend(anchored);
-            d.entities.dirty_inv.clear();
-            d.entities.spawned.clear();
-            d.entities.despawned.clear();
+            for r in &mut d.regions {
+                r.resend.clear();
+                r.changes.clear();
+                r.entities.hurt.clear();
+                r.entities.dirty_comp.clear();
+                // Block entity inventory changes must reach the save.
+                let anchored: Vec<IVec3> = r
+                    .entities
+                    .list
+                    .iter()
+                    .filter(|e| e.anchor.is_some() && r.entities.dirty_inv.contains(&e.id))
+                    .map(|e| cube_of(e.pos.floor().as_ivec3()))
+                    .collect();
+                r.modified.extend(anchored);
+                r.entities.dirty_inv.clear();
+                r.entities.spawned.clear();
+                r.entities.despawned.clear();
+            }
         }
         self.unload_unused(c);
     }
@@ -1029,44 +1089,33 @@ impl Server {
                     (center, self.cfg.view_radius + 3, lo - 3, hi + 3)
                 })
                 .collect();
-            let dim = &mut self.dims[di];
-            let removed = dim.retain_cubes(|pos| {
-                views.iter().any(|&(center, r, lo, hi)| {
-                    let d = pos - center;
-                    d.x * d.x + d.z * d.z <= r * r && pos.y >= lo && pos.y <= hi
-                })
-            });
             let storage = self.storage.clone();
-            for (pos, cube, inside) in removed {
-                if let Some(s) = &storage {
-                    let bytes = serialize(c, dim, &inside);
-                    s.lock().save(c, dim.id, pos, &cube, &bytes);
+            let d = &mut self.dims[di];
+            for r in &mut d.regions {
+                let removed = r.retain_cubes(|pos| {
+                    views.iter().any(|&(center, rad, lo, hi)| {
+                        let d = pos - center;
+                        d.x * d.x + d.z * d.z <= rad * rad && pos.y >= lo && pos.y <= hi
+                    })
+                });
+                for (pos, cube, inside) in removed {
+                    if let Some(s) = &storage {
+                        let bytes = serialize(c, r, &inside);
+                        s.lock().save(c, r.id, pos, &cube, &bytes);
+                    }
+                    for id in inside {
+                        r.entities.remove(id);
+                    }
                 }
-                for id in inside {
-                    dim.entities.remove(id);
-                }
+                r.entities.compact();
             }
-            dim.entities.compact();
+            d.dirty = true;
         }
     }
 }
 
-/// Cubes kept loaded around a view: the visible range plus, above it, the column up to where the
-/// generator guarantees open sky (capped), so sky light reaches the visible cubes without having
-/// to send or render those extra cubes.
-fn loaded_y_range(def: &crate::content::DimensionDef, center_y: i32, h: i32) -> (i32, i32) {
-    let lo = (center_y - h).max(def.min_cube_y);
-    let top = center_y + h;
-    let hi = if def.sky_light && def.sky_cube_y != i32::MAX { top.max((def.sky_cube_y - 1).min(top + 12)) } else { top };
-    (lo, hi.min(def.max_cube_y))
-}
-
 fn within(player: DVec3, block: IVec3) -> bool {
     (block.as_dvec3() + DVec3::splat(0.5) - (player + DVec3::Y * 1.6)).length_squared() < REACH * REACH
-}
-
-fn e_selected(d: &Dim, entity: u64) -> u32 {
-    d.entities.get(entity).map_or(0, |e| e.selected)
 }
 
 /// Damages the held tool; breaks it when used up.
@@ -1096,13 +1145,7 @@ fn serialize(c: &Content, d: &Dim, ids: &[u64]) -> Vec<u8> {
 }
 
 fn entities_in(c: &Content, d: &Dim, cube: IVec3) -> Vec<u8> {
-    let ids: Vec<u64> = d
-        .entities
-        .list
-        .iter()
-        .filter(|e| !e.removed && !e.player && cube_of(e.pos.floor().as_ivec3()) == cube)
-        .map(|e| e.id)
-        .collect();
+    let ids: Vec<u64> = d.entities.list.iter().filter(|e| !e.removed && !e.player && cube_of(e.pos.floor().as_ivec3()) == cube).map(|e| e.id).collect();
     serialize(c, d, &ids)
 }
 
@@ -1114,8 +1157,8 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
     }
     let Some(e) = d.entities.get(p.entity) else { return };
     let mut text = format!(
-        "dim = {}\npos = {} {} {}\nlook = {} {}\nhealth = {}\n",
-        c.dims[p.dim as usize].name, e.pos.x, e.pos.y, e.pos.z, e.yaw, e.pitch, e.health
+        "name = {}\ndim = {}\npos = {} {} {}\nlook = {} {}\nhealth = {}\n",
+        p.name, c.dims[p.dim as usize].name, e.pos.x, e.pos.y, e.pos.z, e.yaw, e.pitch, e.health
     );
     if let Some(inv) = d.entities.inventories.get(&p.entity) {
         let items: Vec<String> = inv
@@ -1136,8 +1179,8 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
 
 type PlayerData = (u32, DVec3, f32, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
 
-fn load_player(c: &Content, s: &Storage, name: &str) -> Option<PlayerData> {
-    let src = std::fs::read_to_string(s.player_path(name)).ok()?;
+fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerData> {
+    let src = std::fs::read_to_string(s.player_path(key)).ok()?;
     let (mut dim, mut pos, mut health, mut inv, mut comps) = (None, None, -1.0, None, Vec::new());
     for line in src.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };

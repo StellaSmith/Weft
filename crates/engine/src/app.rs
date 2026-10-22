@@ -80,6 +80,7 @@ pub struct Ctx<'a> {
     pub fps: f32,
     pub frame_ms: f32,
     pub server_ms: f32,
+    pub regions: u32,
     pub debug: bool,
 }
 
@@ -603,6 +604,7 @@ impl Running {
             fps: self.fps,
             frame_ms: self.frame_ms,
             server_ms: 0.0,
+            regions: 0,
             debug: self.debug,
         };
         for a in actions {
@@ -619,7 +621,8 @@ impl Running {
     /// Re-evaluates bound values; layout and geometry only change when a value did.
     fn poll_bindings(&mut self) {
         let mut reqs = Vec::new();
-        let server_ms = self.game.as_ref().and_then(|g| g.server.as_ref()).map_or(0.0, |s| s.tick_ms());
+        let server = self.game.as_ref().and_then(|g| g.server.as_ref());
+        let (server_ms, regions) = server.map_or((0.0, 0), |s| (s.tick_ms(), s.regions()));
         let ctx = Ctx {
             settings: &mut self.settings,
             client: self.game.as_mut().map(|g| &mut g.client),
@@ -628,6 +631,7 @@ impl Running {
             fps: self.fps,
             frame_ms: self.frame_ms,
             server_ms,
+            regions,
             debug: self.debug,
         };
         let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
@@ -844,6 +848,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 fps: r.fps,
                 frame_ms: r.frame_ms,
                 server_ms: 0.0,
+            regions: 0,
                 debug: r.debug,
             };
             if let Some((s, _)) = r.screens.last_mut() {

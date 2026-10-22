@@ -576,3 +576,85 @@ impl Dim {
         self.rng.next()
     }
 }
+
+/// Section = 4x4x4 cubes, the unit regions are made of.
+#[inline]
+pub fn section_of_cube(cube: IVec3) -> IVec3 {
+    cube >> 2
+}
+
+#[inline]
+pub fn section_of(p: DVec3) -> IVec3 {
+    section_of_cube(cube_of(p.floor().as_ivec3()))
+}
+
+type Taken = (Entity, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
+
+/// Everything stored for a set of sections, moved between regions when they merge or split.
+#[derive(Default)]
+pub struct Parcel {
+    cubes: Vec<(IVec3, Arc<Cube>, bool, bool)>,
+    entities: Vec<Taken>,
+    scheduled: Vec<Reverse<(u64, i32, i32, i32)>>,
+}
+
+impl Dim {
+    /// Sections this region occupies: loaded cubes plus where its entities stand.
+    pub fn sections(&self) -> FxHashSet<IVec3> {
+        let mut s: FxHashSet<IVec3> = self.cubes.keys().map(|&c| section_of_cube(c)).collect();
+        s.extend(self.entities.list.iter().filter(|e| !e.removed).map(|e| section_of(e.pos)));
+        s
+    }
+
+    /// Moves out cubes, entities and pending ticks located in sections where `take` is true.
+    pub fn take_sections(&mut self, take: impl Fn(IVec3) -> bool) -> Parcel {
+        let mut p = Parcel::default();
+        let cubes: Vec<IVec3> = self.cubes.keys().copied().filter(|&c| take(section_of_cube(c))).collect();
+        for pos in cubes {
+            let cube = self.cubes.remove(&pos).unwrap();
+            self.grid.cube_unloaded(pos);
+            p.cubes.push((pos, cube, self.modified.remove(&pos), self.settled.remove(&pos)));
+        }
+        let ids: Vec<u64> = self.entities.list.iter().filter(|e| take(section_of(e.pos))).map(|e| e.id).collect();
+        for id in ids {
+            if let Some(t) = self.entities.take(id) {
+                p.entities.push(t);
+            }
+        }
+        let (moved, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.scheduled)
+            .into_iter()
+            .partition(|Reverse((_, x, y, z))| take(section_of_cube(cube_of(IVec3::new(*x, *y, *z)))));
+        self.scheduled = kept.into_iter().collect();
+        p.scheduled = moved;
+        p
+    }
+
+    pub fn absorb(&mut self, c: &Content, p: Parcel) {
+        for (pos, cube, modified, settled) in p.cubes {
+            self.grid.cube_loaded(c, pos, &cube);
+            self.cubes.insert(pos, cube);
+            if modified {
+                self.modified.insert(pos);
+            }
+            if settled {
+                self.settled.insert(pos);
+            }
+        }
+        for (e, inv, comps) in p.entities {
+            let id = e.id;
+            self.entities.insert(c, e);
+            if let Some(inv) = inv {
+                self.entities.inventories.insert(id, inv);
+            }
+            for (k, v) in comps {
+                self.entities.comps.insert((id, k), v);
+            }
+        }
+        self.entities.sort_by_id();
+        self.scheduled.extend(p.scheduled);
+    }
+
+    pub fn set_rng(&mut self, seed: u64) {
+        self.rng = Rng(seed);
+    }
+}

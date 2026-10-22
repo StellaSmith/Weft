@@ -163,6 +163,12 @@ impl Entities {
         Some((e, inv, comps))
     }
 
+    /// Canonical tick order after regions merge.
+    pub fn sort_by_id(&mut self) {
+        self.list.sort_by_key(|e| e.id);
+        self.index = self.list.iter().enumerate().map(|(i, e)| (e.id, i)).collect();
+    }
+
     pub fn inv(&mut self, owner: u64) -> Option<&mut Vec<ItemStack>> {
         self.inventories.get_mut(&owner)
     }

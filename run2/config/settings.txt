@@ -1,7 +1,0 @@
-language = ru_ru
-gui_scale = 0
-view_distance = 12
-vsync = true
-fov = 70
-sensitivity = 1
-name = Maxim

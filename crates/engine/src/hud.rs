@@ -108,7 +108,7 @@ const DEBUG_LINES: &[DebugLine] = &[
         ]
     }),
     ("hud.debug.entities", |c| vec![Arg::Int(c.client.as_ref().map_or(0, |cl| cl.entities.len()) as i64)]),
-    ("hud.debug.server", |c| vec![Arg::Float(c.server_ms as f64, 2)]),
+    ("hud.debug.server", |c| vec![Arg::Float(c.server_ms as f64, 2), Arg::Int(c.regions as i64)]),
     ("hud.debug.looking", |c| {
         let name = c.client.as_ref().and_then(|cl| cl.target).map(|h| content().state_name(h.state)).unwrap_or_else(|| "-".into());
         vec![Arg::Text(name)]

@@ -20,6 +20,7 @@ fn main() {
         screen: None,
         size: (1600, 900),
         dev: cfg!(debug_assertions),
+        script: None,
     };
     let mut verbose = false;
     let mut args = std::env::args().skip(1);
@@ -41,6 +42,7 @@ fn main() {
             "--world" => opts.world = Some(value()),
             "--seed" => opts.seed = value().parse().ok(),
             "--screen" => opts.screen = Some(value()),
+            "--script" => opts.script = Some(PathBuf::from(value())),
             "--size" => {
                 let v: Vec<u32> = value().split('x').filter_map(|s| s.parse().ok()).collect();
                 if v.len() == 2 {

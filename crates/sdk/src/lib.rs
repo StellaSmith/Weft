@@ -3,9 +3,14 @@
 pub use voxide_abi as abi;
 
 mod content;
+mod game;
+mod ui;
 mod world;
 
+pub use abi::ItemStack;
 pub use content::*;
+pub use game::*;
+pub use ui::*;
 pub use world::*;
 
 use std::ffi::c_void;

@@ -388,6 +388,26 @@ impl UiRenderer {
                     None => self.rect(fr, theme.color(class, "fill", 0x60C060FF)),
                 }
             }
+            Kind::Icons { class, count, value, .. } if *value >= 0.0 => {
+                let names = ["full", "half", "empty"].map(|s| theme.get(class, s).map(str::to_string));
+                let tex = names.map(|n| n.and_then(|n| self.texture(gpu, assets, &n)));
+                for i in 0..*count {
+                    let v = *value - i as f32 * 2.0;
+                    let which = if v >= 2.0 { 0 } else if v >= 1.0 { 1 } else { 2 };
+                    let rr = Rect { x: r.x + i as f32 * 8.0 * scale, y: r.y, w: 9.0 * scale, h: 9.0 * scale };
+                    if let Some((idx, _, _)) = tex[2] {
+                        self.image(rr, idx, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
+                    }
+                    if which < 2 {
+                        if let Some((idx, _, _)) = tex[which] {
+                            self.image(rr, idx, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
+                        } else {
+                            self.rect(rr, theme.color(class, "fill", 0xD02020FF));
+                        }
+                    }
+                }
+            }
+            Kind::Icons { .. } => {}
             Kind::Slider { value, .. } => {
                 let track = Rect { x: r.x, y: r.y + r.h * 0.4, w: r.w, h: r.h * 0.2 };
                 self.rect(track, theme.color("slider", "track", 0x404040FF));

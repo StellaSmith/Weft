@@ -47,6 +47,8 @@ pub struct Options {
     pub screen: Option<String>,
     pub size: (u32, u32),
     pub dev: bool,
+    /// Automation: scripted input, see `autopilot.rs`.
+    pub script: Option<PathBuf>,
 }
 
 pub enum Request {
@@ -65,6 +67,8 @@ pub enum Request {
     LeaveWorld,
     Host,
     Join(String),
+    Respawn,
+    SendChat(String),
 }
 
 /// What UI actions and bindings can see and change.
@@ -112,6 +116,9 @@ struct Running {
     debug: bool,
     quit: bool,
     mods: Vec<LoadedMod>,
+    client_hash: u64,
+    autopilot: Option<crate::autopilot::Autopilot>,
+    shot_path: Option<PathBuf>,
 }
 
 struct App {
@@ -204,6 +211,9 @@ impl App {
             debug: false,
             quit: false,
             mods,
+            client_hash: 0,
+            autopilot: self.opts.script.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| crate::autopilot::Autopilot::load(&s)),
+            shot_path: None,
         };
         if let Some(world) = &self.opts.world {
             let saves_dir = r.settings.saves_dir();
@@ -251,6 +261,7 @@ impl Running {
             languages: &self.languages,
             in_game: self.game.is_some(),
             mods: self.mods.len(),
+            client: self.game.as_ref().map(|g| &g.client),
         }
     }
 
@@ -426,6 +437,20 @@ impl Running {
                     }
                     self.rebuild_all();
                 }
+                Request::Respawn => {
+                    if let Some(g) = &mut self.game {
+                        g.client.send(net::ToServer::Respawn);
+                    }
+                    self.screens.retain(|(s, _)| s.name() != "core:death");
+                    self.set_capture(true);
+                }
+                Request::SendChat(text) => {
+                    if let Some(g) = &mut self.game {
+                        if !text.trim().is_empty() {
+                            g.client.send(net::ToServer::Chat(text));
+                        }
+                    }
+                }
                 Request::Join(ticket) => match net::join(&ticket, &self.settings) {
                     Ok(conn) => {
                         self.leave_world_silent();
@@ -457,6 +482,39 @@ impl Running {
         let mut actions: Vec<crate::ui::Action> = Vec::new();
         let mut slider: Option<(std::rc::Rc<dyn Fn(&mut Ctx, f32)>, f32)> = None;
         let mut text_changed: Option<(std::rc::Rc<dyn Fn(&mut Ctx, &str)>, String)> = None;
+        let menu_screen = self.screens.last().is_some_and(|(s, _)| s.name() == "core:menu");
+        if menu_screen {
+            let Some((_, ui)) = self.screens.last_mut() else { return };
+            let slot = hovered.and_then(|h| match ui.nodes[h].kind {
+                Kind::Custom { tag: crate::client::modui::TAG_SLOT, data } => Some(data as u32),
+                _ => None,
+            });
+            if let Some(g) = &mut self.game {
+                let shift = self.input.held_key(Key::Code(KeyCode::ShiftLeft)) || self.input.held_key(Key::Code(KeyCode::ShiftRight));
+                for button in [0u8, 1] {
+                    if self.input.pressed_button(button) {
+                        let inside = ui.nodes.iter().any(|n| matches!(n.kind, Kind::Container { class: Some(_) }) && n.rect.contains(cursor) && n.rect.w < ui.size.x);
+                        match slot {
+                            Some(s) => g.client.send(net::ToServer::Click { slot: s, button, shift }),
+                            None if !inside => g.client.send(net::ToServer::Click { slot: u32::MAX, button, shift: false }),
+                            None => {}
+                        }
+                    }
+                }
+                // Tooltip with the hovered item's name.
+                if let Some(h) = hovered {
+                    if let Kind::Custom { data, .. } = ui.nodes[h].kind {
+                        let stack = g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default();
+                        let tip = (!stack.is_empty()).then(|| text::plain(&crate::hud::item_name(&self.lang, stack.item)));
+                        if ui.nodes[h].tooltip != tip {
+                            ui.nodes[h].tooltip = tip;
+                            self.quads_dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+        let Some((_, ui)) = self.screens.last_mut() else { return };
         if self.input.pressed_button(0) {
             ui.pressed = hovered;
             ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. }));
@@ -578,7 +636,7 @@ impl Running {
                             }
                         }
                     }
-                    Kind::Progress { bind, value, .. } => {
+                    Kind::Progress { bind, value, .. } | Kind::Icons { bind, value, .. } => {
                         let v = bind(&ctx);
                         if (v - *value).abs() > 1e-4 {
                             *value = v;
@@ -642,7 +700,7 @@ impl ApplicationHandler for App {
                 r.gpu.resize(size.width, size.height);
                 r.rebuild_all();
             }
-            WindowEvent::Focused(false) => {
+            WindowEvent::Focused(false) if self.opts.script.is_none() => {
                 r.input.release_all();
                 if r.game.is_some() && r.screens.is_empty() && self.opts.shot.is_none() {
                     r.open(Box::new(screens::Pause));
@@ -723,6 +781,33 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.last = now;
     let scale = r.gui_scale();
 
+    if let Some(ap) = &mut r.autopilot {
+        let loaded = r.game.as_ref().is_some_and(|g| g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0);
+        match ap.frame(&mut r.input, r.gpu.surface_size(), loaded) {
+            crate::autopilot::Action::Look(yaw, pitch) => {
+                if let Some(g) = &mut r.game {
+                    g.client.player.yaw = yaw.to_radians();
+                    g.client.player.pitch = pitch.to_radians();
+                }
+            }
+            crate::autopilot::Action::Chat(t) => {
+                if let Some(g) = &mut r.game {
+                    g.client.send(net::ToServer::Chat(t));
+                }
+            }
+            crate::autopilot::Action::Shot(name) => {
+                let dir = opts.shot.clone().unwrap_or_else(|| r.settings.run_dir.join("screenshots"));
+                r.shot_path = Some(if dir.extension().is_some() { dir.with_file_name(name) } else { dir.join(name) });
+                r.gpu.request_capture();
+                r.shot_pending = true;
+            }
+            crate::autopilot::Action::Quit => return true,
+            crate::autopilot::Action::None => {}
+        }
+        if r.screens.is_empty() && r.game.is_some() {
+            r.input.captured = true;
+        }
+    }
     let mut requests = Vec::new();
     if r.waiting_key.is_some() {
         for k in r.input.pressed_list() {
@@ -744,7 +829,13 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
         }
     } else if r.input.pressed_key(Key::Code(KeyCode::Escape)) {
-        if r.screens.len() > 1 || (r.game.is_some() && !r.screens.is_empty()) {
+        if r.screens.last().is_some_and(|(s, _)| s.name() == "core:death") {
+        } else if r.screens.len() > 1 || (r.game.is_some() && !r.screens.is_empty()) {
+            if r.screens.last().is_some_and(|(s, _)| s.name() == "core:menu") {
+                if let Some(g) = &mut r.game {
+                    g.client.close_menu();
+                }
+            }
             requests.push(Request::Close);
         } else if r.game.is_some() && r.screens.is_empty() {
             r.open(Box::new(screens::Pause));
@@ -760,6 +851,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);
         if let Some(g) = &mut r.game {
             g.client.render.reload_shaders(&mut *r.gpu);
+            g.client.entity_render.reload(&mut *r.gpu);
         }
         r.rebuild_all();
         log::info!("assets reloaded");
@@ -791,6 +883,52 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             g.client.player.vel = DVec3::ZERO;
         }
     }
+    let events = r.game.as_mut().map(|g| std::mem::take(&mut g.client.events)).unwrap_or_default();
+    for ev in events {
+        match ev {
+            crate::client::ClientEvent::OpenMenu => {
+                let kind = r.game.as_ref().and_then(|g| g.client.menu.as_ref()).map_or(0, |m| m.kind);
+                r.screens.retain(|(s, _)| s.name() != "core:menu");
+                r.open(Box::new(crate::game_screens::MenuScreen { kind }));
+            }
+            crate::client::ClientEvent::CloseMenu => {
+                r.screens.retain(|(s, _)| s.name() != "core:menu");
+                r.quads_dirty = true;
+                r.set_capture(true);
+            }
+            crate::client::ClientEvent::Died => {
+                r.screens.clear();
+                r.open(Box::new(crate::game_screens::Death));
+            }
+        }
+    }
+    if r.game.is_some() && r.screens.is_empty() && r.input.pressed("core:chat") {
+        r.open(Box::new(crate::game_screens::Chat));
+        r.input.typed.clear();
+    }
+    let top = r.screens.last().map(|(s, _)| s.name().to_string());
+    if top.as_deref() == Some("core:chat") && r.input.pressed_key(Key::Code(KeyCode::Enter)) {
+        let text = r.screens.last().and_then(|(_, ui)| {
+            ui.find("chat").and_then(|n| match &ui.nodes[n].kind {
+                Kind::Input { value, .. } => Some(value.clone()),
+                _ => None,
+            })
+        });
+        r.screens.pop();
+        r.set_capture(true);
+        r.quads_dirty = true;
+        if let Some(t) = text {
+            r.handle(vec![Request::SendChat(t)]);
+        }
+    }
+    if top.as_deref() == Some("core:menu") && r.input.pressed("core:inventory") {
+        if let Some(g) = &mut r.game {
+            g.client.close_menu();
+        }
+        r.screens.retain(|(s, _)| s.name() != "core:menu");
+        r.set_capture(true);
+        r.quads_dirty = true;
+    }
     if let Some(reason) = r.game.as_ref().and_then(|g| g.client.disconnected.clone()) {
         log::info!("disconnected: {reason}");
         r.leave_world_silent();
@@ -802,7 +940,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.input.end_frame();
 
     if let Some(g) = &r.game {
-        if r.hud.update(&g.client, r.debug) {
+        if r.hud.update(&g.client, r.debug, &r.lang) {
+            r.quads_dirty = true;
+        }
+        let mut h = g.client.selected as u64;
+        for s in g.client.inventory.iter().chain(g.client.menu.iter().flat_map(|m| m.slots.iter().chain([&m.cursor]))) {
+            h = crate::world::mix(h ^ ((s.item as u64) << 32 | s.count as u64) ^ (s.damage as u64) << 48);
+        }
+        if h != r.client_hash {
+            r.client_hash = h;
             r.quads_dirty = true;
         }
     }
@@ -844,10 +990,19 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         for ui in layers {
             let theme = &r.theme;
             let textures = &r.textures;
+            let unit = ui.text_unit;
             let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool| {
-                crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, scale);
+                crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, scale, unit);
             };
             r.ui.build(&mut *r.gpu, &r.assets, ui, &r.theme, scale, game, &mut custom);
+            all.append(&mut r.ui.quads);
+        }
+        // The stack held by the mouse in container menus.
+        if let Some(cursor) = client.and_then(|c| c.menu.as_ref()).map(|m| m.cursor).filter(|s| !s.is_empty()) {
+            let unit = text_unit;
+            let p = r.input.cursor;
+            let rect = crate::ui::Rect { x: p.x - 9.0 * scale, y: p.y - 9.0 * scale, w: 18.0 * scale, h: 18.0 * scale };
+            crate::hud::stack_icon(&mut r.ui, &r.textures, rect, cursor, scale, unit);
             all.append(&mut r.ui.quads);
         }
         r.ui.quads = all;
@@ -857,13 +1012,14 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     let clear = r.game.as_ref().map_or([0.02, 0.02, 0.03, 1.0], |g| g.client.fog_color());
     r.list.push(Cmd::BeginPass { color: Some((Target::Surface, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
     if let Some(g) = &mut r.game {
-        g.client.render(&mut *r.gpu, &mut r.list, &info);
+        g.client.entity_render.preload(&mut *r.gpu, &r.assets, &g.client.entities);
+        g.client.render(&mut *r.gpu, &mut r.list, &info, &r.textures);
     }
     r.ui.draw(&mut *r.gpu, &mut r.list, &info);
     r.list.push(Cmd::EndPass);
 
     let capture_now = r.shot_pending;
-    if opts.shot.is_some() && !r.shot_pending {
+    if opts.shot.is_some() && opts.script.is_none() && !r.shot_pending {
         let ready = match &r.game {
             Some(g) => g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0,
             None => true,
@@ -877,16 +1033,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     if capture_now {
         r.shot_pending = false;
         if let Some(cap) = r.gpu.take_capture() {
-            let path = opts
-                .shot
-                .clone()
-                .unwrap_or_else(|| r.settings.run_dir.join("screenshots").join(format!("{}.png", saves::now_secs())));
+            let path = r.shot_path.take().or_else(|| opts.shot.clone().filter(|_| opts.script.is_none())).unwrap_or_else(|| {
+                r.settings.run_dir.join("screenshots").join(format!("{}.png", saves::now_secs()))
+            });
             match crate::assets::encode_png(&path, cap.width, cap.height, &cap.rgba) {
                 Ok(()) => log::info!("screenshot saved to {}", path.display()),
                 Err(e) => log::error!("screenshot: {e}"),
             }
         }
-        if opts.shot.is_some() {
+        if opts.shot.is_some() && opts.script.is_none() {
             return true;
         }
     }

@@ -77,6 +77,7 @@ fn log(r: &mut Registry, name: &str, handle: &'static Block, wood: &str) {
         .tool("axe", 0)
         .tag("base:logs")
         .prop("base:flammable", 5u32)
+        .prop("base:fuel", 300u32)
         .states(3, |i, s| match i {
             0 => s.textures(&top, &side, &top),
             1 => s.faces([&top, &top, &side, &side, &side, &side]),
@@ -220,9 +221,10 @@ fn plant(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
 }
 
 pub fn register(r: &mut Registry) {
-    r.block("stone", &STONE).hardness(1.5).tool("pickaxe", 0).drops("cobblestone", 1).tag("base:stone");
-    r.block("cobblestone", &COBBLESTONE).hardness(2.0).tool("pickaxe", 0).tag("base:stone");
-    r.block("mossy_cobblestone", &MOSSY_COBBLESTONE).hardness(2.0).tool("pickaxe", 0);
+    // harvest level N > 0 needs a matching tool of tier N-1 (wood 0, stone 1, iron 2, diamond 3).
+    r.block("stone", &STONE).hardness(1.5).tool("pickaxe", 1).drops("cobblestone", 1).tag("base:stone");
+    r.block("cobblestone", &COBBLESTONE).hardness(2.0).tool("pickaxe", 1).tag("base:stone");
+    r.block("mossy_cobblestone", &MOSSY_COBBLESTONE).hardness(2.0).tool("pickaxe", 1);
     r.block("dirt", &DIRT).hardness(0.5).tool("shovel", 0);
     r.block("grass", &GRASS)
         .textures("grass_top", "grass_side", "dirt")
@@ -235,20 +237,20 @@ pub fn register(r: &mut Registry) {
     r.block("sand", &SAND).hardness(0.5).tool("shovel", 0);
     r.block("gravel", &GRAVEL).hardness(0.6).tool("shovel", 0);
     r.block("clay", &CLAY).hardness(0.6).tool("shovel", 0);
-    r.block("sandstone", &SANDSTONE).textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).tool("pickaxe", 0);
+    r.block("sandstone", &SANDSTONE).textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).tool("pickaxe", 1);
     r.block("snow", &SNOW).hardness(0.2).tool("shovel", 0);
     r.block("ice", &ICE).hardness(0.5).translucent().opacity(2).friction(0.98).tool("pickaxe", 0).drops_nothing();
-    r.block("obsidian", &OBSIDIAN).hardness(50.0).tool("pickaxe", 3);
-    r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 0).drops("coal", 1).tag("base:ores");
-    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 1).tag("base:ores");
-    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores");
-    r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 2).drops("diamond", 1).tag("base:ores");
+    r.block("obsidian", &OBSIDIAN).hardness(50.0).tool("pickaxe", 4);
+    r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 1).drops("coal", 1).tag("base:ores");
+    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores");
+    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).tag("base:ores");
+    r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 3).drops("diamond", 1).tag("base:ores");
 
     log(r, "oak_log", &OAK_LOG, "oak");
     log(r, "birch_log", &BIRCH_LOG, "birch");
     log(r, "spruce_log", &SPRUCE_LOG, "spruce");
     for (name, h, tex) in [("oak_planks", &OAK_PLANKS, "planks_oak"), ("birch_planks", &BIRCH_PLANKS, "planks_birch"), ("spruce_planks", &SPRUCE_PLANKS, "planks_spruce")] {
-        r.block(name, h).texture(tex).hardness(2.0).tool("axe", 0).tag("base:planks").prop("base:flammable", 5u32);
+        r.block(name, h).texture(tex).hardness(2.0).tool("axe", 0).tag("base:planks").prop("base:flammable", 5u32).prop("base:fuel", 300u32);
     }
     leaves(r, "oak_leaves", &OAK_LEAVES, "leaves_oak");
     leaves(r, "birch_leaves", &BIRCH_LEAVES, "leaves_birch");
@@ -297,7 +299,9 @@ pub fn register(r: &mut Registry) {
     r.block("crafting_table", &CRAFTING_TABLE)
         .faces(["crafting_table_side", "crafting_table_side", "planks_oak", "crafting_table_top", "crafting_table_front", "crafting_table_front"])
         .hardness(2.5)
-        .tool("axe", 0);
+        .tool("axe", 0)
+        .prop("base:fuel", 300u32)
+        .on_use(crate::machines::open_crafting);
     r.block("furnace", &FURNACE)
         .states(8, |i, s| {
             let facing = i % 4;
@@ -311,8 +315,9 @@ pub fn register(r: &mut Registry) {
             if lit { s.light_rgb(13, 11, 8) } else { s }
         })
         .hardness(3.5)
-        .tool("pickaxe", 0)
-        .placement(|p| (p.horizontal() + 2) % 4);
+        .tool("pickaxe", 1)
+        .placement(|p| (p.horizontal() + 2) % 4)
+        .on_use(crate::machines::open_on_use(&crate::machines::FURNACE_MENU));
     r.block("chest", &CHEST)
         .states(4, |i, s| {
             let mut f = ["chest_side"; 6];
@@ -323,7 +328,8 @@ pub fn register(r: &mut Registry) {
         })
         .hardness(2.5)
         .tool("axe", 0)
-        .placement(|p| (p.horizontal() + 2) % 4);
+        .placement(|p| (p.horizontal() + 2) % 4)
+        .on_use(crate::machines::open_on_use(&crate::machines::CHEST_MENU));
     r.block("torch", &TORCH)
         .model_box([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], "torch")
         .not_solid()
@@ -338,12 +344,12 @@ pub fn register(r: &mut Registry) {
         });
     r.block("ladder", &LADDER).model_box([0.0, 0.0, 15.0], [16.0, 16.0, 16.0], "ladder").climbable().not_solid().hardness(0.4);
     r.block("glowstone", &GLOWSTONE).light(15).hardness(0.3);
-    r.block("bricks", &BRICKS).hardness(2.0).tool("pickaxe", 0);
-    r.block("stone_bricks", &STONE_BRICKS).texture("stonebrick").hardness(1.5).tool("pickaxe", 0);
-    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 1);
-    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 2);
-    r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 2);
-    r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 0).prop("base:fuel", 16000u32);
+    r.block("bricks", &BRICKS).hardness(2.0).tool("pickaxe", 1);
+    r.block("stone_bricks", &STONE_BRICKS).texture("stonebrick").hardness(1.5).tool("pickaxe", 1);
+    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 2);
+    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 3);
+    r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 3);
+    r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 1).prop("base:fuel", 16000u32);
     r.block("wool", &WOOL).texture("wool_white").hardness(0.8).prop("base:flammable", 30u32);
 }
 

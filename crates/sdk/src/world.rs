@@ -12,6 +12,10 @@ impl World {
         World { raw }
     }
 
+    pub(crate) fn raw(&self) -> *mut abi::WorldCtx {
+        self.raw
+    }
+
     pub fn get(&self, pos: [i32; 3]) -> u32 {
         unsafe { (host().get_block)(self.raw, &pos) }
     }
@@ -36,10 +40,6 @@ impl World {
     /// Uniform in `0..n`.
     pub fn random_below(&self, n: u32) -> u32 {
         ((self.random() >> 32) * n as u64 >> 32) as u32
-    }
-
-    pub fn drop_item(&self, pos: [f32; 3], item: u32, count: u32) {
-        unsafe { (host().drop_item)(self.raw, &pos, item, count, 0) }
     }
 
     pub fn flags(&self, pos: [i32; 3]) -> u32 {

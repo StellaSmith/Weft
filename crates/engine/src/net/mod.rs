@@ -7,6 +7,8 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use glam::{DVec3, IVec3};
 
+use voxide_abi::ItemStack;
+
 use crate::world::Cube;
 
 pub mod screens;
@@ -24,6 +26,17 @@ pub fn join(_ticket: &str, _settings: &crate::settings::Settings) -> Result<Clie
     Err("joining is not available yet".into())
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct EntityView {
+    pub id: u64,
+    pub kind: u32,
+    pub pos: DVec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub item: ItemStack,
+    pub health: f32,
+}
+
 #[derive(Clone)]
 pub enum ToClient {
     Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },
@@ -32,6 +45,23 @@ pub enum ToClient {
     Blocks { dim: u32, changes: Vec<(IVec3, u32)> },
     Time { dim: u32, time: u64 },
     Teleport { dim: u32, pos: DVec3 },
+    Spawn(Vec<EntityView>),
+    /// id, position, yaw, pitch.
+    Moves(Vec<(u64, DVec3, f32, f32)>),
+    Despawn(Vec<u64>),
+    Hurt(Vec<(u64, f32)>),
+    /// Own inventory: (slot, stack) for changed slots.
+    Inventory(Vec<(u32, ItemStack)>),
+    /// Own synced components: (component id, bytes).
+    Components(Vec<(u32, Vec<u8>)>),
+    Health { health: f32, max: f32 },
+    OpenMenu { kind: u32, window: u32, slots: u32 },
+    MenuSlots(Vec<(u32, ItemStack)>),
+    MenuData(Vec<(u32, i32)>),
+    Cursor(ItemStack),
+    CloseMenu,
+    Died,
+    Chat(String),
     Disconnect(String),
 }
 
@@ -40,8 +70,19 @@ pub enum ToServer {
     Join { name: String },
     Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool },
     Break { pos: IVec3 },
-    Place { pos: IVec3, face: u8, state: u32, look: [f32; 3] },
-    Use { pos: IVec3, face: u8 },
+    /// Right click on a block: the block reacts first (chests), otherwise the held item is used or
+    /// placed against the clicked face.
+    Use { pos: IVec3, face: u8, look: [f32; 3], sneak: bool },
+    UseItem { target: Option<(IVec3, u8)> },
+    Select(u32),
+    Attack(u64),
+    Interact(u64),
+    OpenInventory,
+    Click { slot: u32, button: u8, shift: bool },
+    CloseMenu,
+    Drop { all: bool },
+    Respawn,
+    Chat(String),
     Leave,
 }
 

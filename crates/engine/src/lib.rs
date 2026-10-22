@@ -1,6 +1,8 @@
 pub mod app;
 pub mod assets;
+pub mod autopilot;
 pub mod client;
+pub mod game_screens;
 pub mod clipboard;
 pub mod content;
 pub mod host;
@@ -10,6 +12,7 @@ pub mod log;
 pub mod modloader;
 pub mod net;
 pub mod physics;
+pub mod registry;
 pub mod saves;
 pub mod screens;
 pub mod server;

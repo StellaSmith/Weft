@@ -1,0 +1,295 @@
+//! UI building for HUD parts and menu screens. Nodes are sent to the engine as they are created;
+//! bound values are callbacks the engine polls every frame and redraws only on change.
+
+use crate::abi::{self, ItemStack, Slice, Str, ui_kind as k};
+use crate::game::Component;
+use crate::{callback, host};
+
+/// Read-only client state for bindings.
+#[derive(Clone, Copy)]
+pub struct ClientView {
+    raw: *mut abi::ClientCtx,
+}
+
+impl ClientView {
+    pub fn player(&self) -> u64 {
+        unsafe { (host().client_player)(self.raw) }
+    }
+    /// Own player's synced component.
+    pub fn component<T: Copy>(&self, c: &Component<T>) -> Option<T> {
+        let p = unsafe { (host().client_component)(self.raw, 0, c.id()) };
+        (!p.is_null()).then(|| unsafe { std::ptr::read_unaligned(p as *const T) })
+    }
+    pub fn me(&self) -> Option<abi::EntityState> {
+        let mut s = abi::EntityState::default();
+        (unsafe { (host().client_entity)(self.raw, 0, &mut s) } != 0).then_some(s)
+    }
+    pub fn menu_data(&self, i: u32) -> i32 {
+        unsafe { (host().client_menu_data)(self.raw, i) }
+    }
+}
+
+/// Text argument for translation templates.
+pub enum Arg<'a> {
+    Text(&'a str),
+    Key(&'a str),
+    Int(i64),
+    Float(f64),
+    Item(u32),
+}
+
+fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
+    args.iter()
+        .map(|a| match a {
+            Arg::Text(s) => abi::UiArg { kind: 0, text: Str::new(s), num: 0.0 },
+            Arg::Key(s) => abi::UiArg { kind: 1, text: Str::new(s), num: 0.0 },
+            Arg::Int(v) => abi::UiArg { kind: 2, text: Str::EMPTY, num: *v as f64 },
+            Arg::Float(v) => abi::UiArg { kind: 3, text: Str::EMPTY, num: *v },
+            Arg::Item(v) => abi::UiArg { kind: 4, text: Str::EMPTY, num: *v as f64 },
+        })
+        .collect()
+}
+
+/// Layout of a node. Sizes are GUI pixels; `None` = fit content.
+#[derive(Clone, Copy)]
+pub struct S {
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    pub grow: f32,
+    pub gap: f32,
+    pub pad: f32,
+    pub row: bool,
+    pub align: u32,
+    pub justify: u32,
+}
+
+impl Default for S {
+    fn default() -> Self {
+        S { width: None, height: None, grow: 0.0, gap: 0.0, pad: 0.0, row: false, align: 0, justify: 0 }
+    }
+}
+
+impl S {
+    pub fn row() -> S {
+        S { row: true, align: 1, ..S::default() }
+    }
+    pub fn col() -> S {
+        S::default()
+    }
+    pub fn gap(mut self, g: f32) -> S {
+        self.gap = g;
+        self
+    }
+    pub fn pad(mut self, p: f32) -> S {
+        self.pad = p;
+        self
+    }
+    pub fn size(mut self, w: f32, h: f32) -> S {
+        self.width = Some(w);
+        self.height = Some(h);
+        self
+    }
+    pub fn w(mut self, w: f32) -> S {
+        self.width = Some(w);
+        self
+    }
+    pub fn grow(mut self) -> S {
+        self.grow = 1.0;
+        self
+    }
+    pub fn center(mut self) -> S {
+        self.align = 1;
+        self.justify = 1;
+        self
+    }
+    pub fn end(mut self) -> S {
+        self.justify = 2;
+        self
+    }
+}
+
+pub struct Ui {
+    raw: *mut abi::UiCtx,
+    client: ClientView,
+}
+
+pub(crate) fn ui_callback(f: impl Fn(&mut Ui) + Send + Sync + 'static) -> abi::Callback {
+    callback(move |a: &mut abi::UiArgs| {
+        let mut ui = Ui { raw: a.ui, client: ClientView { raw: a.client } };
+        f(&mut ui)
+    })
+}
+
+fn node(kind: u32, s: S) -> abi::UiNode {
+    abi::UiNode {
+        kind,
+        class: Str::EMPTY,
+        text: Str::EMPTY,
+        args: Slice::EMPTY,
+        width: s.width.unwrap_or(f32::NAN),
+        height: s.height.unwrap_or(f32::NAN),
+        grow: s.grow,
+        gap: s.gap,
+        pad: [s.pad; 4],
+        row: s.row as u32,
+        align: s.align,
+        justify: s.justify,
+        slot: 0,
+        data: 0,
+        data_max: u32::MAX,
+        max: 0.0,
+        count: 0,
+        bind: abi::Callback::NONE,
+        on_click: abi::Callback::NONE,
+        tooltip: Str::EMPTY,
+    }
+}
+
+impl Ui {
+    pub fn client(&self) -> ClientView {
+        self.client
+    }
+
+    fn open(&mut self, n: &abi::UiNode) {
+        unsafe { (host().ui_open)(self.raw, n) }
+    }
+
+    fn close(&mut self) {
+        unsafe { (host().ui_close)(self.raw) }
+    }
+
+    fn with(&mut self, n: abi::UiNode, f: impl FnOnce(&mut Ui)) {
+        self.open(&n);
+        f(self);
+        self.close();
+    }
+
+    fn leaf(&mut self, n: abi::UiNode) {
+        self.open(&n);
+        self.close();
+    }
+
+    pub fn column(&mut self, s: S, f: impl FnOnce(&mut Ui)) {
+        self.with(node(k::CONTAINER, s), f)
+    }
+
+    pub fn row(&mut self, s: S, f: impl FnOnce(&mut Ui)) {
+        self.with(node(k::CONTAINER, S { row: true, ..s }), f)
+    }
+
+    /// Themed 9-slice background (`class` from the theme, e.g. "panel").
+    pub fn panel(&mut self, class: &str, s: S, f: impl FnOnce(&mut Ui)) {
+        let mut n = node(k::PANEL, s);
+        n.class = Str::new(class);
+        self.with(n, f)
+    }
+
+    /// Translated text.
+    pub fn text(&mut self, key: &str) {
+        self.text_args(key, &[])
+    }
+
+    pub fn text_args(&mut self, key: &str, args: &[Arg]) {
+        let a = raw_args(args);
+        let mut n = node(k::TEXT, S::default());
+        n.text = Str::new(key);
+        n.args = Slice::new(&a);
+        self.leaf(n)
+    }
+
+    /// Text recomputed every frame; redrawn only when it changes.
+    pub fn text_bind(&mut self, f: impl Fn(&ClientView, &mut TextOut) + Send + Sync + 'static) {
+        let mut n = node(k::TEXT, S::default());
+        n.bind = callback(move |a: &mut abi::UiBindArgs| {
+            let view = ClientView { raw: a.client };
+            let mut out = TextOut { raw: a.text };
+            f(&view, &mut out);
+        });
+        self.leaf(n)
+    }
+
+    /// One menu slot.
+    pub fn slot(&mut self, slot: u32) {
+        let mut n = node(k::SLOT, S::default());
+        n.slot = slot;
+        self.leaf(n)
+    }
+
+    /// `count` menu slots starting at `start`, `per_row` per line.
+    pub fn slots(&mut self, start: u32, count: u32, per_row: u32) {
+        self.column(S::col(), |ui| {
+            for r in 0..count.div_ceil(per_row) {
+                ui.row(S::row(), |ui| {
+                    for i in 0..per_row.min(count - r * per_row) {
+                        ui.slot(start + r * per_row + i);
+                    }
+                });
+            }
+        });
+    }
+
+    /// Progress from menu data: `data[value] / data[max]`.
+    pub fn progress(&mut self, class: &str, s: S, value: u32, max: u32) {
+        let mut n = node(k::PROGRESS, s);
+        n.class = Str::new(class);
+        n.data = value;
+        n.data_max = max;
+        self.leaf(n)
+    }
+
+    /// Progress from any value 0..1.
+    pub fn progress_bind(&mut self, class: &str, s: S, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
+        let mut n = node(k::PROGRESS, s);
+        n.class = Str::new(class);
+        n.bind = bind(f);
+        self.leaf(n)
+    }
+
+    /// `count` icons showing a value in half-icon steps (hearts, hunger).
+    pub fn icons(&mut self, class: &str, count: u32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
+        let mut n = node(k::ICONS, S::default());
+        n.class = Str::new(class);
+        n.count = count;
+        n.bind = bind(f);
+        self.leaf(n)
+    }
+
+    pub fn image(&mut self, texture: &str, w: f32, h: f32) {
+        let mut n = node(k::IMAGE, S::default().size(w, h));
+        n.text = Str::new(texture);
+        self.leaf(n)
+    }
+
+    pub fn spacer(&mut self) {
+        self.leaf(node(k::SPACER, S::default().grow()))
+    }
+
+    pub fn button(&mut self, key: &str, s: S, f: impl Fn(&ClientView) + Send + Sync + 'static) {
+        let mut n = node(k::BUTTON, s);
+        n.on_click = callback(move |a: &mut abi::UiArgs| f(&ClientView { raw: a.client }));
+        n.class = Str::new("button");
+        let key = key.to_string();
+        self.with(n, |ui| ui.text(&key));
+    }
+}
+
+fn bind(f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) -> abi::Callback {
+    callback(move |a: &mut abi::UiBindArgs| {
+        a.value = f(&ClientView { raw: a.client });
+    })
+}
+
+pub struct TextOut {
+    raw: *mut abi::UiCtx,
+}
+
+impl TextOut {
+    pub fn set(&mut self, key: &str, args: &[Arg]) {
+        let a = raw_args(args);
+        unsafe { (host().ui_text)(self.raw, Str::new(key), Slice::new(&a)) }
+    }
+}
+
+pub fn stack(item: u32, count: u32) -> ItemStack {
+    ItemStack::new(item, count)
+}

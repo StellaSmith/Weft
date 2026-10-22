@@ -1,0 +1,157 @@
+//! Furnace and chest: blocks with an entity holding their inventory and state.
+
+use voxide_sdk::abi::slot_flags as sf;
+use voxide_sdk::*;
+
+use crate::blocks::FURNACE;
+use crate::items::FUEL;
+use crate::player::{CRAFTING, player_slots};
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Smelting {
+    pub burn: u32,
+    pub burn_max: u32,
+    pub cook: u32,
+    pub cook_max: u32,
+}
+
+pub static SMELTING: Component<Smelting> = Component::new();
+pub static FURNACE_ENTITY: Entity = Entity::new();
+pub static CHEST_ENTITY: Entity = Entity::new();
+pub static FURNACE_MENU: Menu = Menu::new();
+pub static CHEST_MENU: Menu = Menu::new();
+
+const INPUT: u32 = 0;
+const FUEL_SLOT: u32 = 1;
+const OUTPUT: u32 = 2;
+
+pub fn register(r: &mut Registry) {
+    r.component("smelting", &SMELTING, Smelting::default(), component_flags::SAVE, &["base:furnace"]);
+    r.entity("furnace", &FURNACE_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_furnaces);
+    r.entity("chest", &CHEST_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE);
+    r.block_entity("furnace", "furnace", 3);
+    r.block_entity("chest", "chest", 27);
+
+    r.menu("furnace", &FURNACE_MENU)
+        .data(4)
+        .setup(|m| {
+            m.slots(m.owner(), INPUT, 1, 0);
+            m.slots(m.owner(), FUEL_SLOT, 1, 0);
+            m.slots(m.owner(), OUTPUT, 1, sf::OUTPUT);
+            m.slots(PLAYER, 9, 27, 0);
+            m.slots(PLAYER, 0, 9, 0);
+        })
+        .on_tick(|m| {
+            if let Some(s) = m.world().component(m.owner(), &SMELTING) {
+                let s = *s;
+                m.set_data(0, s.burn as i32);
+                m.set_data(1, s.burn_max as i32);
+                m.set_data(2, s.cook as i32);
+                m.set_data(3, s.cook_max as i32);
+            }
+        })
+        .screen(|ui| {
+            ui.panel("panel", S::col().pad(7.0).gap(6.0), |ui| {
+                ui.text("container.furnace");
+                ui.row(S::row().gap(8.0), |ui| {
+                    ui.spacer();
+                    ui.column(S::col().gap(2.0), |ui| {
+                        ui.slot(0);
+                        ui.progress("flame", S::default().size(14.0, 14.0), 0, 1);
+                        ui.slot(1);
+                    });
+                    ui.progress("arrow", S::default().size(24.0, 16.0), 2, 3);
+                    ui.slot(2);
+                    ui.spacer();
+                });
+                player_slots(ui, 3);
+            });
+        });
+
+    r.menu("chest", &CHEST_MENU)
+        .setup(|m| {
+            m.slots(m.owner(), 0, 27, 0);
+            m.slots(PLAYER, 9, 27, 0);
+            m.slots(PLAYER, 0, 9, 0);
+        })
+        .screen(|ui| {
+            ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+                ui.text("container.chest");
+                ui.slots(0, 27, 9);
+                player_slots(ui, 27);
+            });
+        });
+}
+
+/// Called from the block registrations: right click opens the menu of the block's entity.
+pub fn open_on_use(menu: &'static Menu) -> impl Fn(&mut Use) -> bool + Send + Sync + 'static {
+    move |u| {
+        let w = u.world();
+        let owner = w.block_entity(u.pos());
+        if owner == 0 {
+            return false;
+        }
+        w.open_menu(u.player(), menu, owner);
+        true
+    }
+}
+
+pub fn open_crafting(u: &mut Use) -> bool {
+    u.world().open_menu(u.player(), &CRAFTING, 0);
+    true
+}
+
+fn tick_furnaces(t: &EntityTick) {
+    let w = t.world();
+    for &id in t.ids() {
+        let Some(st) = w.entity(id) else { continue };
+        let pos = [st.pos[0].floor() as i32, st.pos[1].floor() as i32, st.pos[2].floor() as i32];
+        let inv = w.inventory(id);
+        let (input, fuel, output) = (inv.get(INPUT), inv.get(FUEL_SLOT), inv.get(OUTPUT));
+        let Some(s) = w.component(id, &SMELTING) else { continue };
+        let was_lit = s.burn > 0;
+        if s.burn > 0 {
+            s.burn -= 1;
+        }
+        let recipe = (!input.is_empty()).then(|| recipe_process("base:smelting", input.item)).flatten();
+        let fits = recipe.is_some_and(|(out, _)| {
+            output.is_empty() || (output.item == out.item && output.count + out.count <= item_info(out.item).0)
+        });
+        if s.burn == 0 && fits {
+            if let Some(ticks) = item_prop::<u32>(fuel.item, FUEL).filter(|_| !fuel.is_empty()) {
+                s.burn = ticks;
+                s.burn_max = ticks;
+                // Lava buckets leave the bucket behind.
+                let rest = if fuel.item == find_item("base:lava_bucket").unwrap_or(u32::MAX) {
+                    ItemStack::new(find_item("base:bucket").unwrap_or(0), 1)
+                } else {
+                    ItemStack { count: fuel.count - 1, ..fuel }
+                };
+                inv.set(FUEL_SLOT, rest);
+            }
+        }
+        let Some(s) = w.component(id, &SMELTING) else { continue };
+        if s.burn > 0 && fits {
+            let (out, time) = recipe.unwrap();
+            s.cook_max = time.max(1);
+            s.cook += 1;
+            if s.cook >= s.cook_max {
+                s.cook = 0;
+                inv.set(INPUT, ItemStack { count: input.count - 1, ..input });
+                let merged = if output.is_empty() { out } else { ItemStack { count: output.count + out.count, ..output } };
+                inv.set(OUTPUT, merged);
+            }
+        } else if s.cook > 0 {
+            s.cook = s.cook.saturating_sub(2);
+        }
+        let lit = s.burn > 0;
+        if lit != was_lit {
+            let state = w.get(pos);
+            if FURNACE.is(state) {
+                let facing = FURNACE.index(state) % 4;
+                w.set(pos, FURNACE.state(facing + if lit { 4 } else { 0 }));
+            }
+        }
+    }
+}

@@ -135,6 +135,7 @@ pub struct Content {
     pub block_names: FxHashMap<String, u32>,
     pub item_names: FxHashMap<String, u32>,
     pub dim_names: FxHashMap<String, u32>,
+    pub game: crate::registry::Game,
 }
 
 static CONTENT: OnceLock<Content> = OnceLock::new();
@@ -167,6 +168,23 @@ impl Content {
         self.block_names.get(name).map(|&b| self.blocks[b as usize].first_state)
     }
 
+    pub fn item_has_tag(&self, item: u32, tag: &str) -> bool {
+        self.items.get(item as usize).is_some_and(|d| d.tags.iter().any(|t| t == tag))
+            || self.items.get(item as usize).and_then(|d| d.block).is_some_and(|s| self.block_of(s).tags.iter().any(|t| t == tag))
+    }
+
+    pub fn item_prop(&self, item: u32, key: &str) -> Option<&[u8]> {
+        let d = self.items.get(item as usize)?;
+        d.props.iter().find(|p| p.0 == key).map(|p| p.1.as_slice()).or_else(|| {
+            let b = self.block_of(d.block?);
+            b.props.iter().find(|p| p.0 == key).map(|p| p.1.as_slice())
+        })
+    }
+
+    pub fn max_stack(&self, item: u32) -> u32 {
+        self.items.get(item as usize).map_or(64, |d| d.max_stack)
+    }
+
     pub fn mod_name(&self, id: ModId) -> &str {
         self.mods.get(id.0 as usize).map_or("engine", |m| m.id.as_str())
     }
@@ -197,6 +215,7 @@ pub struct RawRegistrar {
     pub items: Vec<RawItem>,
     pub biomes: Vec<(BiomeDef, usize)>,
     pub dims: Vec<(DimensionDef, usize)>,
+    pub game: crate::registry::RawGame,
     pub errors: Vec<String>,
 }
 
@@ -249,7 +268,15 @@ pub struct RawItem {
 
 impl RawRegistrar {
     pub fn new(owner: ModId) -> Self {
-        RawRegistrar { owner, blocks: Vec::new(), items: Vec::new(), biomes: Vec::new(), dims: Vec::new(), errors: Vec::new() }
+        RawRegistrar {
+            owner,
+            blocks: Vec::new(),
+            items: Vec::new(),
+            biomes: Vec::new(),
+            dims: Vec::new(),
+            game: Default::default(),
+            errors: Vec::new(),
+        }
     }
 }
 
@@ -375,7 +402,9 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
     let mut items: Vec<(ModId, RawItem)> = Vec::new();
     let mut biomes: Vec<(BiomeDef, usize)> = Vec::new();
     let mut dims: Vec<(DimensionDef, usize)> = Vec::new();
+    let mut games = Vec::new();
     for r in regs {
+        games.push(r.game);
         errors.extend(r.errors.into_iter().map(|e| format!("{}: {e}", mods[r.owner.0 as usize].id)));
         blocks.extend(r.blocks.into_iter().map(|b| (r.owner, b)));
         items.extend(r.items.into_iter().map(|i| (r.owner, i)));
@@ -600,6 +629,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         })
         .collect();
     let dim_names = dim_defs.iter().enumerate().map(|(i, d)| (d.name.clone(), i as u32)).collect();
+    let game = crate::registry::freeze(games, &block_names, &item_names, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -615,5 +645,6 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         block_names,
         item_names,
         dim_names,
+        game,
     })
 }

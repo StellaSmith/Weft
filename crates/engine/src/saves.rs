@@ -32,6 +32,7 @@ pub struct WorldMeta {
     pub seed: u64,
     pub last_played: u64,
     pub times: Vec<(String, u64)>,
+    pub next_entity: u64,
 }
 
 pub fn now_secs() -> u64 {
@@ -41,7 +42,7 @@ pub fn now_secs() -> u64 {
 impl WorldMeta {
     pub fn load(dir: &Path) -> Option<WorldMeta> {
         let src = std::fs::read_to_string(dir.join("world.txt")).ok()?;
-        let mut m = WorldMeta { dir: dir.to_path_buf(), name: String::new(), seed: 0, last_played: 0, times: Vec::new() };
+        let mut m = WorldMeta { dir: dir.to_path_buf(), name: String::new(), seed: 0, last_played: 0, times: Vec::new(), next_entity: 1 };
         for line in src.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let (k, v) = (k.trim(), v.trim());
@@ -49,6 +50,7 @@ impl WorldMeta {
                 "name" => m.name = v.to_string(),
                 "seed" => m.seed = v.parse().unwrap_or(0),
                 "last_played" => m.last_played = v.parse().unwrap_or(0),
+                "next_entity" => m.next_entity = v.parse().unwrap_or(1),
                 _ => {
                     if let Some(d) = k.strip_prefix("time.") {
                         m.times.push((d.to_string(), v.parse().unwrap_or(0)));
@@ -60,7 +62,10 @@ impl WorldMeta {
     }
 
     pub fn save(&self) {
-        let mut s = format!("name = {}\nseed = {}\nlast_played = {}\n", self.name, self.seed, self.last_played);
+        let mut s = format!(
+            "name = {}\nseed = {}\nlast_played = {}\nnext_entity = {}\n",
+            self.name, self.seed, self.last_played, self.next_entity
+        );
         for (d, t) in &self.times {
             s.push_str(&format!("time.{d} = {t}\n"));
         }
@@ -91,7 +96,7 @@ pub fn create(saves: &Path, name: &str, seed: u64) -> WorldMeta {
         n += 1;
         dir = saves.join(format!("{base}_{n}"));
     }
-    let m = WorldMeta { dir, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new() };
+    let m = WorldMeta { dir, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), next_entity: 1 };
     m.save();
     m
 }
@@ -254,22 +259,24 @@ impl Storage {
         self.regions.contains_key(&(dim, r)) || self.dim_dirs[dim as usize].join(format!("r.{}.{}.{}.bin", r.x, r.y, r.z)).exists()
     }
 
-    pub fn load(&mut self, dim: u32, pos: IVec3) -> Option<Cube> {
+    /// The cube and the serialized entities that were in it.
+    pub fn load(&mut self, dim: u32, pos: IVec3) -> Option<(Cube, Vec<u8>)> {
         let (r, i) = region_of(pos);
         if !self.region_exists(dim, r) {
             return None;
         }
         let raw = self.region(dim, r)?.read(i)?;
         let data = lz4_flex::decompress_size_prepended(&raw).ok()?;
+        let len = u32::from_le_bytes(data.get(..4)?.try_into().ok()?) as usize;
         let ids = &self.ids;
-        let cube = Cube::read(&mut &data[..], |w| ids.runtime_id(w));
+        let cube = Cube::read(&mut data.get(4..4 + len)?, |w| ids.runtime_id(w));
         if cube.is_none() {
             log::error!("corrupt cube {pos} in dimension {dim}, regenerating it");
         }
-        cube
+        Some((cube?, data[4 + len..].to_vec()))
     }
 
-    pub fn save(&mut self, c: &Content, dim: u32, pos: IVec3, cube: &Cube) {
+    pub fn save(&mut self, c: &Content, dim: u32, pos: IVec3, cube: &Cube, entities: &[u8]) {
         let mut buf = Vec::new();
         let mut cube = cube.clone();
         cube.compact();
@@ -277,7 +284,11 @@ impl Storage {
         for &s in cube.palette() {
             map.insert(s, self.ids.world_id(c, s));
         }
+        buf.extend_from_slice(&[0; 4]);
         cube.write(&mut buf, |s| map[&s]);
+        let len = (buf.len() - 4) as u32;
+        buf[..4].copy_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(entities);
         let packed = lz4_flex::compress_prepend_size(&buf);
         let (r, i) = region_of(pos);
         if let Some(reg) = self.region(dim, r) {

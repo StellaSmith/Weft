@@ -908,4 +908,11 @@ impl ItemUse {
     pub fn target(&self) -> Option<([i32; 3], u32)> {
         (self.args.has_target != 0).then_some((self.args.pos, self.args.face))
     }
+    pub fn stack(&self) -> crate::ItemStack {
+        self.args.stack
+    }
+    /// Replaces the held stack (use count 0 to consume it entirely).
+    pub fn set_stack(&mut self, s: crate::ItemStack) {
+        self.args.stack = s;
+    }
 }

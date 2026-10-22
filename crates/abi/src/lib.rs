@@ -341,11 +341,324 @@ pub struct PlaceArgs {
 pub struct ItemUseArgs {
     pub world: *mut WorldCtx,
     pub player: u64,
+    /// In/out: the held stack; change it to consume (eating, placing).
+    pub stack: ItemStack,
     /// Target block if any (`has_target`).
     pub pos: [i32; 3],
     pub face: u32,
     pub has_target: u32,
     pub handled: u32,
+}
+
+// ---------------------------------------------------------------- items, entities, menus
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Hash)]
+pub struct ItemStack {
+    pub item: u32,
+    pub count: u32,
+    pub damage: u32,
+    /// Reserved for item data handles; 0 for plain stacks.
+    pub extra: u32,
+}
+
+impl ItemStack {
+    pub const EMPTY: ItemStack = ItemStack { item: 0, count: 0, damage: 0, extra: 0 };
+
+    pub fn new(item: u32, count: u32) -> ItemStack {
+        ItemStack { item, count, damage: 0, extra: 0 }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.item == 0 || self.count == 0
+    }
+}
+
+pub mod entity_flags {
+    pub const FALL_DAMAGE: u32 = 1;
+    /// Other entities push it away.
+    pub const PUSHABLE: u32 = 2;
+    pub const NO_GRAVITY: u32 = 4;
+    pub const INVULNERABLE: u32 = 8;
+    /// Burns in daylight (undead).
+    pub const BURNS_IN_SUN: u32 = 16;
+    pub const SWIMS: u32 = 32;
+}
+
+/// Which body part a model piece is, so the engine can animate it (walk cycle, head look).
+pub mod part_role {
+    pub const STATIC: u32 = 0;
+    pub const HEAD: u32 = 1;
+    pub const ARM_LEFT: u32 = 2;
+    pub const ARM_RIGHT: u32 = 3;
+    pub const LEG_LEFT: u32 = 4;
+    pub const LEG_RIGHT: u32 = 5;
+    /// Quadrupeds: front legs swing opposite to back legs.
+    pub const LEG_FRONT_LEFT: u32 = 6;
+    pub const LEG_FRONT_RIGHT: u32 = 7;
+    /// Arms held forward (zombies).
+    pub const ARM_FORWARD_LEFT: u32 = 8;
+    pub const ARM_FORWARD_RIGHT: u32 = 9;
+}
+
+/// Box in model pixels (1/16 block) relative to the part pivot; `uv` is the top-left texel of the
+/// classic box unwrap.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ModelCuboid {
+    pub origin: [f32; 3],
+    pub size: [f32; 3],
+    pub uv: [f32; 2],
+    pub inflate: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ModelPart {
+    /// Pivot in model pixels, y up from the feet.
+    pub pivot: [f32; 3],
+    pub role: u32,
+    pub cuboids: Slice<ModelCuboid>,
+}
+
+#[repr(C)]
+pub struct EntityDesc {
+    pub name: Str,
+    pub cell: *const AtomicU32,
+    pub width: f32,
+    pub height: f32,
+    pub eye: f32,
+    pub max_health: f32,
+    /// Walking speed in blocks per second.
+    pub speed: f32,
+    pub flags: u32,
+    /// 0 misc, 1 hostile, 2 passive. Spawning rules are up to mods; this feeds caps and profiling.
+    pub category: u32,
+    pub texture: Str,
+    pub texture_size: [u32; 2],
+    pub parts: Slice<ModelPart>,
+    /// `EntityTickArgs`: every entity of this kind in one call.
+    pub on_tick: Callback,
+    /// `EntityEventArgs`.
+    pub on_hurt: Callback,
+    pub on_death: Callback,
+    pub on_interact: Callback,
+}
+
+#[repr(C)]
+pub struct EntityTickArgs {
+    pub world: *mut WorldCtx,
+    pub kind: u32,
+    pub ids: *const u64,
+    pub count: usize,
+}
+
+#[repr(C)]
+pub struct EntityEventArgs {
+    pub world: *mut WorldCtx,
+    pub entity: u64,
+    /// Attacker / interacting player, 0 if none.
+    pub other: u64,
+    /// In/out for `on_hurt`: change it to reduce damage (armour).
+    pub amount: f32,
+    pub cause: u32,
+    pub handled: u32,
+}
+
+pub mod damage {
+    pub const GENERIC: u32 = 0;
+    pub const FALL: u32 = 1;
+    pub const ATTACK: u32 = 2;
+    pub const FIRE: u32 = 3;
+    pub const STARVE: u32 = 4;
+    pub const DROWN: u32 = 5;
+    pub const VOID: u32 = 6;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct EntityState {
+    pub kind: u32,
+    pub flags: u32,
+    pub pos: [f64; 3],
+    pub vel: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: u32,
+    pub in_liquid: u32,
+    pub health: f32,
+    pub max_health: f32,
+    pub age: u64,
+    /// Blocks fallen since last on ground.
+    pub fall: f32,
+    /// Distance walked this tick (hunger exhaustion).
+    pub moved: f32,
+}
+
+pub mod component_flags {
+    pub const SAVE: u32 = 1;
+    /// Sent to the player that owns it (HUD values like hunger).
+    pub const SYNC_OWNER: u32 = 2;
+}
+
+#[repr(C)]
+pub struct ComponentDesc {
+    pub name: Str,
+    pub cell: *const AtomicU32,
+    pub size: u32,
+    pub flags: u32,
+    /// Initial bytes, `size` long.
+    pub default: Slice<u8>,
+    /// Entity kinds ("core:player") that get this component when spawned.
+    pub attach_to: Slice<Str>,
+}
+
+/// Recipe ingredients are item names or `#tag`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RecipeKey {
+    pub ch: u32,
+    pub item: Str,
+}
+
+#[repr(C)]
+pub struct RecipeDesc {
+    /// Recipe type, e.g. "base:crafting", "base:smelting". Any mod can add types.
+    pub kind: Str,
+    /// Shaped recipes: rows of key characters. Empty for shapeless/processing.
+    pub pattern: Slice<Str>,
+    pub keys: Slice<RecipeKey>,
+    /// Shapeless/processing inputs.
+    pub inputs: Slice<Str>,
+    pub output: Str,
+    pub count: u32,
+    /// Processing time in ticks, meaning is up to the recipe type.
+    pub time: u32,
+}
+
+pub mod slot_flags {
+    /// Can only be taken from (crafting result).
+    pub const OUTPUT: u32 = 1;
+    pub const ARMOR_HEAD: u32 = 2;
+    pub const ARMOR_CHEST: u32 = 4;
+    pub const ARMOR_LEGS: u32 = 8;
+    pub const ARMOR_FEET: u32 = 16;
+}
+
+#[repr(C)]
+pub struct MenuDesc {
+    pub name: Str,
+    pub cell: *const AtomicU32,
+    /// Slots in the menu's own temporary inventory (crafting grids), returned to the player on close.
+    pub temp_slots: u32,
+    /// Synced integers (progress values) the screen can bind to.
+    pub data_count: u32,
+    /// `MenuArgs`, server: add slots with `Host::menu_slots`.
+    pub setup: Callback,
+    /// `MenuArgs`, server: a slot changed (recompute crafting output).
+    pub on_change: Callback,
+    /// `MenuArgs` with `slot` set, server: an OUTPUT slot was taken (consume ingredients).
+    pub on_take: Callback,
+    /// `MenuArgs`, server, every tick while open: refresh data values.
+    pub on_tick: Callback,
+    /// `UiArgs`, client: build the screen. Slot widgets refer to menu slot indices.
+    pub screen: Callback,
+}
+
+#[repr(C)]
+pub struct MenuCtx {
+    _p: [u8; 0],
+}
+
+#[repr(C)]
+pub struct MenuArgs {
+    pub world: *mut WorldCtx,
+    pub menu: *mut MenuCtx,
+    pub player: u64,
+    /// Entity whose inventory the menu shows (block entity), 0 for the player's own.
+    pub owner: u64,
+    pub slot: u32,
+}
+
+// ---------------------------------------------------------------- mod UI
+
+#[repr(C)]
+pub struct UiCtx {
+    _p: [u8; 0],
+}
+
+/// Client-side game view for HUD bindings.
+#[repr(C)]
+pub struct ClientCtx {
+    _p: [u8; 0],
+}
+
+pub mod ui_kind {
+    pub const CONTAINER: u32 = 0;
+    pub const PANEL: u32 = 1;
+    pub const TEXT: u32 = 2;
+    pub const BUTTON: u32 = 3;
+    /// Menu slot `slot`.
+    pub const SLOT: u32 = 4;
+    /// Bound value 0..1: `bind`, or menu data `data / data_max` (max index, or `max` constant).
+    pub const PROGRESS: u32 = 5;
+    pub const IMAGE: u32 = 6;
+    pub const SPACER: u32 = 7;
+    /// Row of `count` icons (full/half/empty textures from the theme `class`) driven by `bind`.
+    pub const ICONS: u32 = 8;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UiArg {
+    /// 0 text, 1 translation key, 2 integer, 3 float, 4 item id.
+    pub kind: u32,
+    pub text: Str,
+    pub num: f64,
+}
+
+#[repr(C)]
+pub struct UiNode {
+    pub kind: u32,
+    pub class: Str,
+    /// Translation key (or texture for IMAGE).
+    pub text: Str,
+    pub args: Slice<UiArg>,
+    /// NaN = automatic.
+    pub width: f32,
+    pub height: f32,
+    pub grow: f32,
+    pub gap: f32,
+    pub pad: [f32; 4],
+    pub row: u32,
+    /// 0 start, 1 center, 2 end, 3 stretch.
+    pub align: u32,
+    /// 0 start, 1 center, 2 end, 3 space between.
+    pub justify: u32,
+    pub slot: u32,
+    pub data: u32,
+    pub data_max: u32,
+    pub max: f32,
+    pub count: u32,
+    /// `UiBindArgs`: fills `value` (and text via `Host::ui_text`) every frame.
+    pub bind: Callback,
+    pub on_click: Callback,
+    pub tooltip: Str,
+}
+
+#[repr(C)]
+pub struct UiArgs {
+    pub ui: *mut UiCtx,
+    pub client: *mut ClientCtx,
+}
+
+#[repr(C)]
+pub struct UiBindArgs {
+    pub client: *mut ClientCtx,
+    /// Out: numeric value.
+    pub value: f32,
+    /// Pass to `Host::ui_text` to set text.
+    pub text: *mut UiCtx,
 }
 
 // ---------------------------------------------------------------- host
@@ -375,7 +688,6 @@ pub struct Host {
     pub world_time: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
     /// Deterministic per-world random stream.
     pub random: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
-    pub drop_item: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f32; 3], item: u32, count: u32, damage: u32),
 
     /// Looks up a frozen id by full name ("base:stone"), `u32::MAX` if missing.
     pub find_block: unsafe extern "C" fn(name: Str) -> u32,
@@ -383,4 +695,73 @@ pub struct Host {
     /// State id -> first state id of its block.
     pub block_of: unsafe extern "C" fn(state: u32) -> u32,
     pub state_flags: unsafe extern "C" fn(state: u32) -> u32,
+
+    pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
+    pub reg_component: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ComponentDesc),
+    /// Extra callbacks on an entity kind owned by someone else: hook 0 tick, 1 hurt, 2 death, 3 interact.
+    pub reg_entity_hook: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, hook: u32, cb: Callback),
+    pub reg_recipe: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeDesc),
+    pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
+    /// HUD part, `UiArgs`, rebuilt when the HUD is.
+    pub reg_hud: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
+    /// Menu opened by the inventory key.
+    pub set_player_menu: unsafe extern "C" fn(reg: *mut Registrar, menu: Str),
+    /// Block entity kind created (with an inventory of `slots`) when the block is placed, removed
+    /// (dropping its items) when broken.
+    pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str, slots: u32),
+
+    pub light: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
+    /// 0..1 sun strength for the world's time of day.
+    pub daylight: unsafe extern "C" fn(world: *mut WorldCtx) -> f32,
+
+    pub entity_spawn: unsafe extern "C" fn(world: *mut WorldCtx, kind: u32, pos: *const [f64; 3]) -> u64,
+    pub entity_remove: unsafe extern "C" fn(world: *mut WorldCtx, id: u64),
+    pub entity_get: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, out: *mut EntityState) -> u32,
+    /// Writes pos, vel, yaw, pitch and health from `state`.
+    pub entity_set: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, state: *const EntityState),
+    /// AI steering: horizontal direction and speed factor applied by the physics, optional jump.
+    pub entity_walk: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dir: *const [f32; 2], speed: f32, jump: u32),
+    pub entity_damage: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: f32, source: u64, cause: u32) -> u32,
+    /// Fills `out` with ids near `pos` (all kinds if `kind` is u32::MAX), returns how many matched.
+    pub entities_near: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize,
+    pub component: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, comp: u32) -> *mut u8,
+    pub player_count: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
+    pub player_at: unsafe extern "C" fn(world: *mut WorldCtx, index: u32) -> u64,
+
+    pub inv_size: unsafe extern "C" fn(world: *mut WorldCtx, owner: u64) -> u32,
+    pub inv_get: unsafe extern "C" fn(world: *mut WorldCtx, owner: u64, slot: u32) -> ItemStack,
+    pub inv_set: unsafe extern "C" fn(world: *mut WorldCtx, owner: u64, slot: u32, stack: ItemStack),
+    /// Merges into existing stacks first; returns what did not fit.
+    pub inv_insert: unsafe extern "C" fn(world: *mut WorldCtx, owner: u64, stack: ItemStack) -> ItemStack,
+    pub selected_slot: unsafe extern "C" fn(world: *mut WorldCtx, player: u64) -> u32,
+    pub spawn_item: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3], stack: ItemStack),
+    pub block_entity: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u64,
+    pub open_menu: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, menu: u32, owner: u64),
+
+    /// During `MenuDesc::setup`: add `count` slots of `owner`'s inventory (0 = the menu's temp slots,
+    /// u64::MAX = the player) starting at `start`.
+    pub menu_slots: unsafe extern "C" fn(menu: *mut MenuCtx, owner: u64, start: u32, count: u32, flags: u32),
+    pub menu_get: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32) -> ItemStack,
+    pub menu_set: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32, stack: ItemStack),
+    pub menu_set_data: unsafe extern "C" fn(menu: *mut MenuCtx, index: u32, value: i32),
+
+    /// Matches a grid against recipes of `kind`; returns the output stack (empty if none).
+    pub recipe_match: unsafe extern "C" fn(kind: Str, grid: *const ItemStack, width: u32, height: u32) -> ItemStack,
+    /// Processing recipe for one input item: output stack, time written to `time_out`.
+    pub recipe_process: unsafe extern "C" fn(kind: Str, input: u32, time_out: *mut u32) -> ItemStack,
+    /// Typed per-item property bytes registered with `prop`, null if absent.
+    pub item_prop: unsafe extern "C" fn(item: u32, key: Str, len: *mut usize) -> *const u8,
+    /// Returns the placed block state (0 if none).
+    pub item_info: unsafe extern "C" fn(item: u32, max_stack: *mut u32, durability: *mut u32) -> u32,
+    pub item_has_tag: unsafe extern "C" fn(item: u32, tag: Str) -> u32,
+
+    pub ui_open: unsafe extern "C" fn(ui: *mut UiCtx, node: *const UiNode),
+    pub ui_close: unsafe extern "C" fn(ui: *mut UiCtx),
+    /// From a text binding: set the translation key and args shown.
+    pub ui_text: unsafe extern "C" fn(ui: *mut UiCtx, key: Str, args: Slice<UiArg>),
+    pub client_player: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
+    /// Synced component of an entity the client knows (own player always), null if unknown.
+    pub client_component: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, comp: u32) -> *const u8,
+    pub client_entity: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, out: *mut EntityState) -> u32,
+    pub client_menu_data: unsafe extern "C" fn(client: *mut ClientCtx, index: u32) -> i32,
 }

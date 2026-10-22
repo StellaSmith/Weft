@@ -82,3 +82,7 @@ multiplayer.copy = Copy
 multiplayer.copied = Copied!
 multiplayer.connecting = Connecting...
 multiplayer.disconnected = Disconnected: {0}
+death.title = You Died!
+death.respawn = Respawn
+hud.debug.entities = Entities: {0}
+hud.debug.mods = Mods per tick: {0}

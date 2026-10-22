@@ -5,9 +5,13 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-use voxide_abi::{self as abi, Callback, Host, ModId, Str};
+use glam::{DVec3, IVec3};
+use voxide_abi::{self as abi, Callback, Host, ItemStack, ModId, Str};
 
 use crate::content::{self, RawRegistrar, content, try_content};
+use crate::registry;
+use crate::server::Dim;
+use crate::server::menu::MenuCall;
 
 pub static HOST: Host = Host {
     size: size_of::<Host>(),
@@ -21,11 +25,54 @@ pub static HOST: Host = Host {
     schedule_tick,
     world_time,
     random,
-    drop_item,
     find_block,
     find_item,
     block_of,
     state_flags,
+    reg_entity,
+    reg_component,
+    reg_entity_hook,
+    reg_recipe,
+    reg_menu,
+    reg_hud,
+    set_player_menu,
+    set_block_entity,
+    light,
+    daylight,
+    entity_spawn,
+    entity_remove,
+    entity_get,
+    entity_set,
+    entity_walk,
+    entity_damage,
+    entities_near,
+    component,
+    player_count,
+    player_at,
+    inv_size,
+    inv_get,
+    inv_set,
+    inv_insert,
+    selected_slot,
+    spawn_item,
+    block_entity,
+    open_menu,
+    menu_slots,
+    menu_get,
+    menu_set,
+    menu_set_data,
+    recipe_match,
+    recipe_process,
+    item_prop,
+    item_info,
+    item_has_tag,
+    ui_open: crate::client::modui::ui_open,
+    ui_close: crate::client::modui::ui_close,
+    ui_text: crate::client::modui::ui_text,
+    client_player: crate::client::modui::client_player,
+    client_component: crate::client::modui::client_component,
+    client_entity: crate::client::modui::client_entity,
+    client_menu_data: crate::client::modui::client_menu_data,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -67,33 +114,27 @@ pub fn invoke<A>(owner: ModId, cb: Callback, args: &mut A) -> bool {
 
 // ---------------------------------------------------------------- world access from callbacks
 
-/// What a callback can do to the world it was called from.
-pub trait WorldAccess {
-    fn get(&mut self, pos: [i32; 3]) -> u32;
-    fn set(&mut self, pos: [i32; 3], state: u32) -> bool;
-    fn schedule(&mut self, pos: [i32; 3], delay: u32);
-    fn time(&mut self) -> u64;
-    fn random(&mut self) -> u64;
-    fn drop_item(&mut self, pos: [f32; 3], item: u32, count: u32, damage: u32);
+/// `WorldCtx` pointers handed to mods point at one of these. Only valid during the callback.
+pub struct CallCtx {
+    pub dim: *mut Dim,
 }
 
-/// `WorldCtx` pointers handed to mods point at one of these.
-pub struct CallCtx<'a> {
-    pub world: &'a mut dyn WorldAccess,
-}
-
-impl<'a> CallCtx<'a> {
+impl CallCtx {
     pub fn raw(&mut self) -> *mut abi::WorldCtx {
         self as *mut CallCtx as *mut abi::WorldCtx
     }
 }
 
-unsafe fn ctx<'a>(w: *mut abi::WorldCtx) -> &'a mut CallCtx<'a> {
-    unsafe { &mut *(w as *mut CallCtx) }
+unsafe fn dim<'a>(w: *mut abi::WorldCtx) -> &'a mut Dim {
+    unsafe { &mut *(*(w as *mut CallCtx)).dim }
+}
+
+fn ip(p: *const [i32; 3]) -> IVec3 {
+    IVec3::from_array(unsafe { *p })
 }
 
 unsafe extern "C" fn get_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u32 {
-    unsafe { ctx(w).world.get(*pos) }
+    unsafe { dim(w).get(ip(pos)).unwrap_or(content::AIR) }
 }
 
 unsafe extern "C" fn set_block(w: *mut abi::WorldCtx, pos: *const [i32; 3], state: u32) -> u32 {
@@ -101,26 +142,228 @@ unsafe extern "C" fn set_block(w: *mut abi::WorldCtx, pos: *const [i32; 3], stat
         log::error!("mod tried to set invalid state {state}");
         return 0;
     }
-    unsafe { ctx(w).world.set(*pos, state) as u32 }
+    unsafe { dim(w).set(content(), ip(pos), state).is_some() as u32 }
 }
 
 unsafe extern "C" fn schedule_tick(w: *mut abi::WorldCtx, pos: *const [i32; 3], delay: u32) {
-    unsafe { ctx(w).world.schedule(*pos, delay) }
+    unsafe { dim(w).schedule(ip(pos), delay) }
 }
 
 unsafe extern "C" fn world_time(w: *mut abi::WorldCtx) -> u64 {
-    unsafe { ctx(w).world.time() }
+    unsafe { dim(w).time }
 }
 
 unsafe extern "C" fn random(w: *mut abi::WorldCtx) -> u64 {
-    unsafe { ctx(w).world.random() }
+    unsafe { dim(w).random() }
 }
 
-unsafe extern "C" fn drop_item(w: *mut abi::WorldCtx, pos: *const [f32; 3], item: u32, count: u32, damage: u32) {
-    unsafe { ctx(w).world.drop_item(*pos, item, count, damage) }
+unsafe extern "C" fn light(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u32 {
+    unsafe { dim(w).light(ip(pos)) }
+}
+
+unsafe extern "C" fn daylight(w: *mut abi::WorldCtx) -> f32 {
+    unsafe { dim(w).daylight(content()) }
+}
+
+unsafe extern "C" fn entity_spawn(w: *mut abi::WorldCtx, kind: u32, pos: *const [f64; 3]) -> u64 {
+    if kind as usize >= content().game.entities.len() {
+        return 0;
+    }
+    unsafe { dim(w).spawn(content(), kind, DVec3::from_array(*pos)) }
+}
+
+unsafe extern "C" fn entity_remove(w: *mut abi::WorldCtx, id: u64) {
+    unsafe { dim(w).entities.remove(id) }
+}
+
+unsafe extern "C" fn entity_get(w: *mut abi::WorldCtx, id: u64, out: *mut abi::EntityState) -> u32 {
+    unsafe {
+        match dim(w).entities.get(id) {
+            Some(e) => {
+                *out = e.state(content());
+                1
+            }
+            None => 0,
+        }
+    }
+}
+
+unsafe extern "C" fn entity_set(w: *mut abi::WorldCtx, id: u64, s: *const abi::EntityState) {
+    unsafe {
+        let s = &*s;
+        if let Some(e) = dim(w).entities.get_mut(id) {
+            let pos = DVec3::from_array(s.pos);
+            if pos.is_finite() {
+                e.pos = pos;
+            }
+            let vel = DVec3::from_array(s.vel);
+            if vel.is_finite() {
+                e.vel = vel;
+            }
+            e.yaw = s.yaw;
+            e.pitch = s.pitch;
+            e.health = s.health.min(s.max_health.max(e.health));
+        }
+    }
+}
+
+unsafe extern "C" fn entity_walk(w: *mut abi::WorldCtx, id: u64, dir: *const [f32; 2], speed: f32, jump: u32) {
+    unsafe {
+        if let Some(e) = dim(w).entities.get_mut(id) {
+            e.walk = Some((*dir, speed, jump != 0));
+        }
+    }
+}
+
+unsafe extern "C" fn entity_damage(w: *mut abi::WorldCtx, id: u64, amount: f32, source: u64, cause: u32) -> u32 {
+    unsafe { dim(w).damage(content(), id, amount, source, cause) as u32 }
+}
+
+unsafe extern "C" fn entities_near(w: *mut abi::WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize {
+    unsafe {
+        let ids = dim(w).entities.near(DVec3::from_array(*pos), radius, kind);
+        for (i, id) in ids.iter().take(max).enumerate() {
+            *out.add(i) = *id;
+        }
+        ids.len()
+    }
+}
+
+unsafe extern "C" fn component(w: *mut abi::WorldCtx, id: u64, comp: u32) -> *mut u8 {
+    unsafe {
+        let d = dim(w);
+        match d.entities.comps.get_mut(&(id, comp)) {
+            Some(b) => {
+                // Written through the pointer: assume dirty so owners get the new value.
+                d.entities.dirty_comp.insert((id, comp));
+                b.as_mut_ptr()
+            }
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+unsafe extern "C" fn player_count(w: *mut abi::WorldCtx) -> u32 {
+    unsafe { dim(w).entities.list.iter().filter(|e| e.player && !e.removed).count() as u32 }
+}
+
+unsafe extern "C" fn player_at(w: *mut abi::WorldCtx, index: u32) -> u64 {
+    unsafe { dim(w).entities.list.iter().filter(|e| e.player && !e.removed).nth(index as usize).map_or(0, |e| e.id) }
+}
+
+unsafe extern "C" fn inv_size(w: *mut abi::WorldCtx, owner: u64) -> u32 {
+    unsafe { dim(w).entities.inventories.get(&owner).map_or(0, |i| i.len() as u32) }
+}
+
+unsafe extern "C" fn inv_get(w: *mut abi::WorldCtx, owner: u64, slot: u32) -> ItemStack {
+    unsafe { dim(w).entities.inventories.get(&owner).and_then(|i| i.get(slot as usize)).copied().unwrap_or_default() }
+}
+
+unsafe extern "C" fn inv_set(w: *mut abi::WorldCtx, owner: u64, slot: u32, stack: ItemStack) {
+    unsafe { dim(w).entities.set_slot(owner, slot, stack) }
+}
+
+unsafe extern "C" fn inv_insert(w: *mut abi::WorldCtx, owner: u64, stack: ItemStack) -> ItemStack {
+    unsafe { dim(w).entities.insert_item(content(), owner, stack) }
+}
+
+unsafe extern "C" fn selected_slot(w: *mut abi::WorldCtx, player: u64) -> u32 {
+    unsafe { dim(w).entities.get(player).map_or(0, |e| e.selected) }
+}
+
+unsafe extern "C" fn spawn_item(w: *mut abi::WorldCtx, pos: *const [f64; 3], stack: ItemStack) {
+    unsafe {
+        dim(w).spawn_item(content(), DVec3::from_array(*pos), stack);
+    }
+}
+
+unsafe extern "C" fn block_entity(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u64 {
+    unsafe { dim(w).entities.anchors.get(&ip(pos)).copied().unwrap_or(0) }
+}
+
+unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, owner: u64) {
+    unsafe { dim(w).events.push(crate::server::DimEvent::OpenMenu { player, menu, owner }) }
+}
+
+// ---------------------------------------------------------------- menus
+
+unsafe fn menu<'a>(m: *mut abi::MenuCtx) -> &'a mut MenuCall {
+    unsafe { &mut *(m as *mut MenuCall) }
+}
+
+unsafe extern "C" fn menu_slots(m: *mut abi::MenuCtx, owner: u64, start: u32, count: u32, flags: u32) {
+    unsafe { menu(m).add_slots(owner, start, count, flags) }
+}
+
+unsafe extern "C" fn menu_get(m: *mut abi::MenuCtx, slot: u32) -> ItemStack {
+    unsafe { menu(m).get(slot) }
+}
+
+unsafe extern "C" fn menu_set(m: *mut abi::MenuCtx, slot: u32, stack: ItemStack) {
+    unsafe { menu(m).set(slot, stack) }
+}
+
+unsafe extern "C" fn menu_set_data(m: *mut abi::MenuCtx, index: u32, value: i32) {
+    unsafe { menu(m).set_data(index, value) }
 }
 
 // ---------------------------------------------------------------- lookups
+
+fn tags(item: u32, tag: &str) -> bool {
+    content().item_has_tag(item, tag)
+}
+
+unsafe extern "C" fn recipe_match(kind: Str, grid: *const ItemStack, width: u32, height: u32) -> ItemStack {
+    let kind = unsafe { kind.as_str() };
+    let cells: Vec<u32> = (0..(width * height) as usize).map(|i| unsafe { (*grid.add(i)).item }).collect();
+    content()
+        .game
+        .match_grid(kind, &cells, width, height, &tags)
+        .map_or(ItemStack::EMPTY, |r| ItemStack::new(r.output, r.count))
+}
+
+unsafe extern "C" fn recipe_process(kind: Str, input: u32, time_out: *mut u32) -> ItemStack {
+    let kind = unsafe { kind.as_str() };
+    match content().game.process(kind, input, &tags) {
+        Some(r) => {
+            if !time_out.is_null() {
+                unsafe { *time_out = r.time }
+            }
+            ItemStack::new(r.output, r.count)
+        }
+        None => ItemStack::EMPTY,
+    }
+}
+
+unsafe extern "C" fn item_prop(item: u32, key: Str, len: *mut usize) -> *const u8 {
+    let key = unsafe { key.as_str() };
+    match content().item_prop(item, key) {
+        Some(b) => {
+            if !len.is_null() {
+                unsafe { *len = b.len() }
+            }
+            b.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+unsafe extern "C" fn item_info(item: u32, max_stack: *mut u32, durability: *mut u32) -> u32 {
+    let Some(d) = content().items.get(item as usize) else { return 0 };
+    unsafe {
+        if !max_stack.is_null() {
+            *max_stack = d.max_stack;
+        }
+        if !durability.is_null() {
+            *durability = d.durability;
+        }
+    }
+    d.block.unwrap_or(0)
+}
+
+unsafe extern "C" fn item_has_tag(item: u32, tag: Str) -> u32 {
+    content().item_has_tag(item, unsafe { tag.as_str() }) as u32
+}
 
 unsafe extern "C" fn find_block(name: Str) -> u32 {
     let name = unsafe { name.as_str() };
@@ -199,4 +442,61 @@ unsafe extern "C" fn reg_dimension(r: *mut abi::Registrar, d: *const abi::Dimens
         let owner = r.owner;
         r.dims.push(content::copy_dimension(owner, &*d));
     }
+}
+
+unsafe extern "C" fn reg_entity(r: *mut abi::Registrar, d: *const abi::EntityDesc) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.entities.push(registry::copy_entity(owner, &*d));
+    }
+}
+
+unsafe extern "C" fn reg_component(r: *mut abi::Registrar, d: *const abi::ComponentDesc) {
+    unsafe {
+        let d = &*d;
+        let mut default = d.default.as_slice().to_vec();
+        default.resize(d.size as usize, 0);
+        reg(r).game.components.push(registry::RawComponent {
+            cell: d.cell as usize,
+            def: registry::ComponentDef { name: d.name.as_str().to_string(), size: d.size, flags: d.flags, default },
+            attach_to: d.attach_to.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
+        });
+    }
+}
+
+unsafe extern "C" fn reg_entity_hook(r: *mut abi::Registrar, kind: Str, hook: u32, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.hooks.push((owner, kind.as_str().to_string(), hook, cb));
+    }
+}
+
+unsafe extern "C" fn reg_recipe(r: *mut abi::Registrar, d: *const abi::RecipeDesc) {
+    unsafe { reg(r).game.recipes.push(registry::copy_recipe(&*d)) }
+}
+
+unsafe extern "C" fn reg_menu(r: *mut abi::Registrar, d: *const abi::MenuDesc) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.menus.push(registry::copy_menu(owner, &*d));
+    }
+}
+
+unsafe extern "C" fn reg_hud(r: *mut abi::Registrar, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.huds.push((owner, cb));
+    }
+}
+
+unsafe extern "C" fn set_player_menu(r: *mut abi::Registrar, menu: Str) {
+    unsafe { reg(r).game.player_menu = Some(menu.as_str().to_string()) }
+}
+
+unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str, slots: u32) {
+    unsafe { reg(r).game.block_entities.push((block.as_str().to_string(), entity.as_str().to_string(), slots)) }
 }

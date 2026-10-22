@@ -20,7 +20,10 @@ pub struct Theme {
 impl Theme {
     pub fn load(assets: &Assets) -> Theme {
         let mut values = FxHashMap::default();
-        for (_, path) in assets.list("ui", "theme") {
+        let mut files = assets.list("ui", "theme");
+        // Engine defaults first so mods override them.
+        files.sort_by_key(|(name, _)| !name.starts_with("core:"));
+        for (_, path) in files {
             let Ok(src) = std::fs::read_to_string(&path) else { continue };
             for line in src.lines() {
                 if line.trim_start().starts_with('#') {

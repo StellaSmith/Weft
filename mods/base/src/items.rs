@@ -71,7 +71,7 @@ pub fn register(r: &mut Registry) {
         ("cooked_beef", 8, 12.8),
         ("rotten_flesh", 4, 0.8),
     ] {
-        r.item(name, leak()).prop(FOOD, Food { hunger, saturation });
+        r.item(name, leak()).prop(FOOD, Food { hunger, saturation }).on_use(crate::player::eat);
     }
     for name in ["leather", "bone", "string", "sugar"] {
         r.item(name, leak());
@@ -95,7 +95,8 @@ pub fn register(r: &mut Registry) {
     for (mat, mult, durability) in [("leather", 0u32, 5u32), ("iron", 1, 15), ("gold", 1, 7), ("diamond", 2, 33)] {
         for (slot, piece, points, dur) in [(0, "helmet", 1, 11), (1, "chestplate", 3, 16), (2, "leggings", 2, 15), (3, "boots", 1, 13)] {
             let points = points + mult * (if slot == 1 { 3 } else { 1 });
-            r.item(&format!("{mat}_{piece}"), leak()).durability(durability * dur).prop(ARMOR, Armor { slot, points });
+            let tag = ["armor/head", "armor/chest", "armor/legs", "armor/feet"][slot as usize];
+            r.item(&format!("{mat}_{piece}"), leak()).durability(durability * dur).prop(ARMOR, Armor { slot, points }).tag(tag);
         }
     }
 }

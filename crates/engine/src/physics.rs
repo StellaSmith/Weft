@@ -152,7 +152,7 @@ pub struct Hit {
 }
 
 /// Amanatides-Woo traversal. Non-cube blocks are hit when the ray crosses their collision box
-/// (or the whole block if they have none).
+/// (or selection box); blocks the ray starts inside are skipped.
 pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3, dir: DVec3, max: f64) -> Option<Hit> {
     let dir = dir.normalize();
     let mut p = origin.floor().as_ivec3();
@@ -163,21 +163,21 @@ pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3
         let o = origin[i] - p[i] as f64;
         t_max[i] = if dir[i] > 0.0 { (1.0 - o) * inv[i] } else { o * inv[i] };
     }
-    let mut face = 0u8;
     let mut t = 0.0;
     while t <= max {
         if let Some(state) = block(p) {
             let s = &c.states[state as usize];
             if s.flags & bf::NOT_TARGETABLE == 0 {
-                let shape: Vec<[f32; 6]> = if s.model == Model::Cube || (s.collision.is_empty() && s.boxes.is_empty()) {
-                    vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
-                } else if !s.collision.is_empty() {
-                    s.collision.clone()
-                } else {
-                    s.boxes.iter().map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]]).collect()
+                let shape: Vec<[f32; 6]> = match s.model {
+                    Model::Cube => vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]],
+                    Model::Cross => vec![[0.125, 0.0, 0.125, 0.875, 0.8, 0.875]],
+                    _ if !s.collision.is_empty() => s.collision.clone(),
+                    _ if !s.boxes.is_empty() => s.boxes.iter().map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]]).collect(),
+                    _ => vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]],
                 };
                 let local = origin - p.as_dvec3();
-                if shape.iter().any(|b| ray_box(local, dir, b, max)) {
+                let best = shape.iter().filter_map(|b| ray_box(local, dir, b, max)).min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((_, face)) = best {
                     return Some(Hit { block: p, face, state });
                 }
             }
@@ -192,26 +192,32 @@ pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3
         t = t_max[axis];
         t_max[axis] += inv[axis];
         p[axis] += step[axis];
-        face = (axis * 2) as u8 + if step[axis] > 0 { 0 } else { 1 };
     }
     None
 }
 
-fn ray_box(o: DVec3, d: DVec3, b: &[f32; 6], max: f64) -> bool {
-    let mut t0 = 0.0f64;
+/// Entry distance and entered face, `None` if missed or if the ray starts inside.
+fn ray_box(o: DVec3, d: DVec3, b: &[f32; 6], max: f64) -> Option<(f64, u8)> {
+    let mut t0 = f64::NEG_INFINITY;
     let mut t1 = max;
+    let mut face = 0u8;
     for i in 0..3 {
         let (lo, hi) = (b[i] as f64, b[i + 3] as f64);
         if d[i].abs() < 1e-12 {
             if o[i] < lo || o[i] > hi {
-                return false;
+                return None;
             }
             continue;
         }
         let a = (lo - o[i]) / d[i];
-        let bb = (hi - o[i]) / d[i];
-        t0 = t0.max(a.min(bb));
-        t1 = t1.min(a.max(bb));
+        let c = (hi - o[i]) / d[i];
+        let (near, far) = if a < c { (a, c) } else { (c, a) };
+        if near > t0 {
+            t0 = near;
+            // Entering through the low side means the -axis face.
+            face = (i * 2) as u8 + if d[i] > 0.0 { 0 } else { 1 };
+        }
+        t1 = t1.min(far);
     }
-    t0 <= t1
+    (t0 <= t1 && t0 >= 0.0).then_some((t0, face))
 }

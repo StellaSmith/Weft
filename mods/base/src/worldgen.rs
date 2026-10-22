@@ -434,6 +434,17 @@ pub fn overworld(g: &mut Gen) {
 }
 
 pub fn spawn(seed: u64) -> [i32; 3] {
+    // Open land first: spawning inside a dense forest is dark and confusing.
+    for r in 0..200 {
+        for k in 0..8 {
+            let a = k as f64 / 8.0 * std::f64::consts::TAU;
+            let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
+            let c = column(seed, x, z);
+            if c.height > SEA + 1 && c.biome == B::Plains && tree_free(seed, x, z) {
+                return [x, c.height, z];
+            }
+        }
+    }
     for r in 0..200 {
         for k in 0..8 {
             let a = k as f64 / 8.0 * std::f64::consts::TAU;

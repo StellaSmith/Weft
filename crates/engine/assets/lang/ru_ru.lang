@@ -82,3 +82,7 @@ multiplayer.copy = Копировать
 multiplayer.copied = Скопировано!
 multiplayer.connecting = Подключение...
 multiplayer.disconnected = Отключено: {0}
+death.title = Вы погибли!
+death.respawn = Возродиться
+hud.debug.entities = Сущностей: {0}
+hud.debug.mods = Время модов за тик: {0}

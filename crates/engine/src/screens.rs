@@ -17,6 +17,7 @@ pub struct BuildCx<'a> {
     pub languages: &'a [(String, String)],
     pub in_game: bool,
     pub mods: usize,
+    pub client: Option<&'a crate::client::Client>,
 }
 
 impl BuildCx<'_> {

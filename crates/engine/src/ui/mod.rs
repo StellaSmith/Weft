@@ -191,6 +191,8 @@ pub enum Kind {
     Image { texture: String, color: u32 },
     Item { bind: ItemBind, last: (u32, u32) },
     Progress { class: String, bind: FloatBind, value: f32 },
+    /// `count` icons showing `value` in half steps (hearts): theme `class.full/half/empty`.
+    Icons { class: String, count: u32, bind: FloatBind, value: f32 },
     Input { value: String, max: usize, on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>> },
     Slider { value: f32, bind: FloatBind, on_change: Rc<dyn Fn(&mut Ctx, f32)> },
     /// Engine-drawn content (slots, 3D previews) identified by a tag.
@@ -260,6 +262,11 @@ impl Ui {
         let id = self.add(kind, style);
         self.stack.push(id);
         id
+    }
+
+    /// Makes an already added node the parent for following adds (until `close`).
+    pub fn open_existing(&mut self, id: NodeId) {
+        self.stack.push(id);
     }
 
     pub fn close(&mut self) {
@@ -372,6 +379,7 @@ impl Ui {
         } else {
             match &self.nodes[id].kind {
                 Kind::Item { .. } => [16.0, 16.0],
+                Kind::Icons { count, .. } => [*count as f32 * 8.0 + 1.0, 9.0],
                 Kind::Slider { .. } => [100.0, 12.0],
                 Kind::Input { .. } => [120.0, 18.0],
                 _ => {

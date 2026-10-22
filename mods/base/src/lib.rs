@@ -3,8 +3,12 @@
 
 mod blocks;
 mod items;
-mod worldgen;
+mod machines;
+mod mobs;
 mod noise;
+mod player;
+mod recipes;
+mod worldgen;
 
 use voxide_sdk::*;
 
@@ -16,6 +20,10 @@ declare_mod!(id: "base", name: "Voxide", version: "0.1.0", deps: [], init: init)
 fn init(r: &mut Registry) {
     blocks::register(r);
     items::register(r);
+    player::register(r);
+    machines::register(r);
+    recipes::register(r);
+    mobs::register(r);
     worldgen::register_biomes(r);
     r.dimension("overworld", &OVERWORLD)
         .generator(worldgen::overworld)

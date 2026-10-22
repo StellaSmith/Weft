@@ -259,6 +259,11 @@ macro_rules! state_setters {
             });
             self
         }
+        /// Hide faces between neighbours of the same block (glass panes of a window).
+        pub fn cull_same(mut self) -> Self {
+            self.each(|s, _| s.flags |= bf::CULL_SAME);
+            self
+        }
         /// Like cutout but keeps light partially (leaves).
         pub fn opacity(mut self, o: u8) -> Self {
             self.each(|s, _| s.opacity = o);
@@ -267,6 +272,7 @@ macro_rules! state_setters {
         pub fn translucent(mut self) -> Self {
             self.each(|s, _| {
                 s.flags &= !bf::OPAQUE;
+                s.flags |= bf::CULL_SAME;
                 s.layer = Layer::Translucent;
                 s.opacity = 0;
             });

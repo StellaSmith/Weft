@@ -81,7 +81,7 @@ pub fn build(c: &Content, n: &Neighborhood) -> Mesh {
                             if ninfo.flags & bf::OPAQUE != 0 {
                                 continue;
                             }
-                            if info.layer != Layer::Opaque && ninfo.block == info.block {
+                            if ninfo.block == info.block && info.layer != Layer::Opaque && info.flags & bf::CULL_SAME != 0 {
                                 continue;
                             }
                             let (ao, light) = corner_data(n, &opaque, x, y, z, dir);

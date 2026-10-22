@@ -133,6 +133,9 @@ pub mod block_flags {
     pub const NOT_TARGETABLE: u32 = 32;
     /// Receives random ticks.
     pub const RANDOM_TICKS: u32 = 64;
+    /// Hide faces between two blocks of this kind (glass). Without it see-through blocks keep
+    /// their inner faces, which is what makes leaves look dense.
+    pub const CULL_SAME: u32 = 128;
 }
 
 #[repr(u32)]

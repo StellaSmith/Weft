@@ -289,7 +289,7 @@ pub fn register(r: &mut Registry) {
         .tool("shovel", 0)
         .drops("dirt", 1);
 
-    r.block("glass", &GLASS).cutout().hardness(0.3).drops_nothing();
+    r.block("glass", &GLASS).cutout().cull_same().hardness(0.3).drops_nothing();
     for (name, col) in [("red", [0u8, 12, 12]), ("green", [12, 0, 12]), ("blue", [12, 12, 0])] {
         r.block(&format!("{name}_stained_glass"), leak()).texture(&format!("glass_{name}")).translucent().filter(col[0], col[1], col[2]).hardness(0.3);
     }

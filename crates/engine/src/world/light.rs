@@ -3,6 +3,7 @@
 //! differently (stained glass). Sky light keeps full strength going straight down through fully
 //! transparent blocks.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 
 use glam::IVec3;
@@ -39,6 +40,9 @@ pub struct Lighter<'a, M: CubeMap> {
     pub changed: FxHashSet<IVec3>,
     add: VecDeque<(IVec3, u8)>,
     remove: VecDeque<(IVec3, u8)>,
+    /// Last cube looked up. A flood fill stays inside one cube most of the time, so this saves
+    /// almost every hash lookup. Null pointer = cached miss.
+    cache: Cell<(IVec3, *const Cube)>,
 }
 
 #[inline]
@@ -48,29 +52,51 @@ fn split(p: IVec3) -> (IVec3, usize) {
 
 impl<'a, M: CubeMap> Lighter<'a, M> {
     pub fn new(map: &'a mut M, c: &'a Content, sky: bool) -> Self {
-        Lighter { map, c, sky, changed: FxHashSet::default(), add: VecDeque::new(), remove: VecDeque::new() }
+        Lighter {
+            map,
+            c,
+            sky,
+            changed: FxHashSet::default(),
+            add: VecDeque::new(),
+            remove: VecDeque::new(),
+            cache: Cell::new((IVec3::MAX, std::ptr::null())),
+        }
+    }
+
+    #[inline]
+    fn lookup(&self, cp: IVec3) -> Option<&Cube> {
+        let (k, ptr) = self.cache.get();
+        if k == cp {
+            return unsafe { ptr.as_ref() };
+        }
+        let r = self.map.cube(cp);
+        self.cache.set((cp, r.map_or(std::ptr::null(), |c| c as *const Cube)));
+        r
     }
 
     #[inline]
     fn read(&self, p: IVec3) -> Option<(u32, u32)> {
         let (c, i) = split(p);
-        self.map.cube(c).map(|cube| (cube.get(i), cube.light(i)))
+        self.lookup(c).map(|cube| (cube.get(i), cube.light(i)))
     }
 
     #[inline]
     fn get(&self, p: IVec3, c: usize) -> Option<u8> {
         let (cp, i) = split(p);
-        self.map.cube(cp).map(|cube| ch(cube.light(i), c))
+        self.lookup(cp).map(|cube| ch(cube.light(i), c))
     }
 
     #[inline]
     fn put(&mut self, p: IVec3, c: usize, v: u8) {
         let (cp, i) = split(p);
-        let Some(cube) = self.map.cube(cp) else { return };
+        let Some(cube) = self.lookup(cp) else { return };
         let old = cube.light(i);
         let new = with(old, c, v);
         if new != old {
-            self.map.cube_mut(cp).unwrap().set_light(i, new);
+            // Writing may give the map a fresh copy of a shared cube; keep the cache on it.
+            let cube = self.map.cube_mut(cp).unwrap();
+            cube.set_light(i, new);
+            self.cache.set((cp, cube as *const Cube));
             self.changed.insert(cp);
         }
     }
@@ -146,6 +172,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         let all_opaque = cube.palette().iter().all(|&s| states[s as usize].opacity >= 15);
         let emits = cube.palette().iter().any(|&s| states[s as usize].light != [0; 3]);
         self.map.cube_mut(cp).unwrap().fill_light(0);
+        self.cache.set((IVec3::MAX, std::ptr::null()));
         self.changed.insert(cp);
 
         if self.sky && !all_opaque {
@@ -159,6 +186,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                 if all_clear && src.iter().all(|&v| v == SKY_FULL) {
                     // Open air: the whole cube is full sky, only the borders can spread further.
                     self.map.cube_mut(cp).unwrap().fill_light(SKY_FULL as u32);
+                    self.cache.set((IVec3::MAX, std::ptr::null()));
                     for a in 0..16 {
                         for b in 0..16 {
                             for p in [

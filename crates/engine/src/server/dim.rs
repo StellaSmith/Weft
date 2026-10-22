@@ -42,6 +42,9 @@ pub struct Dim {
     pub events: Vec<DimEvent>,
     next_id: Arc<AtomicU64>,
     pub grid: super::energy::Grid,
+    /// Cubes whose sky light is final: open sky above, or the cube above is settled. Only these
+    /// are sent, so clients never see light being filled in afterwards.
+    pub settled: FxHashSet<IVec3>,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -113,6 +116,7 @@ impl Dim {
             events: Vec::new(),
             next_id,
             grid: Default::default(),
+            settled: FxHashSet::default(),
         }
     }
 
@@ -144,6 +148,12 @@ impl Dim {
         changed.into_iter().filter(|&p| p != pos).for_each(|p| {
             self.light_dirty.insert(p);
         });
+        if open_above || !def.sky_light || self.settled.contains(&(pos + IVec3::Y)) {
+            let mut p = pos;
+            while self.cubes.contains_key(&p) && self.settled.insert(p) {
+                p -= IVec3::Y;
+            }
+        }
     }
 
     /// Drops cubes `keep` rejects; returns the ones that must be saved (modified or holding
@@ -161,6 +171,7 @@ impl Dim {
                 .collect();
             let cube = self.cubes.remove(&pos).unwrap();
             self.grid.cube_unloaded(pos);
+            self.settled.remove(&pos);
             if self.modified.remove(&pos) || !inside.is_empty() {
                 out.push((pos, cube, inside));
             }

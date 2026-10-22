@@ -82,6 +82,8 @@ pub struct Server {
     gen_tx: Sender<Generated>,
     gen_rx: Receiver<Generated>,
     incoming: Receiver<ServerConn>,
+    /// Generated cubes waiting for insertion (lighting is budgeted per tick).
+    backlog: std::collections::VecDeque<Generated>,
     storage: Option<Arc<Mutex<Storage>>>,
     shared: Arc<Shared>,
     next_id: Arc<AtomicU64>,
@@ -187,6 +189,7 @@ impl Server {
             gen_tx,
             gen_rx,
             incoming,
+            backlog: Default::default(),
             storage: storage.map(|s| Arc::new(Mutex::new(s))),
             shared,
             next_id,
@@ -337,9 +340,15 @@ impl Server {
 
     fn receive_generated(&mut self, c: &'static Content) {
         let mut batch: Vec<Generated> = self.gen_rx.try_iter().collect();
-        // Insertion order decides nothing visible, but sorting keeps runs reproducible.
-        batch.sort_by_key(|g| (g.dim, g.pos.x, g.pos.y, g.pos.z));
-        for g in batch {
+        // Top-down so sky light is right the first time; sorted to keep runs reproducible.
+        batch.sort_by_key(|g| (g.dim, -g.pos.y, g.pos.x, g.pos.z));
+        self.backlog.extend(batch);
+        let start = Instant::now();
+        while let Some(g) = self.backlog.pop_front() {
+            if start.elapsed() > Duration::from_millis(15) {
+                self.backlog.push_front(g);
+                break;
+            }
             let d = &mut self.dims[g.dim as usize];
             d.insert(c, g.pos, g.cube);
             for (e, inv, comps) in persist::read(c, &g.entities) {
@@ -794,15 +803,15 @@ impl Server {
             let def = &c.dims[p.dim as usize];
             let (lo, hi) = loaded_y_range(def, center.y, h);
             for y in lo..=hi {
-                let dy = (y - center.y).min(h);
                 for dz in -r..=r {
                     for dx in -r..=r {
                         if dx * dx + dz * dz > r * r {
                             continue;
                         }
                         let pos = IVec3::new(center.x + dx, y, center.z + dz);
-                        if !dim.has(pos) && !dim.generating.contains(&pos) {
-                            wanted.push((dx * dx + dz * dz + dy * dy * 4, p.dim, pos));
+                        if !dim.has(pos) && !dim.generating.contains(&pos) && !self.backlog.iter().any(|g| g.pos == pos && g.dim == p.dim) {
+                            // Nearest columns first, each column from the top down.
+                            wanted.push(((dx * dx + dz * dz) * 64 - y, p.dim, pos));
                         }
                     }
                 }
@@ -949,7 +958,7 @@ impl Server {
                 for dz in -r..=r {
                     for dx in -r..=r {
                         let pos = center + IVec3::new(dx, dy, dz);
-                        if !in_range(pos) || p.sent.contains(&pos) || !dim.has(pos) {
+                        if !in_range(pos) || p.sent.contains(&pos) || !dim.has(pos) || !dim.settled.contains(&pos) {
                             continue;
                         }
                         let ready = crate::world::DIRS.iter().all(|d| {

@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "backends/*", "mods/*"]
+default-members = ["crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+rust-version = "1.90"
+
+[workspace.dependencies]
+voxide_abi = { path = "crates/abi" }
+voxide_sdk = { path = "crates/sdk" }
+voxide_render = { path = "crates/render" }
+voxide_engine = { path = "crates/engine" }
+voxide_vulkan = { path = "backends/vulkan" }
+
+ash = "0.38"
+ash-window = "0.13"
+gpu-allocator = { version = "0.28", default-features = false, features = ["vulkan", "std"] }
+winit = "0.30"
+raw-window-handle = "0.6"
+naga = { version = "30", features = ["wgsl-in", "spv-out"] }
+glam = { version = "0.34", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+log = { version = "0.4", features = ["std"] }
+rayon = "1"
+parking_lot = "0.13"
+crossbeam-channel = "0.5"
+libloading = "0.9"
+lz4_flex = "0.14"
+png = "0.18"
+rustc-hash = "2"
+taffy = "0.15"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = "line-tables-only"

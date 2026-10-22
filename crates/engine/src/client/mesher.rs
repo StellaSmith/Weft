@@ -1,0 +1,300 @@
+//! Turns a cube plus a one-block border into GPU records.
+//!
+//! Full block faces: 4 words (pos/dir/ao, texture/biome/tint, light for 4 corners).
+//! Everything else (plants, boxes, liquids): 8-word quads with explicit corners.
+
+use voxide_abi::{Layer, Model, block_flags as bf};
+
+use crate::content::Content;
+
+pub const PAD: usize = 18;
+pub const PAD_VOLUME: usize = PAD * PAD * PAD;
+
+#[inline]
+pub const fn pidx(x: i32, y: i32, z: i32) -> usize {
+    (((y + 1) as usize * PAD) + (z + 1) as usize) * PAD + (x + 1) as usize
+}
+
+/// Input of one meshing job, copied out of the client world so it can run on any thread.
+pub struct Neighborhood {
+    pub states: Box<[u32; PAD_VOLUME]>,
+    pub light: Box<[u32; PAD_VOLUME]>,
+    /// Biome id per column of the centre cube.
+    pub biomes: [u8; 256],
+}
+
+#[derive(Default)]
+pub struct Mesh {
+    /// Per layer (opaque, cutout, translucent).
+    pub faces: [Vec<[u32; 4]>; 3],
+    pub quads: [Vec<[u32; 8]>; 3],
+}
+
+impl Mesh {
+    pub fn is_empty(&self) -> bool {
+        self.faces.iter().all(Vec::is_empty) && self.quads.iter().all(Vec::is_empty)
+    }
+}
+
+/// Corners in counter-clockwise order seen from outside: bottom-left, bottom-right, top-right,
+/// top-left in texture space.
+const CORNERS: [[[i32; 3]; 4]; 6] = [
+    [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]],
+    [[1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1]],
+    [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+    [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]],
+    [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]],
+    [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+];
+
+const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
+
+#[inline]
+fn light16(l: u32) -> u32 {
+    let c = |s: u32| ((l >> s) & 0xFF).min(15);
+    c(0) | c(8) << 4 | c(16) << 8 | c(24) << 12
+}
+
+pub fn build(c: &Content, n: &Neighborhood) -> Mesh {
+    let mut mesh = Mesh::default();
+    let states = &n.states;
+    let opaque = |i: usize| c.states[states[i] as usize].flags & bf::OPAQUE != 0;
+
+    for y in 0..16i32 {
+        for z in 0..16i32 {
+            for x in 0..16i32 {
+                let i = pidx(x, y, z);
+                let s = states[i];
+                if s == 0 {
+                    continue;
+                }
+                let info = &c.states[s as usize];
+                let biome = n.biomes[(z * 16 + x) as usize] as u32;
+                match info.model {
+                    Model::None => {}
+                    Model::Cube => {
+                        for dir in 0..6 {
+                            let [dx, dy, dz] = NORMALS[dir];
+                            let ni = pidx(x + dx, y + dy, z + dz);
+                            let ns = states[ni];
+                            let ninfo = &c.states[ns as usize];
+                            if ninfo.flags & bf::OPAQUE != 0 {
+                                continue;
+                            }
+                            if info.layer != Layer::Opaque && ninfo.block == info.block {
+                                continue;
+                            }
+                            let (ao, light) = corner_data(n, &opaque, x, y, z, dir);
+                            let w0 = x as u32 | (y as u32) << 4 | (z as u32) << 8 | (dir as u32) << 12 | ao << 16;
+                            let tint = if info.tint_faces & (1 << dir) != 0 { info.tint as u32 } else { 0 };
+                            let w1 = info.textures[dir] & 0xFFFF | biome << 16 | tint << 24;
+                            mesh.faces[info.layer as usize].push([w0, w1, light[0] | light[1] << 16, light[2] | light[3] << 16]);
+                        }
+                    }
+                    Model::Cross => {
+                        let l = light16(n.light[i]);
+                        let t = info.textures[0];
+                        let b = [x as f32, y as f32, z as f32];
+                        let e = 0.15;
+                        let (a0, a1) = ([b[0] + e, b[1], b[2] + e], [b[0] + 1.0 - e, b[1] + 1.0, b[2] + 1.0 - e]);
+                        let (c0, c1) = ([b[0] + e, b[1], b[2] + 1.0 - e], [b[0] + 1.0 - e, b[1] + 1.0, b[2] + e]);
+                        for (p0, p1) in [(a0, a1), (c0, c1)] {
+                            let corners = [
+                                [p0[0], p0[1], p0[2]],
+                                [p1[0], p0[1], p1[2]],
+                                [p1[0], p1[1], p1[2]],
+                                [p0[0], p1[1], p0[2]],
+                            ];
+                            let back = [corners[1], corners[0], corners[3], corners[2]];
+                            for q in [corners, back] {
+                                mesh.quads[Layer::Cutout as usize].push(quad(q, [0, 0, 16, 16], t, biome, info.tint, [l; 4]));
+                            }
+                        }
+                    }
+                    Model::Boxes => {
+                        let l = light16(n.light[i]);
+                        for bx in &info.boxes {
+                            for dir in 0..6 {
+                                let [dx, dy, dz] = NORMALS[dir];
+                                let axis = dir / 2;
+                                let at_edge = if dir % 2 == 0 { bx.min[axis] <= 0.0 } else { bx.max[axis] >= 1.0 };
+                                let (ns, nl) = (states[pidx(x + dx, y + dy, z + dz)], n.light[pidx(x + dx, y + dy, z + dz)]);
+                                if at_edge && c.states[ns as usize].flags & bf::OPAQUE != 0 {
+                                    continue;
+                                }
+                                let fl = if at_edge { light16(nl) } else { l };
+                                let corners = CORNERS[dir].map(|k| {
+                                    [
+                                        x as f32 + if k[0] == 1 { bx.max[0] } else { bx.min[0] },
+                                        y as f32 + if k[1] == 1 { bx.max[1] } else { bx.min[1] },
+                                        z as f32 + if k[2] == 1 { bx.max[2] } else { bx.min[2] },
+                                    ]
+                                });
+                                let uv = box_uv(dir, bx.min, bx.max);
+                                mesh.quads[info.layer as usize].push(quad(corners, uv, bx.textures[dir], biome, info.tint, [fl; 4]));
+                            }
+                        }
+                    }
+                    Model::Liquid => liquid(c, n, &mut mesh, x, y, z, biome),
+                }
+            }
+        }
+    }
+    mesh
+}
+
+fn box_uv(dir: usize, min: [f32; 3], max: [f32; 3]) -> [u32; 4] {
+    let p = |v: f32| (v * 16.0).round().clamp(0.0, 16.0) as u32;
+    // Texture u/v follow the same axes as the face corners.
+    match dir {
+        0 => [p(min[2]), 16 - p(max[1]), p(max[2]), 16 - p(min[1])],
+        1 => [16 - p(max[2]), 16 - p(max[1]), 16 - p(min[2]), 16 - p(min[1])],
+        2 => [p(min[0]), p(min[2]), p(max[0]), p(max[2])],
+        3 => [p(min[0]), p(min[2]), p(max[0]), p(max[2])],
+        4 => [16 - p(max[0]), 16 - p(max[1]), 16 - p(min[0]), 16 - p(min[1])],
+        _ => [p(min[0]), 16 - p(max[1]), p(max[0]), 16 - p(min[1])],
+    }
+}
+
+fn corner_data(n: &Neighborhood, opaque: &impl Fn(usize) -> bool, x: i32, y: i32, z: i32, dir: usize) -> (u32, [u32; 4]) {
+    let nrm = NORMALS[dir];
+    let axis = dir / 2;
+    let (ta, tb) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let base = [x + nrm[0], y + nrm[1], z + nrm[2]];
+    let mut ao_bits = 0u32;
+    let mut lights = [0u32; 4];
+    for (k, corner) in CORNERS[dir].iter().enumerate() {
+        let sa = corner[ta] * 2 - 1;
+        let sb = corner[tb] * 2 - 1;
+        let mut p1 = base;
+        p1[ta] += sa;
+        let mut p2 = base;
+        p2[tb] += sb;
+        let mut p3 = base;
+        p3[ta] += sa;
+        p3[tb] += sb;
+        let i0 = pidx(base[0], base[1], base[2]);
+        let i1 = pidx(p1[0], p1[1], p1[2]);
+        let i2 = pidx(p2[0], p2[1], p2[2]);
+        let i3 = pidx(p3[0], p3[1], p3[2]);
+        let (s1, s2, s3) = (opaque(i1), opaque(i2), opaque(i3));
+        let ao = if s1 && s2 { 0 } else { 3 - (s1 as u32 + s2 as u32 + s3 as u32) };
+        ao_bits |= ao << (k * 2);
+
+        let mut sum = [0u32; 4];
+        let mut count = 0;
+        for (idx, solid) in [(i0, false), (i1, s1), (i2, s2), (i3, s3 || (s1 && s2))] {
+            if solid {
+                continue;
+            }
+            let l = n.light[idx];
+            for (ch, s) in sum.iter_mut().enumerate() {
+                *s += (l >> (ch * 8)) & 0xFF;
+            }
+            count += 1;
+        }
+        let avg = |v: u32| ((v + count / 2) / count.max(1)).min(15);
+        lights[k] = avg(sum[0]) | avg(sum[1]) << 4 | avg(sum[2]) << 8 | avg(sum[3]) << 12;
+    }
+    (ao_bits, lights)
+}
+
+fn quad(corners: [[f32; 3]; 4], uv: [u32; 4], texture: u32, biome: u32, tint: u8, light: [u32; 4]) -> [u32; 8] {
+    let enc = |p: [f32; 3]| {
+        let e = |v: f32| ((v * 16.0).round() as i32 + 32).clamp(0, 1023) as u32;
+        e(p[0]) | e(p[1]) << 10 | e(p[2]) << 20
+    };
+    [
+        enc(corners[0]),
+        enc(corners[1]),
+        enc(corners[2]),
+        enc(corners[3]),
+        texture & 0xFFFF | biome << 16 | (tint as u32) << 24,
+        uv[0] | uv[1] << 5 | uv[2] << 10 | uv[3] << 15,
+        light[0] | light[1] << 16,
+        light[2] | light[3] << 16,
+    ]
+}
+
+fn liquid(c: &Content, n: &Neighborhood, mesh: &mut Mesh, x: i32, y: i32, z: i32, biome: u32) {
+    let i = pidx(x, y, z);
+    let s = n.states[i];
+    let info = &c.states[s as usize];
+    let block = info.block;
+    let same = |xx: i32, yy: i32, zz: i32| c.states[n.states[pidx(xx, yy, zz)] as usize].block == block;
+    let height = |xx: i32, zz: i32| -> Option<f32> {
+        if !same(xx, y, zz) {
+            return None;
+        }
+        if same(xx, y + 1, zz) {
+            return Some(1.0);
+        }
+        let lvl = c.states[n.states[pidx(xx, y, zz)] as usize].level.min(7) as f32;
+        Some((8.0 - lvl) / 9.0)
+    };
+    let corner_h = |cx: i32, cz: i32| -> f32 {
+        // Corner (cx, cz) in {0,1}: average over the up to four columns sharing it.
+        let mut sum = 0.0;
+        let mut cnt = 0.0;
+        for (ox, oz) in [(cx - 1, cz - 1), (cx, cz - 1), (cx - 1, cz), (cx, cz)] {
+            if let Some(h) = height(x + ox, z + oz) {
+                if h >= 1.0 {
+                    return 1.0;
+                }
+                sum += h;
+                cnt += 1.0;
+            }
+        }
+        sum / cnt
+    };
+    let h = [corner_h(0, 0), corner_h(1, 0), corner_h(1, 1), corner_h(0, 1)];
+    let hat = |cx: i32, cz: i32| match (cx, cz) {
+        (0, 0) => h[0],
+        (1, 0) => h[1],
+        (1, 1) => h[2],
+        _ => h[3],
+    };
+    let l = light16(n.light[i]);
+    let t = info.textures[3];
+    let ts = info.textures[0];
+    let (fx, fy, fz) = (x as f32, y as f32, z as f32);
+    let layer = info.layer as usize;
+    if !same(x, y + 1, z) {
+        let corners = [
+            [fx, fy + hat(0, 1), fz + 1.0],
+            [fx + 1.0, fy + hat(1, 1), fz + 1.0],
+            [fx + 1.0, fy + hat(1, 0), fz],
+            [fx, fy + hat(0, 0), fz],
+        ];
+        let lu = light16(n.light[pidx(x, y + 1, z)]).max(l);
+        mesh.quads[layer].push(quad(corners, [0, 0, 16, 16], t, biome, info.tint, [lu; 4]));
+        let back = [corners[1], corners[0], corners[3], corners[2]];
+        mesh.quads[layer].push(quad(back, [0, 0, 16, 16], t, biome, info.tint, [lu; 4]));
+    }
+    for dir in [0usize, 1, 4, 5] {
+        let [dx, _, dz] = NORMALS[dir];
+        if same(x + dx, y, z + dz) {
+            continue;
+        }
+        let ni = pidx(x + dx, y, z + dz);
+        if c.states[n.states[ni] as usize].flags & bf::OPAQUE != 0 {
+            continue;
+        }
+        let k = CORNERS[dir];
+        let corners = k.map(|p| {
+            let top = if p[1] == 1 { hat(p[0], p[2]) } else { 0.0 };
+            [fx + p[0] as f32, fy + top, fz + p[2] as f32]
+        });
+        let nl = light16(n.light[ni]);
+        mesh.quads[layer].push(quad(corners, [0, 0, 16, 16], ts, biome, info.tint, [nl; 4]));
+    }
+    let below = pidx(x, y - 1, z);
+    if !same(x, y - 1, z) && c.states[n.states[below] as usize].flags & bf::OPAQUE == 0 {
+        let corners = CORNERS[2].map(|p| [fx + p[0] as f32, fy, fz + p[2] as f32]);
+        mesh.quads[layer].push(quad(corners, [0, 0, 16, 16], t, biome, info.tint, [light16(n.light[below]); 4]));
+    }
+}

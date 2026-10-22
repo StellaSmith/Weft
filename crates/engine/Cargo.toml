@@ -1,0 +1,21 @@
+[package]
+name = "voxide_engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+voxide_abi.workspace = true
+voxide_render.workspace = true
+winit.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+rayon.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+libloading.workspace = true
+lz4_flex.workspace = true
+png.workspace = true
+rustc-hash.workspace = true
+taffy.workspace = true

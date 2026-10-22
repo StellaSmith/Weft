@@ -1,0 +1,8 @@
+[package]
+name = "voxide_sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+voxide_abi.workspace = true

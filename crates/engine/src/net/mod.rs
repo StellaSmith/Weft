@@ -9,6 +9,21 @@ use glam::{DVec3, IVec3};
 
 use crate::world::Cube;
 
+pub mod screens;
+
+/// Ticket others can use to join this host, once hosting started.
+pub fn current_ticket() -> Option<String> {
+    None
+}
+
+pub fn host(_server: &crate::server::ServerHandle, _settings: &crate::settings::Settings) {
+    log::warn!("hosting is not available yet");
+}
+
+pub fn join(_ticket: &str, _settings: &crate::settings::Settings) -> Result<ClientConn, String> {
+    Err("joining is not available yet".into())
+}
+
 #[derive(Clone)]
 pub enum ToClient {
     Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },

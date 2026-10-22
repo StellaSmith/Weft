@@ -18,4 +18,4 @@ libloading.workspace = true
 lz4_flex.workspace = true
 png.workspace = true
 rustc-hash.workspace = true
-taffy.workspace = true
+arboard.workspace = true

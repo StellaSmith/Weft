@@ -1,4 +1,5 @@
 pub mod mesher;
+pub mod textures;
 pub mod world;
 pub mod world_render;
 
@@ -8,11 +9,11 @@ use glam::{DVec3, IVec3, Vec2, Vec3};
 use voxide_abi::block_flags as bf;
 use voxide_render::{Backend, CommandList, FrameInfo};
 
-use crate::assets::Assets;
 use crate::content::{AIR, content};
 use crate::input::Input;
 use crate::net::{ClientConn, ToClient, ToServer};
 use crate::physics::{self, Hit};
+use textures::GameTextures;
 use world::ClientWorld;
 use world_render::{Camera, FrameParams, WorldRenderer};
 
@@ -46,19 +47,18 @@ pub struct Client {
     pub selected: usize,
     pub disconnected: Option<String>,
     break_cooldown: f32,
+    pub view_radius: i32,
+    pub fov: f32,
 }
 
 impl Client {
-    pub fn new(gpu: &mut dyn Backend, assets: &Assets, mut conn: ClientConn, name: &str) -> Result<Client, String> {
+    pub fn new(gpu: &mut dyn Backend, textures: &GameTextures, mut conn: ClientConn, name: &str, view_radius: i32) -> Result<Client, String> {
         let c = content();
-        let render = WorldRenderer::new(gpu, c, assets)?;
+        let render = WorldRenderer::new(gpu, c, textures)?;
         conn.send(ToServer::Join { name: name.to_string() });
-        let hotbar: Vec<u32> = c
-            .blocks
+        let hotbar: Vec<u32> = ["base:grass", "base:stone", "base:oak_planks", "base:glass", "base:torch", "base:red_lamp", "base:green_lamp", "base:blue_lamp", "base:glowstone"]
             .iter()
-            .skip(1)
-            .filter(|b| c.states[b.first_state as usize].hardness >= 0.0)
-            .map(|b| b.first_state)
+            .filter_map(|n| c.item_names.get(*n).copied())
             .collect();
         Ok(Client {
             conn,
@@ -83,6 +83,8 @@ impl Client {
             selected: 0,
             disconnected: None,
             break_cooldown: 0.0,
+            view_radius,
+            fov: 70.0,
         })
     }
 
@@ -182,7 +184,7 @@ impl Client {
             } else if input.held_button(1) {
                 if let Some(hit) = self.target {
                     let n = hit.block + crate::world::DIRS[hit.face as usize];
-                    let state = self.hotbar.get(self.selected).copied().unwrap_or(AIR);
+                    let state = self.hotbar.get(self.selected).and_then(|&i| c.items[i as usize].block).unwrap_or(AIR);
                     let player_box = physics::Aabb::around(self.player.pos, HALF_WIDTH, HEIGHT);
                     let block_box = physics::Aabb { min: n.as_dvec3(), max: n.as_dvec3() + DVec3::ONE };
                     let solid = c.states[state as usize].flags & bf::SOLID != 0;
@@ -216,7 +218,15 @@ impl Client {
     }
 
     pub fn camera(&self) -> Camera {
-        Camera { pos: self.player.pos + DVec3::Y * EYE, yaw: self.player.yaw, pitch: self.player.pitch, fov: 70.0 }
+        Camera { pos: self.player.pos + DVec3::Y * EYE, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov }
+    }
+
+    pub fn set_view_distance(&mut self, r: i32) {
+        self.view_radius = r;
+    }
+
+    pub fn destroy(&mut self, gpu: &mut dyn Backend) {
+        self.render.destroy(gpu);
     }
 
     /// Fraction of full daylight for the current dimension and time.
@@ -232,7 +242,8 @@ impl Client {
         ((phase * std::f64::consts::TAU).sin() * 2.0 + 0.6).clamp(0.12, 1.0) as f32
     }
 
-    pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, view_distance: f32) {
+    pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo) {
+        let view_distance = self.view_radius as f32 * 16.0;
         let def = &content().dims[self.world.dim as usize];
         let day = self.daylight();
         let rgb = |c: u32| Vec3::new(((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32) / 255.0;

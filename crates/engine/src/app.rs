@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glam::{DVec3, Vec2};
-use voxide_render::{Backend, BackendDesc, CommandList, Cmd, Format, Target, TextureDesc, TextureId};
+use voxide_render::{Backend, BackendDesc, Cmd, CommandList, Format, Target, TextureDesc, TextureId};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -12,10 +12,21 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::assets::Assets;
 use crate::client::Client;
+use crate::client::textures::GameTextures;
+use crate::content::content;
+use crate::hud::Hud;
 use crate::input::{Input, Key};
 use crate::modloader::{self, LoadedMod};
 use crate::net;
+use crate::saves::{self, WorldMeta};
+use crate::screens::{self, BuildCx, Screen};
 use crate::server::{self, ServerConfig, ServerHandle};
+use crate::settings::Settings;
+use crate::ui::lang::Lang;
+use crate::ui::render::UiRenderer;
+use crate::ui::text::{self, Arg};
+use crate::ui::theme::Theme;
+use crate::ui::{Kind, Ui};
 
 pub type BackendFactory = fn(&BackendDesc) -> Result<Box<dyn Backend>, voxide_render::Error>;
 
@@ -24,15 +35,53 @@ pub struct Options {
     pub run_dir: PathBuf,
     pub mod_dirs: Vec<PathBuf>,
     pub gpu_debug: bool,
-    pub vsync: bool,
     /// Automation: save a screenshot here once the world finished loading, then quit.
     pub shot: Option<PathBuf>,
     pub shot_delay: f32,
     /// Automation: fixed camera (x, y, z, yaw degrees, pitch degrees).
     pub camera: Option<[f64; 5]>,
-    pub seed: u64,
-    pub view_radius: i32,
+    /// Automation: skip the menu and play this world (created if missing).
+    pub world: Option<String>,
+    pub seed: Option<u64>,
+    /// Automation: open this built-in screen.
+    pub screen: Option<String>,
     pub size: (u32, u32),
+    pub dev: bool,
+}
+
+pub enum Request {
+    Open(Box<dyn Screen>),
+    Close,
+    Quit,
+    Rebuild,
+    ApplySettings,
+    SetLanguage(String),
+    WaitKey(String),
+    Rebind(String, Key),
+    ResetBinds,
+    SelectWorld(usize),
+    StartWorld(WorldMeta),
+    CreateWorldFromForm,
+    LeaveWorld,
+    Host,
+    Join(String),
+}
+
+/// What UI actions and bindings can see and change.
+pub struct Ctx<'a> {
+    pub settings: &'a mut Settings,
+    pub client: Option<&'a mut Client>,
+    pub input: &'a Input,
+    pub requests: &'a mut Vec<Request>,
+    pub fps: f32,
+    pub frame_ms: f32,
+    pub server_ms: f32,
+    pub debug: bool,
+}
+
+pub struct Game {
+    pub client: Client,
+    pub server: Option<ServerHandle>,
 }
 
 struct Running {
@@ -40,16 +89,29 @@ struct Running {
     window: Arc<Window>,
     depth: (TextureId, u32, u32),
     list: CommandList,
-    client: Client,
-    server: ServerHandle,
     input: Input,
+    settings: Settings,
+    lang: Lang,
+    languages: Vec<(String, String)>,
+    theme: Theme,
+    assets: Assets,
+    textures: GameTextures,
+    ui: UiRenderer,
+    screens: Vec<(Box<dyn Screen>, Ui)>,
+    hud: Hud,
+    game: Option<Game>,
     last: Instant,
     started: Instant,
-    frames: u64,
     shot_pending: bool,
+    fps: f32,
+    frame_ms: f32,
     fps_timer: Instant,
     fps_frames: u32,
-    _mods: Vec<LoadedMod>,
+    quads_dirty: bool,
+    waiting_key: Option<String>,
+    debug: bool,
+    quit: bool,
+    mods: Vec<LoadedMod>,
 }
 
 struct App {
@@ -70,8 +132,17 @@ pub fn run(factory: BackendFactory, opts: Options) -> Result<(), String> {
     }
 }
 
+fn engine_assets() -> PathBuf {
+    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+    if dev.exists() {
+        return dev;
+    }
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("assets").join("core"))).unwrap_or(dev)
+}
+
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
+        let settings = Settings::load(&self.opts.run_dir);
         let attrs = Window::default_attributes()
             .with_title("Voxide")
             .with_inner_size(winit::dpi::PhysicalSize::new(self.opts.size.0, self.opts.size.1));
@@ -81,36 +152,78 @@ impl App {
             window: &*window,
             width: size.width,
             height: size.height,
-            vsync: self.opts.vsync,
+            vsync: settings.vsync,
             debug: self.opts.gpu_debug,
         })
         .map_err(|e| e.to_string())?;
 
         let cache = self.opts.run_dir.join("cache");
         let mods = modloader::load(&self.opts.mod_dirs, &cache)?;
-        let assets = Assets::new(mods.iter().map(|m| (m.id.clone(), m.assets.clone())), Vec::new());
-
-        let server = server::spawn(ServerConfig { seed: self.opts.seed, view_radius: self.opts.view_radius, view_height: 6 });
-        let (client_conn, server_conn) = net::local_pair();
-        let _ = server.connect.send(server_conn);
-        let client = Client::new(&mut *gpu, &assets, client_conn, "Player")?;
+        let mut roots: Vec<(String, PathBuf)> = vec![("core".into(), engine_assets())];
+        roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
+        let packs = std::fs::read_dir(self.opts.run_dir.join("resourcepacks"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        let assets = Assets::new(roots, packs);
+        let lang = Lang::load(&assets, &settings.language, self.opts.dev);
+        let theme = Theme::load(&assets);
+        let textures = GameTextures::new(&mut *gpu, content(), &assets);
+        let ui = UiRenderer::new(&mut *gpu, &assets)?;
+        let mut input = Input::default();
+        settings.apply_binds(&mut input);
         let depth = make_depth(&mut *gpu, size.width, size.height);
-        Ok(Running {
+        let mut r = Running {
             gpu,
             window,
             depth,
             list: CommandList::default(),
-            client,
-            server,
-            input: Input::default(),
+            input,
+            settings,
+            lang,
+            languages: Vec::new(),
+            theme,
+            assets,
+            textures,
+            ui,
+            screens: Vec::new(),
+            hud: Hud::default(),
+            game: None,
             last: Instant::now(),
             started: Instant::now(),
-            frames: 0,
             shot_pending: false,
+            fps: 0.0,
+            frame_ms: 0.0,
             fps_timer: Instant::now(),
             fps_frames: 0,
-            _mods: mods,
-        })
+            quads_dirty: true,
+            waiting_key: None,
+            debug: false,
+            quit: false,
+            mods,
+        };
+        if let Some(world) = &self.opts.world {
+            let saves_dir = r.settings.saves_dir();
+            let meta = saves::list(&saves_dir)
+                .into_iter()
+                .find(|w| &w.name == world)
+                .unwrap_or_else(|| saves::create(&saves_dir, world, self.opts.seed.unwrap_or(1)));
+            r.start_world(meta);
+        } else {
+            r.open(Box::new(screens::Title));
+            match self.opts.screen.as_deref() {
+                Some("settings") => r.open(Box::new(screens::SettingsScreen)),
+                Some("language") => r.open(Box::new(screens::LanguageScreen)),
+                Some("controls") => r.open(Box::new(screens::Controls { waiting: None })),
+                Some("worlds") => r.open(Box::new(saves::WorldSelect::default())),
+                Some("create") => r.open(Box::new(saves::CreateWorld)),
+                _ => {}
+            }
+        }
+        Ok(r)
     }
 }
 
@@ -122,15 +235,381 @@ fn make_depth(gpu: &mut dyn Backend, w: u32, h: u32) -> (TextureId, u32, u32) {
     (t, w, h)
 }
 
-fn set_capture(window: &Window, input: &mut Input, on: bool) {
-    if on {
-        let _ = window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
-        window.set_cursor_visible(false);
-    } else {
-        let _ = window.set_cursor_grab(CursorGrabMode::None);
-        window.set_cursor_visible(true);
+impl Running {
+    fn gui_scale(&self) -> f32 {
+        let (w, h) = self.gpu.surface_size();
+        let max = (w / 320).min(h / 240).max(1);
+        let s = if self.settings.gui_scale == 0 { max } else { self.settings.gui_scale.min(max) };
+        s as f32
     }
-    input.captured = on;
+
+    fn build_cx(&self) -> BuildCx<'_> {
+        BuildCx {
+            lang: &self.lang,
+            input: &self.input,
+            settings: &self.settings,
+            languages: &self.languages,
+            in_game: self.game.is_some(),
+            mods: self.mods.len(),
+        }
+    }
+
+    fn open(&mut self, mut s: Box<dyn Screen>) {
+        if s.name() == "core:language" && self.languages.is_empty() {
+            self.languages = Lang::available(&self.assets);
+        }
+        let mut ui = Ui::new();
+        s.build(&mut ui, &self.build_cx());
+        self.screens.push((s, ui));
+        self.quads_dirty = true;
+        self.set_capture(false);
+    }
+
+    fn rebuild_all(&mut self) {
+        let mut screens = std::mem::take(&mut self.screens);
+        for (s, ui) in &mut screens {
+            let (hover, focus) = (ui.hovered, ui.focused);
+            let inputs: Vec<(String, String)> = ui
+                .nodes
+                .iter()
+                .filter_map(|n| match (&n.id, &n.kind) {
+                    (Some(id), Kind::Input { value, .. }) => Some((id.clone(), value.clone())),
+                    _ => None,
+                })
+                .collect();
+            ui.clear();
+            s.build(ui, &self.build_cx());
+            // Typed text survives rebuilds (language switch, resize).
+            for (id, v) in inputs {
+                if let Some(n) = ui.find(&id) {
+                    if let Kind::Input { value, .. } = &mut ui.nodes[n].kind {
+                        *value = v;
+                    }
+                }
+            }
+            ui.hovered = hover.filter(|&h| h < ui.nodes.len());
+            ui.focused = focus.filter(|&h| h < ui.nodes.len());
+        }
+        self.screens = screens;
+        self.hud.invalidate();
+        self.quads_dirty = true;
+    }
+
+    fn set_capture(&mut self, on: bool) {
+        let on = on && self.screens.is_empty() && self.game.is_some();
+        if on {
+            let _ = self.window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+            self.window.set_cursor_visible(false);
+        } else {
+            let _ = self.window.set_cursor_grab(CursorGrabMode::None);
+            self.window.set_cursor_visible(true);
+        }
+        self.input.captured = on;
+    }
+
+    fn start_world(&mut self, meta: WorldMeta) {
+        log::info!("opening world '{}' (seed {})", meta.name, meta.seed);
+        let storage = saves::Storage::open(meta.clone(), content());
+        let server = server::spawn(
+            ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance, view_height: 6 },
+            Some(storage),
+        );
+        let (client_conn, server_conn) = net::local_pair();
+        let _ = server.connect.send(server_conn);
+        match Client::new(&mut *self.gpu, &self.textures, client_conn, &self.settings.name, self.settings.view_distance) {
+            Ok(client) => {
+                self.game = Some(Game { client, server: Some(server) });
+                self.screens.clear();
+                self.hud.invalidate();
+                self.quads_dirty = true;
+                self.set_capture(true);
+            }
+            Err(e) => log::error!("{e}"),
+        }
+    }
+
+    fn leave_world(&mut self) {
+        self.leave_world_silent();
+        self.screens.clear();
+        self.open(Box::new(screens::Title));
+    }
+
+    fn leave_world_silent(&mut self) {
+        if let Some(mut g) = self.game.take() {
+            g.client.leave();
+            self.gpu.wait_idle();
+            g.client.destroy(&mut *self.gpu);
+            if let Some(mut s) = g.server.take() {
+                s.stop();
+            }
+        }
+        self.set_capture(false);
+    }
+
+    fn handle(&mut self, reqs: Vec<Request>) {
+        for r in reqs {
+            match r {
+                Request::Open(s) => self.open(s),
+                Request::Close => {
+                    self.screens.pop();
+                    self.quads_dirty = true;
+                    if self.screens.is_empty() {
+                        self.set_capture(true);
+                    } else {
+                        self.rebuild_all();
+                    }
+                }
+                Request::Quit => self.quit = true,
+                Request::Rebuild => self.rebuild_all(),
+                Request::ApplySettings => {
+                    self.gpu.set_vsync(self.settings.vsync);
+                    if let Some(g) = &mut self.game {
+                        g.client.set_view_distance(self.settings.view_distance);
+                        if let Some(s) = &g.server {
+                            s.set_view(self.settings.view_distance);
+                        }
+                    }
+                }
+                Request::SetLanguage(code) => {
+                    self.settings.language = code.clone();
+                    self.lang = Lang::load(&self.assets, &code, self.lang.dev);
+                    self.rebuild_all();
+                }
+                Request::WaitKey(a) => {
+                    self.waiting_key = Some(a.clone());
+                    if let Some((s, _)) = self.screens.last_mut() {
+                        *s = Box::new(screens::Controls { waiting: Some(a) });
+                    }
+                    self.rebuild_all();
+                }
+                Request::Rebind(action, key) => {
+                    self.input.rebind(&action, key);
+                    self.settings.set_bind(&action, key);
+                    self.waiting_key = None;
+                    if let Some((s, _)) = self.screens.last_mut() {
+                        *s = Box::new(screens::Controls { waiting: None });
+                    }
+                }
+                Request::ResetBinds => {
+                    let defaults: Vec<(String, Key)> = self.input.binds.iter().map(|b| (b.action.clone(), b.default)).collect();
+                    for (a, k) in defaults {
+                        self.input.rebind(&a, k);
+                    }
+                    self.settings.binds.clear();
+                    self.rebuild_all();
+                }
+                Request::SelectWorld(i) => {
+                    if let Some((s, _)) = self.screens.last_mut() {
+                        s.select(i);
+                    }
+                    self.rebuild_all();
+                }
+                Request::StartWorld(meta) => self.start_world(meta),
+                Request::CreateWorldFromForm => {
+                    let Some((_, ui)) = self.screens.last() else { continue };
+                    let field = |id: &str| {
+                        ui.find(id).and_then(|n| match &ui.nodes[n].kind {
+                            Kind::Input { value, .. } => Some(value.clone()),
+                            _ => None,
+                        })
+                    };
+                    let name = field("name").unwrap_or_default();
+                    let seed = saves::parse_seed(&field("seed").unwrap_or_default());
+                    let name = if name.trim().is_empty() { "World".to_string() } else { name.trim().to_string() };
+                    let meta = saves::create(&self.settings.saves_dir(), &name, seed);
+                    self.start_world(meta);
+                }
+                Request::LeaveWorld => self.leave_world(),
+                Request::Host => {
+                    if let Some(Game { server: Some(s), .. }) = &self.game {
+                        net::host(s, &self.settings);
+                    }
+                    self.rebuild_all();
+                }
+                Request::Join(ticket) => match net::join(&ticket, &self.settings) {
+                    Ok(conn) => {
+                        self.leave_world_silent();
+                        match Client::new(&mut *self.gpu, &self.textures, conn, &self.settings.name, self.settings.view_distance) {
+                            Ok(client) => {
+                                self.game = Some(Game { client, server: None });
+                                self.screens.clear();
+                                self.hud.invalidate();
+                                self.set_capture(true);
+                            }
+                            Err(e) => log::error!("{e}"),
+                        }
+                    }
+                    Err(e) => self.open(Box::new(screens::Message { title: "multiplayer.disconnected".into(), args: vec![Arg::Text(e)] })),
+                },
+            }
+        }
+    }
+
+    /// Mouse and keyboard for the top screen.
+    fn screen_input(&mut self, scale: f32, requests: &mut Vec<Request>) {
+        let cursor = self.input.cursor / scale;
+        let Some((_, ui)) = self.screens.last_mut() else { return };
+        let hovered = ui.hit(cursor);
+        if hovered != ui.hovered {
+            ui.hovered = hovered;
+            self.quads_dirty = true;
+        }
+        let mut actions: Vec<crate::ui::Action> = Vec::new();
+        let mut slider: Option<(std::rc::Rc<dyn Fn(&mut Ctx, f32)>, f32)> = None;
+        let mut text_changed: Option<(std::rc::Rc<dyn Fn(&mut Ctx, &str)>, String)> = None;
+        if self.input.pressed_button(0) {
+            ui.pressed = hovered;
+            ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. }));
+            if let Some(h) = hovered {
+                if let Kind::Text(t) = &ui.nodes[h].kind {
+                    let r = ui.nodes[h].rect;
+                    let unit = ui.text_unit * t.scale;
+                    let p = (cursor - Vec2::new(r.x, r.y)) / unit;
+                    let target = t.layout.links.iter().find(|(_, b)| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]).map(|l| l.0.clone());
+                    if let Some(n) = target.and_then(|t| ui.find(&t)) {
+                        ui.focused = Some(n);
+                    }
+                }
+            }
+            self.quads_dirty = true;
+        }
+        if self.input.held_button(0) {
+            if let Some(p) = ui.pressed {
+                let r = ui.nodes[p].rect;
+                if let Kind::Slider { value, on_change, .. } = &mut ui.nodes[p].kind {
+                    let v = ((cursor.x - r.x) / r.w).clamp(0.0, 1.0);
+                    if (v - *value).abs() > 1e-4 {
+                        *value = v;
+                        slider = Some((on_change.clone(), v));
+                        self.quads_dirty = true;
+                    }
+                }
+            }
+        } else if let Some(p) = ui.pressed.take() {
+            if Some(p) == hovered {
+                if let Kind::Button { action: Some(a), enabled: true, .. } = &ui.nodes[p].kind {
+                    actions.push(a.clone());
+                }
+            }
+            self.quads_dirty = true;
+        }
+        if let Some(f) = ui.focused {
+            if let Kind::Input { value, max, on_change } = &mut ui.nodes[f].kind {
+                let mut changed = false;
+                let ctrl = self.input.held_key(Key::Code(KeyCode::ControlLeft)) || self.input.held_key(Key::Code(KeyCode::ControlRight));
+                if ctrl && self.input.pressed_key(Key::Code(KeyCode::KeyV)) {
+                    if let Some(clip) = crate::clipboard::get() {
+                        value.extend(clip.trim().chars().take(max.saturating_sub(value.chars().count())));
+                        changed = true;
+                    }
+                } else {
+                    for ch in self.input.typed.chars() {
+                        if !ch.is_control() && value.chars().count() < *max {
+                            value.push(ch);
+                            changed = true;
+                        }
+                    }
+                }
+                if self.input.pressed_key(Key::Code(KeyCode::Backspace)) {
+                    value.pop();
+                    changed = true;
+                }
+                if changed {
+                    ui.dirty = true;
+                    self.quads_dirty = true;
+                    if let Some(cb) = on_change {
+                        text_changed = Some((cb.clone(), value.clone()));
+                    }
+                }
+            }
+        }
+        let mut ctx = Ctx {
+            settings: &mut self.settings,
+            client: self.game.as_mut().map(|g| &mut g.client),
+            input: &self.input,
+            requests,
+            fps: self.fps,
+            frame_ms: self.frame_ms,
+            server_ms: 0.0,
+            debug: self.debug,
+        };
+        for a in actions {
+            a(&mut ctx);
+        }
+        if let Some((f, v)) = slider {
+            f(&mut ctx, v);
+        }
+        if let Some((f, v)) = text_changed {
+            f(&mut ctx, &v);
+        }
+    }
+
+    /// Re-evaluates bound values; layout and geometry only change when a value did.
+    fn poll_bindings(&mut self) {
+        let mut reqs = Vec::new();
+        let server_ms = self.game.as_ref().and_then(|g| g.server.as_ref()).map_or(0.0, |s| s.tick_ms());
+        let ctx = Ctx {
+            settings: &mut self.settings,
+            client: self.game.as_mut().map(|g| &mut g.client),
+            input: &self.input,
+            requests: &mut reqs,
+            fps: self.fps,
+            frame_ms: self.frame_ms,
+            server_ms,
+            debug: self.debug,
+        };
+        let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+        let tcx = text::Ctx { lang: &self.lang, input: Some(ctx.input), item_name: &items };
+        let mut uis: Vec<&mut Ui> = self.screens.iter_mut().map(|(_, u)| u).collect();
+        uis.push(&mut self.hud.ui);
+        for ui in uis {
+            let mut relayout = false;
+            let mut redraw = false;
+            for n in &mut ui.nodes {
+                match &mut n.kind {
+                    Kind::Text(t) => {
+                        if let Some(b) = &t.bind {
+                            let v = b(&ctx);
+                            if t.last.as_ref() != Some(&v) {
+                                t.spans.clear();
+                                text::format(tcx.lang.get(&v.0), &v.1, &tcx, &mut t.spans);
+                                t.last = Some(v);
+                                relayout = true;
+                            }
+                        }
+                    }
+                    Kind::Progress { bind, value, .. } => {
+                        let v = bind(&ctx);
+                        if (v - *value).abs() > 1e-4 {
+                            *value = v;
+                            redraw = true;
+                        }
+                    }
+                    Kind::Slider { bind, value, .. } => {
+                        let v = bind(&ctx);
+                        if v.is_finite() && (v - *value).abs() > 1e-4 {
+                            *value = v;
+                            redraw = true;
+                        }
+                    }
+                    Kind::Item { bind, last } => {
+                        let v = bind(&ctx);
+                        if v != *last {
+                            *last = v;
+                            redraw = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if relayout {
+                ui.dirty = true;
+            }
+            if relayout || redraw {
+                self.quads_dirty = true;
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -158,24 +637,22 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(r) = &mut self.run else { return };
         match event {
-            WindowEvent::CloseRequested => {
-                r.client.leave();
-                el.exit();
+            WindowEvent::CloseRequested => r.quit = true,
+            WindowEvent::Resized(size) => {
+                r.gpu.resize(size.width, size.height);
+                r.rebuild_all();
             }
-            WindowEvent::Resized(size) => r.gpu.resize(size.width, size.height),
             WindowEvent::Focused(false) => {
                 r.input.release_all();
-                set_capture(&r.window, &mut r.input, false);
+                if r.game.is_some() && r.screens.is_empty() && self.opts.shot.is_none() {
+                    r.open(Box::new(screens::Pause));
+                }
+                r.set_capture(false);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
-                        ElementState::Pressed => {
-                            if code == KeyCode::Escape && r.input.captured {
-                                set_capture(&r.window, &mut r.input, false);
-                            }
-                            r.input.key_down(Key::Code(code));
-                        }
+                        ElementState::Pressed => r.input.key_down(Key::Code(code)),
                         ElementState::Released => r.input.key_up(Key::Code(code)),
                     }
                 }
@@ -195,8 +672,8 @@ impl ApplicationHandler for App {
                     MouseButton::Other(n) => (5 + n).min(255) as u8,
                 };
                 if state == ElementState::Pressed {
-                    if !r.input.captured && b == 0 {
-                        set_capture(&r.window, &mut r.input, true);
+                    if !r.input.captured && r.screens.is_empty() && r.game.is_some() && b == 0 {
+                        r.set_capture(true);
                         return;
                     }
                     r.input.key_down(Key::Mouse(b));
@@ -214,8 +691,9 @@ impl ApplicationHandler for App {
                 r.input.cursor = Vec2::new(position.x as f32, position.y as f32);
             }
             WindowEvent::RedrawRequested => {
-                if frame(r, &self.opts) {
-                    r.client.leave();
+                if frame(r, &self.opts) || r.quit {
+                    r.leave_world_silent();
+                    r.settings.save();
                     el.exit();
                 }
             }
@@ -232,8 +710,7 @@ impl ApplicationHandler for App {
     fn exiting(&mut self, _el: &ActiveEventLoop) {
         if let Some(mut r) = self.run.take() {
             r.gpu.wait_idle();
-            r.server.stop();
-            drop(r.client);
+            r.leave_world_silent();
             drop(r.gpu);
         }
     }
@@ -244,72 +721,180 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     let now = Instant::now();
     let dt = (now - r.last).as_secs_f64();
     r.last = now;
+    let scale = r.gui_scale();
 
+    let mut requests = Vec::new();
+    if r.waiting_key.is_some() {
+        for k in r.input.pressed_list() {
+            let mut ctx = Ctx {
+                settings: &mut r.settings,
+                client: None,
+                input: &r.input,
+                requests: &mut requests,
+                fps: r.fps,
+                frame_ms: r.frame_ms,
+                server_ms: 0.0,
+                debug: r.debug,
+            };
+            if let Some((s, _)) = r.screens.last_mut() {
+                if s.key(k, &mut ctx) {
+                    r.waiting_key = None;
+                    break;
+                }
+            }
+        }
+    } else if r.input.pressed_key(Key::Code(KeyCode::Escape)) {
+        if r.screens.len() > 1 || (r.game.is_some() && !r.screens.is_empty()) {
+            requests.push(Request::Close);
+        } else if r.game.is_some() && r.screens.is_empty() {
+            r.open(Box::new(screens::Pause));
+        }
+    }
+    if r.input.pressed("core:debug") {
+        r.debug = !r.debug;
+        r.hud.invalidate();
+    }
     if r.input.pressed("core:reload") {
-        r.client.render.reload_shaders(&mut *r.gpu);
+        r.ui.reload(&mut *r.gpu);
+        r.theme = Theme::load(&r.assets);
+        r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);
+        if let Some(g) = &mut r.game {
+            g.client.render.reload_shaders(&mut *r.gpu);
+        }
+        r.rebuild_all();
+        log::info!("assets reloaded");
     }
-    r.client.update(&mut *r.gpu, &r.input, dt);
-    if let Some(cam) = opts.camera {
-        r.client.player.pos = DVec3::new(cam[0], cam[1] - 1.62, cam[2]);
-        r.client.player.yaw = (cam[3] as f32).to_radians();
-        r.client.player.pitch = (cam[4] as f32).to_radians();
-        r.client.player.flying = true;
-        r.client.player.vel = DVec3::ZERO;
+    if r.input.pressed("core:screenshot") {
+        r.gpu.request_capture();
+        r.shot_pending = true;
     }
-    if let Some(reason) = &r.client.disconnected {
+    r.screen_input(scale, &mut requests);
+    r.handle(requests);
+
+    let paused = r.screens.iter().any(|(s, _)| s.pauses());
+    let world_input = r.screens.is_empty();
+    if let Some(g) = &mut r.game {
+        if let Some(s) = &g.server {
+            s.set_paused(paused && !s.is_hosting());
+        }
+        g.client.fov = r.settings.fov;
+        if world_input {
+            g.client.update(&mut *r.gpu, &r.input, dt);
+        } else {
+            g.client.update(&mut *r.gpu, &Input::default(), dt);
+        }
+        if let Some(cam) = opts.camera {
+            g.client.player.pos = DVec3::new(cam[0], cam[1] - 1.62, cam[2]);
+            g.client.player.yaw = (cam[3] as f32).to_radians();
+            g.client.player.pitch = (cam[4] as f32).to_radians();
+            g.client.player.flying = true;
+            g.client.player.vel = DVec3::ZERO;
+        }
+    }
+    if let Some(reason) = r.game.as_ref().and_then(|g| g.client.disconnected.clone()) {
         log::info!("disconnected: {reason}");
-        return true;
+        r.leave_world_silent();
+        r.screens.clear();
+        r.open(Box::new(screens::Title));
+        r.open(Box::new(screens::Message { title: "multiplayer.disconnected".into(), args: vec![Arg::Text(reason)] }));
     }
+    r.input.sensitivity = r.settings.sensitivity;
     r.input.end_frame();
+
+    if let Some(g) = &r.game {
+        if r.hud.update(&g.client, r.debug) {
+            r.quads_dirty = true;
+        }
+    }
+    r.poll_bindings();
+    let surface = r.gpu.surface_size();
+    let gui_size = Vec2::new(surface.0 as f32, surface.1 as f32) / scale;
+    let text_unit = (scale * 0.5).round().max(1.0) / scale;
+    {
+        let mut uis: Vec<&mut Ui> = Vec::new();
+        if r.game.is_some() {
+            uis.push(&mut r.hud.ui);
+        }
+        uis.extend(r.screens.iter_mut().map(|(_, u)| u));
+        for ui in uis {
+            if ui.dirty || ui.size != gui_size || ui.text_unit != text_unit {
+                ui.text_unit = text_unit;
+                ui.layout(gui_size, &r.ui.font);
+                ui.dirty = false;
+                r.quads_dirty = true;
+            }
+        }
+    }
 
     let Some(info) = r.gpu.begin_frame() else { return false };
     if (r.depth.1, r.depth.2) != (info.width, info.height) {
         r.gpu.destroy_texture(r.depth.0);
         r.depth = make_depth(&mut *r.gpu, info.width, info.height);
     }
+    if r.quads_dirty {
+        r.quads_dirty = false;
+        let mut all = Vec::new();
+        let game = r.game.as_ref().map(|_| (content(), &r.textures));
+        let client = r.game.as_ref().map(|g| &g.client);
+        let mut layers: Vec<&Ui> = Vec::new();
+        if r.game.is_some() {
+            layers.push(&r.hud.ui);
+        }
+        layers.extend(r.screens.iter().map(|(_, u)| u));
+        for ui in layers {
+            let theme = &r.theme;
+            let textures = &r.textures;
+            let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool| {
+                crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, scale);
+            };
+            r.ui.build(&mut *r.gpu, &r.assets, ui, &r.theme, scale, game, &mut custom);
+            all.append(&mut r.ui.quads);
+        }
+        r.ui.quads = all;
+    }
+
     r.list.clear();
-    let fog = r.client.fog_color();
-    r.list.push(Cmd::BeginPass { color: Some((Target::Surface, Some(fog))), depth: Some((r.depth.0, Some(0.0))) });
-    let view = opts.view_radius as f32 * 16.0;
-    r.client.render(&mut *r.gpu, &mut r.list, &info, view);
+    let clear = r.game.as_ref().map_or([0.02, 0.02, 0.03, 1.0], |g| g.client.fog_color());
+    r.list.push(Cmd::BeginPass { color: Some((Target::Surface, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
+    if let Some(g) = &mut r.game {
+        g.client.render(&mut *r.gpu, &mut r.list, &info);
+    }
+    r.ui.draw(&mut *r.gpu, &mut r.list, &info);
     r.list.push(Cmd::EndPass);
 
     let capture_now = r.shot_pending;
-    if let Some(_) = &opts.shot {
-        let loaded = r.client.joined && r.client.world.cubes.len() > 50 && r.client.world.pending_meshes() == 0;
-        if !r.shot_pending && loaded && r.started.elapsed().as_secs_f32() > opts.shot_delay {
+    if opts.shot.is_some() && !r.shot_pending {
+        let ready = match &r.game {
+            Some(g) => g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0,
+            None => true,
+        };
+        if ready && r.started.elapsed().as_secs_f32() > opts.shot_delay {
             r.gpu.request_capture();
             r.shot_pending = true;
         }
     }
     r.gpu.end_frame(&r.list);
     if capture_now {
-        if let (Some(cap), Some(path)) = (r.gpu.take_capture(), &opts.shot) {
-            match crate::assets::encode_png(path, cap.width, cap.height, &cap.rgba) {
+        r.shot_pending = false;
+        if let Some(cap) = r.gpu.take_capture() {
+            let path = opts
+                .shot
+                .clone()
+                .unwrap_or_else(|| r.settings.run_dir.join("screenshots").join(format!("{}.png", saves::now_secs())));
+            match crate::assets::encode_png(&path, cap.width, cap.height, &cap.rgba) {
                 Ok(()) => log::info!("screenshot saved to {}", path.display()),
                 Err(e) => log::error!("screenshot: {e}"),
             }
         }
-        return true;
+        if opts.shot.is_some() {
+            return true;
+        }
     }
-    r.frames += 1;
     r.fps_frames += 1;
-    if r.fps_timer.elapsed().as_secs_f32() >= 2.0 {
-        let fps = r.fps_frames as f32 / r.fps_timer.elapsed().as_secs_f32();
-        log::debug!(
-            "fps {fps:.0}, cubes {}, pending meshes {}, draws {}, pos {:.1?}, joined {}",
-            r.client.world.cubes.len(),
-            r.client.world.pending_meshes(),
-            r.client.render.drawn,
-            r.client.player.pos,
-            r.client.joined
-        );
-        r.window.set_title(&format!(
-            "Voxide | {fps:.0} fps | {} draws, {}k faces | {} cubes",
-            r.client.render.drawn,
-            r.client.render.faces_drawn / 1000,
-            r.client.world.cubes.len()
-        ));
+    let el = r.fps_timer.elapsed().as_secs_f32();
+    if el >= 0.5 {
+        r.fps = r.fps_frames as f32 / el;
+        r.frame_ms = el * 1000.0 / r.fps_frames as f32;
         r.fps_timer = Instant::now();
         r.fps_frames = 0;
     }

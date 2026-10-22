@@ -11,37 +11,38 @@ fn main() {
     let mut opts = Options {
         run_dir: PathBuf::from("run"),
         mod_dirs: vec![PathBuf::from("mods")],
-        gpu_debug: cfg!(debug_assertions),
-        vsync: true,
+        gpu_debug: false,
         shot: None,
         shot_delay: 0.0,
         camera: None,
-        seed: 1,
-        view_radius: 12,
+        world: None,
+        seed: None,
+        screen: None,
         size: (1600, 900),
+        dev: cfg!(debug_assertions),
     };
     let mut verbose = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
+        let mut value = || args.next().unwrap_or_default();
         match a.as_str() {
-            "--run-dir" => opts.run_dir = args.next().map(PathBuf::from).unwrap_or(opts.run_dir),
-            "--mods" => opts.mod_dirs.push(args.next().map(PathBuf::from).unwrap_or_default()),
+            "--run-dir" => opts.run_dir = PathBuf::from(value()),
+            "--mods" => opts.mod_dirs.push(PathBuf::from(value())),
             "--gpu-debug" => opts.gpu_debug = true,
-            "--no-gpu-debug" => opts.gpu_debug = false,
-            "--no-vsync" => opts.vsync = false,
             "--verbose" => verbose = true,
-            "--shot" => opts.shot = args.next().map(PathBuf::from),
-            "--shot-delay" => opts.shot_delay = args.next().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            "--shot" => opts.shot = Some(PathBuf::from(value())),
+            "--shot-delay" => opts.shot_delay = value().parse().unwrap_or(0.0),
             "--camera" => {
-                let v: Vec<f64> = args.next().unwrap_or_default().split(',').filter_map(|s| s.parse().ok()).collect();
+                let v: Vec<f64> = value().split(',').filter_map(|s| s.parse().ok()).collect();
                 if v.len() == 5 {
                     opts.camera = Some([v[0], v[1], v[2], v[3], v[4]]);
                 }
             }
-            "--seed" => opts.seed = args.next().and_then(|s| s.parse().ok()).unwrap_or(opts.seed),
-            "--view" => opts.view_radius = args.next().and_then(|s| s.parse().ok()).unwrap_or(opts.view_radius),
+            "--world" => opts.world = Some(value()),
+            "--seed" => opts.seed = value().parse().ok(),
+            "--screen" => opts.screen = Some(value()),
             "--size" => {
-                let v: Vec<u32> = args.next().unwrap_or_default().split('x').filter_map(|s| s.parse().ok()).collect();
+                let v: Vec<u32> = value().split('x').filter_map(|s| s.parse().ok()).collect();
                 if v.len() == 2 {
                     opts.size = (v[0], v[1]);
                 }

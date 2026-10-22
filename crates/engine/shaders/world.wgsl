@@ -148,8 +148,10 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 }
 
 fn lightmap(v: f32) -> f32 {
-    // Each level is ~80% of the next one up, like the classic table, with a floor so caves are not pitch black.
-    return pow(0.8, (1.0 - v) * 15.0) * 0.97 + 0.03;
+    // Classic brightness table, halfway towards the "bright" gamma setting.
+    let b = v / (3.0 - 2.0 * v);
+    let bright = 1.0 - pow(1.0 - b, 4.0);
+    return mix(b, bright, 0.5) * 0.96 + 0.04;
 }
 
 fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {

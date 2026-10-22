@@ -28,6 +28,8 @@ pub struct Dim {
     /// Cubes whose light changed this tick, sent whole.
     pub resend: Vec<(IVec3, Arc<Cube>)>,
     light_dirty: FxHashSet<IVec3>,
+    /// Cubes changed since the last save. Untouched cubes are never written (regenerating is cheaper).
+    pub modified: FxHashSet<IVec3>,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -82,6 +84,7 @@ impl Dim {
             changes: Vec::new(),
             resend: Vec::new(),
             light_dirty: FxHashSet::default(),
+            modified: FxHashSet::default(),
         }
     }
 
@@ -110,8 +113,18 @@ impl Dim {
         });
     }
 
-    pub fn retain_cubes(&mut self, _c: &Content, keep: impl Fn(IVec3) -> bool) {
-        self.cubes.retain(|&pos, _| keep(pos));
+    /// Drops cubes `keep` rejects; returns the modified ones so they can be saved.
+    pub fn retain_cubes(&mut self, keep: impl Fn(IVec3) -> bool) -> Vec<(IVec3, Arc<Cube>)> {
+        let mut out = Vec::new();
+        let modified = &mut self.modified;
+        self.cubes.retain(|&pos, cube| {
+            let k = keep(pos);
+            if !k && modified.remove(&pos) {
+                out.push((pos, cube.clone()));
+            }
+            k
+        });
+        out
     }
 
     pub fn get(&self, p: IVec3) -> Option<u32> {
@@ -127,6 +140,7 @@ impl Dim {
             return Some(old);
         }
         self.changes.push((p, state));
+        self.modified.insert(cp);
         let def = &c.dims[self.id as usize];
         let mut map = Cubes(&mut self.cubes);
         let mut lighter = Lighter::new(&mut map, c, def.sky_light);

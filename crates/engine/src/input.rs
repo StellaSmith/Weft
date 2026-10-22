@@ -128,6 +128,10 @@ impl Input {
         self.pressed.contains(&k)
     }
 
+    pub fn pressed_list(&self) -> Vec<Key> {
+        self.pressed.iter().copied().collect()
+    }
+
     pub fn held_button(&self, b: u8) -> bool {
         self.held.contains(&Key::Mouse(b))
     }

@@ -1,14 +1,20 @@
 pub mod app;
 pub mod assets;
 pub mod client;
+pub mod clipboard;
 pub mod content;
 pub mod host;
+pub mod hud;
 pub mod input;
 pub mod log;
 pub mod modloader;
 pub mod net;
 pub mod physics;
+pub mod saves;
+pub mod screens;
 pub mod server;
+pub mod settings;
+pub mod ui;
 pub mod world;
 
 pub use app::{BackendFactory, Options, run};

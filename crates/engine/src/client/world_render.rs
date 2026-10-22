@@ -6,7 +6,7 @@ use rustc_hash::FxHashMap;
 use voxide_render::*;
 
 use super::mesher::Mesh;
-use crate::assets::{Assets, build_array};
+use super::textures::GameTextures;
 use crate::content::Content;
 
 const FACE_WORDS: u32 = 4;
@@ -128,8 +128,7 @@ pub struct WorldRenderer {
     indirect: Vec<(BufferId, u32)>,
     biomes: BufferId,
     tex_info: BufferId,
-    pub block_array: TextureId,
-    pub block_layers: Vec<(u32, u32)>,
+    block_index: u32,
     pub drawn: u32,
     pub faces_drawn: u64,
 }
@@ -145,35 +144,12 @@ pub fn world_shader() -> Result<Shader, ShaderError> {
 }
 
 impl WorldRenderer {
-    pub fn new(gpu: &mut dyn Backend, c: &Content, assets: &Assets) -> Result<WorldRenderer, String> {
+    pub fn new(gpu: &mut dyn Backend, c: &Content, textures: &GameTextures) -> Result<WorldRenderer, String> {
         let shader = world_shader().map_err(|e| e.0)?;
         let (face_pipes, quad_pipes) = Self::pipelines(gpu, &shader)?;
 
-        let t = std::time::Instant::now();
-        let array = build_array(assets, &c.block_textures);
-        let block_array = gpu.create_texture(
-            &TextureDesc {
-                width: array.size,
-                height: array.size,
-                layers: Some(array.layers),
-                mips: array.mips.len() as u32,
-                format: Format::Rgba8Srgb,
-                render_target: false,
-            },
-            "block textures",
-        );
-        for (i, mip) in array.mips.iter().enumerate() {
-            gpu.write_texture(block_array, i as u32, mip);
-        }
-        log::info!(
-            "block textures: {} names, {} layers of {}px in {:.1} ms",
-            c.block_textures.len(),
-            array.layers,
-            array.size,
-            t.elapsed().as_secs_f64() * 1000.0
-        );
-        let info: Vec<u32> = array
-            .entries
+        let info: Vec<u32> = textures
+            .block_layers
             .iter()
             .map(|&(first, frames)| first | frames.min(255) << 16 | 2 << 24)
             .collect();
@@ -201,8 +177,7 @@ impl WorldRenderer {
             indirect: Vec::new(),
             biomes,
             tex_info,
-            block_array,
-            block_layers: array.entries,
+            block_index: textures.block_index,
             drawn: 0,
             faces_drawn: 0,
         })
@@ -264,6 +239,22 @@ impl WorldRenderer {
         }
     }
 
+    pub fn destroy(&mut self, gpu: &mut dyn Backend) {
+        self.meshes.clear();
+        for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
+            gpu.destroy_buffer(b);
+        }
+        for b in self.globals.drain(..).chain([self.biomes, self.tex_info]) {
+            gpu.destroy_buffer(b);
+        }
+        for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)) {
+            gpu.destroy_buffer(b);
+        }
+        for p in self.face_pipes.into_iter().chain(self.quad_pipes) {
+            gpu.destroy_pipeline(p);
+        }
+    }
+
     pub fn clear(&mut self) {
         let keys: Vec<IVec3> = self.meshes.keys().copied().collect();
         for k in keys {
@@ -319,7 +310,7 @@ impl WorldRenderer {
             sky_color: p.sky_color.extend(1.0).to_array(),
             fog_color: p.fog_color.extend(1.0).to_array(),
             params: [p.daylight, p.fog_start, p.fog_end, p.time],
-            ids: [gpu.texture_index(self.block_array), p.ambient, 0, 0],
+            ids: [self.block_index, p.ambient, 0, 0],
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));

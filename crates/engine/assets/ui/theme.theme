@@ -1,0 +1,13 @@
+# Fallback look used when no mod provides textures.
+default.text = #e0e0e0
+default.shadow = #303030
+panel.fill = #202028e0
+button.fill = #505060ff
+button.text = #ffffff
+button.hover_text = #ffffa0
+title.text = #ffffff
+title.shadow = #3f3f3f
+dim.text = #a0a0a0
+input.fill = #000000ff
+background.fill = #101018ff
+overlay.fill = #00000080

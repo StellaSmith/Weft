@@ -1,0 +1,7 @@
+    0.170 INFO  [vulkan] GPU: NVIDIA GeForce RTX 5080
+    0.510 INFO  [engine::content] testmod replaces block base:torch
+    0.510 INFO  [engine::modloader] 2 mods, 60 blocks (113 states), 118 items, 3 dimensions in 36.9 ms
+    0.519 INFO  [engine::client::textures] block textures: 82 textures, 112 layers of 16px in 5.7 ms
+    0.522 INFO  [engine::client::textures] item textures: 63 textures, 63 layers of 16px in 3.1 ms
+   10.806 INFO  [engine::app] screenshot saved to .agent/shots\mp_client.png
+   10.833 INFO  [engine::client] [chat] <Maxim> hello from the second player

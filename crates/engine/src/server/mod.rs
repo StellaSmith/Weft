@@ -42,6 +42,8 @@ pub struct ServerConfig {
 
 pub struct Player {
     pub name: String,
+    /// Public key: the identity saves are keyed by.
+    pub key: String,
     conn: ServerConn,
     pub dim: u32,
     pub entity: u64,
@@ -211,6 +213,7 @@ impl Server {
         while let Ok(conn) = self.incoming.try_recv() {
             self.players.push(Player {
                 name: String::new(),
+                key: String::new(),
                 conn,
                 dim: 0,
                 entity: 0,
@@ -370,7 +373,7 @@ impl Server {
 
     fn handle(&mut self, c: &'static Content, pi: usize, msg: ToServer) {
         match msg {
-            ToServer::Join { name } => self.join(c, pi, name),
+            ToServer::Join { name, key } => self.join(c, pi, name, key),
             ToServer::Move { pos, yaw, pitch, on_ground } => {
                 if !pos.is_finite() || self.players[pi].dead {
                     return;
@@ -594,12 +597,13 @@ impl Server {
         }
     }
 
-    fn join(&mut self, c: &'static Content, pi: usize, name: String) {
-        if self.players.iter().any(|p| p.joined && p.name == name) {
+    fn join(&mut self, c: &'static Content, pi: usize, name: String, key: String) {
+        let key = if key.is_empty() { name.clone() } else { key };
+        if self.players.iter().any(|p| p.joined && p.key == key) {
             self.players[pi].conn.send(ToClient::Disconnect(format!("{name} is already playing")));
             return;
         }
-        let saved = self.storage.as_ref().and_then(|s| load_player(c, &s.lock(), &name));
+        let saved = self.storage.as_ref().and_then(|s| load_player(c, &s.lock(), &key));
         let overworld = c.dim_names.get("base:overworld").copied().unwrap_or(0);
         let (dim, pos, health, inv, comps) = match saved {
             Some(s) => s,
@@ -619,6 +623,7 @@ impl Server {
         }
         let p = &mut self.players[pi];
         p.name = name;
+        p.key = key;
         p.joined = true;
         p.dim = dim;
         p.entity = id;
@@ -787,11 +792,9 @@ impl Server {
             let (center, r, h) = self.view(p);
             let dim = &self.dims[p.dim as usize];
             let def = &c.dims[p.dim as usize];
-            for dy in -h..=h {
-                let y = center.y + dy;
-                if y < def.min_cube_y || y > def.max_cube_y {
-                    continue;
-                }
+            let (lo, hi) = loaded_y_range(def, center.y, h);
+            for y in lo..=hi {
+                let dy = (y - center.y).min(h);
                 for dz in -r..=r {
                     for dx in -r..=r {
                         if dx * dx + dz * dz > r * r {
@@ -1006,20 +1009,22 @@ impl Server {
             return;
         }
         for di in 0..self.dims.len() {
-            let views: Vec<(IVec3, i32, i32)> = self
+            let def = &c.dims[di];
+            let views: Vec<(IVec3, i32, i32, i32)> = self
                 .players
                 .iter()
                 .filter(|p| p.joined && p.dim as usize == di)
                 .map(|p| {
                     let (center, _, _) = self.view(p);
-                    (center, self.cfg.view_radius + 3, self.cfg.view_height + 3)
+                    let (lo, hi) = loaded_y_range(def, center.y, self.cfg.view_height);
+                    (center, self.cfg.view_radius + 3, lo - 3, hi + 3)
                 })
                 .collect();
             let dim = &mut self.dims[di];
             let removed = dim.retain_cubes(|pos| {
-                views.iter().any(|&(center, r, h)| {
+                views.iter().any(|&(center, r, lo, hi)| {
                     let d = pos - center;
-                    d.x * d.x + d.z * d.z <= r * r && d.y.abs() <= h
+                    d.x * d.x + d.z * d.z <= r * r && pos.y >= lo && pos.y <= hi
                 })
             });
             let storage = self.storage.clone();
@@ -1035,6 +1040,16 @@ impl Server {
             dim.entities.compact();
         }
     }
+}
+
+/// Cubes kept loaded around a view: the visible range plus, above it, the column up to where the
+/// generator guarantees open sky (capped), so sky light reaches the visible cubes without having
+/// to send or render those extra cubes.
+fn loaded_y_range(def: &crate::content::DimensionDef, center_y: i32, h: i32) -> (i32, i32) {
+    let lo = (center_y - h).max(def.min_cube_y);
+    let top = center_y + h;
+    let hi = if def.sky_light && def.sky_cube_y != i32::MAX { top.max((def.sky_cube_y - 1).min(top + 12)) } else { top };
+    (lo, hi.min(def.max_cube_y))
 }
 
 fn within(player: DVec3, block: IVec3) -> bool {
@@ -1084,7 +1099,7 @@ fn entities_in(c: &Content, d: &Dim, cube: IVec3) -> Vec<u8> {
 
 fn save_player(s: &Storage, p: &Player, d: &Dim) {
     let c = content();
-    let path = s.player_path(&p.name);
+    let path = s.player_path(&p.key);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }

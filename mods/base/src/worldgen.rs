@@ -136,7 +136,7 @@ fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {
     let x = cx * TREE_CELL + (h % TREE_CELL as u64) as i32;
     let z = cz * TREE_CELL + ((h >> 8) % TREE_CELL as u64) as i32;
     let col = column(seed, x, z);
-    if col.height < SEA || unit(h >> 16) >= tree_density(col.biome) {
+    if col.height < SEA || unit(h.rotate_left(17)) >= tree_density(col.biome) {
         return None;
     }
     if matches!(col.biome, B::Desert | B::Beach | B::Ocean) {
@@ -493,5 +493,25 @@ pub fn flat(g: &mut Gen) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn biome_mix() {
+        let mut counts = std::collections::BTreeMap::new();
+        for x in (-4000..4000).step_by(64) {
+            for z in (-4000..4000).step_by(64) {
+                *counts.entry(format!("{:?}", column(7, x, z).biome)).or_insert(0) += 1;
+            }
+        }
+        println!("{counts:?}");
+        let sp = spawn(7);
+        let c = column(7, sp[0], sp[2]);
+        println!("spawn {sp:?} biome {:?} height {}", c.biome, c.height);
+        assert!(counts.get("Plains").copied().unwrap_or(0) > 100);
     }
 }

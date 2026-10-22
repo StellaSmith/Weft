@@ -33,6 +33,8 @@ lz4_flex = "0.14"
 png = "0.18"
 rustc-hash = "2"
 arboard = { version = "3", default-features = false }
+iroh = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [profile.dev]
 opt-level = 1

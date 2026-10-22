@@ -27,6 +27,8 @@ pub enum Step {
     Look(f32, f32),
     Chat(String),
     Shot(String),
+    Host(String),
+    Join(String),
     Quit,
 }
 
@@ -42,6 +44,10 @@ pub enum Action {
     Look(f32, f32),
     Chat(String),
     Shot(String),
+    /// Start hosting; the ticket is written to this file once online.
+    Host(String),
+    /// Join using the ticket stored in this file (waits until it exists).
+    Join(String),
     Quit,
 }
 
@@ -68,6 +74,8 @@ impl Autopilot {
                 "look" if nums.len() == 2 => Step::Look(nums[0], nums[1]),
                 "chat" => Step::Chat(rest.to_string()),
                 "shot" => Step::Shot(rest.trim().to_string()),
+                "host" => Step::Host(rest.trim().to_string()),
+                "join" => Step::Join(rest.trim().to_string()),
                 "quit" => Step::Quit,
                 _ => {
                     log::warn!("autopilot: unknown line '{line}'");
@@ -133,6 +141,14 @@ impl Autopilot {
             Step::Look(y, p) => Action::Look(*y, *p),
             Step::Chat(t) => Action::Chat(t.clone()),
             Step::Shot(f) => Action::Shot(f.clone()),
+            Step::Host(f) => Action::Host(f.clone()),
+            Step::Join(f) => match std::fs::read_to_string(f) {
+                Ok(t) if !t.trim().is_empty() => Action::Join(t.trim().to_string()),
+                _ => {
+                    advance = false;
+                    Action::None
+                }
+            },
             Step::Quit => Action::Quit,
         };
         if advance {

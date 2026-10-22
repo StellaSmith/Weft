@@ -86,3 +86,4 @@ death.title = Вы погибли!
 death.respawn = Возродиться
 hud.debug.entities = Сущностей: {0}
 hud.debug.mods = Время модов за тик: {0}
+core.raw = {0}

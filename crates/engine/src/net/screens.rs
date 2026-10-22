@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::app::{Ctx, Request};
 use crate::screens::{BuildCx, Screen, button, frame, label};
-use crate::ui::text::{self, Arg};
+use crate::ui::text::Arg;
 use crate::ui::{Kind, Style, Ui};
 
 #[derive(Default)]
@@ -18,19 +18,24 @@ impl Screen for Multiplayer {
         frame(ui, cx, "multiplayer.title", |ui| {
             if cx.in_game {
                 ui.panel("panel", Style::default().pad(8.0).gap(4.0).stretch().w(340.0), |ui| {
-                    match &ticket {
-                        Some(t) => {
-                            label(ui, cx, "multiplayer.your_ticket", &[], "default");
-                            let short = if t.len() > 48 { format!("{}...{}", &t[..24], &t[t.len() - 16..]) } else { t.clone() };
-                            ui.text(text::plain(&short), "dim");
-                            let t = t.clone();
-                            button(ui, cx, "multiplayer.copy", &[], 120.0, move |_| {
+                    let hosting = super::p2p::HOSTING.lock().is_some();
+                    if hosting || ticket.is_some() {
+                        label(ui, cx, "multiplayer.your_ticket", &[], "default");
+                        ui.text_bound(
+                            "dim",
+                            Box::new(|_: &Ctx| {
+                                let t = super::current_ticket().unwrap_or_else(|| "...".into());
+                                let short = if t.len() > 52 { format!("{}...{}", &t[..28], &t[t.len() - 20..]) } else { t };
+                                ("core.raw".into(), vec![Arg::Text(short)])
+                            }),
+                        );
+                        button(ui, cx, "multiplayer.copy", &[], 120.0, move |_| {
+                            if let Some(t) = super::current_ticket() {
                                 crate::clipboard::set(&t);
-                            });
-                        }
-                        None => {
-                            button(ui, cx, "multiplayer.host", &[], 200.0, |c| c.requests.push(Request::Host));
-                        }
+                            }
+                        });
+                    } else {
+                        button(ui, cx, "multiplayer.host", &[], 200.0, |c| c.requests.push(Request::Host));
                     }
                 });
             }
@@ -48,7 +53,6 @@ impl Screen for Multiplayer {
                 );
             });
             button(ui, cx, "menu.back", &[], 200.0, |c| c.requests.push(Request::Close));
-            let _ = Arg::Int(0);
         });
     }
 }

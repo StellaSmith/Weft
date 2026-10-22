@@ -100,11 +100,11 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(gpu: &mut dyn Backend, textures: &GameTextures, mut conn: ClientConn, name: &str, view_radius: i32) -> Result<Client, String> {
+    pub fn new(gpu: &mut dyn Backend, textures: &GameTextures, mut conn: ClientConn, name: &str, key: &str, view_radius: i32) -> Result<Client, String> {
         let c = content();
         let render = WorldRenderer::new(gpu, c, textures)?;
         let entity_render = EntityRenderer::new(gpu)?;
-        conn.send(ToServer::Join { name: name.to_string() });
+        conn.send(ToServer::Join { name: name.to_string(), key: key.to_string() });
         Ok(Client {
             conn,
             world: ClientWorld::new(0),

@@ -11,19 +11,22 @@ use voxide_abi::ItemStack;
 
 use crate::world::Cube;
 
+pub mod codec;
+pub mod p2p;
 pub mod screens;
 
-/// Ticket others can use to join this host, once hosting started.
+/// Ticket others can use to join this host, once hosting is online.
 pub fn current_ticket() -> Option<String> {
-    None
+    p2p::HOSTING.lock().as_ref().and_then(|h| h.ticket.clone())
 }
 
-pub fn host(_server: &crate::server::ServerHandle, _settings: &crate::settings::Settings) {
-    log::warn!("hosting is not available yet");
+pub fn host(server: &crate::server::ServerHandle, settings: &crate::settings::Settings) {
+    server.shared.hosting.store(true, std::sync::atomic::Ordering::Relaxed);
+    p2p::host(server.connect.clone(), settings);
 }
 
-pub fn join(_ticket: &str, _settings: &crate::settings::Settings) -> Result<ClientConn, String> {
-    Err("joining is not available yet".into())
+pub fn join(ticket: &str, settings: &crate::settings::Settings) -> Result<ClientConn, String> {
+    p2p::join(ticket, settings)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,7 +70,8 @@ pub enum ToClient {
 
 #[derive(Clone)]
 pub enum ToServer {
-    Join { name: String },
+    /// `key`: the player's public key, their identity across sessions and addresses.
+    Join { name: String, key: String },
     Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool },
     Break { pos: IVec3 },
     /// Right click on a block: the block reacts first (chests), otherwise the held item is used or

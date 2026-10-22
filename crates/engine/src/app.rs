@@ -119,6 +119,7 @@ struct Running {
     client_hash: u64,
     autopilot: Option<crate::autopilot::Autopilot>,
     shot_path: Option<PathBuf>,
+    ticket_file: Option<PathBuf>,
 }
 
 struct App {
@@ -214,6 +215,7 @@ impl App {
             client_hash: 0,
             autopilot: self.opts.script.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| crate::autopilot::Autopilot::load(&s)),
             shot_path: None,
+            ticket_file: None,
         };
         if let Some(world) = &self.opts.world {
             let saves_dir = r.settings.saves_dir();
@@ -327,7 +329,8 @@ impl Running {
         );
         let (client_conn, server_conn) = net::local_pair();
         let _ = server.connect.send(server_conn);
-        match Client::new(&mut *self.gpu, &self.textures, client_conn, &self.settings.name, self.settings.view_distance) {
+        let key = net::p2p::player_key(&self.settings.run_dir);
+        match Client::new(&mut *self.gpu, &self.textures, client_conn, &self.settings.name, &key, self.settings.view_distance) {
             Ok(client) => {
                 self.game = Some(Game { client, server: Some(server) });
                 self.screens.clear();
@@ -352,6 +355,7 @@ impl Running {
             g.client.destroy(&mut *self.gpu);
             if let Some(mut s) = g.server.take() {
                 s.stop();
+                net::p2p::stop_hosting();
             }
         }
         self.set_capture(false);
@@ -451,10 +455,20 @@ impl Running {
                         }
                     }
                 }
-                Request::Join(ticket) => match net::join(&ticket, &self.settings) {
+                Request::Join(ticket) => match {
+                    let typed = self.screens.last().and_then(|(_, ui)| {
+                        ui.find("ticket").and_then(|n| match &ui.nodes[n].kind {
+                            Kind::Input { value, .. } => Some(value.clone()),
+                            _ => None,
+                        })
+                    });
+                    let ticket = if ticket.is_empty() { typed.unwrap_or_default() } else { ticket };
+                    net::join(&ticket, &self.settings)
+                } {
                     Ok(conn) => {
                         self.leave_world_silent();
-                        match Client::new(&mut *self.gpu, &self.textures, conn, &self.settings.name, self.settings.view_distance) {
+                        let key = net::p2p::player_key(&self.settings.run_dir);
+                        match Client::new(&mut *self.gpu, &self.textures, conn, &self.settings.name, &key, self.settings.view_distance) {
                             Ok(client) => {
                                 self.game = Some(Game { client, server: None });
                                 self.screens.clear();
@@ -801,11 +815,22 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 r.gpu.request_capture();
                 r.shot_pending = true;
             }
+            crate::autopilot::Action::Host(file) => {
+                r.handle(vec![Request::Host]);
+                r.ticket_file = Some(PathBuf::from(file));
+            }
+            crate::autopilot::Action::Join(ticket) => r.handle(vec![Request::Join(ticket)]),
             crate::autopilot::Action::Quit => return true,
             crate::autopilot::Action::None => {}
         }
         if r.screens.is_empty() && r.game.is_some() {
             r.input.captured = true;
+        }
+    }
+    if let Some(f) = &r.ticket_file {
+        if let Some(t) = net::current_ticket() {
+            let _ = std::fs::write(f, t);
+            r.ticket_file = None;
         }
     }
     let mut requests = Vec::new();

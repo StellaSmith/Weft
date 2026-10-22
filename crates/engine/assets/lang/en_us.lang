@@ -86,3 +86,4 @@ death.title = You Died!
 death.respawn = Respawn
 hud.debug.entities = Entities: {0}
 hud.debug.mods = Mods per tick: {0}
+core.raw = {0}

@@ -534,14 +534,23 @@ impl Client {
 
         let world = &self.world;
         let block = |p: IVec3| world.block_or_air(p);
-        // Do not simulate until the ground under the player arrived.
-        let ready = self.joined && !self.dead && block(self.player.pos.floor().as_ivec3()).is_some();
+        // Walking waits for the ground under the player to arrive; flying goes on, taking cubes
+        // that are not here yet for air (the next ones are usually on their way).
+        let flying = self.player.flying || self.player.noclip;
+        let ready = self.joined && !self.dead && (flying || block(self.player.pos.floor().as_ivec3()).is_some());
         if ready {
+            let air_if_missing = |p: IVec3| block(p).or(Some(crate::content::AIR));
             self.accum += dt.min(0.25);
             while self.accum >= STEP {
                 self.accum -= STEP;
                 self.player.prev = self.player.pos;
-                step_player(&mut self.player, input, &block, c.dims[world.dim as usize].gravity as f64);
+                let flying = self.player.flying || self.player.noclip;
+                let gravity = c.dims[world.dim as usize].gravity as f64;
+                if flying {
+                    step_player(&mut self.player, input, &air_if_missing, gravity);
+                } else {
+                    step_player(&mut self.player, input, &block, gravity);
+                }
             }
         }
 

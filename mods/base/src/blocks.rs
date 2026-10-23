@@ -212,14 +212,19 @@ fn liquid(r: &mut Registry, name: &str, handle: &'static Block, still: &str, flo
 }
 
 fn plant(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
-    r.block(name, handle).texture(tex).plant().tab("natural").on_neighbor(|e| {
-        let w = e.world();
-        let p = e.pos();
-        let below = w.get([p[0], p[1] - 1, p[2]]);
-        if !(GRASS.is(below) || DIRT.is(below) || SNOWY_GRASS.is(below) || FARMLAND.is(below)) {
-            w.set(p, 0);
-        }
-    });
+    r.block(name, handle).texture(tex).plant().needs_below("base:plant_soil").tab("natural");
+}
+
+/// Sand and gravel: with nothing under them they drop a block every two ticks.
+fn fall_tick(e: &mut BlockEvent) {
+    let w = e.world();
+    let p = e.pos();
+    let below = [p[0], p[1] - 1, p[2]];
+    if state_flags(w.get(below)) & bf::REPLACEABLE != 0 {
+        let state = w.get(p);
+        w.set(p, 0);
+        w.set(below, state);
+    }
 }
 
 pub fn register(r: &mut Registry) {
@@ -236,8 +241,8 @@ pub fn register(r: &mut Registry) {
         .drops("dirt", 1)
         .random_ticks(grass_tick).tab("natural");
     r.block("snowy_grass", &SNOWY_GRASS).textures("snow", "grass_snow_side", "dirt").hardness(0.6).tool("shovel", 0).drops("dirt", 1).tab("natural");
-    r.block("sand", &SAND).hardness(0.5).tool("shovel", 0).tab("natural");
-    r.block("gravel", &GRAVEL).hardness(0.6).tool("shovel", 0).tab("natural");
+    r.block("sand", &SAND).hardness(0.5).tool("shovel", 0).on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(fall_tick).tab("natural");
+    r.block("gravel", &GRAVEL).hardness(0.6).tool("shovel", 0).on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(fall_tick).tab("natural");
     r.block("clay", &CLAY).hardness(0.6).tool("shovel", 0).tab("natural");
     r.block("sandstone", &SANDSTONE).textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).tool("pickaxe", 1).tab("building");
     r.block("snow", &SNOW).hardness(0.2).tool("shovel", 0).tab("natural");
@@ -261,19 +266,21 @@ pub fn register(r: &mut Registry) {
     liquid(r, "water", &WATER, "water_still", 5, 1, true, 0);
     liquid(r, "lava", &LAVA, "lava_still", 30, 2, false, 15);
 
-    r.block("tall_grass", &TALL_GRASS).texture("tallgrass").plant().tint_grass().drops("wheat_seeds", 1).no_item();
+    r.block("tall_grass", &TALL_GRASS).texture("tallgrass").plant().needs_below("base:plant_soil").tint_grass().drops("wheat_seeds", 1).no_item();
     plant(r, "dandelion", &DANDELION, "flower_dandelion");
     plant(r, "rose", &ROSE, "flower_rose");
-    r.block("sapling", &SAPLING).texture("sapling_oak").plant().random_ticks(|e| grow_sapling(e.world(), e.pos())).tab("natural");
-    r.block("sugar_cane", &SUGAR_CANE).texture("reeds").plant().random_ticks(|e| grow_column(e, &SUGAR_CANE)).tab("natural");
+    r.block("sapling", &SAPLING).texture("sapling_oak").plant().needs_below("base:plant_soil").random_ticks(|e| grow_sapling(e.world(), e.pos())).tab("natural");
+    r.block("sugar_cane", &SUGAR_CANE).texture("reeds").plant().needs_below("base:sugar_cane_soil").random_ticks(|e| grow_column(e, &SUGAR_CANE)).tab("natural");
     r.block("cactus", &CACTUS)
         .textures("cactus_top", "cactus_side", "cactus_top")
         .model_box_faces([1.0, 0.0, 1.0], [15.0, 16.0, 15.0], ["cactus_side", "cactus_side", "cactus_top", "cactus_top", "cactus_side", "cactus_side"])
         .hardness(0.4)
+        .needs_below("base:cactus_soil")
         .random_ticks(|e| grow_column(e, &CACTUS)).tab("natural");
     r.block("wheat", &WHEAT)
         .states(8, |i, s| s.texture(&format!("wheat_stage_{i}")))
         .plant()
+        .needs_below("base:crop_soil")
         .no_item()
         .drops("wheat", 1)
         .random_ticks(|e| {
@@ -341,19 +348,14 @@ pub fn register(r: &mut Registry) {
         .not_solid()
         .light_rgb(15, 13, 10)
         .hardness(0.0)
-        .tab("functional")
-        .on_neighbor(|e| {
-            let w = e.world();
-            let p = e.pos();
-            if state_flags(w.get([p[0], p[1] - 1, p[2]])) & bf::SOLID == 0 {
-                w.set(p, 0);
-            }
-        });
+        .needs(2, "")
+        .tab("functional");
     // State = the wall it hangs on, in `Place::horizontal` order (-Z, +X, +Z, -X).
     r.block("ladder", &LADDER)
         .states(4, |i, s| {
             let (min, max) = [([0.0, 0.0, 0.0], [16.0, 16.0, 1.0]), ([15.0, 0.0, 0.0], [16.0, 16.0, 16.0]), ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]), ([0.0, 0.0, 0.0], [1.0, 16.0, 16.0])][i as usize];
-            s.model_box(min, max, "ladder")
+            // Hangs on a solid wall: -Z, +X, +Z, -X faces.
+            s.model_box(min, max, "ladder").needs([4, 1, 5, 0][i as usize], "")
         })
         .placement(|p| match p.face() {
             0 => 1,
@@ -374,6 +376,14 @@ pub fn register(r: &mut Registry) {
     r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 3).tag("ore_blocks/diamond").tab("building");
     r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 1).tag("ore_blocks/coal").prop("base:fuel", 16000u32).tab("building");
     r.block("wool", &WOOL).texture("wool_white").hardness(0.8).prop("base:flammable", 30u32).tab("colored");
+
+    // What may grow or stand where. Other mods add their blocks to these with `r.tag`.
+    r.tag("base:plant_soil", &["grass", "dirt", "snowy_grass", "farmland"]);
+    r.tag("base:sugar_cane_soil", &["grass", "dirt", "sand", "sugar_cane"]);
+    r.tag("base:cactus_soil", &["sand", "cactus"]);
+    r.tag("base:crop_soil", &["farmland"]);
+    r.tag("base:grass_spreads_to", &["dirt"]);
+    r.tag("base:animal_spawn", &["grass"]);
 }
 
 /// Handles for blocks nothing refers to directly.
@@ -390,7 +400,7 @@ fn grass_tick(e: &mut BlockEvent) {
     }
     let r = w.random();
     let t = [p[0] + (r % 3) as i32 - 1, p[1] + ((r >> 8) % 5) as i32 - 3, p[2] + ((r >> 16) % 3) as i32 - 1];
-    if DIRT.is(w.get(t)) && state_flags(w.get([t[0], t[1] + 1, t[2]])) & bf::OPAQUE == 0 {
+    if block_has_tag(w.get(t), "base:grass_spreads_to") && state_flags(w.get([t[0], t[1] + 1, t[2]])) & bf::OPAQUE == 0 {
         w.set(t, GRASS.id());
     }
 }

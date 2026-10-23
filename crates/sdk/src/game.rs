@@ -675,7 +675,8 @@ impl Registry {
         unsafe { (host().reg_recipe)(self.raw, &desc) }
     }
 
-    /// Adds `tag` to items of any mod, e.g. `r.tag("ingots/tin", &["othermod:tin_ingot"])`.
+    /// Adds `tag` to blocks and items of any mod, e.g. `r.tag("ingots/tin", &["othermod:tin_ingot"])`
+    /// or `r.tag("base:plant_soil", &["othermod:mud"])`.
     pub fn tag(&mut self, tag: &str, items: &[&str]) {
         for item in items {
             let item = qualify(self.ns, item);

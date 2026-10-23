@@ -47,6 +47,11 @@ impl World {
     }
 }
 
+/// The block of `state` carries `tag` (its own or added by any mod with `Registry::tag`).
+pub fn block_has_tag(state: u32, tag: &str) -> bool {
+    unsafe { (host().block_has_tag)(state, crate::abi::Str::new(tag)) != 0 }
+}
+
 pub fn state_flags(state: u32) -> u32 {
     unsafe { (host().state_flags)(state) }
 }

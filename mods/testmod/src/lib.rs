@@ -70,7 +70,8 @@ fn init(r: &mut Registry) {
         .model_box([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], "soul_torch")
         .not_solid()
         .light_rgb(3, 9, 15)
-        .hardness(0.0);
+        .hardness(0.0)
+        .needs(2, "");
 
     r.component("machine", &MACHINE, Machine::default(), component_flags::SAVE, &["testmod:generator", "testmod:electric_furnace"]);
     r.entity("generator", &GENERATOR_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_generators);

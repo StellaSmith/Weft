@@ -205,6 +205,11 @@ pub struct StateDesc {
     pub friction: f32,
     /// Movement speed multiplier while inside (cobweb, liquids).
     pub drag: f32,
+    /// Face (-X, +X, -Y, +Y, -Z, +Z) whose neighbour holds the block up, 255 = none. Unsupported,
+    /// it cannot be placed and breaks off (dropping itself) when the support goes.
+    pub support_side: u8,
+    /// Block tag the supporting block needs; empty = any solid block.
+    pub support: Str,
 }
 
 #[repr(C)]
@@ -795,6 +800,7 @@ pub struct Host {
     /// Returns the placed block state (0 if none).
     pub item_info: unsafe extern "C" fn(item: u32, max_stack: *mut u32, durability: *mut u32) -> u32,
     pub item_has_tag: unsafe extern "C" fn(item: u32, tag: Str) -> u32,
+    pub block_has_tag: unsafe extern "C" fn(state: u32, tag: Str) -> u32,
 
     pub ui_open: unsafe extern "C" fn(ui: *mut UiCtx, node: *const UiNode),
     pub ui_close: unsafe extern "C" fn(ui: *mut UiCtx),

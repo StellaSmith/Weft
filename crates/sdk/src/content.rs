@@ -188,6 +188,8 @@ struct StateDef {
     hardness: f32,
     friction: f32,
     drag: f32,
+    support_side: u8,
+    support: String,
 }
 
 impl StateDef {
@@ -208,6 +210,8 @@ impl StateDef {
             hardness: 1.0,
             friction: 0.6,
             drag: 1.0,
+            support_side: 255,
+            support: String::new(),
         }
     }
 }
@@ -301,6 +305,21 @@ macro_rules! state_setters {
             self
         }
         /// Plants: cross model, no collision, replaceable by placement.
+        /// Needs a block tagged `tag` underneath (`#` optional): placed only there, and breaks
+        /// off when it goes.
+        pub fn needs_below(self, tag: &str) -> Self {
+            self.needs(2, tag)
+        }
+        /// Needs the neighbour on `face` (-X, +X, -Y, +Y, -Z, +Z) to be tagged `tag`, or solid
+        /// if `tag` is empty.
+        pub fn needs(mut self, face: u32, tag: &str) -> Self {
+            let tag = tag.trim_start_matches('#').to_string();
+            self.each(|s, _| {
+                s.support_side = face as u8;
+                s.support = tag.clone();
+            });
+            self
+        }
         pub fn plant(mut self) -> Self {
             self.each(|s, _| {
                 s.flags = bf::REPLACEABLE;
@@ -609,6 +628,8 @@ impl Drop for BlockBuilder<'_> {
                 hardness: s.hardness,
                 friction: s.friction,
                 drag: s.drag,
+                support_side: s.support_side,
+                support: Str::new(&s.support),
             })
             .collect();
         let tags: Vec<Str> = self.tags.iter().map(|t| Str::new(t)).collect();

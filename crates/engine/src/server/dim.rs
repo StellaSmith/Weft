@@ -629,8 +629,27 @@ impl Dim {
             }
             budget -= 1;
             let Some(state) = self.get(p) else { continue };
+            if !self.supported(c, p, state) {
+                self.break_off(c, p, state);
+                continue;
+            }
             self.call_block(c, state, |b| b.on_neighbor, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: from.to_array(), entity: 0 });
         }
+    }
+
+    /// The block `state` would be held up at `p` (unloaded neighbours count as holding).
+    fn supported(&self, c: &'static Content, p: IVec3, state: u32) -> bool {
+        let Some((side, _)) = c.states[state as usize].support else { return true };
+        self.get(p + DIRS[side as usize]).is_none_or(|n| c.supports(state, n))
+    }
+
+    /// Breaks a block that lost its support, dropping what it drops.
+    fn break_off(&mut self, c: &'static Content, p: IVec3, state: u32) {
+        self.set(c, p, AIR);
+        if let Some(item) = c.block_of(state).drop {
+            self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), ItemStack::new(item, c.block_of(state).drop_count.max(1)));
+        }
+        self.call_block(c, state, |b| b.on_broken, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
     }
 
     pub fn finish_tick(&mut self) {
@@ -679,6 +698,9 @@ impl Dim {
             if args.state >= def.first_state && args.state < def.first_state + def.states {
                 chosen = args.state;
             }
+        }
+        if !self.supported(c, p, chosen) {
+            return false;
         }
         self.set(c, p, chosen);
         self.call_block(c, chosen, |b| b.on_placed, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state: chosen, other: [0; 3], entity: player });

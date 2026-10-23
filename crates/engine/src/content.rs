@@ -39,6 +39,8 @@ pub struct StateInfo {
     pub drag: f32,
     /// Block is tagged `core:conductor` (part of energy networks).
     pub conductor: bool,
+    /// Face whose neighbour must hold it up, and the tag that neighbour needs (`None`: solid).
+    pub support: Option<(u8, Option<String>)>,
 }
 
 impl StateInfo {
@@ -221,6 +223,19 @@ impl Content {
         self.block_names.get(name).map(|&b| self.blocks[b as usize].first_state)
     }
 
+    pub fn block_has_tag(&self, state: u32, tag: &str) -> bool {
+        self.states.get(state as usize).is_some_and(|_| self.block_of(state).tags.iter().any(|t| t == tag))
+    }
+
+    /// Whether `neighbour`, on the face the state rests on, holds it up.
+    pub fn supports(&self, state: u32, neighbour: u32) -> bool {
+        match &self.states[state as usize].support {
+            None => true,
+            Some((_, Some(tag))) => self.block_has_tag(neighbour, tag),
+            Some((_, None)) => self.states[neighbour as usize].flags & abi::block_flags::SOLID != 0,
+        }
+    }
+
     pub fn item_has_tag(&self, item: u32, tag: &str) -> bool {
         self.items.get(item as usize).is_some_and(|d| d.tags.iter().any(|t| t == tag))
             || self.items.get(item as usize).and_then(|d| d.block).is_some_and(|s| self.block_of(s).tags.iter().any(|t| t == tag))
@@ -299,6 +314,8 @@ pub struct RawState {
     pub hardness: f32,
     pub friction: f32,
     pub drag: f32,
+    pub support_side: u8,
+    pub support: String,
 }
 
 pub struct RawBlock {
@@ -387,6 +404,8 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 hardness: s.hardness,
                 friction: s.friction,
                 drag: s.drag,
+                support_side: s.support_side,
+                support: s.support.as_str().to_string(),
             })
             .collect();
         RawBlock {
@@ -596,6 +615,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         friction: 0.6,
         drag: 1.0,
         conductor: false,
+        support: None,
     }];
     let mut block_defs = vec![BlockDef {
         name: "core:air".into(),
@@ -663,6 +683,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
                 friction: s.friction,
                 drag: s.drag,
                 conductor: b.tags.iter().any(|t| t == "core:conductor"),
+                support: (s.support_side < 6).then(|| (s.support_side, (!s.support.is_empty()).then(|| s.support.clone()))),
             });
         }
         let drop = if b.drop.is_empty() { b.name.clone() } else { b.drop.clone() };
@@ -820,10 +841,18 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         }
     }
     for g in &games {
-        for (tag, item) in &g.tags {
-            match item_names.get(item) {
-                Some(&i) => item_defs[i as usize].tags.push(tag.clone()),
-                None => errors.push(format!("tag {tag}: unknown item {item}")),
+        // Tags are global: a name tags its block and its item, whichever exist.
+        for (tag, name) in &g.tags {
+            let block = block_names.get(name).copied();
+            let item = item_names.get(name).copied();
+            if let Some(b) = block {
+                block_defs[b as usize].tags.push(tag.clone());
+            }
+            if let Some(i) = item {
+                item_defs[i as usize].tags.push(tag.clone());
+            }
+            if block.is_none() && item.is_none() {
+                errors.push(format!("tag {tag}: unknown block or item {name}"));
             }
         }
     }

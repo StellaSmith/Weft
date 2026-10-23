@@ -67,6 +67,7 @@ pub static HOST: Host = Host {
     item_prop,
     item_info,
     item_has_tag,
+    block_has_tag,
     ui_open: crate::client::modui::ui_open,
     ui_close: crate::client::modui::ui_close,
     ui_text: crate::client::modui::ui_text,
@@ -407,6 +408,10 @@ unsafe extern "C" fn item_info(item: u32, max_stack: *mut u32, durability: *mut 
         }
     }
     d.block.unwrap_or(0)
+}
+
+unsafe extern "C" fn block_has_tag(state: u32, tag: Str) -> u32 {
+    content().block_has_tag(state, unsafe { tag.as_str() }) as u32
 }
 
 unsafe extern "C" fn item_has_tag(item: u32, tag: Str) -> u32 {

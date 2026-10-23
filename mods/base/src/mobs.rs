@@ -2,7 +2,6 @@
 
 use voxide_sdk::*;
 
-use crate::blocks::GRASS;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -200,7 +199,7 @@ fn spawn_around_players(t: &EntityTick) {
             if dark && hostiles < 8 {
                 let kind = if w.random_below(3) == 0 { &SPIDER } else { &ZOMBIE };
                 w.spawn(kind, at);
-            } else if !dark && animals < 6 && w.random_below(20) == 0 && GRASS.is(w.get([x, y - 1, z])) {
+            } else if !dark && animals < 6 && w.random_below(20) == 0 && block_has_tag(w.get([x, y - 1, z]), "base:animal_spawn") {
                 let kind = if w.random_below(2) == 0 { &PIG } else { &COW };
                 for _ in 0..2 + w.random_below(2) {
                     w.spawn(kind, at);

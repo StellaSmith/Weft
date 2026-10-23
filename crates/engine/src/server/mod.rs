@@ -1246,11 +1246,24 @@ impl Server {
         // Enough jobs to keep every worker busy for a whole tick; the backlog counts too so
         // generation never runs far ahead of lighting.
         let budget = rayon::current_num_threads() * 64;
+        let queued: FxHashSet<(u32, IVec3)> = self.backlog.iter().map(|g| (g.dim, g.pos)).collect();
+        // Cubes the backlog waits on (the ones above, see `receive_generated`) go first, whatever
+        // the budget: a backlog that fills the budget waiting for them would stall loading for good.
+        let mut blockers: Vec<(u32, IVec3)> = self
+            .backlog
+            .iter()
+            .map(|g| (g.dim, g.pos + IVec3::Y))
+            .filter(|&(d, p)| self.wanted.contains(&(d, p)) && !self.dims[d as usize].generating.contains(&p) && !queued.contains(&(d, p)))
+            .collect();
+        blockers.sort_unstable_by_key(|&(d, p)| (d, p.x, p.y, p.z));
+        blockers.dedup();
+        for (d, p) in blockers {
+            self.spawn_generation(d, p);
+        }
         let in_flight: usize = self.dims.iter().map(|d| d.generating.len()).sum::<usize>() + self.backlog.len();
         if in_flight >= budget {
             return;
         }
-        let queued: FxHashSet<(u32, IVec3)> = self.backlog.iter().map(|g| (g.dim, g.pos)).collect();
         let mut wanted: Vec<(i32, u32, IVec3)> = Vec::new();
         self.wanted.clear();
         for pi in 0..self.players.len() {
@@ -1343,22 +1356,27 @@ impl Server {
         wanted.sort_by_key(|w| w.0);
         wanted.dedup_by_key(|w| (w.1, w.2));
         for &(_, dim, pos) in wanted.iter().take(budget - in_flight) {
-            self.dims[dim as usize].generating.insert(pos);
-            let tx = self.gen_tx.clone();
-            let seed = self.cfg.seed;
-            let storage = self.storage.clone();
-            let shared = self.shared.clone();
-            rayon::spawn(move || {
-                let t = Instant::now();
-                let loaded = storage.and_then(|s| s.lock().load(dim, pos));
-                let (mut cube, entities) = loaded.unwrap_or_else(|| (dim::generate(content(), dim, seed, pos), Vec::new()));
-                let conn = dim::see_through(content(), &cube);
-                crate::world::light::prelight(content(), &mut cube, content().dims[dim as usize].sky_light);
-                shared.gen_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                shared.generated.fetch_add(1, Ordering::Relaxed);
-                let _ = tx.send(Generated { dim, pos, cube, entities, conn });
-            });
+            self.spawn_generation(dim, pos);
         }
+    }
+
+    /// Loads or generates a cube on the worker pool; it arrives through `gen_rx`.
+    fn spawn_generation(&mut self, dim: u32, pos: IVec3) {
+        self.dims[dim as usize].generating.insert(pos);
+        let tx = self.gen_tx.clone();
+        let seed = self.cfg.seed;
+        let storage = self.storage.clone();
+        let shared = self.shared.clone();
+        rayon::spawn(move || {
+            let t = Instant::now();
+            let loaded = storage.and_then(|s| s.lock().load(dim, pos));
+            let (mut cube, entities) = loaded.unwrap_or_else(|| (dim::generate(content(), dim, seed, pos), Vec::new()));
+            let conn = dim::see_through(content(), &cube);
+            crate::world::light::prelight(content(), &mut cube, content().dims[dim as usize].sky_light);
+            shared.gen_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            shared.generated.fetch_add(1, Ordering::Relaxed);
+            let _ = tx.send(Generated { dim, pos, cube, entities, conn });
+        });
     }
 
     fn sync_players(&mut self, c: &'static Content) {

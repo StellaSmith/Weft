@@ -158,7 +158,10 @@ impl Screen for SettingsScreen {
                 slider(ui, "settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness * 100.0, |c, v| c.settings.brightness = v / 100.0);
                 let scale = if s.gui_scale == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale as i64) };
                 button(ui, cx, "settings.gui_scale", &[scale], 300.0, |c| {
-                    c.settings.gui_scale = (c.settings.gui_scale + 1) % 7;
+                    // Auto, then every scale the window can actually show.
+                    let (w, h) = c.stats.window;
+                    let max = (w / 320).min(h / 240).max(1);
+                    c.settings.gui_scale = if c.settings.gui_scale >= max { 0 } else { c.settings.gui_scale + 1 };
                     c.requests.push(Request::Rebuild);
                 });
                 button(ui, cx, "settings.vsync", &[on_off(s.vsync)], 300.0, |c| {

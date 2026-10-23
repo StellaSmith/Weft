@@ -125,7 +125,7 @@ pub fn register(r: &mut Registry) {
         .on_change(|m| craft_result(m, 0, 3, 9))
         .on_take(|m| consume_grid(m, 0, 9))
         .screen(|ui| {
-            ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+            ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
                 ui.text("container.crafting");
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();

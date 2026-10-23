@@ -157,6 +157,21 @@ impl UiRenderer {
         }
     }
 
+    /// Repeats the texture every `size` physical pixels from the rect's corner.
+    pub fn tile(&mut self, r: Rect, tex: (u32, u32, u32), size: f32, color: u32) {
+        let mut y = r.y;
+        while y < r.y + r.h {
+            let h = size.min(r.y + r.h - y);
+            let mut x = r.x;
+            while x < r.x + r.w {
+                let w = size.min(r.x + r.w - x);
+                self.image(Rect { x, y, w, h }, tex.0, [0.0, 0.0, w / size, h / size], color);
+                x += size;
+            }
+            y += size;
+        }
+    }
+
     pub fn glyph_run(&mut self, items: &[Placed], x: f32, y: f32, px: f32, default_color: u32, shadow: Option<u32>, icons: &mut Vec<(f32, f32, f32, u32)>) {
         for pass in [true, false] {
             if pass && shadow.is_none() {
@@ -364,6 +379,7 @@ impl UiRenderer {
             let name = theme.get(class, state).or_else(|| theme.get(class, "texture")).map(str::to_string);
             let color = theme.color(class, "color", 0xFFFFFFFF);
             match name.and_then(|n| me.texture(gpu, assets, &n)) {
+                Some(t) if theme.get(class, "tile").is_some() => me.tile(r, t, theme.num(class, "tile", 32.0) * scale, color),
                 Some(t) => me.nine(r, t, theme.num(class, "border", 3.0), scale, color),
                 None => {
                     if let Some(fill) = theme.get(class, "fill") {

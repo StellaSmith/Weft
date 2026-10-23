@@ -347,7 +347,7 @@ pub fn stack_icon(ren: &mut UiRenderer, textures: &GameTextures, r: Rect, stack:
         let px = scale * text_unit;
         let spans = text::plain(&stack.count.to_string());
         let layout = text::layout(&spans, &ren.font, None);
-        let tx = x + s - layout.width * px + scale;
+        let tx = x + s - layout.width * px;
         let ty = y + s - 16.0 * px + scale;
         let mut icons = Vec::new();
         ren.glyph_run(&layout.items, tx, ty, px, 0xFFFFFFFF, Some(0x3F3F3FFF), &mut icons);

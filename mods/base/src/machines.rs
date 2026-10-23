@@ -52,7 +52,7 @@ pub fn register(r: &mut Registry) {
             }
         })
         .screen(|ui| {
-            ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+            ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
                 ui.text("container.furnace");
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();

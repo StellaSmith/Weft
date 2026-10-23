@@ -106,6 +106,11 @@ impl S {
         self.justify = 1;
         self
     }
+    /// Children fill the cross axis (rows as wide as the column), so `spacer()`s can centre.
+    pub fn stretch(mut self) -> S {
+        self.align = 3;
+        self
+    }
     pub fn end(mut self) -> S {
         self.justify = 2;
         self

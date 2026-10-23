@@ -23,6 +23,7 @@ tooltip.texture = base:gui/tooltip
 tooltip.border = 3
 background.texture = base:gui/background
 background.color = #ffffff
+background.tile = 32
 hearts.full = base:gui/heart_full
 hearts.half = base:gui/heart_half
 hearts.empty = base:gui/heart_empty

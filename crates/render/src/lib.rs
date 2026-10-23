@@ -36,6 +36,7 @@ pub mod usage {
     /// Persistently mapped and written directly by the CPU. The caller must not overwrite a range the
     /// GPU may still read (use one range per frame in flight).
     pub const HOST: u32 = 8;
+    pub const INDEX: u32 = 16;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,12 +135,27 @@ pub enum Cmd {
     Scissor { x: i32, y: i32, w: u32, h: u32 },
     Draw { vertices: u32, instances: u32, first_vertex: u32, first_instance: u32 },
     DrawIndirect { buffer: BufferId, offset: u64, count: u32 },
+    /// 32-bit indices for the following indexed draws.
+    IndexBuffer(BufferId),
+    /// `count` [`DrawIndexedArgs`] records.
+    DrawIndexedIndirect { buffer: BufferId, offset: u64, count: u32 },
     DrawIndirectCount { buffer: BufferId, offset: u64, count_buffer: BufferId, count_offset: u64, max: u32 },
     Dispatch { x: u32, y: u32, z: u32 },
     /// Makes shader writes visible to later commands. Only needed between compute and its consumers.
     Barrier,
     /// GPU timestamp, see [`Backend::gpu_times`].
     Mark,
+}
+
+/// Layout of one indexed indirect draw, matches every API we care about.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DrawIndexedArgs {
+    pub indices: u32,
+    pub instances: u32,
+    pub first_index: u32,
+    pub vertex_offset: i32,
+    pub first_instance: u32,
 }
 
 /// Layout of one non-indexed indirect draw, matches every API we care about.

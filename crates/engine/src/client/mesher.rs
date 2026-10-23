@@ -140,8 +140,16 @@ pub fn build(c: &Content, n: &Neighborhood) -> Mesh {
             }
         }
     }
+    // Grouped by direction so the renderer can skip faces turned away from the camera.
+    for faces in &mut mesh.faces {
+        faces.sort_by_key(|f| DIR_RANK[((f[0] >> 12) & 7) as usize]);
+    }
     mesh
 }
+
+/// Order of face directions in a mesh: all positive, then all negative, so the directions seen
+/// from one octant are mostly one contiguous range.
+pub const DIR_RANK: [u8; 6] = [3, 0, 4, 1, 5, 2];
 
 fn box_uv(dir: usize, min: [f32; 3], max: [f32; 3]) -> [u32; 4] {
     let p = |v: f32| (v * 16.0).round().clamp(0.0, 16.0) as u32;

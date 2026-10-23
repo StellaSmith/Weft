@@ -951,6 +951,9 @@ impl Backend for VulkanBackend {
         if usage & usage::STORAGE != 0 {
             flags |= vk::BufferUsageFlags::STORAGE_BUFFER;
         }
+        if usage & usage::INDEX != 0 {
+            flags |= vk::BufferUsageFlags::INDEX_BUFFER;
+        }
         if usage & usage::INDIRECT != 0 {
             flags |= vk::BufferUsageFlags::INDIRECT_BUFFER;
         }
@@ -1428,6 +1431,14 @@ impl Backend for VulkanBackend {
                     Cmd::DrawIndirect { buffer, offset, count } => {
                         let b = self.buffers.get(buffer.0).raw;
                         self.device.cmd_draw_indirect(cmd, b, offset, count, size_of::<DrawArgs>() as u32);
+                    }
+                    Cmd::IndexBuffer(buffer) => {
+                        let b = self.buffers.get(buffer.0).raw;
+                        self.device.cmd_bind_index_buffer(cmd, b, 0, vk::IndexType::UINT32);
+                    }
+                    Cmd::DrawIndexedIndirect { buffer, offset, count } => {
+                        let b = self.buffers.get(buffer.0).raw;
+                        self.device.cmd_draw_indexed_indirect(cmd, b, offset, count, size_of::<DrawIndexedArgs>() as u32);
                     }
                     Cmd::DrawIndirectCount { buffer, offset, count_buffer, count_offset, max } => {
                         let b = self.buffers.get(buffer.0).raw;

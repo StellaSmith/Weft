@@ -12,6 +12,8 @@ use crate::content::Content;
 const FACE_WORDS: u32 = 4;
 const QUAD_WORDS: u32 = 8;
 const PAGE_BYTES: u64 = 64 << 20;
+/// A cube holds at most 6 * 4096 faces; plants and boxes add a few quads per block.
+const MAX_QUADS_PER_DRAW: u32 = 6 * 4096 * 2;
 
 #[derive(Clone, Copy)]
 struct Alloc {
@@ -67,7 +69,8 @@ impl Pool {
 
 struct GpuMesh {
     faces: Option<Alloc>,
-    face_counts: [u32; 3],
+    /// Per layer, per direction rank (see `mesher::DIR_RANK`).
+    face_counts: [[u32; 6]; 3],
     quads: Option<Alloc>,
     quad_counts: [u32; 3],
 }
@@ -129,6 +132,9 @@ pub struct WorldRenderer {
     biomes: BufferId,
     tex_info: BufferId,
     anim: BufferId,
+    /// (0 1 2)(0 2 3) for as many quads as one draw can hold; every face and quad draw shares it
+    /// so each corner is shaded once instead of once per triangle.
+    quad_index: BufferId,
     block_index: u32,
     pub drawn: u32,
     pub faces_drawn: u64,
@@ -180,6 +186,10 @@ impl WorldRenderer {
         let biomes = gpu.create_buffer((biome_data.len() * 16) as u64, usage::STORAGE, "biomes");
         gpu.write_buffer(biomes, 0, bytemuck::cast_slice(&biome_data));
 
+        let indices: Vec<u32> = (0..MAX_QUADS_PER_DRAW).flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q * 4 + i)).collect();
+        let quad_index = gpu.create_buffer((indices.len() * 4) as u64, usage::INDEX, "quad indices");
+        gpu.write_buffer(quad_index, 0, bytemuck::cast_slice(&indices));
+
         let frames = gpu.frames_in_flight();
         let globals = (0..frames).map(|_| gpu.create_buffer(size_of::<Globals>() as u64, usage::STORAGE | usage::HOST, "globals")).collect();
         Ok(WorldRenderer {
@@ -194,6 +204,7 @@ impl WorldRenderer {
             biomes,
             tex_info,
             anim,
+            quad_index,
             block_index: textures.block_index,
             drawn: 0,
             faces_drawn: 0,
@@ -261,7 +272,7 @@ impl WorldRenderer {
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
-        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim]) {
+        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index]) {
             gpu.destroy_buffer(b);
         }
         for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)) {
@@ -284,9 +295,15 @@ impl WorldRenderer {
         if mesh.is_empty() {
             return;
         }
-        let face_counts = mesh.faces.each_ref().map(|v| v.len() as u32);
+        let face_counts = mesh.faces.each_ref().map(|v| {
+            let mut n = [0u32; 6];
+            for f in v {
+                n[super::mesher::DIR_RANK[((f[0] >> 12) & 7) as usize] as usize] += 1;
+            }
+            n
+        });
         let quad_counts = mesh.quads.each_ref().map(|v| v.len() as u32);
-        let total_f: u32 = face_counts.iter().sum();
+        let total_f: u32 = face_counts.iter().flatten().sum();
         let total_q: u32 = quad_counts.iter().sum();
         let faces = (total_f > 0).then(|| {
             let a = self.faces.alloc(gpu, total_f);
@@ -344,21 +361,39 @@ impl WorldRenderer {
         visible.sort_by(|a, b| a.1.total_cmp(&b.1));
 
         // Draw records: (kind 0 faces / 1 quads, layer, page, args, origin)
-        let mut draws: Vec<(u8, u8, u32, DrawArgs, [i32; 4])> = Vec::new();
+        let mut draws: Vec<(u8, u8, u32, DrawIndexedArgs, [i32; 4])> = Vec::new();
         let mut faces_drawn = 0u64;
         for &(pos, _) in &visible {
             let m = &self.meshes[&pos];
             let rel = pos - cam_cube;
             let origin = [rel.x, rel.y, rel.z, 0];
             if let Some(a) = m.faces {
+                // Directions by rank: +X +Y +Z -X -Y -Z. A face direction can be seen only from
+                // the side its normal points to; contiguous visible runs become one draw.
+                let lo = (pos - cam_cube).as_vec3() * 16.0 - cam_frac;
+                let seen = [lo.x < 0.0, lo.y < 0.0, lo.z < 0.0, lo.x > -16.0, lo.y > -16.0, lo.z > -16.0];
                 let mut off = a.offset;
                 for layer in 0..3 {
-                    let n = m.face_counts[layer];
-                    if n > 0 {
-                        draws.push((0, layer as u8, a.page, DrawArgs { vertices: n * 6, instances: 1, first_vertex: off * 6, first_instance: 0 }, origin));
-                        faces_drawn += n as u64;
+                    let counts = m.face_counts[layer];
+                    let mut run: Option<(u32, u32)> = None;
+                    for rank in 0..6 {
+                        let n = counts[rank];
+                        if n > 0 && seen[rank] {
+                            faces_drawn += n as u64;
+                            run = Some(match run {
+                                Some((s, len)) => (s, len + n),
+                                None => (off, n),
+                            });
+                        } else if n > 0 {
+                            if let Some((s, len)) = run.take() {
+                                draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin));
+                            }
+                        }
+                        off += n;
                     }
-                    off += n;
+                    if let Some((s, len)) = run {
+                        draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin));
+                    }
                 }
             }
             if let Some(a) = m.quads {
@@ -366,14 +401,14 @@ impl WorldRenderer {
                 for layer in 0..3 {
                     let n = m.quad_counts[layer];
                     if n > 0 {
-                        draws.push((1, layer as u8, a.page, DrawArgs { vertices: n * 6, instances: 1, first_vertex: off * 6, first_instance: 0 }, origin));
+                        draws.push((1, layer as u8, a.page, DrawIndexedArgs { indices: n * 6, instances: 1, first_index: 0, vertex_offset: (off * 4) as i32, first_instance: 0 }, origin));
                     }
                     off += n;
                 }
             }
         }
         // Opaque/cutout front to back (early depth rejection), translucent back to front.
-        let order = |d: &(u8, u8, u32, DrawArgs, [i32; 4])| (d.1 == 2, d.1, d.0, d.2);
+        let order = |d: &(u8, u8, u32, DrawIndexedArgs, [i32; 4])| (d.1 == 2, d.1, d.0, d.2);
         let mut sorted: Vec<usize> = (0..draws.len()).collect();
         sorted.sort_by_key(|&i| order(&draws[i]));
         let translucent_start = sorted.iter().position(|&i| draws[i].1 == 2).unwrap_or(sorted.len());
@@ -390,9 +425,9 @@ impl WorldRenderer {
         }
         let frames = gpu.frames_in_flight();
         let obuf = Self::ensure_host(gpu, &mut self.origins, frame.slot, frames, n, 16, usage::STORAGE, "origins");
-        let ibuf = Self::ensure_host(gpu, &mut self.indirect, frame.slot, frames, n, 16, usage::INDIRECT, "indirect");
+        let ibuf = Self::ensure_host(gpu, &mut self.indirect, frame.slot, frames, n, 20, usage::INDIRECT, "indirect");
         {
-            let mut args: Vec<DrawArgs> = Vec::with_capacity(n as usize);
+            let mut args: Vec<DrawIndexedArgs> = Vec::with_capacity(n as usize);
             let mut origins: Vec<[i32; 4]> = Vec::with_capacity(n as usize);
             for (k, &i) in sorted.iter().enumerate() {
                 let mut a = draws[i].3;
@@ -401,9 +436,10 @@ impl WorldRenderer {
                 origins.push(draws[i].4);
             }
             gpu.mapped(obuf)[..origins.len() * 16].copy_from_slice(bytemuck::cast_slice(&origins));
-            gpu.mapped(ibuf)[..args.len() * 16].copy_from_slice(bytemuck::cast_slice(&args));
+            gpu.mapped(ibuf)[..args.len() * 20].copy_from_slice(bytemuck::cast_slice(&args));
         }
 
+        list.push(Cmd::IndexBuffer(self.quad_index));
         let mut k = 0usize;
         while k < sorted.len() {
             let (kind, layer, page) = (draws[sorted[k]].0, draws[sorted[k]].1, draws[sorted[k]].2);
@@ -427,7 +463,7 @@ impl WorldRenderer {
             list.bind(3, self.biomes);
             list.bind(4, self.tex_info);
             list.bind(5, self.anim);
-            list.push(Cmd::DrawIndirect { buffer: ibuf, offset: k as u64 * 16, count: (end - k) as u32 });
+            list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: k as u64 * 20, count: (end - k) as u32 });
             k = end;
         }
     }

@@ -108,7 +108,7 @@ fn finish(local: vec3<f32>, origin: vec4<i32>) -> vec4<f32> {
 
 @vertex
 fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    let f = vi / 6u;
+    let f = vi / 4u;
     let w0 = records[f * 4u];
     let w1 = records[f * 4u + 1u];
     let w2 = records[f * 4u + 2u];
@@ -116,9 +116,10 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let ao = (w0 >> 16u) & 255u;
     let a = vec4<u32>(ao & 3u, (ao >> 2u) & 3u, (ao >> 4u) & 3u, (ao >> 6u) & 3u);
     let flip = a.x + a.z < a.y + a.w;
-    var c = TRI[vi % 6u];
+    // Indexed as (0 1 2)(0 2 3); starting one corner later puts the diagonal on 1-3.
+    var c = vi % 4u;
     if flip {
-        c = TRI_FLIP[vi % 6u];
+        c = (c + 1u) % 4u;
     }
     let dir = (w0 >> 12u) & 7u;
     let local = vec3<f32>(f32(w0 & 15u), f32((w0 >> 4u) & 15u), f32((w0 >> 8u) & 15u)) + CORNERS[dir * 4u + c];
@@ -147,8 +148,8 @@ fn decode_pos(w: u32) -> vec3<f32> {
 
 @vertex
 fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    let q = vi / 6u;
-    let c = TRI[vi % 6u];
+    let q = vi / 4u;
+    let c = vi % 4u;
     let base = q * 8u;
     let p0 = decode_pos(records[base]);
     let p1 = decode_pos(records[base + 1u]);

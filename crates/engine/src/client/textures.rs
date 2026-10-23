@@ -15,9 +15,9 @@ pub struct GameTextures {
     pub item_layers: Vec<(u32, u32)>,
 }
 
-fn upload(gpu: &mut dyn Backend, assets: &Assets, names: &[String], label: &str) -> (TextureId, Vec<(u32, u32)>, Vec<Option<crate::assets::Anim>>) {
+fn upload(gpu: &mut dyn Backend, assets: &Assets, names: &[String], composites: &[[u32; 4]], label: &str) -> (TextureId, Vec<(u32, u32)>, Vec<Option<crate::assets::Anim>>) {
     let t = std::time::Instant::now();
-    let array = build_array(assets, names);
+    let array = build_array(assets, names, composites);
     let tex = gpu.create_texture(
         &TextureDesc {
             width: array.size,
@@ -37,9 +37,18 @@ fn upload(gpu: &mut dyn Backend, assets: &Assets, names: &[String], label: &str)
 }
 
 impl GameTextures {
+    pub fn destroy(&self, gpu: &mut dyn Backend) {
+        gpu.destroy_texture(self.block_array);
+        gpu.destroy_texture(self.item_array);
+    }
+
+    /// Also loads the connected texture rules, whose tiles go into the block array.
     pub fn new(gpu: &mut dyn Backend, c: &Content, assets: &Assets) -> GameTextures {
-        let (block_array, block_layers, block_anims) = upload(gpu, assets, &c.block_textures, "block textures");
-        let (item_array, item_layers, _) = upload(gpu, assets, &c.item_textures, "item textures");
+        let (ctm, extra) = super::ctm::load(assets, c);
+        super::ctm::set(ctm);
+        let names: Vec<String> = c.block_textures.iter().chain(&extra.names).cloned().collect();
+        let (block_array, block_layers, block_anims) = upload(gpu, assets, &names, &extra.composites, "block textures");
+        let (item_array, item_layers, _) = upload(gpu, assets, &c.item_textures, &[], "item textures");
         GameTextures {
             block_index: gpu.texture_index(block_array),
             block_array,

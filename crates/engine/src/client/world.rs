@@ -160,6 +160,14 @@ impl ClientWorld {
         self.touch(cp, border);
     }
 
+    /// Remeshes every cube, e.g. after textures were reloaded.
+    pub fn remesh_all(&mut self) {
+        let all: Vec<IVec3> = self.cubes.keys().copied().collect();
+        for p in all {
+            self.touch(p, false);
+        }
+    }
+
     pub fn retint_all(&mut self) {
         self.tints_dirty.extend(self.columns.keys().copied());
     }
@@ -284,9 +292,10 @@ impl ClientWorld {
             self.in_flight.insert(pos);
             let hidden = self.hidden.get(&pos).copied().unwrap_or(0);
             let filler = self.filler;
+            let ctm = super::ctm::current();
             rayon::spawn(move || {
-                let n = neighborhood(&around, hidden, filler);
-                let mesh = mesher::build(content(), &n);
+                let n = neighborhood(&around, hidden, filler, pos);
+                let mesh = mesher::build(content(), &n, &ctm);
                 let _ = tx.send(MeshResult { pos, version, mesh });
             });
         }
@@ -317,7 +326,7 @@ impl ClientWorld {
     }
 }
 
-fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32) -> Neighborhood {
+fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32, pos: IVec3) -> Neighborhood {
     let mut states = Box::new([AIR; PAD_VOLUME]);
     let mut light = Box::new([15u32; PAD_VOLUME]);
     let mut biomes = [0u8; 256];
@@ -358,5 +367,5 @@ fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32) -> Ne
             }
         }
     }
-    Neighborhood { states, light, biomes }
+    Neighborhood { states, light, biomes, origin: (pos * 16).to_array() }
 }

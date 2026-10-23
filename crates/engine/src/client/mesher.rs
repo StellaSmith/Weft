@@ -21,6 +21,8 @@ pub struct Neighborhood {
     pub light: Box<[u32; PAD_VOLUME]>,
     /// Biome id per column of the centre cube.
     pub biomes: [u8; 256],
+    /// World position of the cube's first block.
+    pub origin: [i32; 3],
 }
 
 #[derive(Default)]
@@ -49,13 +51,18 @@ const CORNERS: [[[i32; 3]; 4]; 6] = [
 
 const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
+#[cfg(test)]
+pub fn corners(dir: usize) -> [[i32; 3]; 4] {
+    CORNERS[dir]
+}
+
 #[inline]
 fn light16(l: u32) -> u32 {
     let c = |s: u32| ((l >> s) & 0xFF).min(15);
     c(0) | c(8) << 4 | c(16) << 8 | c(24) << 12
 }
 
-pub fn build(c: &Content, n: &Neighborhood) -> Mesh {
+pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
     let mut mesh = Mesh::default();
     let states = &n.states;
     let opaque = |i: usize| c.states[states[i] as usize].flags & bf::OPAQUE != 0;
@@ -87,7 +94,8 @@ pub fn build(c: &Content, n: &Neighborhood) -> Mesh {
                             let (ao, light) = corner_data(n, &opaque, x, y, z, dir);
                             let w0 = x as u32 | (y as u32) << 4 | (z as u32) << 8 | (dir as u32) << 12 | ao << 16;
                             let tint = if info.tint_faces & (1 << dir) != 0 { info.tint as u32 } else { 0 };
-                            let w1 = info.textures[dir] & 0xFFFF | biome << 16 | tint << 24;
+                            let tex = ctm.resolve(c, n, x, y, z, dir, info.textures[dir] & 0xFFFF);
+                            let w1 = tex | biome << 16 | tint << 24;
                             mesh.faces[info.layer as usize].push([w0, w1, light[0] | light[1] << 16, light[2] | light[3] << 16]);
                         }
                     }

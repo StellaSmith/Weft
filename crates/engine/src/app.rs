@@ -1072,9 +1072,13 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.ui.reload(&mut *r.gpu);
         r.theme = Theme::load(&r.assets);
         r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);
+        r.textures.destroy(&mut *r.gpu);
+        r.textures = GameTextures::new(&mut *r.gpu, content(), &r.assets);
         if let Some(g) = &mut r.game {
             g.client.render.reload_shaders(&mut *r.gpu);
+            g.client.render.set_textures(&mut *r.gpu, &r.textures);
             g.client.entity_render.reload(&mut *r.gpu);
+            g.client.world.remesh_all();
         }
         r.rebuild_all();
         log::info!("assets reloaded");

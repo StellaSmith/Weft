@@ -200,8 +200,10 @@ pub fn parse_anim(src: &str, frame_count: u32, first: u32) -> Anim {
     Anim { frames: order.into_iter().map(|(i, d)| (first + i, d.unwrap_or(frametime).max(1))).collect(), interpolate }
 }
 
-/// Animated textures are vertical strips of square frames.
-pub fn build_array(assets: &Assets, names: &[String]) -> TextureArray {
+/// Animated textures are vertical strips of square frames. Each composite is one more texture
+/// made of the top-left, top-right, bottom-left and bottom-right quarters of the first frames of
+/// four textures given by index.
+pub fn build_array(assets: &Assets, names: &[String], composites: &[[u32; 4]]) -> TextureArray {
     let images: Vec<Option<Image>> = names
         .par_iter()
         .map(|n| {
@@ -245,6 +247,22 @@ pub fn build_array(assets: &Assets, names: &[String]) -> TextureArray {
         anims.push(if count > 1 || meta.is_some() { Some(parse_anim(meta.as_deref().unwrap_or(""), count, first)) } else { None });
         entries.push((first, count));
         layers.extend(frames);
+    }
+    let half = (size / 2) as usize;
+    for parts in composites {
+        let mut out = vec![0u8; (size * size * 4) as usize];
+        for (q, &src) in parts.iter().enumerate() {
+            let Some(&(layer, _)) = entries.get(src as usize) else { continue };
+            let from = &layers[layer as usize];
+            let (qx, qy) = ((q % 2) * half, (q / 2) * half);
+            for y in qy..qy + half {
+                let row = (y * size as usize + qx) * 4;
+                out[row..row + half * 4].copy_from_slice(&from[row..row + half * 4]);
+            }
+        }
+        entries.push((layers.len() as u32, 1));
+        anims.push(None);
+        layers.push(out);
     }
     let mip_count = size.trailing_zeros() + 1;
     let mut mips = Vec::with_capacity(mip_count as usize);

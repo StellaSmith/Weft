@@ -620,8 +620,12 @@ impl Running {
                     Kind::Custom { tag: crate::client::modui::TAG_CREATIVE, data } => Some(data as u32),
                     _ => None,
                 });
-                if let (Some(item), true) = (creative_item, self.input.pressed_button(0)) {
-                    g.client.send(net::ToServer::CreativeTake { item });
+                if let Some(item) = creative_item {
+                    for button in [0u8, 1] {
+                        if self.input.pressed_button(button) {
+                            g.client.send(net::ToServer::CreativeTake { item, button });
+                        }
+                    }
                 }
                 // Tooltip with the hovered item's name.
                 if let Some(h) = hovered {

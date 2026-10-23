@@ -124,6 +124,13 @@ impl Registry {
         unsafe { (host().reg_biome)(self.raw, &desc) }
     }
 
+    /// Creative inventory tab named `tab.<ns>.<name>` in the language files, shown with `icon`.
+    /// Blocks and items join with `.tab(name)`; untabbed items land in a tab named after the mod.
+    pub fn creative_tab(&mut self, name: &str, icon: &str) {
+        let (name, icon) = (qualify(self.ns, name), qualify(self.ns, icon));
+        unsafe { (host().reg_creative_tab)(self.raw, Str::new(&name), Str::new(&icon)) }
+    }
+
     /// Ore veins of `block` in any mod's dimension, e.g.
     /// `r.ore("base:overworld", "tin_ore").y(0, 64).veins(6).size(8).replace("base:stone")`.
     pub fn ore<'a>(&'a mut self, dimension: &str, block: &str) -> OreBuilder<'a> {
@@ -468,6 +475,12 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Creative inventory tab of the block's item, see `Registry::creative_tab`.
+    pub fn tab(mut self, tab: &str) -> Self {
+        self.tags.push(format!("tab/{}", qualify(self.reg.ns, tab)));
+        self
+    }
+
     /// Arbitrary typed data other mods can read by key, e.g. `"base:flammable"`.
     pub fn prop<T: Copy>(mut self, key: &str, value: T) -> Self {
         self.props.push((key.to_string(), pod_bytes(&value)));
@@ -689,6 +702,11 @@ impl ItemBuilder<'_> {
     }
     pub fn tag(mut self, tag: &str) -> Self {
         self.tags.push(tag.to_string());
+        self
+    }
+    /// Creative inventory tab, see `Registry::creative_tab`.
+    pub fn tab(mut self, tab: &str) -> Self {
+        self.tags.push(format!("tab/{}", qualify(self.ns, tab)));
         self
     }
     pub fn prop<T: Copy>(mut self, key: &str, value: T) -> Self {

@@ -83,7 +83,8 @@ fn log(r: &mut Registry, name: &str, handle: &'static Block, wood: &str) {
             1 => s.faces([&top, &top, &side, &side, &side, &side]),
             _ => s.faces([&side, &side, &side, &side, &top, &top]),
         })
-        .placement(axis_placement);
+        .placement(axis_placement)
+        .tab("natural");
 }
 
 fn leaves(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
@@ -95,7 +96,8 @@ fn leaves(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
         .tint_foliage()
         .tag("base:leaves")
         .drops("sapling", 1)
-        .tool("shears", 0);
+        .tool("shears", 0)
+        .tab("natural");
 }
 
 /// Liquid states: level 0..7 (0 = source) plus 8 for "falling".
@@ -210,7 +212,7 @@ fn liquid(r: &mut Registry, name: &str, handle: &'static Block, still: &str, flo
 }
 
 fn plant(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
-    r.block(name, handle).texture(tex).plant().on_neighbor(|e| {
+    r.block(name, handle).texture(tex).plant().tab("natural").on_neighbor(|e| {
         let w = e.world();
         let p = e.pos();
         let below = w.get([p[0], p[1] - 1, p[2]]);
@@ -222,35 +224,35 @@ fn plant(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
 
 pub fn register(r: &mut Registry) {
     // harvest level N > 0 needs a matching tool of tier N-1 (wood 0, stone 1, iron 2, diamond 3).
-    r.block("stone", &STONE).hardness(1.5).tool("pickaxe", 1).drops("cobblestone", 1).tag("base:stone");
-    r.block("cobblestone", &COBBLESTONE).hardness(2.0).tool("pickaxe", 1).tag("base:stone");
-    r.block("mossy_cobblestone", &MOSSY_COBBLESTONE).hardness(2.0).tool("pickaxe", 1);
-    r.block("dirt", &DIRT).hardness(0.5).tool("shovel", 0);
+    r.block("stone", &STONE).hardness(1.5).tool("pickaxe", 1).drops("cobblestone", 1).tag("base:stone").tab("building");
+    r.block("cobblestone", &COBBLESTONE).hardness(2.0).tool("pickaxe", 1).tag("base:stone").tab("building");
+    r.block("mossy_cobblestone", &MOSSY_COBBLESTONE).hardness(2.0).tool("pickaxe", 1).tab("building");
+    r.block("dirt", &DIRT).hardness(0.5).tool("shovel", 0).tab("natural");
     r.block("grass", &GRASS)
         .textures("grass_top", "grass_side", "dirt")
         .tint_grass_top()
         .hardness(0.6)
         .tool("shovel", 0)
         .drops("dirt", 1)
-        .random_ticks(grass_tick);
-    r.block("snowy_grass", &SNOWY_GRASS).textures("snow", "grass_snow_side", "dirt").hardness(0.6).tool("shovel", 0).drops("dirt", 1);
-    r.block("sand", &SAND).hardness(0.5).tool("shovel", 0);
-    r.block("gravel", &GRAVEL).hardness(0.6).tool("shovel", 0);
-    r.block("clay", &CLAY).hardness(0.6).tool("shovel", 0);
-    r.block("sandstone", &SANDSTONE).textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).tool("pickaxe", 1);
-    r.block("snow", &SNOW).hardness(0.2).tool("shovel", 0);
-    r.block("ice", &ICE).hardness(0.5).translucent().opacity(2).friction(0.98).tool("pickaxe", 0).drops_nothing();
-    r.block("obsidian", &OBSIDIAN).hardness(50.0).tool("pickaxe", 4);
-    r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 1).drops("coal", 1).tag("base:ores");
-    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores");
-    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).tag("base:ores");
-    r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 3).drops("diamond", 1).tag("base:ores");
+        .random_ticks(grass_tick).tab("natural");
+    r.block("snowy_grass", &SNOWY_GRASS).textures("snow", "grass_snow_side", "dirt").hardness(0.6).tool("shovel", 0).drops("dirt", 1).tab("natural");
+    r.block("sand", &SAND).hardness(0.5).tool("shovel", 0).tab("natural");
+    r.block("gravel", &GRAVEL).hardness(0.6).tool("shovel", 0).tab("natural");
+    r.block("clay", &CLAY).hardness(0.6).tool("shovel", 0).tab("natural");
+    r.block("sandstone", &SANDSTONE).textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).tool("pickaxe", 1).tab("building");
+    r.block("snow", &SNOW).hardness(0.2).tool("shovel", 0).tab("natural");
+    r.block("ice", &ICE).hardness(0.5).translucent().opacity(2).friction(0.98).tool("pickaxe", 0).drops_nothing().tab("natural");
+    r.block("obsidian", &OBSIDIAN).hardness(50.0).tool("pickaxe", 4).tab("natural");
+    r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 1).drops("coal", 1).tag("base:ores").tab("natural");
+    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores").tab("natural");
+    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).tag("base:ores").tab("natural");
+    r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 3).drops("diamond", 1).tag("base:ores").tab("natural");
 
     log(r, "oak_log", &OAK_LOG, "oak");
     log(r, "birch_log", &BIRCH_LOG, "birch");
     log(r, "spruce_log", &SPRUCE_LOG, "spruce");
     for (name, h, tex) in [("oak_planks", &OAK_PLANKS, "planks_oak"), ("birch_planks", &BIRCH_PLANKS, "planks_birch"), ("spruce_planks", &SPRUCE_PLANKS, "planks_spruce")] {
-        r.block(name, h).texture(tex).hardness(2.0).tool("axe", 0).tag("base:planks").prop("base:flammable", 5u32).prop("base:fuel", 300u32);
+        r.block(name, h).texture(tex).hardness(2.0).tool("axe", 0).tag("base:planks").prop("base:flammable", 5u32).prop("base:fuel", 300u32).tab("building");
     }
     leaves(r, "oak_leaves", &OAK_LEAVES, "leaves_oak");
     leaves(r, "birch_leaves", &BIRCH_LEAVES, "leaves_birch");
@@ -262,13 +264,13 @@ pub fn register(r: &mut Registry) {
     r.block("tall_grass", &TALL_GRASS).texture("tallgrass").plant().tint_grass().drops("wheat_seeds", 1).no_item();
     plant(r, "dandelion", &DANDELION, "flower_dandelion");
     plant(r, "rose", &ROSE, "flower_rose");
-    r.block("sapling", &SAPLING).texture("sapling_oak").plant().random_ticks(|e| grow_sapling(e.world(), e.pos()));
-    r.block("sugar_cane", &SUGAR_CANE).texture("reeds").plant().random_ticks(|e| grow_column(e, &SUGAR_CANE));
+    r.block("sapling", &SAPLING).texture("sapling_oak").plant().random_ticks(|e| grow_sapling(e.world(), e.pos())).tab("natural");
+    r.block("sugar_cane", &SUGAR_CANE).texture("reeds").plant().random_ticks(|e| grow_column(e, &SUGAR_CANE)).tab("natural");
     r.block("cactus", &CACTUS)
         .textures("cactus_top", "cactus_side", "cactus_top")
         .model_box_faces([1.0, 0.0, 1.0], [15.0, 16.0, 15.0], ["cactus_side", "cactus_side", "cactus_top", "cactus_top", "cactus_side", "cactus_side"])
         .hardness(0.4)
-        .random_ticks(|e| grow_column(e, &CACTUS));
+        .random_ticks(|e| grow_column(e, &CACTUS)).tab("natural");
     r.block("wheat", &WHEAT)
         .states(8, |i, s| s.texture(&format!("wheat_stage_{i}")))
         .plant()
@@ -287,21 +289,22 @@ pub fn register(r: &mut Registry) {
         .flags(0, 0)
         .hardness(0.6)
         .tool("shovel", 0)
-        .drops("dirt", 1);
+        .drops("dirt", 1)
+        .tab("natural");
 
-    r.block("glass", &GLASS).cutout().cull_same().hardness(0.3).drops_nothing();
+    r.block("glass", &GLASS).cutout().cull_same().hardness(0.3).drops_nothing().tab("building");
     for (name, col) in [("red", [0u8, 12, 12]), ("green", [12, 0, 12]), ("blue", [12, 12, 0])] {
-        r.block(&format!("{name}_stained_glass"), leak()).texture(&format!("glass_{name}")).translucent().filter(col[0], col[1], col[2]).hardness(0.3);
+        r.block(&format!("{name}_stained_glass"), leak()).texture(&format!("glass_{name}")).translucent().filter(col[0], col[1], col[2]).hardness(0.3).tab("colored");
     }
     for (name, rgb) in [("red", [15u8, 3, 2]), ("green", [2, 15, 4]), ("blue", [3, 6, 15])] {
-        r.block(&format!("{name}_lamp"), leak()).texture(&format!("lamp_{name}")).light_rgb(rgb[0], rgb[1], rgb[2]).hardness(0.3);
+        r.block(&format!("{name}_lamp"), leak()).texture(&format!("lamp_{name}")).light_rgb(rgb[0], rgb[1], rgb[2]).hardness(0.3).tab("colored");
     }
     r.block("crafting_table", &CRAFTING_TABLE)
         .faces(["crafting_table_side", "crafting_table_side", "planks_oak", "crafting_table_top", "crafting_table_front", "crafting_table_front"])
         .hardness(2.5)
         .tool("axe", 0)
         .prop("base:fuel", 300u32)
-        .on_use(crate::machines::open_crafting);
+        .on_use(crate::machines::open_crafting).tab("functional");
     r.block("furnace", &FURNACE)
         .states(8, |i, s| {
             let facing = i % 4;
@@ -317,7 +320,8 @@ pub fn register(r: &mut Registry) {
         .hardness(3.5)
         .tool("pickaxe", 1)
         .placement(|p| (p.horizontal() + 2) % 4)
-        .on_use(crate::machines::open_on_use(&crate::machines::FURNACE_MENU));
+        .on_use(crate::machines::open_on_use(&crate::machines::FURNACE_MENU))
+        .tab("functional");
     r.block("chest", &CHEST)
         .states(4, |i, s| {
             let mut f = ["chest_side"; 6];
@@ -329,12 +333,14 @@ pub fn register(r: &mut Registry) {
         .hardness(2.5)
         .tool("axe", 0)
         .placement(|p| (p.horizontal() + 2) % 4)
-        .on_use(crate::machines::open_on_use(&crate::machines::CHEST_MENU));
+        .on_use(crate::machines::open_on_use(&crate::machines::CHEST_MENU))
+        .tab("functional");
     r.block("torch", &TORCH)
         .model_box([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], "torch")
         .not_solid()
         .light_rgb(15, 13, 10)
         .hardness(0.0)
+        .tab("functional")
         .on_neighbor(|e| {
             let w = e.world();
             let p = e.pos();
@@ -342,15 +348,15 @@ pub fn register(r: &mut Registry) {
                 w.set(p, 0);
             }
         });
-    r.block("ladder", &LADDER).model_box([0.0, 0.0, 15.0], [16.0, 16.0, 16.0], "ladder").climbable().not_solid().hardness(0.4);
-    r.block("glowstone", &GLOWSTONE).light(15).hardness(0.3);
-    r.block("bricks", &BRICKS).hardness(2.0).tool("pickaxe", 1);
-    r.block("stone_bricks", &STONE_BRICKS).texture("stonebrick").hardness(1.5).tool("pickaxe", 1);
-    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 2);
-    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 3);
-    r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 3);
-    r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 1).prop("base:fuel", 16000u32);
-    r.block("wool", &WOOL).texture("wool_white").hardness(0.8).prop("base:flammable", 30u32);
+    r.block("ladder", &LADDER).model_box([0.0, 0.0, 15.0], [16.0, 16.0, 16.0], "ladder").climbable().not_solid().hardness(0.4).tab("functional");
+    r.block("glowstone", &GLOWSTONE).light(15).hardness(0.3).tab("natural");
+    r.block("bricks", &BRICKS).hardness(2.0).tool("pickaxe", 1).tab("building");
+    r.block("stone_bricks", &STONE_BRICKS).texture("stonebrick").hardness(1.5).tool("pickaxe", 1).tab("building");
+    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 2).tab("building");
+    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 3).tab("building");
+    r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 3).tab("building");
+    r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 1).prop("base:fuel", 16000u32).tab("building");
+    r.block("wool", &WOOL).texture("wool_white").hardness(0.8).prop("base:flammable", 30u32).tab("colored");
 }
 
 /// Handles for blocks nothing refers to directly.

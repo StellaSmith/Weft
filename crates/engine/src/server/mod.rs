@@ -639,13 +639,21 @@ impl Server {
                     menu::click(m, r, c, p.entity, slot, button, shift);
                 }
             }
-            ToServer::CreativeTake { item } => {
+            ToServer::CreativeTake { item, button } => {
                 let Server { players, dims, .. } = self;
                 let p = &mut players[pi];
                 let creative = dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).is_some_and(|e| e.mode == GameMode::Creative);
-                if let (true, Some(m), Some(def)) = (creative, &mut p.menu, c.items.get(item as usize).filter(|_| item != 0)) {
-                    let _ = def;
-                    m.cursor = ItemStack::new(item, c.max_stack(item));
+                if let (true, Some(m), true) = (creative, &mut p.menu, item != 0 && (item as usize) < c.items.len()) {
+                    // Like vanilla: the same item adds one, anything else held is thrown away
+                    // first, an empty hand takes a stack (left) or one (right).
+                    let max = c.max_stack(item);
+                    m.cursor = if m.cursor.is_empty() {
+                        ItemStack::new(item, if button == 1 { 1 } else { max })
+                    } else if m.cursor.item == item && m.cursor.damage == 0 {
+                        ItemStack { count: (m.cursor.count + 1).min(max), ..m.cursor }
+                    } else {
+                        ItemStack::EMPTY
+                    };
                 }
             }
             ToServer::Drag { slots, button } => {

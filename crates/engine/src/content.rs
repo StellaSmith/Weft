@@ -89,6 +89,16 @@ pub struct ItemDef {
     pub tags: Vec<String>,
     pub props: Vec<(String, Vec<u8>)>,
     pub on_use: Option<Callback>,
+    /// Owning mod's load position, then registration order: how creative tabs list items.
+    pub order: u64,
+}
+
+/// A creative inventory tab: translated as `tab.<ns>.<name>`, or the mod's name for the tab a mod
+/// gets automatically for items it put in no tab.
+pub struct CreativeTab {
+    pub name: String,
+    pub icon: u32,
+    pub items: Vec<u32>,
 }
 
 pub struct BiomeDef {
@@ -156,6 +166,7 @@ pub struct Content {
     pub block_names: FxHashMap<String, u32>,
     pub item_names: FxHashMap<String, u32>,
     pub dim_names: FxHashMap<String, u32>,
+    pub creative_tabs: Vec<CreativeTab>,
     pub game: crate::registry::Game,
 }
 
@@ -288,6 +299,7 @@ pub struct RawBlock {
 pub struct RawItem {
     pub name: String,
     pub cell: usize,
+    pub seq: u32,
     pub max_stack: u32,
     pub durability: u32,
     pub texture: String,
@@ -386,6 +398,7 @@ pub(crate) unsafe fn copy_item(d: &abi::ItemDesc) -> RawItem {
         RawItem {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
+            seq: 0,
             max_stack: d.max_stack.max(1),
             durability: d.durability,
             texture: d.texture.as_str().to_string(),
@@ -430,6 +443,44 @@ fn write_cell(cell: usize, id: u32) {
     if cell != 0 {
         unsafe { (*(cell as *const std::sync::atomic::AtomicU32)).store(id, std::sync::atomic::Ordering::Relaxed) }
     }
+}
+
+/// Registered tabs in mod order, filled with their tagged items in registration order; every mod
+/// with leftover items gets one more tab of its own.
+fn creative_tabs(mods: &[ModMeta], games: &[crate::registry::RawGame], items: &[ItemDef], item_names: &FxHashMap<String, u32>, errors: &mut Vec<String>) -> Vec<CreativeTab> {
+    let mut tabs: Vec<CreativeTab> = Vec::new();
+    for g in games {
+        for (name, icon) in &g.creative_tabs {
+            let Some(&icon) = item_names.get(icon) else {
+                errors.push(format!("creative tab {name}: unknown icon item {icon}"));
+                continue;
+            };
+            tabs.push(CreativeTab { name: name.clone(), icon, items: Vec::new() });
+        }
+    }
+    let mut ordered: Vec<u32> = (1..items.len() as u32).collect();
+    ordered.sort_by_key(|&i| items[i as usize].order);
+    let mut leftover: Vec<(usize, Vec<u32>)> = Vec::new();
+    for i in ordered {
+        let def = &items[i as usize];
+        let tab = def.tags.iter().find_map(|t| t.strip_prefix("tab/")).and_then(|t| tabs.iter().position(|x| x.name == t));
+        match tab {
+            Some(t) => tabs[t].items.push(i),
+            None => match leftover.iter_mut().find(|l| l.0 == def.owner.0 as usize) {
+                Some(l) => l.1.push(i),
+                None => leftover.push((def.owner.0 as usize, vec![i])),
+            },
+        }
+    }
+    for (m, list) in leftover {
+        let name = format!("{}:misc", mods.get(m).map_or("core", |m| m.id.as_str()));
+        tabs.push(CreativeTab { name, icon: list[0], items: list });
+    }
+    tabs.retain(|t| !t.items.is_empty());
+    for t in &tabs {
+        log::debug!("creative tab {}: {}", t.name, t.items.iter().map(|&i| items[i as usize].name.as_str()).collect::<Vec<_>>().join(" "));
+    }
+    tabs
 }
 
 /// Merges per-mod registrars into frozen content. Ids are assigned in name order, so they do not
@@ -628,6 +679,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         tags: Vec::new(),
         props: Vec::new(),
         on_use: None,
+        order: 0,
     }];
     for (owner, it) in items {
         let id = item_defs.len() as u32;
@@ -665,6 +717,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
             tags: it.tags,
             props: it.props,
             on_use: it.on_use,
+            order: (owner.0 as u64) << 32 | it.seq as u64,
         });
     }
     let item_names: FxHashMap<String, u32> =
@@ -744,6 +797,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
             Err(e) => errors.push(format!("{}: command /{name}: {e}", mod_name(owner))),
         }
     }
+    let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &mut errors);
     let game = crate::registry::freeze(games, &block_names, &item_names, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -761,6 +815,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         item_textures,
         block_names,
         item_names,
+        creative_tabs,
         dim_names,
         game,
     })

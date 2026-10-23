@@ -167,6 +167,8 @@ pub struct RawGame {
     pub block_entities: Vec<(String, String, u32)>,
     pub attach: Vec<(String, String)>,
     pub ores: Vec<RawOre>,
+    /// (name, icon item) in registration order.
+    pub creative_tabs: Vec<(String, String)>,
 }
 
 pub struct RawOre {

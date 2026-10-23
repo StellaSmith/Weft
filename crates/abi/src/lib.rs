@@ -822,6 +822,9 @@ pub struct Host {
     /// Non-zero when the local player is in creative mode (client side, for HUDs and screens).
     pub client_creative: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
     pub reg_ore: unsafe extern "C" fn(reg: *mut Registrar, desc: *const OreDesc),
+    /// Creative inventory tab shown with `icon` (an item name); items join it with the tag
+    /// `tab/<name>`. Tabs appear in mod load order, then registration order.
+    pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
 }
 
 /// Ore veins a mod adds to any dimension, its own or another mod's. The engine scatters them after

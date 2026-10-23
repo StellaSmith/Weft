@@ -15,27 +15,62 @@ use crate::ui::{Kind, Style, Ui};
 
 pub struct MenuScreen {
     pub kind: u32,
-    /// Creative inventory filter.
+    /// Creative inventory filter and open tab.
     search: Rc<RefCell<String>>,
+    tab: Rc<std::cell::Cell<usize>>,
 }
 
 impl MenuScreen {
     pub fn new(kind: u32) -> MenuScreen {
-        MenuScreen { kind, search: Default::default() }
+        MenuScreen { kind, search: Default::default(), tab: Default::default() }
     }
 }
 
-/// Every item matching `filter` (in the registry or translated name) as a scrolling grid of
-/// creative entries, with the search field above.
-fn creative_panel(ui: &mut Ui, cx: &BuildCx, search: &Rc<RefCell<String>>) {
+fn tab_title(cx: &BuildCx, name: &str) -> Vec<Span> {
+    let key = format!("tab.{}", name.replace(':', "."));
+    if cx.lang.has(&key) {
+        return cx.t(&key, &[]);
+    }
+    // Automatic tab of a mod: its display name.
+    let id = name.split(':').next().unwrap_or(name);
+    let c = content();
+    text::plain(c.mods.iter().find(|m| m.id == id).map_or(id, |m| m.name.as_str()))
+}
+
+/// Tab row, search field and the items of the open tab (or of every tab matching the search) as
+/// a scrolling grid of creative entries.
+fn creative_panel(ui: &mut Ui, cx: &BuildCx, search: &Rc<RefCell<String>>, tab: &Rc<std::cell::Cell<usize>>) {
     let c = content();
     let filter = search.borrow().to_lowercase();
-    let items: Vec<u32> = (1..c.items.len() as u32)
-        .filter(|&i| {
-            filter.is_empty() || c.items[i as usize].name.to_lowercase().contains(&filter) || crate::hud::item_name(cx.lang, i).to_lowercase().contains(&filter)
-        })
-        .collect();
+    let open = tab.get().min(c.creative_tabs.len().saturating_sub(1));
+    let items: Vec<u32> = if filter.is_empty() {
+        c.creative_tabs.get(open).map_or(Vec::new(), |t| t.items.clone())
+    } else {
+        c.creative_tabs
+            .iter()
+            .flat_map(|t| t.items.iter().copied())
+            .filter(|&i| c.items[i as usize].name.to_lowercase().contains(&filter) || crate::hud::item_name(cx.lang, i).to_lowercase().contains(&filter))
+            .collect()
+    };
     ui.panel("panel", Style::default().pad(7.0).gap(4.0), |ui| {
+        ui.container(Style::row().gap(1.0), |ui| {
+            for (i, t) in c.creative_tabs.iter().enumerate() {
+                let tab = tab.clone();
+                let b = ui.button("button", Style::default().size(20.0, 20.0), Rc::new(move |ctx: &mut Ctx| {
+                    tab.set(i);
+                    ctx.requests.push(Request::Rebuild);
+                }), |ui| {
+                    ui.add(Kind::Custom { tag: modui::TAG_ICON, data: t.icon as u64 }, Style::default().size(16.0, 16.0));
+                });
+                if let Kind::Button { selected, .. } = &mut ui.nodes[b].kind {
+                    *selected = i == open && filter.is_empty();
+                }
+                ui.nodes[b].tooltip = Some(tab_title(cx, &t.name));
+            }
+        });
+        if let Some(t) = c.creative_tabs.get(open).filter(|_| filter.is_empty()) {
+            ui.text(tab_title(cx, &t.name), "default");
+        }
         let s = search.clone();
         let input = ui.add(
             Kind::Input {
@@ -75,7 +110,7 @@ impl Screen for MenuScreen {
         ui.panel("overlay", Style::default().grow().center(), |ui| {
             ui.container(Style::row().gap(4.0).align(crate::ui::Align::Start), |ui| {
                 if creative {
-                    creative_panel(ui, cx, &self.search);
+                    creative_panel(ui, cx, &self.search, &self.tab);
                 }
                 if let Some(def) = c.game.menus.get(self.kind as usize) {
                     if let Some(cb) = def.screen {

@@ -83,6 +83,7 @@ pub static HOST: Host = Host {
     is_creative,
     client_creative: crate::client::modui::client_creative,
     reg_ore,
+    reg_creative_tab,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -444,7 +445,12 @@ unsafe extern "C" fn reg_block(r: *mut abi::Registrar, d: *const abi::BlockDesc)
 }
 
 unsafe extern "C" fn reg_item(r: *mut abi::Registrar, d: *const abi::ItemDesc) {
-    unsafe { reg(r).items.push(content::copy_item(&*d)) }
+    unsafe {
+        let r = reg(r);
+        let mut item = content::copy_item(&*d);
+        item.seq = r.items.len() as u32;
+        r.items.push(item);
+    }
 }
 
 unsafe extern "C" fn reg_biome(r: *mut abi::Registrar, d: *const abi::BiomeDesc) {
@@ -519,6 +525,13 @@ unsafe extern "C" fn reg_hud(r: *mut abi::Registrar, cb: Callback) {
         let owner = r.owner;
         let name = format!("{}:hud{}", crate::modloader::mod_id_name(owner), r.game.huds.len());
         r.game.huds.push(registry::HudElement { name, anchor: abi::hud_anchor::HOTBAR_LEFT.into(), order: 0, owner, cb });
+    }
+}
+
+unsafe extern "C" fn reg_creative_tab(r: *mut abi::Registrar, name: Str, icon: Str) {
+    unsafe {
+        let r = reg(r);
+        r.game.creative_tabs.push((name.as_str().to_string(), icon.as_str().to_string()));
     }
 }
 

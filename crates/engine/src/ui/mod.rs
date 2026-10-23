@@ -586,6 +586,10 @@ impl Ui {
             if interactive && id != 0 {
                 *best = Some(id);
             }
+            // What a button contains (labels, icons) is part of the button.
+            if matches!(n.kind, Kind::Button { .. }) && id != 0 {
+                return;
+            }
             for &c in &n.children {
                 walk(ui, c, p, best);
             }

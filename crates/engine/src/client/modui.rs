@@ -16,6 +16,8 @@ pub const TAG_SLOT: u32 = 10;
 pub const TAG_ENTITY: u32 = 11;
 /// Creative inventory entry, `data` = item id.
 pub const TAG_CREATIVE: u32 = 12;
+/// Just an item icon, `data` = item id.
+pub const TAG_ICON: u32 = 13;
 
 #[repr(C)]
 struct UiBuild<'a> {

@@ -51,16 +51,16 @@ const MATERIALS: [Material; 5] = [
 ];
 
 pub fn register(r: &mut Registry) {
-    r.item("stick", &STICK).prop(FUEL, 100 as Fuel);
-    r.item("coal", &COAL).prop(FUEL, 1600 as Fuel);
-    r.item("iron_ingot", &IRON_INGOT).tag("ingots/iron");
-    r.item("gold_ingot", &GOLD_INGOT).tag("ingots/gold");
-    r.item("diamond", &DIAMOND).tag("gems/diamond");
-    r.item("wheat_seeds", &WHEAT_SEEDS).places("wheat");
-    r.item("wheat", &WHEAT);
-    r.item("bucket", &BUCKET).stack(16);
-    r.item("water_bucket", &WATER_BUCKET).stack(1);
-    r.item("lava_bucket", &LAVA_BUCKET).stack(1).prop(FUEL, 20000 as Fuel);
+    r.item("stick", &STICK).prop(FUEL, 100 as Fuel).tab("ingredients");
+    r.item("coal", &COAL).prop(FUEL, 1600 as Fuel).tab("ingredients");
+    r.item("iron_ingot", &IRON_INGOT).tag("ingots/iron").tab("ingredients");
+    r.item("gold_ingot", &GOLD_INGOT).tag("ingots/gold").tab("ingredients");
+    r.item("diamond", &DIAMOND).tag("gems/diamond").tab("ingredients");
+    r.item("wheat_seeds", &WHEAT_SEEDS).places("wheat").tab("natural");
+    r.item("wheat", &WHEAT).tab("ingredients");
+    r.item("bucket", &BUCKET).stack(16).tab("tools");
+    r.item("water_bucket", &WATER_BUCKET).stack(1).tab("tools");
+    r.item("lava_bucket", &LAVA_BUCKET).stack(1).prop(FUEL, 20000 as Fuel).tab("tools");
 
     for (name, hunger, saturation) in [
         ("apple", 4, 2.4),
@@ -71,10 +71,10 @@ pub fn register(r: &mut Registry) {
         ("cooked_beef", 8, 12.8),
         ("rotten_flesh", 4, 0.8),
     ] {
-        r.item(name, leak()).prop(FOOD, Food { hunger, saturation }).on_use(crate::player::eat);
+        r.item(name, leak()).prop(FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab("food");
     }
     for name in ["leather", "bone", "string", "sugar"] {
-        r.item(name, leak());
+        r.item(name, leak()).tab("ingredients");
     }
 
     for m in &MATERIALS {
@@ -83,7 +83,8 @@ pub fn register(r: &mut Registry) {
                 .tool(class, m.level, m.speed)
                 .durability(m.durability)
                 .attack(damage + m.damage)
-                .tag(&format!("tools/{kind}"));
+                .tag(&format!("tools/{kind}"))
+                .tab(if kind == "sword" { "combat" } else { "tools" });
         };
         tool(r, "pickaxe", "pickaxe", 2.0);
         tool(r, "axe", "axe", 3.0);
@@ -101,7 +102,8 @@ pub fn register(r: &mut Registry) {
                 .durability(durability * dur)
                 .prop(ARMOR, Armor { slot, points })
                 .tag(tag)
-                .worn(parts, inflate, &format!("armor/{mat}_{layer}"));
+                .worn(parts, inflate, &format!("armor/{mat}_{layer}"))
+                .tab("combat");
         }
     }
 }

@@ -386,6 +386,12 @@ impl Running {
 
     fn start_world(&mut self, meta: WorldMeta) {
         log::info!("opening world '{}' (seed {})", meta.name, meta.seed);
+        if content().dims.is_empty() {
+            log::error!("no dimension registered: no mods were found");
+            self.screens.clear();
+            self.open(Box::new(screens::Message { title: "world.open_failed".into(), args: vec![Arg::Key("world.no_dimensions".into())] }));
+            return;
+        }
         let storage = saves::Storage::open(meta.clone(), content());
         let server = server::spawn(
             ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance, view_height: 6 },

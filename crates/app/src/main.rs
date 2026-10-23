@@ -7,10 +7,22 @@ fn vulkan(desc: &BackendDesc) -> Result<Box<dyn Backend>, Error> {
     Ok(Box::new(voxide_vulkan::VulkanBackend::new(desc)?))
 }
 
+/// Where `mods` and `run` live: the working directory if it has `mods`, otherwise the nearest
+/// folder above the executable that does (a development build runs from `target/<profile>/`).
+fn game_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if cwd.join("mods").is_dir() {
+        return cwd;
+    }
+    let exe = std::env::current_exe().unwrap_or_default();
+    exe.ancestors().skip(1).find(|d| d.join("mods").is_dir()).map(PathBuf::from).unwrap_or(cwd)
+}
+
 fn main() {
+    let root = game_root();
     let mut opts = Options {
-        run_dir: PathBuf::from("run"),
-        mod_dirs: vec![PathBuf::from("mods")],
+        run_dir: root.join("run"),
+        mod_dirs: vec![root.join("mods")],
         gpu_debug: false,
         shot: None,
         shot_delay: 0.0,

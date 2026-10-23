@@ -75,6 +75,7 @@ multiplayer.copied = Copied!
 multiplayer.connecting = Connecting...
 multiplayer.disconnected = Disconnected: {0}
 world.open_failed = Could not open the world: {0}
+world.no_dimensions = no mod adds a dimension (no mods were found?)
 {0}
 death.title = You Died!
 death.respawn = Respawn

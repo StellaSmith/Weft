@@ -86,6 +86,7 @@ pub struct Globals {
     pub ids: [u32; 4],
     pub look: [f32; 4],
     pub cam_cube: [i32; 4],
+    pub extra: [u32; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -143,6 +144,8 @@ pub struct WorldRenderer {
     tint_tiles: u32,
     tex_info: BufferId,
     anim: BufferId,
+    /// Start of the overlay table in `anim`.
+    overlays: u32,
     /// (0 1 2)(0 2 3) for as many quads as one draw can hold; every face and quad draw shares it
     /// so each corner is shaded once instead of once per triangle.
     quad_index: BufferId,
@@ -160,7 +163,7 @@ impl WorldRenderer {
         let shader = world_shader().map_err(|e| e.0)?;
         let (face_pipes, quad_pipes) = Self::pipelines(gpu, &shader)?;
 
-        let (tex_info, anim) = Self::texture_info(gpu, textures);
+        let (tex_info, anim, overlays) = Self::texture_info(gpu, textures);
 
         let biome_data: Vec<[u32; 4]> = if c.biomes.is_empty() {
             vec![[0x7fb238, 0x48b518, 0x3f76e4, 0]]
@@ -190,6 +193,7 @@ impl WorldRenderer {
             tint_tiles: 0,
             tex_info,
             anim,
+            overlays,
             quad_index,
             block_index: textures.block_index,
             drawn: 0,
@@ -199,7 +203,9 @@ impl WorldRenderer {
 
     /// Two words per texture name: static -> (layer, 0); animated -> (offset into the frame list,
     /// count | total ticks << 16 | interpolate << 31).
-    fn texture_info(gpu: &mut dyn Backend, textures: &GameTextures) -> (BufferId, BufferId) {
+    /// Also returns where the overlay table (per texture: overlay + 1 or 0) starts in the frame
+    /// buffer.
+    fn texture_info(gpu: &mut dyn Backend, textures: &GameTextures) -> (BufferId, BufferId, u32) {
         let mut info: Vec<u32> = Vec::with_capacity(textures.block_layers.len() * 2);
         let mut frames: Vec<u32> = vec![0];
         for (i, &(first, _)) in textures.block_layers.iter().enumerate() {
@@ -216,18 +222,20 @@ impl WorldRenderer {
                 }
             }
         }
+        let overlays = frames.len() as u32;
+        frames.extend((0..textures.block_layers.len()).map(|i| textures.overlays.get(i).copied().unwrap_or(0)));
         let tex_info = gpu.create_buffer((info.len() * 4) as u64, usage::STORAGE, "texture info");
         gpu.write_buffer(tex_info, 0, bytemuck::cast_slice(&info));
         let anim = gpu.create_buffer((frames.len() * 4) as u64, usage::STORAGE, "texture frames");
         gpu.write_buffer(anim, 0, bytemuck::cast_slice(&frames));
-        (tex_info, anim)
+        (tex_info, anim, overlays)
     }
 
     /// Switches to a rebuilt block texture array; meshes have to be redone by the caller.
     pub fn set_textures(&mut self, gpu: &mut dyn Backend, textures: &GameTextures) {
         gpu.destroy_buffer(self.tex_info);
         gpu.destroy_buffer(self.anim);
-        (self.tex_info, self.anim) = Self::texture_info(gpu, textures);
+        (self.tex_info, self.anim, self.overlays) = Self::texture_info(gpu, textures);
         self.block_index = textures.block_index;
     }
 
@@ -389,6 +397,7 @@ impl WorldRenderer {
             ids: [self.block_index, p.ambient, self.biome_table.len() as u32, self.tint_tiles],
             look: [p.brightness, 0.0, 0.0, 0.0],
             cam_cube: cam_cube.extend(0).to_array(),
+            extra: [self.overlays, 0, 0, 0],
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));

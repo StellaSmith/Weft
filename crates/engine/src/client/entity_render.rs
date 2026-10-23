@@ -766,6 +766,7 @@ fn hand_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, cam: &Camera, h: &
             let l: Vec<u32> = faces.iter().map(|&f| layer(f)).collect();
             let m = arm * Mat4::from_rotation_y(deg(45.0)) * Mat4::from_scale(Vec3::splat(0.4)) * Mat4::from_translation(Vec3::splat(-0.5));
             out.push(GpuBox { rows: rows(m), color, ids: [textures.block_index, 1, l[0] | l[1] << 16, l[2] | l[3] << 16], ids2: [l[4] | l[5] << 16, 0, 0, 0], ..Default::default() });
+            tinted_faces(out, textures, m, st, &faces, Vec4::from_array(color));
         }
         (_, Some(sp)) => {
             // generated.json / handheld.json first person: rotation 0 -90 25, translation
@@ -802,6 +803,45 @@ fn rows(m: Mat4) -> [[f32; 4]; 3] {
     [m.row(0).to_array(), m.row(1).to_array(), m.row(2).to_array()]
 }
 
+/// Faces of a block item drawn again on top, tinted: faces the block tints (grass tops) and the
+/// overlays of its textures (grass sides). `m` maps the unit cube.
+fn tinted_faces(out: &mut Vec<GpuBox>, textures: &GameTextures, m: Mat4, s: &crate::content::StateInfo, faces: &[u32; 6], color: Vec4) {
+    if s.tint == 0 {
+        return;
+    }
+    let tint = match s.tint {
+        1 => 0x8db360u32,
+        2 => 0x77ab2f,
+        _ => 0x3f76e4,
+    };
+    let rgb = Vec3::new(((tint >> 16) & 255) as f32, ((tint >> 8) & 255) as f32, (tint & 255) as f32) / 255.0;
+    let layer = |name: u32| textures.block_layers.get(name as usize).map_or(0, |l| l.0);
+    for d in 0..6 {
+        let tex = if textures.overlays.get(faces[d] as usize).is_some_and(|&o| o != 0) {
+            textures.overlays[faces[d] as usize] - 1
+        } else if s.tint_faces & (1 << d) != 0 {
+            faces[d]
+        } else {
+            continue;
+        };
+        let l = layer(tex);
+        // A zero-thick box just outside that face.
+        let axis = d / 2;
+        let mut offset = Vec3::ZERO;
+        let mut scale = Vec3::ONE;
+        offset[axis] = if d % 2 == 1 { 1.002 } else { -0.002 };
+        scale[axis] = 0.0;
+        let f = m * Mat4::from_translation(offset) * Mat4::from_scale(scale);
+        out.push(GpuBox {
+            rows: rows(f),
+            color: (color.truncate() * rgb).extend(color.w).to_array(),
+            ids: [textures.block_index, 1, l | l << 16, l | l << 16],
+            ids2: [l | l << 16, 0, 0, 0],
+            ..Default::default()
+        });
+    }
+}
+
 /// Dropped items: a small spinning block, or a flat sprite for regular items.
 fn item_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, age: f32, item: u32, color: Vec4) {
     let c = content();
@@ -828,6 +868,7 @@ fn item_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, age: f
             ids2: [l[4] | l[5] << 16, 0, 0, 0],
             ..Default::default()
         });
+        tinted_faces(out, textures, m, s, &faces, color);
     } else {
         // A flat sprite: zero thickness, so the side faces (which would smear the edge texels
         // into lines) have no area.

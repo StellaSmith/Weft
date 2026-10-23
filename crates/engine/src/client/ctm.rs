@@ -76,6 +76,9 @@ pub struct Ctm {
     /// Per texture id: range in `rules`.
     by_texture: Vec<(u32, u32)>,
     rules: Vec<Rule>,
+    /// Per texture id: its `<name>_overlay` texture id + 1, or 0. The overlay is drawn over the
+    /// face and takes the block's tint instead of the face (vanilla's grass sides).
+    pub overlay: Vec<u32>,
 }
 
 /// What the texture array needs on top of the content's block textures.
@@ -188,7 +191,14 @@ pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
     let base = c.block_textures.len() as u32;
     let mut extra = Extra::default();
     let mut ids: FxHashMap<String, u32> = c.block_textures.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
-    let mut ctm = Ctm { by_texture: vec![(0, 0); c.block_textures.len()], rules: Vec::new() };
+    let mut ctm = Ctm { by_texture: vec![(0, 0); c.block_textures.len()], rules: Vec::new(), overlay: vec![0; c.block_textures.len()] };
+    for (tex, name) in c.block_textures.iter().enumerate() {
+        let over = format!("{name}_overlay");
+        if assets.path(&over, "textures", "png").is_some() {
+            extra.names.push(over);
+            ctm.overlay[tex] = base + extra.names.len() as u32;
+        }
+    }
     // Compact sets waiting for their composite ids, which come after every tile name.
     let mut compact: Vec<(usize, Vec<u32>)> = Vec::new();
     for (tex, name) in c.block_textures.iter().enumerate() {
@@ -340,6 +350,11 @@ fn hash(x: i32, y: i32, z: i32, f: u32) -> u64 {
 }
 
 impl Ctm {
+    #[inline]
+    pub fn has_overlay(&self, tex: u32) -> bool {
+        self.overlay.get(tex as usize).is_some_and(|&o| o != 0)
+    }
+
     /// Texture for face `dir` of the block at `(x, y, z)` in the cube, `tex` being its plain one.
     #[inline]
     #[allow(clippy::too_many_arguments)]

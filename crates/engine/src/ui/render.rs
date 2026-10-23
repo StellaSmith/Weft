@@ -389,6 +389,26 @@ impl UiRenderer {
                 push([x, top + q], [h, q], [0.0, h], 5, 0.8);
                 push([cx, top + h], [h, -q], [0.0, h], 1, 0.62);
                 push([cx, top], [h, q], [-h, q], 3, 1.0);
+                // Tinted overlays on top of their faces.
+                let grass = shade(match s.tint {
+                    1 => 0x8db360,
+                    2 => 0x77ab2f,
+                    _ => 0x3f76e4,
+                } << 8 | 0xFF, 1.0);
+                for (p0, u, v, face, k) in [([x, top + q], [h, q], [0.0, h], 5, 0.8), ([cx, top + h], [h, -q], [0.0, h], 1, 0.62), ([cx, top], [h, q], [-h, q], 3, 1.0)] {
+                    let Some(&o) = tex.overlays.get(faces[face] as usize).filter(|&&o| o != 0) else { continue };
+                    self.quads.push(Quad {
+                        p0,
+                        u,
+                        v,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        color: shade(if s.tint == 0 { 0xFFFFFFFF } else { grass }, k),
+                        tex: tex.block_index,
+                        layer: layer(o - 1),
+                        mode: 2,
+                        ..Default::default()
+                    });
+                }
             }
         }
     }

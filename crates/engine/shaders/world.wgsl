@@ -12,6 +12,8 @@ struct Globals {
     look: vec4<f32>,
     // Origins are relative to this cube.
     cam_cube: vec4<i32>,
+    // x: start of the overlay table in `frames` (per texture: overlay texture + 1, or 0)
+    extra: vec4<u32>,
 }
 
 @group(1) @binding(0) var<storage, read> g: Globals;
@@ -48,6 +50,10 @@ struct VOut {
     @location(4) dist: f32,
     @location(5) @interpolate(flat) layer2: u32,
     @location(6) @interpolate(flat) blend: f32,
+    // Overlay layer + 1 (0: none) and the tint it takes; without an overlay the tint is already
+    // in `color`.
+    @location(7) @interpolate(flat) overlay: u32,
+    @location(8) tint: vec3<f32>,
 }
 
 fn unpack_rgb(c: u32) -> vec3<f32> {
@@ -159,7 +165,17 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let l = (lw >> ((c & 1u) * 16u)) & 65535u;
     out.light = unpack_light(l);
     let o = origins[ii] + g.cam_cube;
-    out.color = tint_color(w1, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z)) * SHADE[dir] * AO[a[c]];
+    let tint = tint_color(w1, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z));
+    let ov = frames[g.extra.x + (w1 & 65535u)];
+    if ov != 0u {
+        out.overlay = texture_frame(ov - 1u).a + 1u;
+        out.tint = tint;
+        out.color = vec3(SHADE[dir] * AO[a[c]]);
+    } else {
+        out.overlay = 0u;
+        out.tint = vec3(1.0);
+        out.color = tint * SHADE[dir] * AO[a[c]];
+    }
     return out;
 }
 
@@ -206,6 +222,8 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.light = unpack_light(l);
     let o = origins[ii] + g.cam_cube;
     out.color = tint_color(w4, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z))) * shade;
+    out.overlay = 0u;
+    out.tint = vec3(1.0);
     return out;
 }
 
@@ -262,9 +280,20 @@ fn sample(in: VOut) -> vec4<f32> {
     return mix(a, b, in.blend);
 }
 
+// The tinted overlay over the base texture; its tint is a gamma-space factor like the others.
+fn with_overlay(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
+    if in.overlay == 0u {
+        return albedo;
+    }
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let ov = textureSampleGrad(texture_arrays[g.ids.x], linear_mipped, nearest_uv(in.uv, du, dv), in.overlay - 1u, du, dv);
+    return vec4(mix(albedo.rgb, ov.rgb * pow(in.tint, vec3(2.2)), ov.a), albedo.a);
+}
+
 @fragment
 fn fs_opaque(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = sample(in);
+    let albedo = with_overlay(in, sample(in));
     return vec4(shade(in, albedo).rgb, 1.0);
 }
 
@@ -285,7 +314,7 @@ fn sample_cutout(in: VOut) -> vec4<f32> {
 
 @fragment
 fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = sample_cutout(in);
+    let albedo = with_overlay(in, sample_cutout(in));
     if albedo.a < 0.5 {
         discard;
     }
@@ -294,6 +323,6 @@ fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_translucent(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = sample(in);
+    let albedo = with_overlay(in, sample(in));
     return shade(in, albedo);
 }

@@ -13,6 +13,8 @@ pub struct GameTextures {
     pub item_array: TextureId,
     pub item_index: u32,
     pub item_layers: Vec<(u32, u32)>,
+    /// Per block texture: its overlay texture + 1, or 0 (see `ctm::Ctm::overlay`).
+    pub overlays: Vec<u32>,
 }
 
 fn upload(gpu: &mut dyn Backend, assets: &Assets, names: &[String], composites: &[[u32; 4]], label: &str) -> (TextureId, Vec<(u32, u32)>, Vec<Option<crate::assets::Anim>>) {
@@ -45,6 +47,7 @@ impl GameTextures {
     /// Also loads the connected texture rules, whose tiles go into the block array.
     pub fn new(gpu: &mut dyn Backend, c: &Content, assets: &Assets) -> GameTextures {
         let (ctm, extra) = super::ctm::load(assets, c);
+        let overlays = ctm.overlay.clone();
         super::ctm::set(ctm);
         let names: Vec<String> = c.block_textures.iter().chain(&extra.names).cloned().collect();
         let (block_array, block_layers, block_anims) = upload(gpu, assets, &names, &extra.composites, "block textures");
@@ -57,6 +60,7 @@ impl GameTextures {
             item_index: gpu.texture_index(item_array),
             item_array,
             item_layers,
+            overlays,
         }
     }
 }

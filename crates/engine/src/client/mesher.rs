@@ -93,8 +93,8 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                             }
                             let (ao, light) = corner_data(n, &opaque, x, y, z, dir);
                             let w0 = x as u32 | (y as u32) << 4 | (z as u32) << 8 | (dir as u32) << 12 | ao << 16;
-                            let tint = if info.tint_faces & (1 << dir) != 0 { info.tint as u32 } else { 0 };
                             let tex = ctm.resolve(c, n, x, y, z, dir, info.textures[dir] & 0xFFFF);
+                            let tint = if info.tint_faces & (1 << dir) != 0 || ctm.has_overlay(tex) { info.tint as u32 } else { 0 };
                             let w1 = tex | biome << 16 | tint << 24;
                             mesh.faces[info.layer as usize].push([w0, w1, light[0] | light[1] << 16, light[2] | light[3] << 16]);
                         }

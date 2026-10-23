@@ -1,12 +1,14 @@
 //! Connected and varied block textures. A `<texture>.ctm` file next to a block texture (in a mod
-//! or a resource pack) holds rules for every cube face using that texture; methods and keys follow
+//! or a resource pack) holds rules for every cube face showing that texture, on any block and any
+//! face (a log side is just its side texture); methods and keys follow
 //! OptiFine/MCPatcher CTM so existing packs port with little more than renaming files:
 //!
 //! ```text
 //! method = compact       # ctm (47 tiles), compact (5), horizontal, vertical, h+v, v+h (4/4/7/7),
 //!                        # top (1), random, repeat, fixed (1)
 //! tiles = glass/0-4      # relative to this file; ranges expand, <default> is the plain texture
-//! connect = block        # block (default), tile (same texture on that face), state
+//! connect = tile         # tile (default: neighbours showing this texture on that face, whatever
+//!                        # block they are), block (same block), state (same block state)
 //! faces = sides          # all, top, bottom, sides, north, south, east, west
 //! inner_seams = true     # covered neighbours do not connect
 //! weights = 8 1 1        # random
@@ -291,9 +293,9 @@ pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
             ctm.rules.push(Rule {
                 method,
                 connect: match kv.get("connect").copied() {
-                    Some("tile") => Connect::Tile,
+                    Some("block") => Connect::Block,
                     Some("state") => Connect::State,
-                    _ => Connect::Block,
+                    _ => Connect::Tile,
                 },
                 faces: kv.get("faces").map_or(0b111111, |v| faces(v)),
                 inner_seams: kv.get("inner_seams").is_some_and(|v| *v == "true"),

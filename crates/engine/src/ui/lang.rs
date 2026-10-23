@@ -2,7 +2,8 @@
 //! language list reads just the first line of each file.
 //!
 //! File format (`lang/<code>.lang` in any mod or pack): `key = value` per line, `#` comments, the
-//! first entry should be `language.name`. Values are templates, see `text.rs`.
+//! first entry should be `language.name`. An indented line continues the previous value on a new
+//! line. Values are templates, see `text.rs`.
 
 use std::cell::RefCell;
 
@@ -21,13 +22,23 @@ pub struct Lang {
 }
 
 fn parse(src: &str, into: &mut FxHashMap<String, String>) {
+    let mut last: Option<String> = None;
     for line in src.lines() {
         let line = line.trim_start_matches('\u{feff}');
-        if line.trim_start().starts_with('#') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        if line.starts_with([' ', '\t']) {
+            if let Some(v) = last.as_ref().and_then(|k| into.get_mut(k)) {
+                v.push('\n');
+                v.push_str(&trimmed.replace("\\n", "\n"));
+            }
             continue;
         }
         if let Some((k, v)) = line.split_once('=') {
             into.insert(k.trim().to_string(), v.trim().replace("\\n", "\n"));
+            last = Some(k.trim().to_string());
         }
     }
 }
@@ -87,5 +98,18 @@ impl Lang {
         let mut v: Vec<_> = out.into_iter().collect();
         v.sort();
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indented_lines_continue_the_value() {
+        let mut m = FxHashMap::default();
+        parse("# c\na = one\n    two\n\n\tthree\nb = x\ny\n", &mut m);
+        assert_eq!(m["a"], "one\ntwo\nthree");
+        assert_eq!(m["b"], "x\ny");
     }
 }

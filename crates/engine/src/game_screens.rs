@@ -79,7 +79,7 @@ impl Screen for MenuScreen {
                 }
                 if let Some(def) = c.game.menus.get(self.kind as usize) {
                     if let Some(cb) = def.screen {
-                        modui::build(ui, cx.lang, def.owner, cb, cx.client);
+                        modui::build(ui, cx.lang, Some(cx.input), def.owner, cb, cx.client);
                     }
                 }
             });

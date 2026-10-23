@@ -629,7 +629,7 @@ impl Running {
                         } else {
                             g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default()
                         };
-                        let tip = (!stack.is_empty()).then(|| text::plain(&crate::hud::item_name(&self.lang, stack.item)));
+                        let tip = (!stack.is_empty()).then(|| crate::hud::item_tooltip(&self.lang, &self.input, stack));
                         if ui.nodes[h].tooltip != tip {
                             ui.nodes[h].tooltip = tip;
                             self.quads_dirty = true;
@@ -1177,7 +1177,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
 
     if let Some(g) = &r.game {
         let chat_open = r.screens.last().is_some_and(|(s, _)| s.name() == "core:chat");
-        if r.hud.update(&g.client, r.debug, r.settings.debug_groups, chat_open, &r.lang) {
+        if r.hud.update(&g.client, r.debug, r.settings.debug_groups, chat_open, &r.lang, &r.input) {
             r.quads_dirty = true;
         }
         let mut h = g.client.selected as u64;

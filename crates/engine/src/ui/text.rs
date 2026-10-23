@@ -5,7 +5,10 @@
 //! - `{key:core:inventory}` shows the key the player bound to an action
 //! - `{item:base:diamond}` draws an item icon inline
 //! - `{link:target}text{/link}` makes a clickable link to another element or screen
+//! - `{lang:some.key}` inserts another translation, so shared phrases are written once
 //! - `{{` is a literal brace
+//!
+//! Item tooltips also understand `{shift}`: what follows shows only while sneak is held.
 
 use super::font::Font;
 use super::lang::Lang;
@@ -95,6 +98,10 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, bas
         } else if let Some(target) = tag.strip_prefix("link:") {
             out.push(Span { piece: Piece::LinkStart(target.to_string()), color: None });
             color = Some(color.unwrap_or(0x80B0FF));
+        } else if let Some(key) = tag.strip_prefix("lang:") {
+            if depth < 4 {
+                format_depth(cx.lang.get(key), args, cx, out, color, depth + 1);
+            }
         } else if tag == "/link" {
             out.push(Span { piece: Piece::LinkEnd, color: None });
             color = base;

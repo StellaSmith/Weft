@@ -47,7 +47,7 @@ impl Hud {
     /// Returns true if the tree was rebuilt.
     /// `chat_open`: the chat screen shows the messages itself.
     /// `groups`: bit per `DEBUG_GROUPS` entry shown with the debug overlay.
-    pub fn update(&mut self, client: &Client, debug: bool, groups: u32, chat_open: bool, lang: &Lang) -> bool {
+    pub fn update(&mut self, client: &Client, debug: bool, groups: u32, chat_open: bool, lang: &Lang, input: &crate::input::Input) -> bool {
         let chat_visible = if chat_open { 0 } else { client.chat.iter().filter(|(_, t)| t.elapsed().as_secs() < 10).count() };
         let key = (debug, chat_visible, client.chat.len(), client.dead, groups);
         if self.key == Some(key) {
@@ -74,7 +74,7 @@ impl Hud {
             v
         };
         let draw = |ui: &mut Ui, part: Option<(voxide_abi::ModId, voxide_abi::Callback)>| match part {
-            Some((owner, cb)) => modui::build(ui, lang, owner, cb, Some(client)),
+            Some((owner, cb)) => modui::build(ui, lang, Some(input), owner, cb, Some(client)),
             None => {
                 ui.container(Style::row().gap(0.0), |ui| {
                     for i in 0..9 {
@@ -373,16 +373,57 @@ pub fn slot_background(ren: &mut UiRenderer, theme: &Theme, r: Rect, selected: b
 }
 
 /// Display name of an item: `item.<ns>.<path>`, then `block.<ns>.<path>`, then the raw name.
-pub fn item_name(lang: &Lang, item: u32) -> String {
-    let c = content();
-    let Some(d) = c.items.get(item as usize) else { return String::new() };
+/// `item.ns.name`, or `block.ns.name` for block items that only have that.
+fn item_key(lang: &Lang, item: u32) -> Option<String> {
+    let d = content().items.get(item as usize)?;
     let path = d.name.replace(':', ".");
-    for key in [format!("item.{path}"), format!("block.{path}")] {
-        if lang.has(&key) {
-            return lang.get(&key).to_string();
+    [format!("item.{path}"), format!("block.{path}")].into_iter().find(|k| lang.has(k))
+}
+
+pub fn item_name(lang: &Lang, item: u32) -> String {
+    match item_key(lang, item) {
+        Some(k) => lang.get(&k).to_string(),
+        None => content().items.get(item as usize).map_or(String::new(), |d| d.name.clone()),
+    }
+}
+
+/// The name, then the `<name key>.tooltip` translation in grey (the part after `{shift}` only while
+/// sneak is held, a hint otherwise), then durability for damaged tools.
+pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi::ItemStack) -> Vec<text::Span> {
+    const GREY: u32 = 0xA8A8A8;
+    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+    let cx = text::Ctx { lang, input: Some(input), item_name: &items };
+    let mut out = text::plain(&item_name(lang, stack.item));
+    let line = |template: &str, args: &[text::Arg], out: &mut Vec<text::Span>| {
+        out.push(text::Span { piece: text::Piece::Text("\n".into()), color: None });
+        let start = out.len();
+        text::format(template, args, &cx, out);
+        for s in &mut out[start..] {
+            s.color = s.color.or(Some(GREY));
+        }
+    };
+    if let Some(key) = item_key(lang, stack.item).map(|k| format!("{k}.tooltip")).filter(|k| lang.has(k)) {
+        let template = lang.get(&key);
+        match template.split_once("{shift}") {
+            Some((always, more)) => {
+                let always = always.trim_end_matches('\n');
+                if !always.is_empty() {
+                    line(always, &[], &mut out);
+                }
+                if input.held("core:sneak") {
+                    line(more.trim_start_matches('\n'), &[], &mut out);
+                } else {
+                    line(lang.get("tooltip.more"), &[], &mut out);
+                }
+            }
+            None => line(template, &[], &mut out),
         }
     }
-    d.name.clone()
+    let max = content().items.get(stack.item as usize).map_or(0, |d| d.durability);
+    if max > 0 && stack.damage > 0 {
+        line(lang.get("tooltip.durability"), &[text::Arg::Int((max - stack.damage.min(max)) as i64), text::Arg::Int(max as i64)], &mut out);
+    }
+    out
 }
 
 /// The debug overlay groups of one side, each a dark panel with a title; the help panel on the

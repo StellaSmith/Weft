@@ -23,6 +23,7 @@ struct UiBuild<'a> {
     owner: ModId,
     ui: &'a mut Ui,
     lang: &'a Lang,
+    input: Option<&'a crate::input::Input>,
     depth: u32,
 }
 
@@ -52,8 +53,8 @@ unsafe fn view<'a>(c: *mut abi::ClientCtx) -> Option<&'a Client> {
 }
 
 /// Runs a mod's UI builder callback into `ui`.
-pub fn build(ui: &mut Ui, lang: &Lang, owner: ModId, cb: Callback, client: Option<&Client>) {
-    let mut b = UiBuild { tag: 1, owner, ui, lang, depth: 0 };
+pub fn build(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input>, owner: ModId, cb: Callback, client: Option<&Client>) {
+    let mut b = UiBuild { tag: 1, owner, ui, lang, input, depth: 0 };
     let mut v = ClientView::new(client);
     let mut args = abi::UiArgs { ui: &mut b as *mut UiBuild as *mut abi::UiCtx, client: v.raw() };
     host::invoke(owner, cb, &mut args);
@@ -118,14 +119,14 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             },
             ..Style::default()
         };
-        let lang = b.lang;
+        let (lang, input) = (b.lang, b.input);
         let spans = |key: Str, a: abi::Slice<abi::UiArg>| {
             let mut out = Vec::new();
             if key.len == 0 {
                 return out;
             }
             let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
-            let cx = text::Ctx { lang, input: None, item_name: &items };
+            let cx = text::Ctx { lang, input, item_name: &items };
             text::format(lang.get(key.as_str()), &args(a), &cx, &mut out);
             out
         };

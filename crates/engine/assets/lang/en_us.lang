@@ -144,3 +144,5 @@ keyname.Comma = ,
 keyname.Period = .
 keyname.CapsLock = Caps Lock
 settings.brightness = Brightness: {0}%
+tooltip.more = Hold {key:core:sneak} for details
+tooltip.durability = Durability: {0} / {1}

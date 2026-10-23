@@ -130,3 +130,5 @@ keyname.ArrowDown = Вниз
 keyname.ArrowLeft = Влево
 keyname.ArrowRight = Вправо
 settings.brightness = Яркость: {0}%
+tooltip.more = Удерживайте {key:core:sneak} для подробностей
+tooltip.durability = Прочность: {0} / {1}

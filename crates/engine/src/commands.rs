@@ -260,7 +260,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("insert", "<pos:pos> <item:item> [count:int]"),
     ("block", "<pos:pos>"),
     ("heal", ""),
-    ("gamemode", "creative | survival"),
+    ("gamemode", "survival | creative | spectator"),
     ("regions", ""),
 ];
 

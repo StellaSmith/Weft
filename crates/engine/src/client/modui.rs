@@ -264,7 +264,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
 }
 
 pub unsafe extern "C" fn client_creative(c: *mut abi::ClientCtx) -> u32 {
-    unsafe { view(c).is_some_and(|cl| cl.creative) as u32 }
+    unsafe { view(c).is_some_and(|cl| cl.mode.invulnerable()) as u32 }
 }
 
 pub unsafe extern "C" fn client_menu_data(c: *mut abi::ClientCtx, index: u32) -> i32 {

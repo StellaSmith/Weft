@@ -20,7 +20,7 @@ pub const TAG_CROSSHAIR: u32 = 2;
 #[derive(Default)]
 pub struct Hud {
     pub ui: Ui,
-    key: Option<(bool, usize, usize, bool, u32)>,
+    key: Option<(bool, usize, usize, bool, u32, u8)>,
     /// Player overrides from `config/hud.txt`: element name -> (anchor, order).
     layout: rustc_hash::FxHashMap<String, (String, i32)>,
 }
@@ -49,7 +49,7 @@ impl Hud {
     /// `groups`: bit per `DEBUG_GROUPS` entry shown with the debug overlay.
     pub fn update(&mut self, client: &Client, debug: bool, groups: u32, chat_open: bool, lang: &Lang, input: &crate::input::Input) -> bool {
         let chat_visible = if chat_open { 0 } else { client.chat.iter().filter(|(_, t)| t.elapsed().as_secs() < 10).count() };
-        let key = (debug, chat_visible, client.chat.len(), client.dead, groups);
+        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8);
         if self.key == Some(key) {
             return false;
         }
@@ -75,6 +75,7 @@ impl Hud {
         };
         let draw = |ui: &mut Ui, part: Option<(voxide_abi::ModId, voxide_abi::Callback)>| match part {
             Some((owner, cb)) => modui::build(ui, lang, Some(input), owner, cb, Some(client)),
+            None if client.mode == crate::world::GameMode::Spectator => {}
             None => {
                 ui.container(Style::row().gap(0.0), |ui| {
                     for i in 0..9 {

@@ -358,7 +358,7 @@ impl Dim {
     pub fn damage(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         let Some(e) = self.entities.get(id) else { return false };
         let k = &c.game.entities[e.kind as usize];
-        if ((k.is(ef::INVULNERABLE) || e.creative) && cause != damage::VOID) || e.hurt_cooldown > 0 || e.health <= 0.0 {
+        if ((k.is(ef::INVULNERABLE) || e.mode.invulnerable()) && cause != damage::VOID) || e.hurt_cooldown > 0 || e.health <= 0.0 {
             return false;
         }
         let mut amount = amount;
@@ -537,7 +537,7 @@ impl Dim {
     /// Item entities: merge neighbours, get picked up by players.
     fn items(&mut self, c: &'static Content) {
         let players: Vec<(u64, DVec3)> =
-            self.entities.list.iter().filter(|e| e.player && !e.removed && e.health > 0.0).map(|e| (e.id, e.pos)).collect();
+            self.entities.list.iter().filter(|e| e.player && !e.removed && e.health > 0.0 && e.mode != crate::world::GameMode::Spectator).map(|e| (e.id, e.pos)).collect();
         let items: Vec<(u64, DVec3)> = self.entities.list.iter().filter(|e| !e.removed && !e.item.is_empty()).map(|e| (e.id, e.pos)).collect();
         for (id, pos) in items {
             let Some(e) = self.entities.get(id) else { continue };
@@ -609,7 +609,7 @@ impl Dim {
             return false;
         }
         let (_, harvest) = break_time(c, state, tool);
-        let harvest = harvest && !self.entities.get(player).is_some_and(|e| e.creative);
+        let harvest = harvest && !self.entities.get(player).is_some_and(|e| e.mode == crate::world::GameMode::Creative);
         self.set(c, p, AIR);
         let block = c.block_of(state);
         if harvest {

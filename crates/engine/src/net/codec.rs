@@ -257,9 +257,9 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.u8(20);
             w.str(t);
         }
-        ToClient::GameMode(creative) => {
+        ToClient::GameMode(mode) => {
             w.u8(23);
-            w.u8(*creative as u8);
+            w.u8(*mode as u8);
         }
         ToClient::Players(names) => {
             w.u8(22);
@@ -404,7 +404,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             }
             ToClient::Players(names)
         }
-        23 => ToClient::GameMode(r.u8()? != 0),
+        23 => ToClient::GameMode(crate::world::GameMode::from_u8(r.u8()?)),
         _ => return None,
     })
 }

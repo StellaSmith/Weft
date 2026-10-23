@@ -24,7 +24,7 @@ pub use dim::{Dim, DimEvent, break_time};
 use crate::content::{Content, DimensionDef, content};
 use crate::net::{EntityView, ServerConn, ToClient, ToServer};
 use crate::saves::Storage;
-use crate::world::{Cube, cube_of};
+use crate::world::{Cube, GameMode, cube_of};
 use entity::Entity;
 use menu::OpenMenu;
 use regions::DimSet;
@@ -525,6 +525,7 @@ impl Server {
                     self.players[pi].fall = 0.0;
                 }
             }
+            ToServer::Break { .. } if self.mode(pi) == GameMode::Spectator => {}
             ToServer::Break { pos } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
@@ -538,6 +539,7 @@ impl Server {
                     wear(c, r, entity, sel, 1);
                 }
             }
+            ToServer::Use { .. } if self.mode(pi) == GameMode::Spectator => {}
             ToServer::Use { pos, face, look, sneak } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
@@ -561,7 +563,7 @@ impl Server {
                         let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
                         let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
                         if (!solid || !player_box.intersects(&block_box)) && r.place(c, target, face, state, look, entity) {
-                            if !r.entities.get(entity).is_some_and(|e| e.creative) {
+                            if !r.entities.get(entity).is_some_and(|e| e.mode == GameMode::Creative) {
                                 r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
                             }
                         }
@@ -569,6 +571,7 @@ impl Server {
                     _ => self.handle(c, pi, ToServer::UseItem { target: Some((pos, face)) }),
                 }
             }
+            ToServer::UseItem { .. } if self.mode(pi) == GameMode::Spectator => {}
             ToServer::UseItem { target } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(sel) = r.entities.get(entity).map(|e| e.selected) else { return };
@@ -601,6 +604,7 @@ impl Server {
                     }
                 }
             }
+            ToServer::Attack(_) if self.mode(pi) == GameMode::Spectator => {}
             ToServer::Attack(target) => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let (Some(me), Some(t)) = (r.entities.get(entity), r.entities.get(target)) else { return };
@@ -615,6 +619,7 @@ impl Server {
                     wear(c, r, entity, sel, if tool == "sword" { 1 } else { 2 });
                 }
             }
+            ToServer::Interact(_) if self.mode(pi) == GameMode::Spectator => {}
             ToServer::Interact(target) => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(kind) = r.entities.get(target).map(|e| e.kind) else { return };
@@ -637,7 +642,7 @@ impl Server {
             ToServer::CreativeTake { item } => {
                 let Server { players, dims, .. } = self;
                 let p = &mut players[pi];
-                let creative = dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).is_some_and(|e| e.creative);
+                let creative = dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).is_some_and(|e| e.mode == GameMode::Creative);
                 if let (true, Some(m), Some(def)) = (creative, &mut p.menu, c.items.get(item as usize).filter(|_| item != 0)) {
                     let _ = def;
                     m.cursor = ItemStack::new(item, c.max_stack(item));
@@ -657,6 +662,7 @@ impl Server {
                     menu::close(m, r, c, p.entity);
                 }
             }
+            ToServer::Drop { .. } if self.mode(pi) == GameMode::Spectator => {}
             ToServer::Drop { all } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
@@ -751,8 +757,8 @@ impl Server {
         let kind = &c.game.entities[c.game.player_kind as usize];
         let mut e = Entity::new(id, c.game.player_kind, pos, if health > 0.0 { health } else { kind.max_health });
         e.player = true;
-        e.creative = self.storage.as_ref().is_some_and(|s| saved_creative(&s.lock(), &key));
-        let creative = e.creative;
+        e.mode = self.storage.as_ref().map_or(GameMode::Survival, |s| saved_mode(&s.lock(), &key));
+        let mode = e.mode;
         r.entities.insert(c, e);
         if let Some(inv) = inv {
             r.entities.inventories.insert(id, inv);
@@ -777,15 +783,20 @@ impl Server {
         p.conn.send(ToClient::Welcome { player: id, dim, pos, seed: self.cfg.seed });
         p.conn.send(ToClient::Time { dim, time });
         p.conn.send(ToClient::Health { health, max: kind.max_health });
-        p.conn.send(ToClient::GameMode(creative));
+        p.conn.send(ToClient::GameMode(mode));
     }
 
-    fn set_creative(&mut self, pi: usize, creative: bool) {
+    fn set_mode(&mut self, pi: usize, mode: GameMode) {
         let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
         if let Some(e) = self.dims[dim as usize].entity_region(entity).and_then(|r| r.entities.get_mut(entity)) {
-            e.creative = creative;
+            e.mode = mode;
         }
-        self.players[pi].conn.send(ToClient::GameMode(creative));
+        self.players[pi].conn.send(ToClient::GameMode(mode));
+    }
+
+    fn mode(&self, pi: usize) -> GameMode {
+        let p = &self.players[pi];
+        self.dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(GameMode::Survival, |e| e.mode)
     }
 
     /// Moves a player (with inventory and components) to a position, possibly in another
@@ -957,9 +968,9 @@ impl Server {
                 format!("{} in {}", d.get(p).map_or("unloaded".into(), |s| c.state_name(s)), c.dims[d.id as usize].name)
             }
             "gamemode" => {
-                let creative = a.get("creative").is_some();
-                self.set_creative(pi, creative);
-                format!("game mode: {}", if creative { "creative" } else { "survival" })
+                let mode = GameMode::ALL.into_iter().find(|m| a.get(m.name()).is_some()).unwrap_or_default();
+                self.set_mode(pi, mode);
+                format!("game mode: {}", mode.name())
             }
             "heal" => {
                 let max = c.game.entities[c.game.player_kind as usize].max_health;
@@ -1142,12 +1153,14 @@ impl Server {
             }
 
             // Entities in range: spawn new ones, despawn gone ones, stream movement.
-            let me = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
+            let (me, me_mode) = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or((DVec3::ZERO, GameMode::Survival), |e| (e.pos, e.mode));
             let range2 = ((r * 16) as f64).powi(2);
             let mut spawn = Vec::new();
             let mut visible = FxHashSet::default();
             for reg in &dim.regions {
-                for e in reg.entities.list.iter().filter(|e| !e.removed && e.id != p.entity && e.anchor.is_none()) {
+                // Spectators are seen only by other spectators.
+                let shown = |e: &&Entity| e.mode != GameMode::Spectator || me_mode == GameMode::Spectator;
+                for e in reg.entities.list.iter().filter(|e| !e.removed && e.id != p.entity && e.anchor.is_none()).filter(shown) {
                     if (e.pos - me).length_squared() > range2 {
                         continue;
                     }
@@ -1395,8 +1408,8 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
         "name = {}\ndim = {}\npos = {} {} {}\nlook = {} {}\nhealth = {}\n",
         p.name, c.dims[p.dim as usize].name, e.pos.x, e.pos.y, e.pos.z, e.yaw, e.pitch, e.health
     );
-    if e.creative {
-        text.push_str("mode = creative\n");
+    if e.mode != GameMode::Survival {
+        text.push_str(&format!("mode = {}\n", e.mode.name()));
     }
     if let Some(inv) = d.entities.inventories.get(&p.entity) {
         let items: Vec<String> = inv
@@ -1415,8 +1428,9 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
     }
 }
 
-fn saved_creative(s: &Storage, key: &str) -> bool {
-    std::fs::read_to_string(s.player_path(key)).is_ok_and(|src| src.lines().any(|l| l.replace(' ', "") == "mode=creative"))
+fn saved_mode(s: &Storage, key: &str) -> GameMode {
+    let src = std::fs::read_to_string(s.player_path(key)).unwrap_or_default();
+    src.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == "mode").and_then(|(_, v)| GameMode::parse(v.trim()))).unwrap_or_default()
 }
 
 type PlayerData = (u32, DVec3, f32, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);

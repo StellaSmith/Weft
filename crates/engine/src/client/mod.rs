@@ -17,6 +17,7 @@ use crate::content::content;
 use crate::input::Input;
 use crate::net::{ClientConn, ToClient, ToServer};
 use crate::physics::{self, Hit};
+use crate::world::GameMode;
 use entity_render::EntityRenderer;
 use textures::GameTextures;
 use world::ClientWorld;
@@ -32,6 +33,10 @@ pub struct LocalPlayer {
     /// leave the ground before the next send, and the server would add up the falls.
     pub landed: bool,
     pub flying: bool,
+    /// Spectator: moves through blocks.
+    pub noclip: bool,
+    /// Flying speed multiplier, changed with the scroll wheel in spectator mode.
+    pub fly_speed: f32,
     pub in_liquid: bool,
     /// Physics steps until the next jump while the key stays held (vanilla's 10 ticks), so a
     /// two-block gap cannot be used to bounce at full speed.
@@ -102,7 +107,9 @@ pub struct Client {
     pub inventory: Vec<ItemStack>,
     pub health: f32,
     pub max_health: f32,
-    pub creative: bool,
+    pub mode: GameMode,
+    /// When jump was last pressed, for double-tap flight toggling.
+    last_jump: Option<Instant>,
     /// Held item and when it became held: its name shows above the hotbar for a moment.
     pub held_name: (u32, Instant),
     /// Names of the players online, for completion.
@@ -146,6 +153,8 @@ impl Client {
                 eye: EYE,
                 fov_mul: 1.0,
                 flying: false,
+                noclip: false,
+                fly_speed: 1.0,
                 in_liquid: false,
             },
             joined: false,
@@ -170,7 +179,8 @@ impl Client {
             players: Vec::new(),
             sent: Vec::new(),
             held_name: (0, Instant::now()),
-            creative: false,
+            mode: GameMode::Survival,
+            last_jump: None,
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -268,11 +278,11 @@ impl Client {
                     }
                 }
                 ToClient::Players(names) => self.players = names,
-                ToClient::GameMode(creative) => {
-                    self.creative = creative;
-                    if !creative {
-                        self.player.flying = false;
-                    }
+                ToClient::GameMode(mode) => {
+                    self.mode = mode;
+                    self.player.flying = mode == GameMode::Spectator || (mode == GameMode::Creative && self.player.flying);
+                    self.player.noclip = mode == GameMode::Spectator;
+                    self.player.fly_speed = 1.0;
                 }
                 ToClient::Worn(list) => {
                     for (id, items) in list {
@@ -382,17 +392,33 @@ impl Client {
             self.player.yaw -= input.mouse_delta.x * sens;
             self.player.pitch = (self.player.pitch - input.mouse_delta.y * sens).clamp(-1.55, 1.55);
         }
-        if input.pressed("core:fly") && self.creative {
-            self.player.flying = !self.player.flying;
+        if self.mode == GameMode::Creative && input.captured {
+            if input.pressed("core:fly") {
+                self.player.flying = !self.player.flying;
+            }
+            // Double tap jump toggles flight, like vanilla's 7 ticks.
+            if input.pressed("core:jump") {
+                match self.last_jump.take() {
+                    Some(t) if t.elapsed().as_secs_f32() < 0.35 => self.player.flying = !self.player.flying,
+                    _ => self.last_jump = Some(Instant::now()),
+                }
+            }
         }
         let old = self.selected;
-        for i in 0..9 {
-            if input.pressed(&format!("core:hotbar{}", i + 1)) {
-                self.selected = i;
+        let spectator = self.mode == GameMode::Spectator;
+        if !spectator {
+            for i in 0..9 {
+                if input.pressed(&format!("core:hotbar{}", i + 1)) {
+                    self.selected = i;
+                }
             }
         }
         if input.scroll != 0.0 {
-            self.selected = (self.selected as i32 - input.scroll.signum() as i32).rem_euclid(9) as usize;
+            if spectator {
+                self.player.fly_speed = (self.player.fly_speed * if input.scroll > 0.0 { 1.25 } else { 0.8 }).clamp(0.1, 10.0);
+            } else {
+                self.selected = (self.selected as i32 - input.scroll.signum() as i32).rem_euclid(9) as usize;
+            }
         }
         if old != self.selected {
             self.conn.send(ToServer::Select(self.selected as u32));
@@ -409,7 +435,7 @@ impl Client {
         let moving = input.held("core:forward");
         let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
         self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
-        if input.pressed("core:drop") {
+        if input.pressed("core:drop") && !spectator {
             self.conn.send(ToServer::Drop { all: input.held("core:sprint") });
         }
         if input.pressed("core:inventory") && input.captured {
@@ -433,9 +459,9 @@ impl Client {
 
         let eye = self.player.pos + DVec3::Y * self.player.eye;
         let look = self.camera().forward().as_dvec3();
-        self.target = physics::raycast(c, &block, eye, look, 5.0);
+        self.target = if spectator { None } else { physics::raycast(c, &block, eye, look, 5.0) };
         let block_dist = self.target.map_or(f64::INFINITY, |h| (h.block.as_dvec3() + DVec3::splat(0.5) - eye).length());
-        self.target_entity = self.pick_entity(eye, look, block_dist.min(4.5));
+        self.target_entity = if spectator { None } else { self.pick_entity(eye, look, block_dist.min(4.5)) };
 
         self.cooldown -= dt as f32;
         if input.captured && !self.dead {
@@ -449,7 +475,7 @@ impl Client {
                 } else if let Some(hit) = self.target {
                     let held = self.held().item;
                     let (time, _) = crate::server::break_time(c, hit.state, held);
-                    let time = if self.creative { 0.0 } else { time };
+                    let time = if self.mode == GameMode::Creative { 0.0 } else { time };
                     let progress = match self.breaking {
                         Some((p, v)) if p == hit.block => v,
                         _ => 0.0,
@@ -664,7 +690,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
 
     let sprint = input.held("core:sprint");
     if p.flying {
-        let speed = if sprint { 30.0 } else { 11.0 };
+        let speed = if sprint { 30.0 } else { 11.0 } * p.fly_speed as f64;
         let mut v = dir * speed;
         if input.held("core:jump") {
             v.y += speed * 0.8;
@@ -704,6 +730,11 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         }
     }
 
+    if p.noclip {
+        p.pos += p.vel * STEP;
+        p.on_ground = false;
+        return;
+    }
     let step_h = if p.on_ground && !p.flying { 0.6 } else { 0.0 };
     let before = p.pos;
     let r = physics::move_box(c, block, p.pos, HALF_WIDTH, HEIGHT, p.vel * STEP, step_h);
@@ -724,4 +755,8 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
     }
     p.on_ground = r.on_ground || (p.pos == before && p.on_ground);
     p.landed |= p.on_ground;
+    // Flying creative players stop flying when they come down onto the ground.
+    if p.flying && r.on_ground && r.hit[1] {
+        p.flying = false;
+    }
 }

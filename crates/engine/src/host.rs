@@ -254,11 +254,16 @@ unsafe extern "C" fn component(w: *mut abi::WorldCtx, id: u64, comp: u32) -> *mu
 }
 
 unsafe extern "C" fn player_count(w: *mut abi::WorldCtx) -> u32 {
-    unsafe { dim(w).entities.list.iter().filter(|e| e.player && !e.removed).count() as u32 }
+    unsafe { dim(w).entities.list.iter().filter(|e| visible_player(e)).count() as u32 }
 }
 
 unsafe extern "C" fn player_at(w: *mut abi::WorldCtx, index: u32) -> u64 {
-    unsafe { dim(w).entities.list.iter().filter(|e| e.player && !e.removed).nth(index as usize).map_or(0, |e| e.id) }
+    unsafe { dim(w).entities.list.iter().filter(|e| visible_player(e)).nth(index as usize).map_or(0, |e| e.id) }
+}
+
+/// Players mods get to see: spectators are left out, so mobs neither chase nor spawn around them.
+fn visible_player(e: &crate::server::entity::Entity) -> bool {
+    e.player && !e.removed && e.mode != crate::world::GameMode::Spectator
 }
 
 unsafe extern "C" fn inv_size(w: *mut abi::WorldCtx, owner: u64) -> u32 {
@@ -552,7 +557,7 @@ unsafe extern "C" fn command_reply(args: *mut abi::CommandArgs, text: Str) {
 }
 
 unsafe extern "C" fn is_creative(w: *mut abi::WorldCtx, entity: u64) -> u32 {
-    unsafe { dim(w).entities.get(entity).is_some_and(|e| e.creative) as u32 }
+    unsafe { dim(w).entities.get(entity).is_some_and(|e| e.mode.invulnerable()) as u32 }
 }
 
 unsafe extern "C" fn reg_hud_element(r: *mut abi::Registrar, name: Str, anchor: Str, order: i32, cb: Callback) {

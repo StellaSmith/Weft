@@ -5,6 +5,40 @@ use glam::IVec3;
 
 pub use cube::Cube;
 
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum GameMode {
+    #[default]
+    Survival,
+    Creative,
+    /// Flies through blocks, cannot touch anything, unseen by mobs and survival players.
+    Spectator,
+}
+
+impl GameMode {
+    pub const ALL: [GameMode; 3] = [GameMode::Survival, GameMode::Creative, GameMode::Spectator];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GameMode::Survival => "survival",
+            GameMode::Creative => "creative",
+            GameMode::Spectator => "spectator",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<GameMode> {
+        GameMode::ALL.into_iter().find(|m| m.name() == s)
+    }
+
+    pub fn from_u8(v: u8) -> GameMode {
+        GameMode::ALL.get(v as usize).copied().unwrap_or_default()
+    }
+
+    /// Takes no damage and needs no food.
+    pub fn invulnerable(self) -> bool {
+        self != GameMode::Survival
+    }
+}
+
 #[inline]
 pub fn cube_of(p: IVec3) -> IVec3 {
     p >> 4

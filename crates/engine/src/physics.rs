@@ -38,6 +38,38 @@ pub fn boxes(c: &Content, state: u32, out: &mut Vec<[f64; 6]>) {
     }
 }
 
+/// Solid collision boxes of the blocks around `area`; unloaded positions count as full blocks.
+fn solid_boxes(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, area: Aabb) -> Vec<Aabb> {
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    // One extra layer below for collision boxes taller than a block (fences); everything else
+    // stays inside its own block.
+    let lo = area.min.floor().as_ivec3() - IVec3::Y;
+    let hi = area.max.floor().as_ivec3();
+    for y in lo.y..=hi.y {
+        for z in lo.z..=hi.z {
+            for x in lo.x..=hi.x {
+                let p = IVec3::new(x, y, z);
+                let b = p.as_dvec3();
+                match block(p) {
+                    None => out.push(Aabb { min: b, max: b + DVec3::ONE }),
+                    Some(s) => {
+                        buf.clear();
+                        boxes(c, s, &mut buf);
+                        out.extend(buf.iter().map(|bx| Aabb { min: b + DVec3::new(bx[0], bx[1], bx[2]), max: b + DVec3::new(bx[3], bx[4], bx[5]) }));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `area` overlaps anything solid.
+pub fn collides(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, area: Aabb) -> bool {
+    solid_boxes(c, block, area).iter().any(|s| s.intersects(&area))
+}
+
 pub struct MoveResult {
     pub pos: DVec3,
     pub hit: [bool; 3],
@@ -55,37 +87,6 @@ pub fn move_box(
     delta: DVec3,
     step_height: f64,
 ) -> MoveResult {
-    let mut boxes_buf = Vec::new();
-    let mut collect = |area: Aabb| -> Vec<Aabb> {
-        let mut out = Vec::new();
-        // One extra layer below for collision boxes taller than a block (fences); everything
-        // else stays inside its own block.
-        let lo = area.min.floor().as_ivec3() - IVec3::Y;
-        let hi = area.max.floor().as_ivec3();
-        for y in lo.y..=hi.y {
-            for z in lo.z..=hi.z {
-                for x in lo.x..=hi.x {
-                    let p = IVec3::new(x, y, z);
-                    let b = p.as_dvec3();
-                    match block(p) {
-                        None => out.push(Aabb { min: b, max: b + DVec3::ONE }),
-                        Some(s) => {
-                            boxes_buf.clear();
-                            boxes(c, s, &mut boxes_buf);
-                            for bx in &boxes_buf {
-                                out.push(Aabb {
-                                    min: b + DVec3::new(bx[0], bx[1], bx[2]),
-                                    max: b + DVec3::new(bx[3], bx[4], bx[5]),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out
-    };
-
     let start = Aabb::around(pos, half_width, height);
     let mut sweep = start;
     for i in 0..3 {
@@ -96,7 +97,7 @@ pub fn move_box(
         }
     }
     sweep.max.y += step_height;
-    let solids = collect(sweep);
+    let solids = solid_boxes(c, block, sweep);
 
     let try_move = |from: Aabb, delta: DVec3| -> (Aabb, [bool; 3], DVec3) {
         let mut b = from;

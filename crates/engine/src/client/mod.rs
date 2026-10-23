@@ -47,6 +47,8 @@ pub struct LocalPlayer {
     /// sprinting or flying).
     pub eye: f64,
     pub fov_mul: f32,
+    /// Crouching: lower box and eyes. Stays on under a low ceiling until there is room to stand.
+    pub crouched: bool,
 }
 
 pub struct ClientEntity {
@@ -95,6 +97,9 @@ pub enum ClientEvent {
 const HALF_WIDTH: f64 = 0.3;
 const HEIGHT: f64 = 1.8;
 const EYE: f64 = 1.62;
+/// Crouching, like modern versions: fits under 1.5 block gaps.
+const CROUCH_HEIGHT: f64 = 1.5;
+const CROUCH_EYE: f64 = 1.27;
 /// Player physics runs at vanilla's tick rate; the camera is interpolated between ticks.
 const STEP: f64 = 1.0 / 20.0;
 
@@ -180,6 +185,7 @@ impl Client {
                 jump_cooldown: 0,
                 eye: EYE,
                 fov_mul: 1.0,
+                crouched: false,
                 flying: false,
                 noclip: false,
                 fly_speed: 1.0,
@@ -495,7 +501,7 @@ impl Client {
         // Eye and view widen or drop over a few frames like vanilla, not in one jump.
         let k = (dt * 12.0).min(1.0);
         let sneaking = input.held("core:sneak") && !self.player.flying;
-        let eye_target = if sneaking { EYE - 0.08 } else { EYE };
+        let eye_target = if self.player.crouched { CROUCH_EYE } else { EYE };
         self.player.eye += (eye_target - self.player.eye) * k;
         let moving = input.held("core:forward");
         let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
@@ -957,23 +963,39 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         }
     }
 
+    // Crouch while sneaking; stand up only where the full height fits.
+    if sneak && !p.flying && !p.noclip {
+        p.crouched = true;
+    } else if p.crouched && (p.noclip || !physics::collides(c, block, physics::Aabb::around(p.pos, HALF_WIDTH - 1e-3, HEIGHT))) {
+        p.crouched = false;
+    }
+    let height = if p.crouched { CROUCH_HEIGHT } else { HEIGHT };
+
     let before = p.pos;
     if p.noclip {
         p.pos += p.vel;
         p.on_ground = false;
     } else {
-        let step_h = if p.on_ground && !p.flying { 0.6 } else { 0.0 };
-        let r = physics::move_box(c, block, p.pos, HALF_WIDTH, HEIGHT, p.vel, step_h);
-        p.pos = r.pos;
-        // Sneaking on an edge: do not walk off.
-        if sneak && p.on_ground && !p.flying && !r.on_ground {
-            let below = |pos: DVec3| physics::move_box(c, block, pos, HALF_WIDTH, HEIGHT, DVec3::new(0.0, -0.6, 0.0), 0.0).on_ground;
-            if !below(p.pos) {
-                p.pos = before;
-                p.vel.x = 0.0;
-                p.vel.z = 0.0;
+        // Sneaking at an edge (vanilla): each horizontal component is cut back in 0.05 steps
+        // while the moved box would have nothing under it, so the player slides along the edge
+        // and never falls off it.
+        if sneak && p.on_ground && !p.flying {
+            let ground = |dx: f64, dz: f64| physics::collides(c, block, physics::Aabb::around(p.pos + DVec3::new(dx, -0.6, dz), HALF_WIDTH, height));
+            let shrink = |v: f64| if v.abs() < 0.05 { 0.0 } else { v - 0.05 * v.signum() };
+            while p.vel.x != 0.0 && !ground(p.vel.x, 0.0) {
+                p.vel.x = shrink(p.vel.x);
+            }
+            while p.vel.z != 0.0 && !ground(0.0, p.vel.z) {
+                p.vel.z = shrink(p.vel.z);
+            }
+            while p.vel.x != 0.0 && p.vel.z != 0.0 && !ground(p.vel.x, p.vel.z) {
+                p.vel.x = shrink(p.vel.x);
+                p.vel.z = shrink(p.vel.z);
             }
         }
+        let step_h = if p.on_ground && !p.flying { 0.6 } else { 0.0 };
+        let r = physics::move_box(c, block, p.pos, HALF_WIDTH, height, p.vel, step_h);
+        p.pos = r.pos;
         for i in 0..3 {
             if r.hit[i] {
                 p.vel[i] = 0.0;

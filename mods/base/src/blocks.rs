@@ -249,8 +249,8 @@ pub fn register(r: &mut Registry) {
     r.block("ice", &ICE).hardness(0.5).translucent().opacity(2).friction(0.98).tool("pickaxe", 0).drops_nothing().tab("natural");
     r.block("obsidian", &OBSIDIAN).hardness(50.0).tool("pickaxe", 4).tab("natural");
     r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 1).drops("coal", 1).tag("base:ores").tag("ores/coal").tab("natural");
-    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores").tag("ores/iron").tab("natural");
-    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).tag("base:ores").tag("ores/gold").tab("natural");
+    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).drops("raw_iron", 1).tag("base:ores").tag("ores/iron").tab("natural");
+    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).drops("raw_gold", 1).tag("base:ores").tag("ores/gold").tab("natural");
     r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 3).drops("diamond", 1).tag("base:ores").tag("ores/diamond").tab("natural");
 
     log(r, "oak_log", &OAK_LOG, "oak");

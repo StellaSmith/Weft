@@ -57,6 +57,9 @@ pub fn register(r: &mut Registry) {
     r.item("coal", &COAL).tag("gems/coal").prop(FUEL, 1600 as Fuel).tab("ingredients");
     r.item("iron_ingot", &IRON_INGOT).tag("ingots/iron").tag("materials/iron").tab("ingredients");
     r.item("gold_ingot", &GOLD_INGOT).tag("ingots/gold").tag("materials/gold").tab("ingredients");
+    // Metal ores drop raw pieces (like modern versions) that smelt into ingots.
+    r.item("raw_iron", leak()).tag("raw_ores/iron").tab("ingredients");
+    r.item("raw_gold", leak()).tag("raw_ores/gold").tab("ingredients");
     r.item("diamond", &DIAMOND).tag("gems/diamond").tag("materials/diamond").tab("ingredients");
     r.item("wheat_seeds", &WHEAT_SEEDS).places("wheat").tab("natural");
     r.item("wheat", &WHEAT).tab("ingredients");

@@ -142,11 +142,19 @@ const ICON: f32 = 16.0;
 
 /// Lays out spans, wrapping at spaces when a line would exceed `max_width` (font pixels).
 pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout {
-    layout_spaced(spans, font, max_width, font.line_height)
+    layout_with(spans, font, max_width, font.line_height, false)
 }
 
 /// `layout` with lines `line_height` font pixels apart (tooltips leave room between lines).
 pub fn layout_spaced(spans: &[Span], font: &Font, max_width: Option<f32>, line_height: f32) -> TextLayout {
+    layout_with(spans, font, max_width, line_height, false)
+}
+
+/// Every glyph in a cell of the same width (9 font pixels, 17 for wide characters), so changing
+/// numbers do not shift the text after them (debug overlay).
+const MONO: f32 = 9.0;
+
+pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_height: f32, mono: bool) -> TextLayout {
     let lh = line_height;
     let mut out = TextLayout::default();
     let (mut x, mut y) = (0.0f32, 0.0f32);
@@ -210,8 +218,14 @@ pub fn layout_spaced(spans: &[Span], font: &Font, max_width: Option<f32>, line_h
                         }
                         last_break = Some((out.items.len(), x));
                     }
-                    out.items.push(Placed::Glyph { x, y, ch, color: span.color });
-                    x += adv;
+                    if mono {
+                        let cell = if adv > MONO + 1.0 { MONO * 2.0 - 1.0 } else { MONO };
+                        out.items.push(Placed::Glyph { x: x + ((cell - adv) / 2.0).floor(), y, ch, color: span.color });
+                        x += cell;
+                    } else {
+                        out.items.push(Placed::Glyph { x, y, ch, color: span.color });
+                        x += adv;
+                    }
                 }
             }
             Piece::Icon(item) => {

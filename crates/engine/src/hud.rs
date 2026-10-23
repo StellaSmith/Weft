@@ -452,6 +452,7 @@ fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
                 let n = ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
                 if let Some(t) = ui.text_mut(n) {
                     t.wrap = false;
+                    t.mono = true;
                 }
             }
         });

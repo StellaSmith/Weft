@@ -191,6 +191,8 @@ pub struct TextNode {
     pub last: Option<(String, Vec<Arg>)>,
     pub layout: TextLayout,
     pub wrap: bool,
+    /// Fixed-width glyphs, so changing numbers do not move the text after them.
+    pub mono: bool,
     pub scale: f32,
     pub color: Option<u32>,
     pub center: bool,
@@ -362,6 +364,7 @@ impl Ui {
                 last: None,
                 layout: TextLayout::default(),
                 wrap: true,
+                mono: false,
                 scale: 1.0,
                 color: None,
                 center: false,
@@ -379,6 +382,7 @@ impl Ui {
                 last: None,
                 layout: TextLayout::default(),
                 wrap: true,
+                mono: false,
                 scale: 1.0,
                 color: None,
                 center: false,
@@ -453,7 +457,7 @@ impl Ui {
         let unit = self.text_unit;
         let content = if let Kind::Text(t) = &mut self.nodes[id].kind {
             let max = if t.wrap { Some(inner_avail[0].max(8.0) / (t.scale * unit)) } else { None };
-            t.layout = text::layout(&t.spans, font, max);
+            t.layout = text::layout_with(&t.spans, font, max, font.line_height, t.mono);
             [t.layout.width * t.scale * unit, t.layout.height * t.scale * unit]
         } else {
             match &self.nodes[id].kind {
@@ -494,7 +498,7 @@ impl Ui {
             // Final fit: wrap to the box we actually got, or shrink if wrapping is off.
             if t.layout.width * t.scale * unit > inner.w + 0.5 {
                 if t.wrap {
-                    t.layout = text::layout(&t.spans, font, Some(inner.w / (t.scale * unit)));
+                    t.layout = text::layout_with(&t.spans, font, Some(inner.w / (t.scale * unit)), font.line_height, t.mono);
                 } else if t.layout.width > 0.0 {
                     t.scale = (inner.w / (t.layout.width * unit)).max(0.25);
                 }

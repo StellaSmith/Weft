@@ -1271,7 +1271,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.list.push(Cmd::BeginPass { color: Some((Target::Surface, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
     if let Some(g) = &mut r.game {
         let worn = g.client.worn();
-        g.client.entity_render.preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn);
+        let held = g.client.held().item;
+        g.client.entity_render.preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, held);
         g.client.render(&mut *r.gpu, &mut r.list, &info, &r.textures);
     }
     r.ui.draw(&mut *r.gpu, &mut r.list, &info);

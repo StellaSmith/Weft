@@ -94,6 +94,8 @@ pub struct Camera {
     pub yaw: f32,
     pub pitch: f32,
     pub fov: f32,
+    /// Walking sway in view space: offset, roll and extra pitch (vanilla's view bobbing).
+    pub bob: (Vec3, f32, f32),
 }
 
 impl Camera {
@@ -104,7 +106,8 @@ impl Camera {
     }
 
     pub fn view(&self) -> Mat4 {
-        glam::camera::rh::view::look_to_mat4(Vec3::ZERO, self.forward(), Vec3::Y)
+        let (offset, roll, pitch) = self.bob;
+        Mat4::from_translation(offset) * Mat4::from_rotation_z(roll) * Mat4::from_rotation_x(pitch) * glam::camera::rh::view::look_to_mat4(Vec3::ZERO, self.forward(), Vec3::Y)
     }
 
     pub fn proj(&self, aspect: f32) -> Mat4 {

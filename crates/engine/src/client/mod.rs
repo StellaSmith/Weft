@@ -132,6 +132,10 @@ pub struct Client {
     /// Own walk distance and swing amplitude, for the third person model and view bobbing.
     self_walk: f32,
     self_swing: f32,
+    /// Vanilla's bobbing state: distance walked (x0.6) and the smoothed amplitude.
+    walk_dist: f32,
+    bob: f32,
+    last_smooth: DVec3,
     /// Held item and when it became held: its name shows above the hotbar for a moment.
     pub held_name: (u32, Instant),
     /// Names of the players online, for completion.
@@ -210,6 +214,9 @@ impl Client {
             hand_swing: None,
             self_walk: 0.0,
             self_swing: 0.0,
+            walk_dist: 0.0,
+            bob: 0.0,
+            last_smooth: DVec3::ZERO,
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -487,11 +494,19 @@ impl Client {
         if input.pressed("core:perspective") && input.captured {
             self.view = (self.view + 1) % 3;
         }
-        let speed = self.player.vel.with_y(0.0).length() as f32;
-        self.self_walk += speed * dt as f32;
+        let now = self.smooth_pos();
+        let moved = (now - self.last_smooth).with_y(0.0).length().min(2.0) as f32;
+        self.last_smooth = now;
+        let speed = moved / (dt as f32).max(1e-4);
+        self.self_walk += moved;
         let k_swing = (dt * 10.0).min(1.0) as f32;
-        let amp = if self.player.on_ground || self.player.flying { (speed / 4.3).min(1.0) } else { 0.0 };
+        let walking = self.player.on_ground && !self.player.flying;
+        let amp = if walking { (speed / 4.3).min(1.0) } else { 0.0 };
         self.self_swing += (amp - self.self_swing) * k_swing;
+        // Vanilla: amplitude follows the per-tick speed capped at 0.1, eased by 0.4 per tick.
+        self.walk_dist += moved * 0.6;
+        let target = if walking { (speed / 20.0).min(0.1) } else { 0.0 };
+        self.bob += (target - self.bob) * (1.0 - 0.6f32.powf(dt as f32 * 20.0));
         if let Some(p) = &mut self.hand_swing {
             *p += dt as f32 / 0.3;
             if *p >= 1.0 {
@@ -679,7 +694,19 @@ impl Client {
     }
 
     pub fn camera(&self) -> Camera {
-        Camera { pos: self.smooth_pos() + DVec3::Y * self.player.eye, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov * self.player.fov_mul }
+        Camera { pos: self.smooth_pos() + DVec3::Y * self.player.eye, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov * self.player.fov_mul, bob: (Vec3::ZERO, 0.0, 0.0) }
+    }
+
+    /// The camera with view bobbing, for drawing (aiming uses the steady one).
+    fn bobbed(&self, mut cam: Camera) -> Camera {
+        use std::f32::consts::PI;
+        let (f, g) = (self.walk_dist * PI, self.bob);
+        cam.bob = (
+            Vec3::new(f.sin() * g * 0.5, -(f.cos() * g).abs(), 0.0),
+            (f.sin() * g * 3.0).to_radians(),
+            ((f - 0.2).cos() * g).abs().to_radians() * 5.0,
+        );
+        cam
     }
 
     /// The camera drawn from: the eye, or up to 4 blocks behind or in front of it in third person,
@@ -687,7 +714,7 @@ impl Client {
     pub fn render_camera(&self) -> Camera {
         let eye = self.camera();
         if self.view == 0 {
-            return eye;
+            return self.bobbed(eye);
         }
         let front = self.view == 2;
         let mut cam = eye;
@@ -778,8 +805,6 @@ impl Client {
         let hand = (self.view == 0 && !self.dead && self.mode != GameMode::Spectator).then(|| entity_render::Hand {
             stack: self.held(),
             swing: self.hand_swing,
-            bob: self.self_walk,
-            bob_amount: self.self_swing,
         });
         let world = &self.world;
         let light = |p: IVec3| world.light(p);

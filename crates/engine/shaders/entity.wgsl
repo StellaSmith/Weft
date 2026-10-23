@@ -75,7 +75,11 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     let uv = UVS[c];
     out.mode = b.ids.y;
     out.tex = b.ids.x;
-    if b.ids.y == 1u || b.ids.y == 3u {
+    if b.ids.y == 4u {
+        // One texel for the whole box (pixels of held item sprites).
+        out.layer = b.ids.z;
+        out.uv = b.uvo.xy;
+    } else if b.ids.y == 1u || b.ids.y == 3u {
         var packed = b.ids.z;
         if face >= 2u && face < 4u {
             packed = b.ids.w;
@@ -107,6 +111,8 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         albedo = textureSample(textures[in.tex], nearest_clamp, in.uv);
     } else if in.mode == 1u || in.mode == 3u {
         albedo = textureSample(texture_arrays[in.tex], nearest_mipped, in.uv, in.layer);
+    } else if in.mode == 4u {
+        albedo = textureSampleLevel(texture_arrays[in.tex], nearest_mipped, in.uv, in.layer, 0.0);
     }
     if in.mode == 3u {
         // Flames give their own light.

@@ -60,6 +60,8 @@ pub struct Style {
     pub align: Align,
     pub justify: Justify,
     pub self_align: Option<Align>,
+    /// Children scroll inside this node (mouse wheel) and are clipped to it.
+    pub scroll: bool,
 }
 
 impl Default for Style {
@@ -76,6 +78,7 @@ impl Default for Style {
             align: Align::Start,
             justify: Justify::Start,
             self_align: None,
+            scroll: false,
         }
     }
 }
@@ -147,6 +150,10 @@ impl Style {
         self.justify = j;
         self
     }
+    pub fn scroll(mut self) -> Self {
+        self.scroll = true;
+        self
+    }
     pub fn stretch(mut self) -> Self {
         self.align = Align::Stretch;
         self
@@ -166,6 +173,12 @@ pub struct Rect {
 }
 
 impl Rect {
+    pub fn intersect(&self, o: Rect) -> Rect {
+        let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
+        let (x1, y1) = ((self.x + self.w).min(o.x + o.w), (self.y + self.h).min(o.y + o.h));
+        Rect { x: x0, y: y0, w: (x1 - x0).max(0.0), h: (y1 - y0).max(0.0) }
+    }
+
     pub fn contains(&self, p: Vec2) -> bool {
         p.x >= self.x && p.y >= self.y && p.x < self.x + self.w && p.y < self.y + self.h
     }
@@ -192,7 +205,7 @@ pub enum Kind {
     Item { bind: ItemBind, last: (u32, u32) },
     Progress { class: String, bind: FloatBind, value: f32 },
     /// `count` icons showing `value` in half steps (hearts): theme `class.full/half/empty`.
-    Icons { class: String, count: u32, bind: FloatBind, value: f32 },
+    Icons { class: String, count: u32, bind: FloatBind, value: f32, rtl: bool },
     Input { value: String, max: usize, on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>> },
     Slider { value: f32, bind: FloatBind, on_change: Rc<dyn Fn(&mut Ctx, f32)> },
     /// Engine-drawn content (slots, 3D previews) identified by a tag.
@@ -207,6 +220,8 @@ pub struct Node {
     pub id: Option<String>,
     pub tooltip: Option<Vec<Span>>,
     measured: [f32; 2],
+    /// Visible part when inside a scrolling node, GUI units.
+    pub clip: Option<Rect>,
 }
 
 pub struct Ui {
@@ -216,6 +231,8 @@ pub struct Ui {
     pub pressed: Option<NodeId>,
     pub focused: Option<NodeId>,
     pub dirty: bool,
+    /// Scroll offsets by node id (or index), kept across rebuilds.
+    scroll: rustc_hash::FxHashMap<String, f32>,
     pub size: Vec2,
     /// GUI pixels per font pixel, chosen by the caller so glyphs land on whole physical pixels.
     pub text_unit: f32,
@@ -237,12 +254,41 @@ impl Ui {
             id: None,
             tooltip: None,
             measured: [0.0; 2],
+            clip: None,
         };
-        Ui { nodes: vec![root], stack: vec![0], hovered: None, pressed: None, focused: None, dirty: true, size: Vec2::ZERO, text_unit: 0.5 }
+        Ui {
+            nodes: vec![root],
+            stack: vec![0],
+            hovered: None,
+            pressed: None,
+            focused: None,
+            dirty: true,
+            scroll: Default::default(),
+            size: Vec2::ZERO,
+            text_unit: 0.5,
+        }
     }
 
     pub fn clear(&mut self) {
+        let scroll = std::mem::take(&mut self.scroll);
         *self = Ui::new();
+        self.scroll = scroll;
+    }
+
+    fn scroll_key(&self, id: NodeId) -> String {
+        self.nodes[id].id.clone().unwrap_or_else(|| format!("#{id}"))
+    }
+
+    /// Scrolls the innermost scrolling node under `p` by `lines` wheel steps; true if one moved.
+    pub fn scroll_at(&mut self, p: Vec2, lines: f32) -> bool {
+        let Some(id) = (0..self.nodes.len()).rev().find(|&i| self.nodes[i].style.scroll && self.nodes[i].rect.contains(p) && self.nodes[i].clip.is_none_or(|c| c.contains(p))) else {
+            return false;
+        };
+        let key = self.scroll_key(id);
+        let v = self.scroll.entry(key).or_default();
+        *v = (*v - lines * 20.0).max(0.0);
+        self.dirty = true;
+        true
     }
 
     pub fn root_style(&mut self, s: Style) {
@@ -251,7 +297,7 @@ impl Ui {
 
     pub fn add(&mut self, kind: Kind, style: Style) -> NodeId {
         let id = self.nodes.len();
-        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, measured: [0.0; 2] });
+        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, measured: [0.0; 2], clip: None });
         let parent = *self.stack.last().unwrap();
         self.nodes[parent].children.push(id);
         self.dirty = true;
@@ -353,6 +399,25 @@ impl Ui {
         self.size = size;
         self.measure(0, [size.x, size.y], font);
         self.arrange(0, Rect { x: 0.0, y: 0.0, w: size.x, h: size.y }, font);
+        self.assign_clips(0, None);
+    }
+
+    fn assign_clips(&mut self, id: NodeId, clip: Option<Rect>) {
+        self.nodes[id].clip = clip;
+        let inner = if self.nodes[id].style.scroll {
+            let r = self.nodes[id].rect;
+            let p = self.nodes[id].style.pad;
+            let own = Rect { x: r.x + p[0], y: r.y + p[1], w: (r.w - p[0] - p[2]).max(0.0), h: (r.h - p[1] - p[3]).max(0.0) };
+            Some(match clip {
+                Some(c) => c.intersect(own),
+                None => own,
+            })
+        } else {
+            clip
+        };
+        for c in self.nodes[id].children.clone() {
+            self.assign_clips(c, inner);
+        }
     }
 
     fn resolve(len: Len, avail: f32) -> Option<f32> {
@@ -456,8 +521,18 @@ impl Ui {
                 free = 0.0;
             }
         }
+        let mut scrolled = 0.0;
+        if style.scroll {
+            // Content longer than the node scrolls; the offset stays within the content.
+            let key = self.scroll_key(id);
+            let max = (-free).max(0.0);
+            let v = self.scroll.entry(key).or_default();
+            *v = v.min(max);
+            scrolled = *v;
+            free = free.max(0.0);
+        }
         let (mut pos, spacing) = match style.justify {
-            Justify::Start => (0.0, style.gap),
+            Justify::Start => (-scrolled, style.gap),
             Justify::Center => (free.max(0.0) / 2.0, style.gap),
             // Overflowing content sticks out at the start, the end edge stays put.
             Justify::End => (free, style.gap),
@@ -495,7 +570,7 @@ impl Ui {
     pub fn hit(&self, p: Vec2) -> Option<NodeId> {
         fn walk(ui: &Ui, id: NodeId, p: Vec2, best: &mut Option<NodeId>) {
             let n = &ui.nodes[id];
-            if !n.rect.contains(p) && id != 0 {
+            if (!n.rect.contains(p) || n.clip.is_some_and(|c| !c.contains(p))) && id != 0 {
                 return;
             }
             let interactive = matches!(n.kind, Kind::Button { .. } | Kind::Input { .. } | Kind::Slider { .. } | Kind::Custom { .. })

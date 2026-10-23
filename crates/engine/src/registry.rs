@@ -8,6 +8,15 @@ use voxide_abi::{self as abi, Callback, ModId, entity_flags as ef, part_role};
 
 pub const ENGINE: ModId = ModId(u32::MAX);
 pub const PLAYER: &str = "core:player";
+
+#[derive(Clone)]
+pub struct HudElement {
+    pub name: String,
+    pub anchor: String,
+    pub order: i32,
+    pub owner: ModId,
+    pub cb: Callback,
+}
 pub const ITEM: &str = "core:item";
 
 #[derive(Clone)]
@@ -109,7 +118,7 @@ pub struct Game {
     pub menus: Vec<MenuDef>,
     pub menu_names: FxHashMap<String, u32>,
     pub recipes: FxHashMap<String, Vec<Recipe>>,
-    pub huds: Vec<(ModId, Callback)>,
+    pub huds: Vec<HudElement>,
     pub player_menu: Option<u32>,
     /// Block index -> (entity kind, inventory slots).
     pub block_entities: FxHashMap<u32, u32>,
@@ -150,7 +159,7 @@ pub struct RawGame {
     pub hooks: Vec<(ModId, String, u32, Callback)>,
     pub recipes: Vec<RawRecipe>,
     pub menus: Vec<(usize, MenuDef)>,
-    pub huds: Vec<(ModId, Callback)>,
+    pub huds: Vec<HudElement>,
     pub player_menu: Option<String>,
     pub block_entities: Vec<(String, String, u32)>,
     pub attach: Vec<(String, String)>,

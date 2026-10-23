@@ -54,18 +54,13 @@ pub fn register(r: &mut Registry) {
         e.set_amount(reduced);
     });
 
-    r.hud(|ui| {
-        ui.row(S::row().w(182.0).gap(2.0), |ui| {
-            ui.column(S::col().gap(1.0), |ui| {
-                ui.icons("armor", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.armor > 0.0 { h.armor } else { -1.0 }));
-                ui.icons("hearts", 10, |c| c.me().map_or(20.0, |s| s.health.ceil()));
-            });
-            ui.spacer();
-            ui.column(S::col().gap(1.0).end(), |ui| {
-                ui.icons("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }));
-                ui.icons("food", 10, |c| c.component(&HUNGER).map_or(20.0, |h| h.food.ceil()));
-            });
-        });
+    r.hud_element("health", hud_anchor::HOTBAR_LEFT, 0, |ui| ui.icons("hearts", 10, |c| c.me().map_or(20.0, |s| s.health.ceil())));
+    r.hud_element("armor", hud_anchor::HOTBAR_LEFT, 1, |ui| {
+        ui.icons("armor", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.armor > 0.0 { h.armor } else { -1.0 }))
+    });
+    r.hud_element("food", hud_anchor::HOTBAR_RIGHT, 0, |ui| ui.icons_rtl("food", 10, |c| c.component(&HUNGER).map_or(20.0, |h| h.food.ceil())));
+    r.hud_element("air", hud_anchor::HOTBAR_RIGHT, 1, |ui| {
+        ui.icons_rtl("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }))
     });
 
     // Slots: 0-3 grid, 4 result, 5-8 armour, 9-35 main, 36-44 hotbar.

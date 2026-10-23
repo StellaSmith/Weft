@@ -215,7 +215,11 @@ impl App {
             textures,
             ui,
             screens: Vec::new(),
-            hud: Hud::default(),
+            hud: {
+                let mut h = Hud::default();
+                h.load_layout(&self.opts.run_dir);
+                h
+            },
             game: None,
             last: Instant::now(),
             started: Instant::now(),
@@ -509,6 +513,9 @@ impl Running {
     fn screen_input(&mut self, scale: f32, requests: &mut Vec<Request>) {
         let cursor = self.input.cursor / scale;
         let Some((_, ui)) = self.screens.last_mut() else { return };
+        if self.input.scroll != 0.0 && ui.scroll_at(cursor, self.input.scroll) {
+            self.quads_dirty = true;
+        }
         let hovered = ui.hit(cursor);
         if hovered != ui.hovered {
             ui.hovered = hovered;
@@ -914,6 +921,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
     if r.input.pressed("core:reload") {
         r.assets.rescan();
+        r.hud.load_layout(&opts.run_dir);
         r.ui.reload(&mut *r.gpu);
         r.theme = Theme::load(&r.assets);
         r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);

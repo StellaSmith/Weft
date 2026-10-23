@@ -632,7 +632,8 @@ pub mod ui_kind {
     pub const PROGRESS: u32 = 5;
     pub const IMAGE: u32 = 6;
     pub const SPACER: u32 = 7;
-    /// Row of `count` icons (full/half/empty textures from the theme `class`) driven by `bind`.
+    /// Row of `count` icons (full/half/empty textures from the theme `class`) driven by `bind`;
+    /// `data` 1 fills from the right.
     pub const ICONS: u32 = 8;
     /// The local player's model with what it wears, turning towards the mouse.
     pub const ENTITY: u32 = 9;
@@ -803,6 +804,20 @@ pub struct Host {
     pub energy_extract: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
     /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at spawn.
     pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str),
+    /// HUD element `name` placed at `anchor` (see `hud_anchor`), `order` 0 nearest the anchor's
+    /// edge. Players can move any element to another anchor in `config/hud.txt`.
+    pub reg_hud_element: unsafe extern "C" fn(reg: *mut Registrar, name: Str, anchor: Str, order: i32, cb: Callback),
+}
+
+/// Places for HUD elements. `HOTBAR_LEFT`/`HOTBAR_RIGHT` stack upwards above the hotbar's halves.
+pub mod hud_anchor {
+    pub const TOP_LEFT: &str = "top_left";
+    pub const TOP_RIGHT: &str = "top_right";
+    pub const BOTTOM_LEFT: &str = "bottom_left";
+    pub const BOTTOM_RIGHT: &str = "bottom_right";
+    pub const HOTBAR: &str = "hotbar";
+    pub const HOTBAR_LEFT: &str = "hotbar_left";
+    pub const HOTBAR_RIGHT: &str = "hotbar_right";
 }
 
 /// Layout of the engine's `core:energy` component. Blocks tagged `core:conductor` connect the

@@ -254,6 +254,16 @@ impl Ui {
         self.leaf(n)
     }
 
+    /// Like `icons`, filling from the right (hunger).
+    pub fn icons_rtl(&mut self, class: &str, count: u32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
+        let mut n = node(k::ICONS, S::default());
+        n.class = Str::new(class);
+        n.count = count;
+        n.data = 1;
+        n.bind = bind(f);
+        self.leaf(n)
+    }
+
     pub fn image(&mut self, texture: &str, w: f32, h: f32) {
         let mut n = node(k::IMAGE, S::default().size(w, h));
         n.text = Str::new(texture);

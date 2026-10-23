@@ -172,7 +172,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             }
             uk::ICONS => {
                 let bind = if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
-                b.ui.open(Kind::Icons { class, count: n.count, bind, value: -1.0 }, style)
+                b.ui.open(Kind::Icons { class, count: n.count, bind, value: -1.0, rtl: n.data == 1 }, style)
             }
             uk::IMAGE => b.ui.open(Kind::Image { texture: n.text.as_str().to_string(), color: 0xFFFFFFFF }, style),
             uk::ENTITY => b.ui.open(Kind::Custom { tag: TAG_ENTITY, data: 0 }, style),

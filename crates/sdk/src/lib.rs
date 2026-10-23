@@ -8,7 +8,7 @@ mod game;
 mod ui;
 mod world;
 
-pub use abi::{ItemStack, worn_parts};
+pub use abi::{ItemStack, hud_anchor, worn_parts};
 pub use cache::ColumnCache;
 pub use content::*;
 pub use game::*;

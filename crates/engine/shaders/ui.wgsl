@@ -10,6 +10,8 @@ struct Quad {
     layer: u32,
     // 0 solid colour, 1 texture, 2 texture array layer, 3 font (alpha from red)
     mode: u32,
+    // Visible rectangle (x0, y0, x1, y1) in pixels; empty = everywhere.
+    rect: vec4<f32>,
 }
 
 struct Screen {
@@ -30,6 +32,7 @@ struct VOut {
     @location(2) @interpolate(flat) tex: u32,
     @location(3) @interpolate(flat) layer: u32,
     @location(4) @interpolate(flat) mode: u32,
+    @location(5) @interpolate(flat) rect: vec4<f32>,
 }
 
 fn unpack(c: u32) -> vec4<f32> {
@@ -49,11 +52,15 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     out.tex = q.tex;
     out.layer = q.layer;
     out.mode = q.mode;
+    out.rect = q.rect;
     return out;
 }
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
+    if in.rect.z > in.rect.x && (in.clip.x < in.rect.x || in.clip.x > in.rect.z || in.clip.y < in.rect.y || in.clip.y > in.rect.w) {
+        discard;
+    }
     if in.mode == 0u {
         return in.color;
     }

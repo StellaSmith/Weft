@@ -5,6 +5,13 @@ use rustc_hash::FxHashMap;
 
 pub const CELL: u32 = 16;
 const ATLAS_COLS: u32 = 64;
+/// Cells are spaced with an empty pixel all around: with fractional text scales a quad's edge can
+/// sample just outside its glyph, which must hit blank space and not the neighbouring glyph.
+const STRIDE: u32 = CELL + 2;
+
+fn cell_origin(cell: u32) -> (u32, u32) {
+    ((cell % ATLAS_COLS) * STRIDE + 1, (cell / ATLAS_COLS) * STRIDE + 1)
+}
 
 #[derive(Clone, Copy)]
 pub struct Glyph {
@@ -42,13 +49,13 @@ impl Font {
             bitmaps.push((ch, width, bytes));
         }
         let rows = (bitmaps.len() as u32 + 1).div_ceil(ATLAS_COLS);
-        let atlas_width = ATLAS_COLS * CELL;
-        let atlas_height = rows * CELL;
+        let atlas_width = ATLAS_COLS * STRIDE;
+        let atlas_height = rows * STRIDE;
         let mut atlas = vec![0u8; (atlas_width * atlas_height) as usize];
         let mut glyphs = FxHashMap::default();
         for (n, (ch, width, bytes)) in bitmaps.iter().enumerate() {
             let cell = n as u32 + 1;
-            let (cx, cy) = ((cell % ATLAS_COLS) * CELL, (cell / ATLAS_COLS) * CELL);
+            let (cx, cy) = cell_origin(cell);
             let bpr = (*width / 8) as usize;
             let (mut min_x, mut max_x) = (u32::MAX, 0);
             for y in 0..16u32 {
@@ -69,10 +76,11 @@ impl Font {
             glyphs.insert(*ch, Glyph { cell, left, advance });
         }
         // Cell 0 stays empty and is used for a visible box when a glyph is missing.
+        let (ox, oy) = cell_origin(0);
         for i in 0..CELL {
             for j in [2, CELL - 3] {
-                atlas[(j * atlas_width + i.clamp(2, CELL - 3)) as usize] = 255;
-                atlas[(i.clamp(2, CELL - 3) * atlas_width + j) as usize] = 255;
+                atlas[((oy + j) * atlas_width + ox + i.clamp(2, CELL - 3)) as usize] = 255;
+                atlas[((oy + i.clamp(2, CELL - 3)) * atlas_width + ox + j) as usize] = 255;
             }
         }
         Font { glyphs, atlas_width, atlas_height, atlas, line_height: 16.0, fallback: Glyph { cell: 0, left: 2, advance: 13 } }
@@ -89,7 +97,7 @@ impl Font {
     }
 
     pub fn uv(&self, g: Glyph) -> [f32; 4] {
-        let (cx, cy) = ((g.cell % ATLAS_COLS) * CELL, (g.cell / ATLAS_COLS) * CELL);
+        let (cx, cy) = cell_origin(g.cell);
         let x0 = (cx + g.left as u32) as f32 / self.atlas_width as f32;
         let x1 = (cx + g.left as u32 + g.advance as u32 - 1) as f32 / self.atlas_width as f32;
         [x0, cy as f32 / self.atlas_height as f32, x1, (cy + CELL) as f32 / self.atlas_height as f32]

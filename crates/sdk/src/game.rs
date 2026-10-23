@@ -591,6 +591,12 @@ impl Registry {
         unsafe { (host().reg_hud)(self.raw, ui_callback(f)) }
     }
 
+    /// HUD element at `anchor` (`hud_anchor::*`); `order` 0 sits nearest the anchor's edge.
+    pub fn hud_element(&mut self, name: &str, anchor: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
+        let name = qualify(self.ns, name);
+        unsafe { (host().reg_hud_element)(self.raw, Str::new(&name), Str::new(anchor), order, ui_callback(f)) }
+    }
+
     /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or `#tag`.
     pub fn shaped(&mut self, kind: &str, output: &str, count: u32, pattern: &[&str], keys: &[(char, &str)]) {
         let pattern: Vec<Str> = pattern.iter().map(|p| Str::new(p)).collect();

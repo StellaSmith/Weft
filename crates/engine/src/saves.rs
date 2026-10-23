@@ -343,7 +343,8 @@ impl Screen for WorldSelect {
         let worlds = list(&cx.settings.saves_dir());
         let selected = self.selected;
         frame(ui, cx, "world.select", |ui| {
-            ui.panel("panel", Style::default().pad(8.0).gap(4.0).stretch().w(300.0).min_h(120.0), |ui| {
+            // The list takes whatever height is left and scrolls; the buttons below always show.
+            let list = ui.panel("panel", Style::default().pad(8.0).gap(4.0).stretch().w(300.0).h(0.0).grow().min_h(60.0).scroll(), |ui| {
                 if worlds.is_empty() {
                     label(ui, cx, "world.empty", &[], "dim");
                 }
@@ -362,6 +363,7 @@ impl Screen for WorldSelect {
                     }
                 }
             });
+            ui.set_id(list, "worlds");
             ui.container(Style::row().gap(6.0), |ui| {
                 let sel = selected.and_then(|i| worlds.get(i)).cloned();
                 let play = button(ui, cx, "world.play", &[], 145.0, move |c| {

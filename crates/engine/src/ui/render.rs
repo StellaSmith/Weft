@@ -25,6 +25,8 @@ pub struct Quad {
     pub tex: u32,
     pub layer: u32,
     pub mode: u32,
+    /// Visible rectangle in physical pixels; empty (all zero) means unclipped.
+    pub clip: [f32; 4],
 }
 
 pub struct UiRenderer {
@@ -37,6 +39,8 @@ pub struct UiRenderer {
     buffers: Vec<(BufferId, u32)>,
     screen: Vec<BufferId>,
     pub quads: Vec<Quad>,
+    /// Clip of each deferred item icon, in the order they were queued.
+    icon_clips: Vec<[f32; 4]>,
 }
 
 fn load_shader() -> Result<Shader, ShaderError> {
@@ -71,6 +75,7 @@ impl UiRenderer {
             buffers: Vec::new(),
             screen,
             quads: Vec::new(),
+            icon_clips: Vec::new(),
         })
     }
 
@@ -172,8 +177,10 @@ impl UiRenderer {
                         } else {
                             color.map_or(default_color, |c| c << 8 | (default_color & 0xFF))
                         };
+                        // Whole physical pixels: centred text starts mid-pixel, and nearest sampling
+                        // at texel borders would drop or double glyph columns.
                         self.quads.push(Quad {
-                            p0: [x + gx * px + off, y + gy * px + off],
+                            p0: [(x + gx * px + off).round(), (y + gy * px + off).round()],
                             u: [w, 0.0],
                             v: [0.0, 16.0 * px],
                             uv,
@@ -285,11 +292,18 @@ impl UiRenderer {
         custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool),
     ) {
         self.quads.clear();
+        self.icon_clips.clear();
         let mut icons = Vec::new();
         self.node(gpu, assets, ui, theme, 0, scale, &mut icons, custom);
         if let Some((c, t)) = game {
-            for (x, y, s, item) in icons {
+            let clips = std::mem::take(&mut self.icon_clips);
+            for (i, (x, y, s, item)) in icons.into_iter().enumerate() {
+                let start = self.quads.len();
                 self.item_icon(c, t, x, y, s, item);
+                let clip = clips.get(i).copied().unwrap_or_default();
+                for q in &mut self.quads[start..] {
+                    q.clip = clip;
+                }
             }
         }
         if let Some(h) = ui.hovered {
@@ -330,6 +344,7 @@ impl UiRenderer {
     ) {
         let n = &ui.nodes[id];
         let r = Rect { x: n.rect.x * scale, y: n.rect.y * scale, w: n.rect.w * scale, h: n.rect.h * scale };
+        let (quad_start, icon_start) = (self.quads.len(), icons.len());
         let hovered = ui.hovered == Some(id);
         let mut background = |me: &mut UiRenderer, class: &str, state: &str| {
             let name = theme.get(class, state).or_else(|| theme.get(class, "texture")).map(str::to_string);
@@ -388,13 +403,14 @@ impl UiRenderer {
                     None => self.rect(fr, theme.color(class, "fill", 0x60C060FF)),
                 }
             }
-            Kind::Icons { class, count, value, .. } if *value >= 0.0 => {
+            Kind::Icons { class, count, value, rtl, .. } if *value >= 0.0 => {
                 let names = ["full", "half", "empty"].map(|s| theme.get(class, s).map(str::to_string));
                 let tex = names.map(|n| n.and_then(|n| self.texture(gpu, assets, &n)));
                 for i in 0..*count {
                     let v = *value - i as f32 * 2.0;
                     let which = if v >= 2.0 { 0 } else if v >= 1.0 { 1 } else { 2 };
-                    let rr = Rect { x: r.x + i as f32 * 8.0 * scale, y: r.y, w: 9.0 * scale, h: 9.0 * scale };
+                    let slot = if *rtl { count - 1 - i } else { i };
+                    let rr = Rect { x: r.x + slot as f32 * 8.0 * scale, y: r.y, w: 9.0 * scale, h: 9.0 * scale };
                     if let Some((idx, _, _)) = tex[2] {
                         self.image(rr, idx, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
                     }
@@ -428,6 +444,12 @@ impl UiRenderer {
             }
             Kind::Custom { tag, data } => custom(self, *tag, *data, r, hovered),
         }
+        let clip = n.clip.map_or([0.0; 4], |c| [c.x * scale, c.y * scale, (c.x + c.w) * scale, (c.y + c.h) * scale]);
+        for q in &mut self.quads[quad_start..] {
+            q.clip = clip;
+        }
+        self.icon_clips.resize(icon_start, [0.0; 4]);
+        self.icon_clips.resize(icons.len(), clip);
         for &c in &n.children {
             self.node(gpu, assets, ui, theme, c, scale, icons, custom);
         }
@@ -439,16 +461,16 @@ impl UiRenderer {
         }
         let frames = gpu.frames_in_flight();
         while self.buffers.len() < frames {
-            self.buffers.push((gpu.create_buffer(64 * 4096, usage::STORAGE | usage::HOST, "ui quads"), 4096));
+            self.buffers.push((gpu.create_buffer(size_of::<Quad>() as u64 * 4096, usage::STORAGE | usage::HOST, "ui quads"), 4096));
         }
         let n = self.quads.len() as u32;
         if self.buffers[frame.slot].1 < n {
             gpu.destroy_buffer(self.buffers[frame.slot].0);
             let cap = n.next_power_of_two();
-            self.buffers[frame.slot] = (gpu.create_buffer(64 * cap as u64, usage::STORAGE | usage::HOST, "ui quads"), cap);
+            self.buffers[frame.slot] = (gpu.create_buffer(size_of::<Quad>() as u64 * cap as u64, usage::STORAGE | usage::HOST, "ui quads"), cap);
         }
         let buf = self.buffers[frame.slot].0;
-        gpu.mapped(buf)[..self.quads.len() * 64].copy_from_slice(bytemuck::cast_slice(&self.quads));
+        gpu.mapped(buf)[..self.quads.len() * size_of::<Quad>()].copy_from_slice(bytemuck::cast_slice(&self.quads));
         let sb = self.screen[frame.slot];
         gpu.mapped(sb)[..16].copy_from_slice(bytemuck::cast_slice(&[frame.width as f32, frame.height as f32, 0.0, 0.0]));
         list.pipeline(self.pipeline);

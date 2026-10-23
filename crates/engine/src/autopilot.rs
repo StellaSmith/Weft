@@ -7,6 +7,7 @@
 //! hold core:forward 1.5
 //! click 0             # mouse button
 //! cursor 0.5 0.4      # move the mouse to a fraction of the window
+//! scroll -3           # mouse wheel, negative = down
 //! look 90 -20         # yaw, pitch in degrees
 //! chat /give stone 10
 //! shot name.png       # into the screenshot directory given with --shot-dir
@@ -27,6 +28,7 @@ pub enum Step {
     Hold(String, f32),
     Click(u8),
     Cursor(f32, f32),
+    Scroll(f32),
     Look(f32, f32),
     Chat(String),
     Shot(String),
@@ -83,6 +85,7 @@ impl Autopilot {
                 }
                 "click" => Step::Click(nums.first().copied().unwrap_or(0.0) as u8),
                 "cursor" if nums.len() == 2 => Step::Cursor(nums[0], nums[1]),
+                "scroll" => Step::Scroll(nums.first().copied().unwrap_or(-1.0)),
                 "look" if nums.len() == 2 => Step::Look(nums[0], nums[1]),
                 "chat" => Step::Chat(rest.to_string()),
                 "shot" => Step::Shot(rest.trim().to_string()),
@@ -166,6 +169,10 @@ impl Autopilot {
             Step::Click(b) => {
                 input.key_down(Key::Mouse(*b));
                 self.release.push((Key::Mouse(*b), now + std::time::Duration::from_millis(50)));
+                Action::None
+            }
+            Step::Scroll(lines) => {
+                input.scroll += *lines;
                 Action::None
             }
             Step::Cursor(x, y) => {

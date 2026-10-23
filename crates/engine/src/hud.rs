@@ -21,9 +21,25 @@ pub const TAG_CROSSHAIR: u32 = 2;
 pub struct Hud {
     pub ui: Ui,
     key: Option<(bool, usize, usize, bool)>,
+    /// Player overrides from `config/hud.txt`: element name -> (anchor, order).
+    layout: rustc_hash::FxHashMap<String, (String, i32)>,
 }
 
 impl Hud {
+    /// Reads `config/hud.txt`: lines `element = anchor [order]`, e.g. `base:food = top_right`.
+    pub fn load_layout(&mut self, run_dir: &std::path::Path) {
+        self.layout.clear();
+        let src = std::fs::read_to_string(run_dir.join("config").join("hud.txt")).unwrap_or_default();
+        for line in src.lines() {
+            let Some((name, v)) = line.split_once('=') else { continue };
+            let mut it = v.split_whitespace();
+            let Some(anchor) = it.next() else { continue };
+            let order = it.next().and_then(|o| o.parse().ok()).unwrap_or(0);
+            self.layout.insert(name.trim().to_string(), (anchor.to_string(), order));
+        }
+        self.key = None;
+    }
+
     pub fn invalidate(&mut self) {
         self.key = None;
     }
@@ -36,22 +52,64 @@ impl Hud {
             return false;
         }
         self.key = Some(key);
+        let c = content();
+        // Elements per anchor, mod parts plus the hotbar itself, with the player's overrides.
+        let mut placed: Vec<(String, i32, Option<(voxide_abi::ModId, voxide_abi::Callback)>)> =
+            vec![("core:hotbar".into(), 0, None)].into_iter().chain(c.game.huds.iter().map(|h| (h.name.clone(), h.order, Some((h.owner, h.cb))))).collect::<Vec<_>>()
+                .into_iter()
+                .map(|(name, order, cb)| {
+                    let default = if cb.is_none() { voxide_abi::hud_anchor::HOTBAR.to_string() } else { c.game.huds.iter().find(|h| h.name == name).map(|h| h.anchor.clone()).unwrap_or_default() };
+                    let (anchor, order) = self.layout.get(&name).cloned().unwrap_or((default, order));
+                    (anchor, order, cb)
+                })
+                .collect();
+        placed.sort_by_key(|p| p.1);
+        let at = |anchor: &str, upwards: bool| -> Vec<Option<(voxide_abi::ModId, voxide_abi::Callback)>> {
+            let mut v: Vec<_> = placed.iter().filter(|p| p.0 == anchor).map(|p| p.2).collect();
+            if upwards {
+                v.reverse();
+            }
+            v
+        };
+        let draw = |ui: &mut Ui, part: Option<(voxide_abi::ModId, voxide_abi::Callback)>| match part {
+            Some((owner, cb)) => modui::build(ui, lang, owner, cb, Some(client)),
+            None => {
+                ui.container(Style::row().gap(0.0), |ui| {
+                    for i in 0..9 {
+                        ui.add(Kind::Custom { tag: TAG_HOTBAR, data: i }, Style::default().size(20.0, 20.0));
+                    }
+                });
+            }
+        };
+        use voxide_abi::hud_anchor as a;
         let ui = &mut self.ui;
         ui.clear();
         ui.root_style(Style::default().stretch());
         // Both halves start at zero height and split the rest evenly, so the crosshair sits at the
         // exact screen centre whatever they contain.
-        ui.container(Style::default().h(0.0).grow().pad(4.0).gap(1.0).align(Align::Start), |ui| {
-            if debug {
-                for (key, f) in DEBUG_LINES {
-                    let key = key.to_string();
-                    ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
+        ui.container(Style::row().h(0.0).grow().pad(4.0).align(Align::Start), |ui| {
+            ui.container(Style::default().w(0.0).gap(1.0).align(Align::Start), |ui| {
+                if debug {
+                    for (key, f) in DEBUG_LINES {
+                        let key = key.to_string();
+                        ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
+                    }
+                    ui.text_bound("debug", Box::new(|_: &Ctx| ("hud.debug.mods".into(), vec![Arg::Text(mod_profile())])));
                 }
-                ui.text_bound("debug", Box::new(|_: &Ctx| ("hud.debug.mods".into(), vec![Arg::Text(mod_profile())])));
-            }
+                for p in at(a::TOP_LEFT, false) {
+                    draw(ui, p);
+                }
+            });
+            ui.container(Style::default().grow(), |_| {});
+            // Zero width, content hanging to the left: corners never push the centre around.
+            ui.container(Style::default().w(0.0).gap(1.0).align(Align::End), |ui| {
+                for p in at(a::TOP_RIGHT, false) {
+                    draw(ui, p);
+                }
+            });
         });
         ui.add(Kind::Custom { tag: TAG_CROSSHAIR, data: 0 }, Style::default().size(9.0, 9.0).self_align(Align::Center));
-        ui.container(Style::default().h(0.0).grow().justify(Justify::End).align(Align::Center).pad(2.0).gap(1.0), |ui| {
+        ui.container(Style::default().h(0.0).grow().justify(Justify::End).align(Align::Stretch).pad(2.0).gap(1.0), |ui| {
             ui.container(Style::default().gap(1.0).pad(2.0).align(Align::Start).self_align(Align::Start), |ui| {
                 let now = std::time::Instant::now();
                 for (line, at) in client.chat.iter().rev().take(10).rev() {
@@ -60,14 +118,37 @@ impl Hud {
                     }
                 }
             });
-            // Mod HUD parts (health, hunger...) stack above the hotbar.
-            for &(owner, cb) in &content().game.huds {
-                modui::build(ui, lang, owner, cb, Some(client));
-            }
-            ui.container(Style::row().gap(0.0), |ui| {
-                for i in 0..9 {
-                    ui.add(Kind::Custom { tag: TAG_HOTBAR, data: i }, Style::default().size(20.0, 20.0));
-                }
+            ui.container(Style::row().align(Align::End), |ui| {
+                ui.container(Style::default().w(0.0).gap(1.0).align(Align::Start), |ui| {
+                    for p in at(a::BOTTOM_LEFT, true) {
+                        draw(ui, p);
+                    }
+                });
+                ui.container(Style::default().grow(), |_| {});
+                ui.container(Style::default().gap(1.0).align(Align::Center), |ui| {
+                    ui.container(Style::row().w(182.0).gap(2.0).align(Align::End), |ui| {
+                        ui.container(Style::default().gap(1.0).align(Align::Start), |ui| {
+                            for p in at(a::HOTBAR_LEFT, true) {
+                                draw(ui, p);
+                            }
+                        });
+                        ui.container(Style::default().grow(), |_| {});
+                        ui.container(Style::default().gap(1.0).align(Align::End), |ui| {
+                            for p in at(a::HOTBAR_RIGHT, true) {
+                                draw(ui, p);
+                            }
+                        });
+                    });
+                    for p in at(a::HOTBAR, true) {
+                        draw(ui, p);
+                    }
+                });
+                ui.container(Style::default().grow(), |_| {});
+                ui.container(Style::default().w(0.0).gap(1.0).align(Align::End), |ui| {
+                    for p in at(a::BOTTOM_RIGHT, true) {
+                        draw(ui, p);
+                    }
+                });
             });
         });
         true

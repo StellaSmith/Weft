@@ -491,6 +491,11 @@ impl UiRenderer {
                 let tx = r.x + 4.0 * scale - shift;
                 let ty = r.y + (r.h - 16.0 * px) / 2.0;
                 let start = self.quads.len();
+                if let Some(a) = ui.anchor.filter(|&a| ui.focused == Some(id) && a != *caret) {
+                    let x_at = |n: usize| super::text::layout(&super::text::plain(&value.chars().take(n).collect::<String>()), &self.font, None).width * px;
+                    let (x0, x1) = (x_at(a.min(*caret)), x_at(a.max(*caret)));
+                    self.rect(Rect { x: tx + x0, y: ty, w: x1 - x0, h: 16.0 * px }, theme.color("input", "selection", 0x3060C0C0));
+                }
                 self.glyph_run(&layout.items, tx, ty, px, theme.color("input", "text", 0xFFFFFFFF), None, icons);
                 if ui.focused == Some(id) {
                     self.rect(Rect { x: tx + caret_x, y: ty, w: px.max(1.0), h: 16.0 * px }, 0xFFFFFFFF);

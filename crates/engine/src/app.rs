@@ -648,6 +648,7 @@ impl Running {
         if self.input.pressed_button(0) {
             ui.pressed = hovered;
             ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. }));
+            ui.anchor = None;
             if let Some(h) = hovered {
                 if let Kind::Text(t) = &ui.nodes[h].kind {
                     let r = ui.nodes[h].rect;
@@ -683,56 +684,8 @@ impl Running {
         }
         if let Some(f) = ui.focused {
             if let Kind::Input { value, caret, max, on_change } = &mut ui.nodes[f].kind {
-                let mut changed = false;
-                let mut moved = false;
-                let len = value.chars().count();
-                *caret = (*caret).min(len);
-                let byte = |s: &str, c: usize| s.char_indices().nth(c).map_or(s.len(), |(i, _)| i);
-                let ctrl = self.input.held_key(Key::Code(KeyCode::ControlLeft)) || self.input.held_key(Key::Code(KeyCode::ControlRight));
-                let mut insert = |value: &mut String, caret: &mut usize, text: &str| {
-                    for ch in text.chars().filter(|c| !c.is_control()) {
-                        if value.chars().count() >= *max {
-                            break;
-                        }
-                        value.insert(byte(value, *caret), ch);
-                        *caret += 1;
-                        changed = true;
-                    }
-                };
-                if ctrl && self.input.pressed_key(Key::Code(KeyCode::KeyV)) {
-                    if let Some(clip) = crate::clipboard::get() {
-                        insert(value, caret, clip.trim());
-                    }
-                } else {
-                    let typed = self.input.typed.clone();
-                    insert(value, caret, &typed);
-                }
-                let key = |k: KeyCode| self.input.pressed_key(Key::Code(k));
-                if key(KeyCode::Backspace) && *caret > 0 {
-                    *caret -= 1;
-                    value.remove(byte(value, *caret));
-                    changed = true;
-                }
-                if key(KeyCode::Delete) && *caret < value.chars().count() {
-                    value.remove(byte(value, *caret));
-                    changed = true;
-                }
-                if key(KeyCode::ArrowLeft) && *caret > 0 {
-                    *caret -= 1;
-                    moved = true;
-                }
-                if key(KeyCode::ArrowRight) && *caret < value.chars().count() {
-                    *caret += 1;
-                    moved = true;
-                }
-                if key(KeyCode::Home) {
-                    *caret = 0;
-                    moved = true;
-                }
-                if key(KeyCode::End) {
-                    *caret = value.chars().count();
-                    moved = true;
-                }
+                let outcome = crate::ui::edit::Field { value, caret, anchor: &mut ui.anchor, max: *max }.handle(&self.input);
+                let (changed, moved) = (outcome.changed, outcome.moved);
                 if moved {
                     self.quads_dirty = true;
                 }
@@ -878,6 +831,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
+                        ElementState::Pressed if event.repeat => r.input.key_repeat(Key::Code(code)),
                         ElementState::Pressed => r.input.key_down(Key::Code(code)),
                         ElementState::Released => r.input.key_up(Key::Code(code)),
                     }

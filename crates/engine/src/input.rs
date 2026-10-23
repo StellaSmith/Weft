@@ -26,6 +26,7 @@ pub struct Input {
     pub typed: String,
     held: FxHashSet<Key>,
     pressed: FxHashSet<Key>,
+    repeated: FxHashSet<Key>,
     pub binds: Vec<Bind>,
     lookup: FxHashMap<String, Key>,
 }
@@ -41,6 +42,7 @@ impl Default for Input {
             typed: String::new(),
             held: FxHashSet::default(),
             pressed: FxHashSet::default(),
+            repeated: FxHashSet::default(),
             binds: Vec::new(),
             lookup: FxHashMap::default(),
         };
@@ -141,6 +143,15 @@ impl Input {
         self.pressed.contains(&Key::Mouse(b))
     }
 
+    /// Pressed this frame, or held long enough for the system's key repeat to fire.
+    pub fn pressed_or_repeated(&self, k: Key) -> bool {
+        self.pressed.contains(&k) || self.repeated.contains(&k)
+    }
+
+    pub fn key_repeat(&mut self, k: Key) {
+        self.repeated.insert(k);
+    }
+
     pub fn key_down(&mut self, k: Key) {
         if self.held.insert(k) {
             self.pressed.insert(k);
@@ -158,6 +169,7 @@ impl Input {
     /// Clears per-frame state after the frame consumed it.
     pub fn end_frame(&mut self) {
         self.pressed.clear();
+        self.repeated.clear();
         self.mouse_delta = Vec2::ZERO;
         self.scroll = 0.0;
         self.typed.clear();

@@ -5,6 +5,7 @@
 //! and multiplied by the GUI scale when drawn. Text never overflows its box: it wraps, or shrinks
 //! when wrapping is off.
 
+pub mod edit;
 pub mod font;
 pub mod lang;
 pub mod render;
@@ -231,6 +232,8 @@ pub struct Ui {
     pub hovered: Option<NodeId>,
     pub pressed: Option<NodeId>,
     pub focused: Option<NodeId>,
+    /// Selection end in the focused text field, the caret being the other.
+    pub anchor: Option<usize>,
     pub dirty: bool,
     /// Scroll offsets by node id (or index), kept across rebuilds.
     scroll: rustc_hash::FxHashMap<String, f32>,
@@ -269,6 +272,7 @@ impl Ui {
             hovered: None,
             pressed: None,
             focused: None,
+            anchor: None,
             dirty: true,
             scroll: Default::default(),
             size: Vec2::ZERO,

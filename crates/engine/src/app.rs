@@ -395,7 +395,8 @@ impl Running {
         let _ = server.connect.send(server_conn);
         let key = net::p2p::player_key(&self.settings.run_dir);
         match Client::new(&mut *self.gpu, &self.textures, client_conn, &self.settings.name, &key, self.settings.view_distance) {
-            Ok(client) => {
+            Ok(mut client) => {
+                client.sent = load_chat_history(&self.settings.run_dir);
                 self.game = Some(Game { client, server: Some(server) });
                 self.screens.clear();
                 self.hud.invalidate();
@@ -546,7 +547,8 @@ impl Running {
                         self.leave_world_silent();
                         let key = net::p2p::player_key(&self.settings.run_dir);
                         match Client::new(&mut *self.gpu, &self.textures, conn, &self.settings.name, &key, self.settings.view_distance) {
-                            Ok(client) => {
+                            Ok(mut client) => {
+                                client.sent = load_chat_history(&self.settings.run_dir);
                                 self.game = Some(Game { client, server: None });
                                 self.screens.clear();
                                 self.hud.invalidate();
@@ -1132,6 +1134,10 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             if let Some(g) = &mut r.game {
                 if g.client.sent.last() != Some(&t) {
                     g.client.sent.push(t.clone());
+                    let sent = &mut g.client.sent;
+                    sent.drain(..sent.len().saturating_sub(CHAT_HISTORY));
+                    std::fs::write(chat_history_path(&r.settings.run_dir), sent.join("
+")).ok();
                 }
             }
             r.handle(vec![Request::SendChat(t)]);
@@ -1352,4 +1358,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.fps_frames = 0;
     }
     false
+}
+
+/// Lines typed into chat, kept across sessions for the arrow keys.
+const CHAT_HISTORY: usize = 100;
+
+fn chat_history_path(run_dir: &std::path::Path) -> PathBuf {
+    run_dir.join("config").join("chat_history.txt")
+}
+
+fn load_chat_history(run_dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(chat_history_path(run_dir)).map(|s| s.lines().filter(|l| !l.is_empty()).map(str::to_string).collect()).unwrap_or_default()
 }

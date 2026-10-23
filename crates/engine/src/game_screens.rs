@@ -144,7 +144,8 @@ impl Screen for Death {
 }
 
 /// Chat input with the recent messages above it and, for commands, completions of the word being
-/// typed (Tab takes the highlighted one, arrows move through them or through sent lines).
+/// typed. Tab takes the highlighted one and further presses go on through the same list; the arrows
+/// browse sent lines, or the list once Tab started.
 pub struct Chat {
     state: Rc<RefCell<ChatState>>,
 }
@@ -156,6 +157,8 @@ struct ChatState {
     selected: usize,
     /// Position in the sent-lines history while browsing it with the arrows.
     history: Option<usize>,
+    /// The text as typed before Tab: further presses go on through its suggestions.
+    stem: Option<String>,
 }
 
 impl Chat {
@@ -168,6 +171,7 @@ impl ChatState {
     fn update(&mut self, text: &str, players: &[String]) {
         self.text = text.to_string();
         self.selected = 0;
+        self.stem = None;
         self.completion = text.strip_prefix('/').map(|line| {
             let mut comp = crate::commands::complete(content(), line, players);
             comp.from += 1;
@@ -239,17 +243,27 @@ impl Screen for Chat {
             ctx.requests.push(Request::SetInput("chat".into(), text));
             ctx.requests.push(Request::Rebuild);
         };
+        // Puts the highlighted suggestion of the stem's list into the input, keeping the list.
+        let take = |st: &mut ChatState, ctx: &mut Ctx| {
+            let stem = st.stem.get_or_insert_with(|| st.text.clone()).clone();
+            let comp = st.completion.as_ref().unwrap();
+            let text = format!("{}{}", &stem[..comp.from.min(stem.len())], comp.suggestions[st.selected.min(n - 1)]);
+            st.text = text.clone();
+            ctx.requests.push(Request::SetInput("chat".into(), text));
+            ctx.requests.push(Request::Rebuild);
+        };
         match key {
             Key::Code(KeyCode::Tab) if n > 0 => {
-                let comp = st.completion.as_ref().unwrap();
-                let text = format!("{}{}", &st.text[..comp.from.min(st.text.len())], comp.suggestions[st.selected.min(n - 1)]);
-                set(&mut st, text, ctx);
+                if st.stem.is_some() {
+                    st.selected = (st.selected + 1) % n;
+                }
+                take(&mut st, ctx);
                 true
             }
-            Key::Code(KeyCode::ArrowUp | KeyCode::ArrowDown) if n > 0 => {
+            Key::Code(KeyCode::ArrowUp | KeyCode::ArrowDown) if n > 0 && st.stem.is_some() => {
                 let up = key == Key::Code(KeyCode::ArrowUp);
                 st.selected = if up { (st.selected + n - 1) % n } else { (st.selected + 1) % n };
-                ctx.requests.push(Request::Rebuild);
+                take(&mut st, ctx);
                 true
             }
             Key::Code(KeyCode::ArrowUp | KeyCode::ArrowDown) if !sent.is_empty() => {

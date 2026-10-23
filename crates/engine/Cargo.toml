@@ -21,3 +21,4 @@ rustc-hash.workspace = true
 arboard.workspace = true
 iroh.workspace = true
 tokio.workspace = true
+zip.workspace = true

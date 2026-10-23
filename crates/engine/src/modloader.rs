@@ -23,33 +23,107 @@ pub fn mod_id_name(m: ModId) -> &'static str {
     NAMES.get().and_then(|n| n.get(m.0 as usize)).map_or("?", |s| s.as_str())
 }
 
-/// Mod roots: every subdirectory of a mods dir is one mod; its library is either inside it or, for
-/// development builds, next to the engine executable (`target/<profile>/`).
-pub fn discover(mod_dirs: &[PathBuf]) -> Vec<(String, PathBuf, PathBuf)> {
+/// Mods found in `mod_dirs`, earlier dirs winning: a folder (`assets/` and the library) or the
+/// same packed into `<name>.zip`, unpacked into `cache` once per version of the file. A folder's
+/// library may also sit next to the engine executable instead (development builds,
+/// `target/<profile>/`).
+pub fn discover(mod_dirs: &[PathBuf], cache: &Path) -> Vec<(String, PathBuf, PathBuf)> {
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
     let mut found = Vec::new();
     for dir in mod_dirs {
         let Ok(entries) = std::fs::read_dir(dir) else { continue };
-        for e in entries.flatten() {
-            let path = e.path();
-            if !path.is_dir() {
+        let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let (name, root) = if path.is_dir() {
+                (path.file_name().unwrap_or_default().to_string_lossy().into_owned(), path)
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+                let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                match unpack(&path, &cache.join("unpacked"), &name) {
+                    Ok(root) => (name, root),
+                    Err(e) => {
+                        log::error!("mod {}: {e}", path.display());
+                        continue;
+                    }
+                }
+            } else {
                 continue;
-            }
-            let name = e.file_name().to_string_lossy().into_owned();
+            };
             let file = libloading::library_filename(&name);
-            let lib = [Some(path.join(&file)), exe_dir.as_ref().map(|d| d.join(&file))]
-                .into_iter()
-                .flatten()
-                .find(|p| p.exists());
+            let lib = [Some(root.join(&file)), exe_dir.as_ref().map(|d| d.join(&file))].into_iter().flatten().find(|p| p.exists());
             match lib {
-                Some(lib) => found.push((name, path, lib)),
-                None => log::warn!("mod dir {} has no {}", path.display(), file.to_string_lossy()),
+                Some(lib) => found.push((name, root, lib)),
+                None => log::warn!("mod {} has no {}", root.display(), file.to_string_lossy()),
             }
         }
     }
+    // Stable: for a name found twice, the first dir's copy stays.
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found.dedup_by(|a, b| a.0 == b.0);
     found
+}
+
+/// Unpacks a mod archive into `<cache>/<name>-<size>-<mtime>`, unless that is already there;
+/// older unpacked versions of the mod are removed.
+fn unpack(archive: &Path, cache: &Path, name: &str) -> Result<PathBuf, String> {
+    let meta = std::fs::metadata(archive).map_err(|e| e.to_string())?;
+    let stamp = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+    let dest = cache.join(format!("{name}-{}-{stamp}", meta.len()));
+    if dest.join(".done").exists() {
+        return Ok(dest);
+    }
+    if let Ok(old) = std::fs::read_dir(cache) {
+        for e in old.flatten() {
+            if e.file_name().to_string_lossy().rsplitn(3, '-').nth(2) == Some(name) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    zip.extract(&dest).map_err(|e| e.to_string())?;
+    std::fs::write(dest.join(".done"), b"").map_err(|e| e.to_string())?;
+    log::info!("unpacked mod {name}");
+    Ok(dest)
+}
+
+/// Packs a mod folder (its `assets/`, and its library from the folder or from next to the engine
+/// executable) into `<out>/<name>.zip`, the single file players drop into `mods/`.
+pub fn pack(dir: &Path, out: &Path) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let name = dir.file_name().ok_or("not a mod folder")?.to_string_lossy().into_owned();
+    let file = libloading::library_filename(&name);
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+    let lib = [Some(dir.join(&file)), exe_dir.map(|d| d.join(&file))].into_iter().flatten().find(|p| p.exists()).ok_or_else(|| format!("{} is not built", file.to_string_lossy()))?;
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let path = out.join(format!("{name}.zip"));
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).map_err(|e| e.to_string())?);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut add = |rel: String, src: &Path| -> Result<(), String> {
+        zip.start_file(rel, opts).map_err(|e| e.to_string())?;
+        zip.write_all(&std::fs::read(src).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    };
+    add(file.to_string_lossy().into_owned(), &lib)?;
+    let mut files = Vec::new();
+    collect(&dir.join("assets"), &mut files);
+    for f in files {
+        let rel = f.strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
+        add(rel, &f)?;
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
 }
 
 /// Loads every library, then calls all `init`s in parallel and freezes the registries.
@@ -64,7 +138,7 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
     }
 
     let mut mods = Vec::new();
-    for (name, dir, lib_path) in discover(mod_dirs) {
+    for (name, dir, lib_path) in discover(mod_dirs, cache) {
         // Windows locks loaded libraries; loading a copy keeps the original rebuildable.
         let copy = shadow.join(format!("{}-{}", std::process::id(), lib_path.file_name().unwrap().to_string_lossy()));
         let load_from = if std::fs::copy(&lib_path, &copy).is_ok() { copy } else { lib_path.clone() };

@@ -918,7 +918,7 @@ pub struct Gen {
 }
 
 impl Gen {
-    fn wrap(a: &mut abi::GenArgs) -> &mut Gen {
+    pub(crate) fn wrap(a: &mut abi::GenArgs) -> &mut Gen {
         unsafe { &mut *(a as *mut abi::GenArgs as *mut Gen) }
     }
     pub fn seed(&self) -> u64 {

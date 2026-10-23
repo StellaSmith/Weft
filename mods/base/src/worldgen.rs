@@ -145,7 +145,7 @@ fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {
     if col.height < SEA || unit(h.rotate_left(17)) >= tree_density(col.biome) {
         return None;
     }
-    if matches!(col.biome, B::Desert | B::Beach | B::Ocean) {
+    if matches!(col.biome, B::Desert | B::Beach | B::Ocean) || TERRAIN.surface_carved(seed, x, z) {
         return None;
     }
     let kind = match col.biome {

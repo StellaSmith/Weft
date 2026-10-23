@@ -309,37 +309,37 @@ impl Caves {
         Caves { lava, lava_from, lava_to }
     }
 
-    /// Cave density sampled on a 4-block grid and trilinearly interpolated.
-    fn carve(&self, seed: u64, ox: i32, oy: i32, oz: i32) -> Vec<bool> {
+    /// Cave density sampled on a 4-block grid and trilinearly interpolated: whether a tunnel
+    /// passes, and how far inside a cavern (> 0) the block is.
+    fn carve(&self, seed: u64, ox: i32, oy: i32, oz: i32) -> Vec<(bool, f32)> {
         const G: usize = 5;
-        let mut grid = [[[0f64; G]; G]; G];
+        let mut grid = [[[(0f64, 0f64); G]; G]; G];
         for (gy, row) in grid.iter_mut().enumerate() {
             for (gz, line) in row.iter_mut().enumerate() {
                 for (gx, v) in line.iter_mut().enumerate() {
-                    let (x, y, z) = ((ox + gx as i32 * 4) as f64, (oy + gy as i32 * 4) as f64, (oz + gz as i32 * 4) as f64);
-                    let a = perlin3(seed ^ 0xC1, x / 48.0, y / 32.0, z / 48.0);
-                    let b = perlin3(seed ^ 0xC2, x / 48.0, y / 32.0, z / 48.0);
-                    // Two thin noise zero-crossings intersect into winding tunnels.
-                    let spaghetti = 0.08 - (a.abs() + b.abs());
-                    let cheese = perlin3(seed ^ 0xC3, x / 90.0, y / 50.0, z / 90.0) - 0.42;
-                    *v = spaghetti.max(cheese);
+                    *v = cave_node(seed, ox + gx as i32 * 4, oy + gy as i32 * 4, oz + gz as i32 * 4);
                 }
             }
         }
-        let mut out = vec![false; 4096];
+        let mut out = vec![(false, 0f32); 4096];
         for y in 0..16 {
             for z in 0..16 {
                 for x in 0..16 {
                     let (gx, gy, gz) = (x / 4, y / 4, z / 4);
                     let (fx, fy, fz) = ((x % 4) as f64 / 4.0, (y % 4) as f64 / 4.0, (z % 4) as f64 / 4.0);
                     let l = |a: f64, b: f64, t: f64| a + (b - a) * t;
-                    let c = |dy: usize, dz: usize, dx: usize| grid[gy + dy][gz + dz][gx + dx];
-                    let v = l(
-                        l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz),
-                        l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz),
-                        fy,
-                    );
-                    out[(y * 16 + z) * 16 + x] = v > 0.0;
+                    let field = |k: usize| {
+                        let c = |dy: usize, dz: usize, dx: usize| {
+                            let v = grid[gy + dy][gz + dz][gx + dx];
+                            if k == 0 { v.0 } else { v.1 }
+                        };
+                        l(
+                            l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz),
+                            l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz),
+                            fy,
+                        )
+                    };
+                    out[(y * 16 + z) * 16 + x] = (field(0) > 0.0, field(1) as f32);
                 }
             }
         }
@@ -426,6 +426,32 @@ impl Terrain {
         Column { height, biome: self.biomes.get(rule).map_or(&EMPTY, |b| b.biome), rule }
     }
 
+    /// Whether caves took the block at the surface of column (`x`, `z`): decorations placed from
+    /// outside the cube (trees) check it so they do not float over pits.
+    pub fn surface_carved(&self, seed: u64, x: i32, z: i32) -> bool {
+        if self.caves.is_none() {
+            return false;
+        }
+        let h = self.column(seed, x, z).height;
+        if self.sea.is_some_and(|s| h <= s.0) {
+            return false;
+        }
+        let (gx, gy, gz) = (x.div_euclid(4) * 4, h.div_euclid(4) * 4, z.div_euclid(4) * 4);
+        let (fx, fy, fz) = ((x - gx) as f64 / 4.0, (h - gy) as f64 / 4.0, (z - gz) as f64 / 4.0);
+        let l = |a: f64, b: f64, t: f64| a + (b - a) * t;
+        let n = |dy: i32, dz: i32, dx: i32| cave_node(seed, gx + dx * 4, gy + dy * 4, gz + dz * 4);
+        let field = |k: usize| {
+            let c = |dy, dz, dx| {
+                let v = n(dy, dz, dx);
+                if k == 0 { v.0 } else { v.1 }
+            };
+            l(l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz), l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz), fy)
+        };
+        let closed = cavern_roof(seed, x, z);
+        let need = closed * 0.25 - (1.0 - closed) * PIT;
+        field(0) > 0.0 || field(1) as f32 > need
+    }
+
     /// Fills the cube with stone, surface layers, water and caves and sets its biomes. Returns the
     /// columns for decorating, or `None` when the cube is above everything.
     pub fn generate(&self, g: &mut Gen) -> Option<Arc<Vec<Column>>> {
@@ -449,8 +475,10 @@ impl Terrain {
         if oy > max_h.max(sea) + 16 {
             return None;
         }
+        // Decided per block from its column alone, so neighbouring cubes agree: tunnels may open
+        // onto the surface, caverns close up under it except where `cavern_roof` lets them out.
         let cave = match &self.caves {
-            Some(c) if oy + 15 < max_h - 1 => Some(c.carve(seed, ox, oy, oz)),
+            Some(c) if oy <= max_h => Some(c.carve(seed, ox, oy, oz)),
             _ => None,
         };
         let stone = self.stone.id();
@@ -471,6 +499,7 @@ impl Terrain {
                 let depth = rule.map_or(0, |r| r.depth);
                 let under = rule.and_then(|r| r.under);
                 let ice = rule.and_then(|r| r.ice).map(|b| b.id());
+                let closed = if cave.is_some() { cavern_roof(seed, ox + x as i32, oz + z as i32) } else { 0.0 };
                 for y in 0..16usize {
                     let wy = oy + y as i32;
                     let mut s = if wy > h {
@@ -494,7 +523,13 @@ impl Terrain {
                     // Keep a seal under water so seas and canyons do not drain into caves.
                     let sealed = h <= sea && wy > h - 4;
                     if let (Some(cave), Some(c)) = (&cave, &self.caves) {
-                        if cave[(y * 16 + z) * 16 + x] && wy <= h && !sealed {
+                        let (tunnel, cavern) = cave[(y * 16 + z) * 16 + x];
+                        // Near the surface a cavern needs to be ever deeper inside its noise, so its
+                        // ceiling domes over instead of breaking through.
+                        // Where they may open they widen towards the surface instead, into a pit.
+                        let depth = (h - wy) as f32;
+                        let need = closed * 0.25 * (1.0 - depth / 12.0).max(0.0) - (1.0 - closed) * PIT * (1.0 - depth / 24.0).max(0.0);
+                        if (tunnel || cavern > need) && wy <= h && !sealed {
                             s = if (c.lava_from..c.lava_to).contains(&wy) { c.lava.id() } else { 0 };
                         }
                     }
@@ -504,6 +539,26 @@ impl Terrain {
         }
         Some(cols)
     }
+}
+
+/// Cave fields at a grid node (every 4 blocks): tunnels, caverns.
+fn cave_node(seed: u64, x: i32, y: i32, z: i32) -> (f64, f64) {
+    let (x, y, z) = (x as f64, y as f64, z as f64);
+    let a = perlin3(seed ^ 0xC1, x / 48.0, y / 32.0, z / 48.0);
+    let b = perlin3(seed ^ 0xC2, x / 48.0, y / 32.0, z / 48.0);
+    // Two thin noise zero-crossings intersect into winding tunnels.
+    let spaghetti = 0.08 - (a.abs() + b.abs());
+    let cheese = perlin3(seed ^ 0xC3, x / 90.0, y / 50.0, z / 90.0) - 0.42;
+    (spaghetti, cheese)
+}
+
+/// 1 where caverns stay under a roof, falling to 0 in patches where they may open into wide pits
+/// like vanilla's cave entrances.
+const PIT: f32 = 0.12;
+
+fn cavern_roof(seed: u64, x: i32, z: i32) -> f32 {
+    let n = perlin2(seed ^ 0xC4, x as f64 / 120.0, z as f64 / 120.0);
+    ramp(n, 0.4, 0.25) as f32
 }
 
 static EMPTY: Biome = Biome::new();
@@ -517,6 +572,71 @@ mod tests {
         assert_eq!(ramp(0.5, 0.0, 1.0), 0.5);
         assert_eq!(ramp(-0.2, 0.0, -0.4), 0.5);
         assert_eq!(ramp(2.0, 0.0, 1.0), 1.0);
+    }
+
+    /// Caverns used to be carved only in cubes wholly below the highest column, so they ran up
+    /// to the bottom of the surface cube: flat stone slabs hanging over open space.
+    #[test]
+    fn caverns_keep_a_roof() {
+        static S: Block = Block::new();
+        let t = Terrain::new(&S, 64.0).feature(preset::hills(16.0, 110.0)).feature(preset::mountains(150.0, 260.0)).caves(Caves::new(&S, 1, 11));
+        let (mut columns, mut breached) = (0, 0);
+        for cx in -3..3 {
+            for cz in -3..3 {
+                let heights: Vec<i32> = (0..256).map(|i| t.column(7, cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32).height).collect();
+                let top = heights.iter().max().unwrap() >> 4;
+                let bottom = (heights.iter().min().unwrap() >> 4) - 1;
+                // Air within the column, by height.
+                let mut air = std::collections::HashMap::new();
+                for cy in bottom..=top {
+                    let mut blocks = vec![0u32; 4096];
+                    let mut biomes = vec![0u8; 256];
+                    let mut args = crate::abi::GenArgs { seed: 7, cube: [cx, cy, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
+                    t.generate(Gen::wrap(&mut args));
+                    for (i, &b) in blocks.iter().enumerate() {
+                        if b == 0 {
+                            air.insert((i % 256, cy * 16 + (i / 256) as i32), ());
+                        }
+                    }
+                }
+                for (i, &h) in heights.iter().enumerate() {
+                    if cavern_roof(7, cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32) < 1.0 {
+                        continue;
+                    }
+                    columns += 1;
+                    // Open space in the 8 blocks under the surface means the cave reached up.
+                    let open = (h - 8..h).filter(|&y| air.contains_key(&(i, y))).count();
+                    if open >= 6 {
+                        breached += 1;
+                    }
+                }
+            }
+        }
+        assert!(breached * 50 < columns, "{breached} of {columns} columns open under the surface");
+    }
+
+    /// The point check trees use agrees with what generation carved.
+    #[test]
+    fn surface_carved_matches_generation() {
+        static S: Block = Block::new();
+        let t = Terrain::new(&S, 64.0).feature(preset::hills(16.0, 110.0)).caves(Caves::new(&S, 1, 11));
+        let mut checked = 0;
+        for cx in -4..4 {
+            for cz in -4..4 {
+                for i in 0..256 {
+                    let (x, z) = (cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32);
+                    let h = t.column(3, x, z).height;
+                    let mut blocks = vec![0u32; 4096];
+                    let mut biomes = vec![0u8; 256];
+                    let mut args = crate::abi::GenArgs { seed: 3, cube: [cx, h >> 4, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
+                    t.generate(Gen::wrap(&mut args));
+                    let air = blocks[((h & 15) as usize * 16 + i / 16) * 16 + i % 16] == 0;
+                    assert_eq!(air, t.surface_carved(3, x, z), "at {x} {z}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 16384);
     }
 
     #[test]

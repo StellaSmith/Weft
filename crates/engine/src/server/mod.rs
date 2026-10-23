@@ -24,6 +24,7 @@ pub use dim::{Dim, DimEvent, break_time};
 use crate::content::{Content, DimensionDef, content};
 use crate::net::{EntityView, ServerConn, ToClient, ToServer};
 use crate::saves::Storage;
+use crate::commands::{Origin, Selector};
 use crate::world::{Cube, GameMode, cube_of};
 use entity::Entity;
 use menu::OpenMenu;
@@ -854,20 +855,33 @@ impl Server {
         let Some(&name) = tokens.first() else { return String::new() };
         let Some(def) = c.commands.iter().find(|d| d.name == name) else { return format!("unknown command /{name}, try /help") };
         let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
-        let here = self.dims[dim as usize].entity_region_ref(entity).and_then(|r| r.entities.get(entity)).map_or(DVec3::ZERO, |e| e.pos);
+        let here = self.dims[dim as usize]
+            .entity_region_ref(entity)
+            .and_then(|r| r.entities.get(entity))
+            .map_or_else(Origin::default, |e| Origin { pos: e.pos, yaw: e.yaw, pitch: e.pitch });
         let players: Vec<String> = self.players.iter().filter(|p| p.joined).map(|p| p.name.clone()).collect();
         let args = match crate::commands::parse_args(c, &def.alts, &tokens[1..], here, &players) {
             Ok(a) => a,
             Err(e) => return format!("{e}. usage: /{} {}", def.name, def.usage),
         };
+        // Selectors become entity ids before mods see them.
+        let selected: Vec<Option<String>> = args
+            .values
+            .iter()
+            .map(|v| match v {
+                Some(crate::commands::Value::Targets(s)) => Some(self.select(pi, s, here.pos).iter().map(|t| t.1.to_string()).collect::<Vec<_>>().join(" ")),
+                _ => None,
+            })
+            .collect();
         match def.handler {
-            None => self.builtin(c, pi, name, &args, here),
+            None => self.builtin(c, pi, name, &args, here.pos),
             Some((owner, cb)) => {
                 let Some((r, player)) = self.region(pi) else { return String::new() };
                 let values: Vec<abi::CommandValue> = args
                     .values
                     .iter()
-                    .map(|v| {
+                    .zip(&selected)
+                    .map(|(v, sel)| {
                         use crate::commands::Value;
                         let mut out = abi::CommandValue { kind: abi::command_value::NONE, int: 0, float: 0.0, text: abi::Str::new(""), pos: [0.0; 3] };
                         match v {
@@ -877,6 +891,10 @@ impl Server {
                             Some(Value::Text(t)) => (out.kind, out.text) = (abi::command_value::TEXT, abi::Str::new(t)),
                             Some(Value::Id(i, n)) => (out.kind, out.int, out.text) = (abi::command_value::ID, *i as i64, abi::Str::new(n)),
                             Some(Value::Pos(p)) => (out.kind, out.pos) = (abi::command_value::POS, p.to_array()),
+                            Some(Value::Targets(_)) => {
+                                let ids = sel.as_deref().unwrap_or("");
+                                (out.kind, out.int, out.text) = (abi::command_value::TARGETS, ids.split_whitespace().count() as i64, abi::Str::new(ids));
+                            }
                         }
                         out
                     })
@@ -891,8 +909,100 @@ impl Server {
         }
     }
 
+    /// Entities a selector picks as (dimension, id), in the order it asks for. `@e` looks in the
+    /// runner's dimension, player selectors in all of them.
+    fn select(&self, pi: usize, s: &Selector, here: DVec3) -> Vec<(u32, u64)> {
+        let me = &self.players[pi];
+        let mut found: Vec<(u32, u64, f64)> = Vec::new();
+        let mut consider = |dim: u32, e: &Entity| {
+            if let Some((kind, neg)) = s.kind {
+                if (e.kind == kind) == neg {
+                    return;
+                }
+            }
+            let d = if dim == me.dim { (e.pos - here).length() } else { f64::INFINITY };
+            if s.distance.is_some_and(|(lo, hi)| d < lo || d > hi) {
+                return;
+            }
+            found.push((dim, e.id, d));
+        };
+        if s.base == 'e' {
+            for r in &self.dims[me.dim as usize].regions {
+                for e in r.entities.list.iter().filter(|e| !e.removed) {
+                    if s.name.as_ref().is_none_or(|n| self.players.iter().any(|p| p.joined && p.entity == e.id && &p.name == n)) {
+                        consider(me.dim, e);
+                    }
+                }
+            }
+        } else {
+            for p in self.players.iter().filter(|p| p.joined) {
+                let mine = p.entity == me.entity;
+                if (s.base == 's' && !mine) || s.name.as_ref().is_some_and(|n| &p.name != n) {
+                    continue;
+                }
+                if let Some(e) = self.dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)) {
+                    consider(p.dim, e);
+                }
+            }
+        }
+        let sort = s.sort.as_deref().unwrap_or(match s.base {
+            'p' => "nearest",
+            'r' => "random",
+            _ => "arbitrary",
+        });
+        match sort {
+            "nearest" => found.sort_by(|a, b| a.2.total_cmp(&b.2)),
+            "furthest" => found.sort_by(|a, b| b.2.total_cmp(&a.2)),
+            "random" => {
+                let mut seed = self.tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for i in (1..found.len()).rev() {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    found.swap(i, (seed % (i as u64 + 1)) as usize);
+                }
+            }
+            _ => {}
+        }
+        let limit = s.limit.unwrap_or(if matches!(s.base, 'p' | 'r' | 's') { 1 } else { usize::MAX });
+        found.into_iter().take(limit).map(|f| (f.0, f.1)).collect()
+    }
+
+    fn player_index(&self, entity: u64) -> Option<usize> {
+        self.players.iter().position(|p| p.joined && p.entity == entity)
+    }
+
+    /// Moves any entity; players go through `change_dim` so their client follows.
+    fn teleport(&mut self, c: &'static Content, dim: u32, id: u64, to_dim: u32, pos: DVec3) {
+        if let Some(pi) = self.player_index(id) {
+            self.change_dim(c, pi, to_dim, pos);
+            return;
+        }
+        let Some((mut e, inv, comps)) = self.dims[dim as usize].entity_region(id).and_then(|r| r.entities.take(id)) else { return };
+        e.pos = pos;
+        let r = self.dims[to_dim as usize].ensure_region(c, pos);
+        r.entities.insert(c, e);
+        if let Some(inv) = inv {
+            r.entities.inventories.insert(id, inv);
+        }
+        for (k, v) in comps {
+            r.entities.comps.insert((id, k), v);
+        }
+    }
+
+    fn position_of(&self, dim: u32, id: u64) -> Option<DVec3> {
+        self.dims[dim as usize].entity_region_ref(id).and_then(|r| r.entities.get(id)).map(|e| e.pos)
+    }
+
     fn builtin(&mut self, c: &'static Content, pi: usize, name: &str, a: &crate::commands::Args, here: DVec3) -> String {
-        let dim = self.players[pi].dim;
+        let me = (self.players[pi].dim, self.players[pi].entity);
+        let targets = |s: &Self, key: &str| -> Vec<(u32, u64)> {
+            match a.get(key) {
+                Some(crate::commands::Value::Targets(sel)) => s.select(pi, sel, here),
+                _ => vec![me],
+            }
+        };
+        let dim = me.0;
         let block_at = |a: &crate::commands::Args| a.pos("pos").map(|p| p.floor().as_ivec3());
         match name {
             "help" => match a.text("command") {
@@ -900,49 +1010,72 @@ impl Server {
                 None => c.commands.iter().map(|d| format!("/{} {}", d.name, d.usage)).collect::<Vec<_>>().join("\n"),
             },
             "tp" => {
-                if let Some(p) = a.pos("pos") {
-                    self.change_dim(c, pi, dim, p);
-                    return format!("teleported to {:.1} {:.1} {:.1}", p.x, p.y, p.z);
-                }
-                let target = a.text("target").unwrap_or_default().to_string();
-                let found = self.players.iter().find(|p| p.joined && p.name == target).map(|p| (p.dim, p.entity));
-                match found.and_then(|(d, e)| self.dims[d as usize].entity_region_ref(e)?.entities.get(e).map(|e| (d, e.pos))) {
-                    Some((d, pos)) => {
-                        self.change_dim(c, pi, d, pos);
-                        format!("teleported to {target}")
+                let who = targets(self, "who");
+                let dest = match (a.pos("pos"), a.get("to")) {
+                    (Some(p), _) => Some((me.0, p)),
+                    (None, Some(crate::commands::Value::Targets(sel))) => {
+                        self.select(pi, sel, here).first().and_then(|&(d, id)| self.position_of(d, id).map(|p| (d, p)))
                     }
-                    None => format!("no player {target}"),
+                    _ => None,
+                };
+                let Some((to_dim, pos)) = dest else { return "no destination".into() };
+                for &(d, id) in &who {
+                    self.teleport(c, d, id, to_dim, pos);
                 }
+                format!("teleported {} to {:.1} {:.1} {:.1}", who.len(), pos.x, pos.y, pos.z)
             }
             "dim" => {
                 let d = a.id("dim").unwrap_or(0);
                 let spawn = self.dims[d as usize].spawn_point(c);
-                self.change_dim(c, pi, d, spawn);
+                let who = targets(self, "who");
+                for &(from, id) in &who {
+                    self.teleport(c, from, id, d, spawn);
+                }
                 format!("now in {}", a.text("dim").unwrap_or_default())
             }
             "give" => {
                 let count = a.int("count").unwrap_or(1).clamp(1, 1 << 20) as u32;
                 let (item, iname) = (a.id("item").unwrap_or(0), a.text("item").unwrap_or_default().to_string());
-                let Some((r, e)) = self.region(pi) else { return String::new() };
-                let left = r.entities.insert_item(c, e, ItemStack::new(item, count));
-                format!("gave {} x {iname}", count - left.count)
+                let mut given = 0;
+                for (d, id) in targets(self, "who") {
+                    if let Some(r) = self.dims[d as usize].entity_region(id) {
+                        given += count - r.entities.insert_item(c, id, ItemStack::new(item, count)).count;
+                    }
+                }
+                format!("gave {given} x {iname}")
             }
             "time" => {
-                let t = a.int("ticks").unwrap_or(0).max(0) as u64;
-                let d = &mut self.dims[dim as usize];
+                let d = &mut self.dims[me.0 as usize];
                 let len = c.dims[d.id as usize].day_length.max(1) as u64;
-                let now = d.time - d.time % len + t;
+                if a.get("query").is_some() {
+                    return format!("time is {} (day {})", d.time % len, d.time / len);
+                }
+                let now = match (a.int("time"), a.int("ticks")) {
+                    (Some(t), _) => d.time - d.time % len + t.max(0) as u64,
+                    (None, Some(add)) => d.time.saturating_add_signed(add),
+                    _ => d.time,
+                };
                 d.set_time(now);
-                format!("time set to {t}")
+                format!("time set to {}", now % len)
             }
             "summon" => {
                 let count = a.int("count").unwrap_or(1).clamp(1, 100_000);
+                let pos = a.pos("pos").unwrap_or(here);
                 let (kind, kname) = (a.id("entity").unwrap_or(0), a.text("entity").unwrap_or_default().to_string());
-                let Some((r, _)) = self.region(pi) else { return String::new() };
+                let r = self.dims[me.0 as usize].ensure_region(c, pos);
                 for _ in 0..count {
-                    r.spawn(c, kind, here);
+                    r.spawn(c, kind, pos);
                 }
                 format!("summoned {count} {kname}")
+            }
+            "kill" => {
+                let who = targets(self, "who");
+                for &(d, id) in &who {
+                    if let Some(r) = self.dims[d as usize].entity_region(id) {
+                        r.damage(c, id, f32::MAX, 0, damage::VOID);
+                    }
+                }
+                format!("killed {}", who.len())
             }
             "setblock" => {
                 let (Some(p), Some(state)) = (block_at(a), a.id("block")) else { return String::new() };
@@ -977,17 +1110,22 @@ impl Server {
             }
             "gamemode" => {
                 let mode = GameMode::ALL.into_iter().find(|m| a.get(m.name()).is_some()).unwrap_or_default();
-                self.set_mode(pi, mode);
-                format!("game mode: {}", mode.name())
+                let who: Vec<usize> = targets(self, "who").iter().filter_map(|t| self.player_index(t.1)).collect();
+                for &p in &who {
+                    self.set_mode(p, mode);
+                }
+                format!("game mode: {} for {}", mode.name(), who.len())
             }
             "heal" => {
                 let max = c.game.entities[c.game.player_kind as usize].max_health;
-                if let Some((r, e)) = self.region(pi) {
-                    if let Some(e) = r.entities.get_mut(e) {
-                        e.health = max;
+                for (d, id) in targets(self, "who") {
+                    if let Some(e) = self.dims[d as usize].entity_region(id).and_then(|r| r.entities.get_mut(id)) {
+                        e.health = c.game.entities[e.kind as usize].max_health;
+                    }
+                    if let Some(p) = self.player_index(id) {
+                        self.players[p].conn.send(ToClient::Health { health: max, max });
                     }
                 }
-                self.players[pi].conn.send(ToClient::Health { health: max, max });
                 "healed".into()
             }
             "regions" => {

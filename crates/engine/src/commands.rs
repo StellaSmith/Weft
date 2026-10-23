@@ -3,8 +3,11 @@
 //! `[name:type]` optional parameters, alternatives separated by `|`, for example
 //! `<pos:pos> | <target:player>` or `<item:item> [count:int]`.
 //!
-//! Types: int, float, word, text (rest of the line), item, block, entity, dim, player, pos (three
-//! coordinates, `~` relative to the player).
+//! Types: int, float, word, text (rest of the line), item, block, entity, dim, player, time
+//! (`day`, `noon`, `night`, `midnight` or ticks), pos (three coordinates; `~` relative to the player,
+//! `^left ^up ^forward` relative to where they look) and targets (a player name or a selector:
+//! `@p` nearest player, `@a` all players, `@e` entities, `@s` yourself, `@r` a random player, with
+//! filters like `@e[type=zombie,distance=..10,limit=3,sort=nearest]`).
 
 use glam::DVec3;
 use voxide_abi::{Callback, ModId};
@@ -24,6 +27,8 @@ pub enum Kind {
     Dim,
     Player,
     Pos,
+    Targets,
+    Time,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +66,8 @@ pub fn parse_usage(usage: &str) -> Result<Vec<Alt>, String> {
                 "dim" => Kind::Dim,
                 "player" => Kind::Player,
                 "pos" => Kind::Pos,
+                "targets" => Kind::Targets,
+                "time" => Kind::Time,
                 _ => return Err(format!("unknown parameter type {ty}")),
             };
             params.push(Param { name: name.to_string(), kind, optional });
@@ -90,7 +97,78 @@ pub enum Value {
     /// Registry id and full name (items, block states, entity kinds, dimensions).
     Id(u32, String),
     Pos(DVec3),
+    Targets(Selector),
 }
+
+/// Who a targets parameter means; the server turns it into entities.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Selector {
+    /// `p`, `a`, `e`, `s`, `r`, or `n` for a plain player name (in `name`).
+    pub base: char,
+    pub name: Option<String>,
+    /// Entity kind, and whether it is negated (`type=!zombie`).
+    pub kind: Option<(u32, bool)>,
+    pub distance: Option<(f64, f64)>,
+    pub limit: Option<usize>,
+    pub sort: Option<String>,
+}
+
+impl Selector {
+    pub fn players_only(&self) -> bool {
+        self.base != 'e'
+    }
+}
+
+/// Where and which way the command runs from, for `~` and `^` coordinates and selectors.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Origin {
+    pub pos: DVec3,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+fn parse_selector(c: &Content, tok: &str, players: &[String]) -> Result<Selector, String> {
+    let mut s = Selector { base: 'n', name: None, kind: None, distance: None, limit: None, sort: None };
+    let Some(rest) = tok.strip_prefix('@') else {
+        if !players.iter().any(|n| n == tok) {
+            return Err(format!("no player {tok}"));
+        }
+        s.name = Some(tok.to_string());
+        return Ok(s);
+    };
+    let mut chars = rest.chars();
+    s.base = chars.next().filter(|b| "paesr".contains(*b)).ok_or_else(|| format!("unknown selector {tok}"))?;
+    let filters = chars.as_str();
+    if filters.is_empty() {
+        return Ok(s);
+    }
+    let inner = filters.strip_prefix('[').and_then(|f| f.strip_suffix(']')).ok_or_else(|| format!("bad selector {tok}"))?;
+    for f in inner.split(',').filter(|f| !f.is_empty()) {
+        let (k, v) = f.split_once('=').ok_or_else(|| format!("bad filter {f}"))?;
+        match k.trim() {
+            "type" => {
+                let (neg, name) = v.strip_prefix('!').map_or((false, v), |n| (true, n));
+                let full = resolve(c.game.entity_names.keys(), name).ok_or_else(|| format!("unknown entity {name}"))?;
+                s.kind = Some((c.game.entity_names[&full], neg));
+            }
+            "distance" => {
+                let num = |t: &str, d: f64| if t.is_empty() { Ok(d) } else { t.parse::<f64>().map_err(|_| format!("bad distance {v}")) };
+                s.distance = Some(match v.split_once("..") {
+                    Some((a, b)) => (num(a, 0.0)?, num(b, f64::INFINITY)?),
+                    None => (num(v, 0.0)?, num(v, 0.0)?),
+                });
+            }
+            "limit" => s.limit = Some(v.parse().map_err(|_| format!("bad limit {v}"))?),
+            "sort" if ["nearest", "furthest", "random", "arbitrary"].contains(&v) => s.sort = Some(v.to_string()),
+            "name" => s.name = Some(v.to_string()),
+            _ => return Err(format!("unknown filter {f}")),
+        }
+    }
+    Ok(s)
+}
+
+/// Named times of day in ticks, like vanilla's `/time set`.
+pub const TIMES: [(&str, i64); 4] = [("day", 1000), ("noon", 6000), ("night", 13000), ("midnight", 18000)];
 
 pub struct Args {
     pub names: Vec<String>,
@@ -149,7 +227,25 @@ fn coordinate(tok: &str, base: f64) -> Option<f64> {
     }
 }
 
-fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: DVec3, players: &[String], slots: &[String]) -> Result<Args, String> {
+/// Three coordinate tokens: absolute and `~` mixed per axis, or all `^` (left, up, forward from
+/// the view).
+fn position(t: &[&str], o: Origin) -> Option<DVec3> {
+    if t.iter().all(|s| s.starts_with('^')) {
+        let num = |s: &str| if s.len() == 1 { Some(0.0) } else { s[1..].parse::<f64>().ok() };
+        let (sy, cy) = (o.yaw as f64).sin_cos();
+        let (sp, cp) = (o.pitch as f64).sin_cos();
+        let forward = DVec3::new(-sy * cp, sp, -cy * cp);
+        let right = DVec3::new(cy, 0.0, -sy);
+        let up = right.cross(forward);
+        return Some(o.pos - right * num(t[0])? + up * num(t[1])? + forward * num(t[2])?);
+    }
+    if t.iter().any(|s| s.starts_with('^')) {
+        return None;
+    }
+    Some(DVec3::new(coordinate(t[0], o.pos.x)?, coordinate(t[1], o.pos.y)?, coordinate(t[2], o.pos.z)?))
+}
+
+fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[String], slots: &[String]) -> Result<Args, String> {
     let mut values: Vec<Option<Value>> = vec![None; slots.len()];
     let mut i = 0;
     for p in alt {
@@ -203,14 +299,27 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: DVec3, players: &[St
                 }
                 Value::Text(tok.to_string())
             }
+            Kind::Targets => match parse_selector(c, tok, players) {
+                Ok(s) => Value::Targets(s),
+                // An optional parameter that does not fit leaves the word to the next one.
+                Err(_) if p.optional => continue,
+                Err(e) => return Err(e),
+            },
+            Kind::Time => match TIMES.iter().find(|t| t.0 == tok) {
+                Some(t) => Value::Int(t.1),
+                None => Value::Int(tok.parse().map_err(|_| format!("{} must be day, noon, night, midnight or ticks", p.name))?),
+            },
             Kind::Pos => {
-                if i + 3 > tokens.len() {
-                    return Err(format!("{} needs x y z", p.name));
+                let parsed = tokens.get(i..i + 3).and_then(|t| position(t, here));
+                match parsed {
+                    Some(v) => {
+                        i += 2;
+                        Value::Pos(v)
+                    }
+                    None if p.optional => continue,
+                    None if i + 3 > tokens.len() => return Err(format!("{} needs x y z", p.name)),
+                    None => return Err(format!("bad position {}", tokens[i..i + 3].join(" "))),
                 }
-                let axis = |k: usize, base: f64| coordinate(tokens[i + k], base).ok_or_else(|| format!("bad coordinate {}", tokens[i + k]));
-                let v = Value::Pos(DVec3::new(axis(0, here.x)?, axis(1, here.y)?, axis(2, here.z)?));
-                i += 2;
-                v
             }
         };
         if let Some(s) = slot {
@@ -225,7 +334,7 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: DVec3, players: &[St
 }
 
 /// Parses `tokens` against the first alternative that accepts them.
-pub fn parse_args(c: &Content, alts: &[Alt], tokens: &[&str], here: DVec3, players: &[String]) -> Result<Args, String> {
+pub fn parse_args(c: &Content, alts: &[Alt], tokens: &[&str], here: Origin, players: &[String]) -> Result<Args, String> {
     let slots = slots(alts);
     let mut first_err = None;
     for alt in alts {
@@ -251,16 +360,17 @@ pub struct CommandDef {
 /// Engine commands, handled by the server itself.
 pub const BUILTIN: &[(&str, &str)] = &[
     ("help", "[command:word]"),
-    ("tp", "<pos:pos> | <target:player>"),
-    ("dim", "<dim:dim>"),
-    ("give", "<item:item> [count:int]"),
-    ("time", "set <ticks:int>"),
-    ("summon", "<entity:entity> [count:int]"),
+    ("tp", "<pos:pos> | <to:targets> | <who:targets> <pos:pos> | <who:targets> <to:targets>"),
+    ("dim", "<dim:dim> [who:targets]"),
+    ("give", "<who:targets> <item:item> [count:int] | <item:item> [count:int]"),
+    ("time", "set <time:time> | add <ticks:int> | query"),
+    ("summon", "<entity:entity> [pos:pos] [count:int]"),
+    ("kill", "[who:targets]"),
     ("setblock", "<pos:pos> <block:block>"),
     ("insert", "<pos:pos> <item:item> [count:int]"),
     ("block", "<pos:pos>"),
-    ("heal", ""),
-    ("gamemode", "survival | creative | spectator"),
+    ("heal", "[who:targets]"),
+    ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]"),
     ("regions", ""),
 ];
 
@@ -292,6 +402,15 @@ pub fn complete(c: &Content, line: &str, players: &[String]) -> Completion {
         let mut found = None;
         for (pi, p) in alt.iter().enumerate() {
             let width = if p.kind == Kind::Pos { 3 } else if p.kind == Kind::Text { usize::MAX / 2 } else { 1 };
+            // An optional selector or position the typed word cannot be skips to what follows.
+            let fits = |w: &str| match p.kind {
+                Kind::Targets => w.starts_with('@') || players.iter().any(|n| n == w),
+                Kind::Pos => w.starts_with('~') || w.starts_with('^') || w.parse::<f64>().is_ok(),
+                _ => true,
+            };
+            if p.optional && typed.len() > at && !fits(typed[at]) {
+                continue;
+            }
             if typed.len() < at + width {
                 found = Some((pi, typed.len() - at));
                 break;
@@ -322,7 +441,10 @@ pub fn complete(c: &Content, line: &str, players: &[String]) -> Completion {
             Kind::Entity => names_from(c.game.entity_names.keys().collect()),
             Kind::Dim => names_from(c.dim_names.keys().collect()),
             Kind::Player => players.iter().filter(|n| n.starts_with(partial)).cloned().collect(),
+            Kind::Targets => ["@p", "@a", "@e", "@s", "@r"].iter().map(|s| s.to_string()).chain(players.iter().cloned()).filter(|n| n.starts_with(partial)).collect(),
+            Kind::Time => TIMES.iter().map(|t| t.0.to_string()).filter(|n| n.starts_with(partial)).collect(),
             Kind::Pos if partial.is_empty() || partial == "~" => vec![if within == 0 { "~ ~ ~".to_string() } else { "~".to_string() }],
+            Kind::Pos if partial == "^" => vec![if within == 0 { "^ ^ ^".to_string() } else { "^".to_string() }],
             _ => Vec::new(),
         };
         for s in list {

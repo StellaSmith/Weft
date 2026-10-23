@@ -867,6 +867,8 @@ pub mod command_value {
     pub const POS: u32 = 4;
     /// `int` is the registry id (item, block state, entity kind, dimension), `text` its name.
     pub const ID: u32 = 5;
+    /// Selected entities: `text` holds their ids separated by spaces, `int` how many.
+    pub const TARGETS: u32 = 6;
 }
 
 #[repr(C)]

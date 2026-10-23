@@ -50,6 +50,11 @@ impl Command<'_> {
         self.value(name).filter(|v| v.kind == cv::ID).map(|v| v.int as u32)
     }
 
+    /// Entities a `targets` parameter selected (`@e[type=zombie]`, a player name, ...).
+    pub fn targets(&self, name: &str) -> Vec<u64> {
+        self.value(name).filter(|v| v.kind == cv::TARGETS).map_or(Vec::new(), |v| unsafe { v.text.as_str() }.split_whitespace().filter_map(|t| t.parse().ok()).collect())
+    }
+
     pub fn pos(&self, name: &str) -> Option<[f64; 3]> {
         self.value(name).filter(|v| v.kind == cv::POS).map(|v| v.pos)
     }

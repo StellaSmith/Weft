@@ -77,7 +77,10 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     out.mode = b.ids.y;
     out.tex = b.ids.x;
     if b.ids.y == 4u {
-        // One texel for the whole box (pixels of held item sprites).
+        // One texel for the whole box (pixels of held item sprites); `ids.w` = faces to skip.
+        if (b.ids.w & (1u << face)) != 0u {
+            out.clip = vec4(0.0, 0.0, 0.0, 1.0);
+        }
         out.layer = b.ids.z;
         out.uv = b.uvo.xy;
     } else if b.ids.y == 1u || b.ids.y == 3u {

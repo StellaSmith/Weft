@@ -790,14 +790,19 @@ fn hand_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, cam: &Camera, h: &
                 * Mat4::from_scale(Vec3::splat(0.68))
                 * Mat4::from_translation(Vec3::splat(-0.5));
             let n = sp.size as f32;
+            let opaque: rustc_hash::FxHashSet<(u8, u8)> = sp.pixels.iter().copied().collect();
+            let solid = |x: i64, y: i64| (0..256).contains(&x) && (0..256).contains(&y) && opaque.contains(&(x as u8, y as u8));
             for &(x, y) in &sp.pixels {
+                // Only the outline: a side face against a neighbouring pixel would fight with it.
+                let (xi, yi) = (x as i64, y as i64);
+                let hidden = solid(xi - 1, yi) as u32 | (solid(xi + 1, yi) as u32) << 1 | (solid(xi, yi + 1) as u32) << 2 | (solid(xi, yi - 1) as u32) << 3;
                 let m = model * Mat4::from_translation(Vec3::new(x as f32 / n, 1.0 - (y as f32 + 1.0) / n, 7.5 / 16.0)) * Mat4::from_scale(Vec3::new(1.0 / n, 1.0 / n, 1.0 / 16.0));
                 // Mode 4: every face takes the colour of this one texel.
                 out.push(GpuBox {
                     rows: rows(m),
                     uvo: [(x as f32 + 0.5) / n, (y as f32 + 0.5) / n, 0.0, 0.0],
                     color,
-                    ids: [index, 4, l, 0],
+                    ids: [index, 4, l, hidden],
                     ..Default::default()
                 });
             }

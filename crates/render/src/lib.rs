@@ -24,6 +24,7 @@ pub const PRELUDE: &str = r#"enable wgpu_binding_array;
 @group(0) @binding(2) var nearest_clamp: sampler;
 @group(0) @binding(3) var linear_clamp: sampler;
 @group(0) @binding(4) var nearest_mipped: sampler;
+@group(0) @binding(5) var linear_mipped: sampler;
 "#;
 
 pub const MAX_TEXTURES: u32 = 4096;

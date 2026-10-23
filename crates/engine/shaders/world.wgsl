@@ -209,17 +209,28 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     return out;
 }
 
-fn lightmap(v: f32) -> f32 {
-    // Vanilla's curve and floors, then lifted towards 1 - (1 - c)^4 by the brightness setting.
-    let c = (v / (4.0 - 3.0 * v) * 0.95 + 0.05) * 0.96 + 0.03;
-    return mix(c, 1.0 - pow(1.0 - c, 4.0), g.look.x);
+fn brightness_curve(level: f32) -> f32 {
+    return level / (4.0 - 3.0 * level);
+}
+
+// Vanilla 26.1's lightmap: dim ambient, sky light that turns blue and weaker at night, warm block
+// light that whitens towards both ends, then the Brightness setting bends it up keeping the hue.
+fn lightmap(light: vec4<f32>) -> vec3<f32> {
+    let day = clamp((g.params.x - 0.12) / 0.88, 0.0, 1.0);
+    let sky = brightness_curve(light.x) * mix(0.24, 1.0, day);
+    var c = max(vec3(0.04), vec3(brightness_curve(f32(g.ids.y) / 15.0))) + mix(vec3(0.478, 0.478, 1.0), vec3(1.0), day) * sky;
+    let block = light.yzw;
+    let p = (2.0 * block - 1.0) * (2.0 * block - 1.0);
+    let tint = mix(vec3(1.0, 0.847, 0.549), vec3(1.0), 0.9 * p);
+    c += tint * vec3(brightness_curve(block.x), brightness_curve(block.y), brightness_curve(block.z)) * 1.4;
+    c = clamp(c, vec3(0.0), vec3(1.0));
+    let m = max(max(c.x, c.y), c.z);
+    let bright = c * ((1.0 - pow(1.0 - m, 4.0)) / max(m, 1e-4));
+    return mix(c, bright, g.look.x);
 }
 
 fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
-    let ambient = f32(g.ids.y) / 15.0;
-    let sky = max(in.light.x * g.params.x, ambient);
-    let block = in.light.yzw;
-    let light = max(vec3(lightmap(sky)) * mix(vec3(0.55, 0.6, 0.85), vec3(1.0), g.params.x), vec3(lightmap(block.x), lightmap(block.y), lightmap(block.z)));
+    let light = lightmap(in.light);
     // Shading factors are meant for gamma space like vanilla's; the target is sRGB, so apply them
     // as their linear equivalent or AO and shadows come out washed out.
     var rgb = albedo.rgb * pow(in.color * light, vec3(2.2));
@@ -228,12 +239,26 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
     return vec4(rgb, albedo.a);
 }
 
+// Nearest texels with antialiased borders (vanilla 26.1's sampleNearest): up close each texel
+// keeps its colour but its edge blends over one screen pixel, so blocks look clean, not jagged.
+fn nearest_uv(uv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec2<f32> {
+    let size = vec2<f32>(textureDimensions(texture_arrays[g.ids.x]).xy);
+    let per_pixel = sqrt(du * du + dv * dv) * size;
+    let t = uv * size;
+    let center = round(t) - 0.5;
+    let off = clamp((t - center - 0.5) / max(per_pixel, vec2(1e-5)) + 0.5, vec2(0.0), vec2(1.0));
+    return (center + off) / size;
+}
+
 fn sample(in: VOut) -> vec4<f32> {
-    let a = textureSample(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer);
+    let du = dpdx(in.uv);
+    let dv = dpdy(in.uv);
+    let uv = nearest_uv(in.uv, du, dv);
+    let a = textureSampleGrad(texture_arrays[g.ids.x], linear_mipped, uv, in.layer, du, dv);
     if in.blend <= 0.0 {
         return a;
     }
-    let b = textureSample(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer2);
+    let b = textureSampleGrad(texture_arrays[g.ids.x], linear_mipped, uv, in.layer2, du, dv);
     return mix(a, b, in.blend);
 }
 
@@ -249,11 +274,12 @@ fn sample_cutout(in: VOut) -> vec4<f32> {
     let size = f32(textureDimensions(texture_arrays[g.ids.x]).x);
     let t = in.uv * size;
     let lod = max(log2(max(min(length(dpdx(t)), length(dpdy(t))), 1e-6)), 0.0);
-    let a = textureSampleLevel(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer, lod);
+    let uv = nearest_uv(in.uv, dpdx(in.uv), dpdy(in.uv));
+    let a = textureSampleLevel(texture_arrays[g.ids.x], linear_mipped, uv, in.layer, lod);
     if in.blend <= 0.0 {
         return a;
     }
-    let b = textureSampleLevel(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer2, lod);
+    let b = textureSampleLevel(texture_arrays[g.ids.x], linear_mipped, uv, in.layer2, lod);
     return mix(a, b, in.blend);
 }
 

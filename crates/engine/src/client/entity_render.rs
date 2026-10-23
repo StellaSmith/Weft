@@ -88,10 +88,19 @@ fn shader() -> Result<Shader, ShaderError> {
     crate::packs::shader("entity.wgsl", include_str!("../../shaders/entity.wgsl"))
 }
 
-/// Same curve as the world shader's `lightmap`.
-fn lightmap(v: f32, brightness: f32) -> f32 {
-    let c = (v / (4.0 - 3.0 * v) * 0.95 + 0.05) * 0.96 + 0.03;
-    c + (1.0 - (1.0 - c).powi(4) - c) * brightness
+/// Same as the world shader's `lightmap`; `day` is the daylight fraction.
+fn lightmap(l: [f32; 4], day: f32, brightness: f32) -> Vec3 {
+    let curve = |v: f32| v / (4.0 - 3.0 * v);
+    let t = ((day - 0.12) / 0.88).clamp(0.0, 1.0);
+    let sky = curve(l[0]) * (0.24 + 0.76 * t);
+    let mut c = Vec3::splat(0.04) + Vec3::new(0.478, 0.478, 1.0).lerp(Vec3::ONE, t) * sky;
+    let block = Vec3::new(l[1], l[2], l[3]);
+    let p = (block * 2.0 - Vec3::ONE) * (block * 2.0 - Vec3::ONE);
+    let tint = Vec3::new(1.0, 0.847, 0.549) * (Vec3::ONE - p * 0.9) + p * 0.9;
+    c += tint * Vec3::new(curve(block.x), curve(block.y), curve(block.z)) * 1.4;
+    c = c.clamp(Vec3::ZERO, Vec3::ONE);
+    let m = c.max_element().max(1e-4);
+    c.lerp(c * ((1.0 - (1.0 - m).powi(4)) / m), brightness)
 }
 
 impl EntityRenderer {
@@ -417,9 +426,7 @@ impl EntityRenderer {
         let shade = |p: DVec3| -> Vec3 {
             let l = light(p.floor().as_ivec3());
             let ch = |s: u32| ((l >> s) & 255).min(15) as f32 / 15.0;
-            let lm = |v: f32| lightmap(v, self.brightness);
-            let sky = lm(ch(0) * day);
-            Vec3::new(sky.max(lm(ch(8))), sky.max(lm(ch(16))), sky.max(lm(ch(24))))
+            lightmap([ch(0), ch(8), ch(16), ch(24)], day, self.brightness)
         };
 
         // Models are posed by the vertex shader: one small record per entity and layer, grouped by

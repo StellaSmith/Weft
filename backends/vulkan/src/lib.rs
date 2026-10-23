@@ -138,7 +138,7 @@ pub struct VulkanBackend {
     global_layout: vk::DescriptorSetLayout,
     global_pool: vk::DescriptorPool,
     global_set: vk::DescriptorSet,
-    samplers: [vk::Sampler; 3],
+    samplers: [vk::Sampler; 4],
     free_tex: Vec<u32>,
     free_arr: Vec<u32>,
     next_tex: u32,
@@ -346,7 +346,7 @@ impl VulkanBackend {
             }
 
             let flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND;
-            let binding_flags = [flags, flags, vk::DescriptorBindingFlags::empty(), Default::default(), Default::default()];
+            let binding_flags = [flags, flags, vk::DescriptorBindingFlags::empty(), Default::default(), Default::default(), Default::default()];
             let bindings = [
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(0)
@@ -373,6 +373,11 @@ impl VulkanBackend {
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::ALL),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(5)
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::ALL),
             ];
             let mut flag_info = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
             let global_layout = device
@@ -389,7 +394,7 @@ impl VulkanBackend {
                     ty: vk::DescriptorType::SAMPLED_IMAGE,
                     descriptor_count: MAX_TEXTURES + MAX_TEXTURE_ARRAYS,
                 },
-                vk::DescriptorPoolSize { ty: vk::DescriptorType::SAMPLER, descriptor_count: 3 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::SAMPLER, descriptor_count: 4 },
             ];
             let global_pool = device
                 .create_descriptor_pool(
@@ -408,6 +413,8 @@ impl VulkanBackend {
                 .map_err(err("global set"))?[0];
 
             let sampler = |filter: vk::Filter, mode: vk::SamplerAddressMode, mips: bool| {
+                // The filtered sampler gets anisotropy: block faces at grazing angles stay sharp.
+                let aniso = filter == vk::Filter::LINEAR && mips;
                 device.create_sampler(
                     &vk::SamplerCreateInfo::default()
                         .mag_filter(filter)
@@ -416,6 +423,8 @@ impl VulkanBackend {
                         .address_mode_u(mode)
                         .address_mode_v(mode)
                         .address_mode_w(mode)
+                        .anisotropy_enable(aniso)
+                        .max_anisotropy(if aniso { 8.0 } else { 1.0 })
                         .max_lod(if mips { vk::LOD_CLAMP_NONE } else { 0.0 }),
                     None,
                 )
@@ -424,6 +433,7 @@ impl VulkanBackend {
                 sampler(vk::Filter::NEAREST, vk::SamplerAddressMode::CLAMP_TO_EDGE, false).map_err(err("sampler"))?,
                 sampler(vk::Filter::LINEAR, vk::SamplerAddressMode::CLAMP_TO_EDGE, false).map_err(err("sampler"))?,
                 sampler(vk::Filter::NEAREST, vk::SamplerAddressMode::REPEAT, true).map_err(err("sampler"))?,
+                sampler(vk::Filter::LINEAR, vk::SamplerAddressMode::REPEAT, true).map_err(err("sampler"))?,
             ];
             let infos: Vec<[vk::DescriptorImageInfo; 1]> =
                 samplers.iter().map(|&s| [vk::DescriptorImageInfo::default().sampler(s)]).collect();

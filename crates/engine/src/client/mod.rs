@@ -62,6 +62,18 @@ pub struct ClientEntity {
     pub walk: f32,
     pub swing: f32,
     pub age: f32,
+    pub burning: bool,
+    /// Seconds since it died: it falls over and turns red, then disappears in a puff.
+    pub dying: Option<f32>,
+}
+
+/// A smoke puff piece: drifts up and shrinks away.
+pub struct Puff {
+    pub pos: DVec3,
+    pub vel: DVec3,
+    pub age: f32,
+    pub life: f32,
+    pub size: f32,
 }
 
 pub struct ClientMenu {
@@ -127,6 +139,7 @@ pub struct Client {
     pub drag: Option<(u8, Vec<u32>)>,
     /// Seconds left of the red screen flash after taking damage.
     pub hurt_flash: f32,
+    pub puffs: Vec<Puff>,
     pub dead: bool,
     pub components: FxHashMap<u32, Vec<u8>>,
     pub menu: Option<ClientMenu>,
@@ -182,6 +195,7 @@ impl Client {
             health: 20.0,
             max_health: 20.0,
             hurt_flash: 0.0,
+            puffs: Vec::new(),
             drag: None,
             players: Vec::new(),
             sent: Vec::new(),
@@ -262,6 +276,8 @@ impl Client {
                                 walk: 0.0,
                                 swing: 0.0,
                                 age: 0.0,
+                                burning: false,
+                                dying: None,
                             },
                         );
                     }
@@ -277,7 +293,23 @@ impl Client {
                 }
                 ToClient::Despawn(ids) => {
                     for id in ids {
-                        self.entities.remove(&id);
+                        // Killed mobs stay a moment for the death animation.
+                        match self.entities.get_mut(&id) {
+                            Some(e) if e.health <= 0.0 && e.item.is_empty() && e.dying.is_none() => e.dying = Some(0.0),
+                            _ => {
+                                self.entities.remove(&id);
+                            }
+                        }
+                    }
+                }
+                ToClient::Burning(ids) => {
+                    for e in self.entities.values_mut() {
+                        e.burning = false;
+                    }
+                    for id in ids {
+                        if let Some(e) = self.entities.get_mut(&id) {
+                            e.burning = true;
+                        }
                     }
                 }
                 ToClient::Hurt(list) => {
@@ -563,7 +595,31 @@ impl Client {
             e.swing += ((speed / 4.0).min(1.0) - e.swing) * (k as f32);
             e.hurt = (e.hurt - dt as f32).max(0.0);
             e.age += dt as f32;
+            if let Some(d) = &mut e.dying {
+                *d += dt as f32;
+                e.hurt = 0.4;
+                e.burning = false;
+            }
         }
+        // Finished death animations turn into a puff of smoke.
+        let c = content();
+        let done: Vec<u64> = self.entities.iter().filter(|(_, e)| e.dying.is_some_and(|d| d >= 1.0)).map(|(&id, _)| id).collect();
+        for id in done {
+            let Some(e) = self.entities.remove(&id) else { continue };
+            let k = &c.game.entities[e.kind as usize];
+            let n = 6 + (k.width * k.height * 6.0) as u32;
+            for i in 0..n {
+                let h = (id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (i as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)).rotate_left(i);
+                let r = |s: u32| ((h >> s) & 255) as f64 / 255.0 - 0.5;
+                let pos = e.pos + DVec3::new(r(0) * k.width as f64, (r(8) + 0.5) * k.height as f64, r(16) * k.width as f64);
+                self.puffs.push(Puff { pos, vel: DVec3::new(r(24) * 0.6, 0.5 + r(32) * 0.4, r(40) * 0.6), age: 0.0, life: 0.7 + r(48) as f32 * 0.4, size: 0.3 + r(56) as f32 * 0.15 });
+            }
+        }
+        for p in &mut self.puffs {
+            p.age += dt as f32;
+            p.pos += p.vel * dt;
+        }
+        self.puffs.retain(|p| p.age < p.life);
         self.hurt_flash = (self.hurt_flash - dt as f32).max(0.0);
         self.hotbar = self.inventory[..9].iter().map(|s| if s.is_empty() { 0 } else { s.item | (s.count.min(255) << 24) }).collect();
 
@@ -654,6 +710,8 @@ impl Client {
             walk: self.self_walk,
             swing: self.self_swing,
             age: 0.0,
+            burning: false,
+            dying: None,
         }
     }
 
@@ -711,7 +769,7 @@ impl Client {
         });
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
-        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, day, self.target, self.breaking);
+        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, &self.puffs, textures, &light, day, self.target, self.breaking);
         list.push(voxide_render::Cmd::Mark);
     }
 

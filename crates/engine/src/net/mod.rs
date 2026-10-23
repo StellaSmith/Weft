@@ -58,6 +58,8 @@ pub enum ToClient {
     Moves(Vec<(u64, DVec3, f32, f32)>),
     Despawn(Vec<u64>),
     Hurt(Vec<(u64, f32)>),
+    /// Every known entity that is on fire, sent once a second.
+    Burning(Vec<u64>),
     Worn(Vec<(u64, Vec<u32>)>),
     GameMode(crate::world::GameMode),
     /// Everyone online, sent when someone joins or leaves.

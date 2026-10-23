@@ -502,12 +502,19 @@ impl Dim {
                         land = Some(fall - 3.0);
                     }
                 }
-                let mut burn = false;
+                // Sunlight sets them on fire for 8 seconds; burning hurts once a second, water puts it out.
                 if k.is(ef::BURNS_IN_SUN) && day > 0.5 && e.age % 20 == 0 && !e.in_liquid {
                     let head = (e.pos + DVec3::Y * k.eye as f64).floor().as_ivec3();
                     let sky = cubes.get(&cube_of(head)).map_or(0, |cb| cb.light(local_index(head)) & 0xFF);
-                    burn = sky >= 15;
+                    if sky >= 15 {
+                        e.fire = e.fire.max(160);
+                    }
                 }
+                if e.in_liquid {
+                    e.fire = 0;
+                }
+                e.fire = e.fire.saturating_sub(1);
+                let burn = e.fire > 0 && e.fire % 20 == 0;
                 if k.category == 1 && e.age % 100 == 0 {
                     let near = players.iter().any(|p| (*p - e.pos).length_squared() < 128.0 * 128.0);
                     if !near {

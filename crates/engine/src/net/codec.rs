@@ -192,6 +192,13 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.u64(*id);
             }
         }
+        ToClient::Burning(ids) => {
+            w.u8(24);
+            w.len(ids.len());
+            for id in ids {
+                w.u64(*id);
+            }
+        }
         ToClient::Hurt(list) => {
             w.u8(9);
             w.len(list.len());
@@ -405,6 +412,14 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             ToClient::Players(names)
         }
         23 => ToClient::GameMode(crate::world::GameMode::from_u8(r.u8()?)),
+        24 => {
+            let n = r.len()?;
+            let mut ids = Vec::with_capacity(n);
+            for _ in 0..n {
+                ids.push(r.u64()?);
+            }
+            ToClient::Burning(ids)
+        }
         _ => return None,
     })
 }

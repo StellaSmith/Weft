@@ -29,6 +29,8 @@ pub struct Entity {
     pub pickup_delay: u32,
     pub player: bool,
     pub mode: crate::world::GameMode,
+    /// Ticks left burning.
+    pub fire: u32,
     /// Hotbar slot the player holds.
     pub selected: u32,
     pub anchor: Option<IVec3>,
@@ -59,6 +61,7 @@ impl Entity {
             pickup_delay: 0,
             player: false,
             mode: crate::world::GameMode::Survival,
+            fire: 0,
             selected: 0,
             anchor: None,
             sent: None,

@@ -48,6 +48,9 @@ struct ModelInstance {
     tex_size: [f32; 2],
     roles: u32,
     first_cuboid: u32,
+    /// Sideways tip-over when dying, radians.
+    roll: f32,
+    _pad: [f32; 3],
 }
 
 #[repr(C)]
@@ -461,6 +464,7 @@ impl EntityRenderer {
         entities: &FxHashMap<u64, ClientEntity>,
         me: Option<&ClientEntity>,
         hand: Option<Hand>,
+        puffs: &[super::Puff],
         textures: &GameTextures,
         light: &impl Fn(IVec3) -> u32,
         day: f32,
@@ -514,7 +518,14 @@ impl EntityRenderer {
                 tex_size,
                 roles: u32::MAX,
                 first_cuboid: self.kind_cuboids[e.kind as usize].0,
+                // Vanilla: sqrt of the death time over a second, up to a quarter turn.
+                roll: e.dying.map_or(0.0, |d| (d * 1.6).sqrt().min(1.0) * std::f32::consts::FRAC_PI_2),
+                _pad: [0.0; 3],
             };
+            if e.burning {
+                let k = &c.game.entities[e.kind as usize];
+                fire_boxes(&mut boxes, textures, base, k.width, k.height, cam.yaw, e.age);
+            }
             let list = &mut by_kind[e.kind as usize];
             list.push(inst);
             for &i in &e.worn {
@@ -589,6 +600,12 @@ impl EntityRenderer {
                 }
             }
         }
+        for p in puffs {
+            let s = p.size * (1.0 - p.age / p.life);
+            let m = Mat4::from_translation(rel(p.pos) - Vec3::splat(s / 2.0)) * Mat4::from_scale(Vec3::splat(s));
+            let g = 0.75 - p.age / p.life * 0.3;
+            boxes.push(GpuBox { rows: rows(m), color: [g, g, g, 0.0], ids: [0, 2, 0, 0], ..Default::default() });
+        }
         let overlay_start = boxes.len();
         let mut overlay_alpha = 0.0;
         if let Some((p, progress)) = breaking {
@@ -651,6 +668,22 @@ impl EntityRenderer {
             list.bind(1, vb);
             list.push(Cmd::Draw { vertices: (boxes.len() - hand_start) as u32 * 36, instances: 1, first_vertex: hand_start as u32 * 36, first_instance: 0 });
         }
+    }
+}
+
+/// Two layers of flames facing the camera, the inner one smaller, like vanilla's burning mobs.
+fn fire_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, width: f32, height: f32, cam_yaw: f32, age: f32) {
+    let c = content();
+    let first = textures.block_layers.get(c.fire_texture as usize).map_or((0, 1), |l| *l);
+    let frame = |offset: f32| first.0 + ((age * 20.0 + offset) as u32 % first.1.max(1));
+    for (i, (scale, back)) in [(1.4, 0.0), (1.0, 0.2)].into_iter().enumerate() {
+        let l = frame(i as f32 * 11.0);
+        let w = width * scale;
+        let m = Mat4::from_translation(base)
+            * Mat4::from_rotation_y(cam_yaw)
+            * Mat4::from_translation(Vec3::new(-w / 2.0, 0.0, back * width))
+            * Mat4::from_scale(Vec3::new(w, height * scale * 0.95, 0.0));
+        out.push(GpuBox { rows: rows(m), color: [1.0, 1.0, 1.0, 0.0], ids: [textures.block_index, 3, l | l << 16, l | l << 16], ids2: [l | l << 16, 0, 0, 0], ..Default::default() });
     }
 }
 

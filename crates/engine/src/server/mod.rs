@@ -1317,6 +1317,14 @@ impl Server {
                     }
                 }
             }
+            // Before despawns: a mob killed this tick is gone already, and the client needs its
+            // last health to play the death animation.
+            for reg in &dim.regions {
+                let hurt: Vec<(u64, f32)> = reg.entities.hurt.iter().filter(|h| p.known.contains(&h.0)).copied().collect();
+                if !hurt.is_empty() {
+                    p.conn.send(ToClient::Hurt(hurt));
+                }
+            }
             let gone: Vec<u64> = p.known.iter().copied().filter(|id| !visible.contains(id)).collect();
             if !gone.is_empty() {
                 p.conn.send(ToClient::Despawn(gone));
@@ -1333,11 +1341,10 @@ impl Server {
                 p.conn.send(ToClient::Worn(worn));
             }
             p.known = visible;
-            for reg in &dim.regions {
-                let hurt: Vec<(u64, f32)> = reg.entities.hurt.iter().filter(|h| p.known.contains(&h.0)).copied().collect();
-                if !hurt.is_empty() {
-                    p.conn.send(ToClient::Hurt(hurt));
-                }
+            if *tick % 20 == 0 {
+                let burning: Vec<u64> =
+                    dim.regions.iter().flat_map(|r| r.entities.list.iter()).filter(|e| e.fire > 0 && !e.removed && p.known.contains(&e.id)).map(|e| e.id).collect();
+                p.conn.send(ToClient::Burning(burning));
             }
 
             if let Some(reg) = dim.entity_region(p.entity) {

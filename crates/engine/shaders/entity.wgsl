@@ -75,7 +75,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     let uv = UVS[c];
     out.mode = b.ids.y;
     out.tex = b.ids.x;
-    if b.ids.y == 1u {
+    if b.ids.y == 1u || b.ids.y == 3u {
         var packed = b.ids.z;
         if face >= 2u && face < 4u {
             packed = b.ids.w;
@@ -105,8 +105,15 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     var albedo = vec4(1.0);
     if in.mode == 0u {
         albedo = textureSample(textures[in.tex], nearest_clamp, in.uv);
-    } else if in.mode == 1u {
+    } else if in.mode == 1u || in.mode == 3u {
         albedo = textureSample(texture_arrays[in.tex], nearest_mipped, in.uv, in.layer);
+    }
+    if in.mode == 3u {
+        // Flames give their own light.
+        if albedo.a < 0.5 {
+            discard;
+        }
+        return vec4(albedo.rgb, 1.0);
     }
     if albedo.a < 0.5 {
         discard;

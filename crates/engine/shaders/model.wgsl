@@ -16,6 +16,11 @@ struct Instance {
     // Bit per part role this layer draws.
     roles: u32,
     first_cuboid: u32,
+    roll: f32,
+    // Scalars, not a vec3: that would align to 16 bytes and break the 80-byte stride.
+    _p0: f32,
+    _p1: f32,
+    _p2: f32,
 }
 
 struct Cuboid {
@@ -122,7 +127,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let local = cub.origin - vec3(grow) + p * (cub.size + vec3(2.0 * grow));
     let a = part_angle(cub.role, inst.pitch, inst.swing);
     let turned = rot_z(cub.rest_yz.y, rot_y(cub.rest_yz.x + a.y, rot_x(cub.rest_x + a.x, local)));
-    let posed = (cub.pivot + turned) / 16.0;
+    var posed = (cub.pivot + turned) / 16.0;
+    if inst.roll != 0.0 {
+        posed = rot_z(inst.roll, posed);
+    }
     let cy = cos(inst.yaw);
     let sy = sin(inst.yaw);
     let world = inst.pos + vec3(posed.x * cy + posed.z * sy, posed.y, -posed.x * sy + posed.z * cy);

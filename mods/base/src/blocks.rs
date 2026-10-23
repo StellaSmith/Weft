@@ -225,7 +225,7 @@ fn plant(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
 pub fn register(r: &mut Registry) {
     // harvest level N > 0 needs a matching tool of tier N-1 (wood 0, stone 1, iron 2, diamond 3).
     r.block("stone", &STONE).hardness(1.5).tool("pickaxe", 1).drops("cobblestone", 1).tag("base:stone").tab("building");
-    r.block("cobblestone", &COBBLESTONE).hardness(2.0).tool("pickaxe", 1).tag("base:stone").tab("building");
+    r.block("cobblestone", &COBBLESTONE).hardness(2.0).tool("pickaxe", 1).tag("base:stone").tag("materials/stone").tab("building");
     r.block("mossy_cobblestone", &MOSSY_COBBLESTONE).hardness(2.0).tool("pickaxe", 1).tab("building");
     r.block("dirt", &DIRT).hardness(0.5).tool("shovel", 0).tab("natural");
     r.block("grass", &GRASS)
@@ -243,16 +243,16 @@ pub fn register(r: &mut Registry) {
     r.block("snow", &SNOW).hardness(0.2).tool("shovel", 0).tab("natural");
     r.block("ice", &ICE).hardness(0.5).translucent().opacity(2).friction(0.98).tool("pickaxe", 0).drops_nothing().tab("natural");
     r.block("obsidian", &OBSIDIAN).hardness(50.0).tool("pickaxe", 4).tab("natural");
-    r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 1).drops("coal", 1).tag("base:ores").tab("natural");
+    r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 1).drops("coal", 1).tag("base:ores").tag("ores/coal").tab("natural");
     r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores").tag("ores/iron").tab("natural");
     r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).tag("base:ores").tag("ores/gold").tab("natural");
-    r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 3).drops("diamond", 1).tag("base:ores").tab("natural");
+    r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 3).drops("diamond", 1).tag("base:ores").tag("ores/diamond").tab("natural");
 
     log(r, "oak_log", &OAK_LOG, "oak");
     log(r, "birch_log", &BIRCH_LOG, "birch");
     log(r, "spruce_log", &SPRUCE_LOG, "spruce");
     for (name, h, tex) in [("oak_planks", &OAK_PLANKS, "planks_oak"), ("birch_planks", &BIRCH_PLANKS, "planks_birch"), ("spruce_planks", &SPRUCE_PLANKS, "planks_spruce")] {
-        r.block(name, h).texture(tex).hardness(2.0).tool("axe", 0).tag("base:planks").prop("base:flammable", 5u32).prop("base:fuel", 300u32).tab("building");
+        r.block(name, h).texture(tex).hardness(2.0).tool("axe", 0).tag("base:planks").tag("materials/wood").prop("base:flammable", 5u32).prop("base:fuel", 300u32).tab("building");
     }
     leaves(r, "oak_leaves", &OAK_LEAVES, "leaves_oak");
     leaves(r, "birch_leaves", &BIRCH_LEAVES, "leaves_birch");
@@ -352,10 +352,10 @@ pub fn register(r: &mut Registry) {
     r.block("glowstone", &GLOWSTONE).light(15).hardness(0.3).tab("natural");
     r.block("bricks", &BRICKS).hardness(2.0).tool("pickaxe", 1).tab("building");
     r.block("stone_bricks", &STONE_BRICKS).texture("stonebrick").hardness(1.5).tool("pickaxe", 1).tab("building");
-    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 2).tag("blocks/iron").tab("building");
-    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 3).tag("blocks/gold").tab("building");
-    r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 3).tab("building");
-    r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 1).prop("base:fuel", 16000u32).tab("building");
+    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 2).tag("ore_blocks/iron").tab("building");
+    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 3).tag("ore_blocks/gold").tab("building");
+    r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 3).tag("ore_blocks/diamond").tab("building");
+    r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 1).tag("ore_blocks/coal").prop("base:fuel", 16000u32).tab("building");
     r.block("wool", &WOOL).texture("wool_white").hardness(0.8).prop("base:flammable", 30u32).tab("colored");
 }
 

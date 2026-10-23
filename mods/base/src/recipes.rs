@@ -28,35 +28,31 @@ pub fn register(r: &mut Registry) {
     r.shapeless(C, "green_stained_glass", 1, &["glass", "cactus"], 0);
     r.shapeless(C, "blue_stained_glass", 1, &["glass", "ice"], 0);
 
-    // Storage blocks for every metal any mod tags as `ingots/<m>` and `blocks/<m>`.
-    for (block, item) in [("#blocks/*", "#ingots/*"), ("diamond_block", "diamond"), ("coal_block", "coal")] {
-        r.shaped(C, block, 1, &["###", "###", "###"], &[('#', item)]);
-        r.shapeless(C, item, 9, &[block], 0);
+    // Every mod's `ore_blocks/<m>` packs its `ingots/<m>` or `gems/<m>`, and its ores smelt into them.
+    for kind in ["#ingots/*", "#gems/*"] {
+        r.shaped(C, "#ore_blocks/*", 1, &["###", "###", "###"], &[('#', kind)]);
+        r.shapeless(C, kind, 9, &["#ore_blocks/*"], 0);
+        r.shapeless(S, kind, 1, &["#ores/*"], 200);
     }
+    r.shapeless(S, "#cooked_meat/*", 1, &["#raw_meat/*"], 200);
 
-    for (mat, input) in [("wood", "#base:planks"), ("stone", "cobblestone"), ("iron", "iron_ingot"), ("gold", "gold_ingot"), ("diamond", "diamond")] {
-        let keys = [('X', input), ('#', "stick")];
-        r.shaped(C, &format!("{mat}_pickaxe"), 1, &["XXX", " # ", " # "], &keys);
-        r.shaped(C, &format!("{mat}_axe"), 1, &["XX", "X#", " #"], &keys);
-        r.shaped(C, &format!("{mat}_shovel"), 1, &["X", "#", "#"], &keys);
-        r.shaped(C, &format!("{mat}_hoe"), 1, &["XX", " #", " #"], &keys);
-        r.shaped(C, &format!("{mat}_sword"), 1, &["X", "X", "#"], &keys);
+    // A `pickaxes/<m>` or `armor_chest/<m>` item is made from `materials/<m>`.
+    for (tool, pattern) in [
+        ("pickaxes", &["XXX", " # ", " # "][..]),
+        ("axes", &["XX", "X#", " #"]),
+        ("shovels", &["X", "#", "#"]),
+        ("hoes", &["XX", " #", " #"]),
+        ("swords", &["X", "X", "#"]),
+    ] {
+        r.shaped(C, &format!("#{tool}/*"), 1, pattern, &[('X', "#materials/*"), ('#', "stick")]);
     }
-    for (mat, input) in [("leather", "leather"), ("iron", "iron_ingot"), ("gold", "gold_ingot"), ("diamond", "diamond")] {
-        let keys = [('X', input)];
-        r.shaped(C, &format!("{mat}_helmet"), 1, &["XXX", "X X"], &keys);
-        r.shaped(C, &format!("{mat}_chestplate"), 1, &["X X", "XXX", "XXX"], &keys);
-        r.shaped(C, &format!("{mat}_leggings"), 1, &["XXX", "X X", "X X"], &keys);
-        r.shaped(C, &format!("{mat}_boots"), 1, &["X X", "X X"], &keys);
+    for (slot, pattern) in crate::items::ARMOR_SLOTS.iter().zip([&["XXX", "X X"][..], &["X X", "XXX", "XXX"], &["XXX", "X X", "X X"], &["X X", "X X"]]) {
+        r.shaped(C, &format!("#{slot}/*"), 1, pattern, &[('X', "#materials/*")]);
     }
 
     for (input, output, ticks) in [
         ("sand", "glass", 200),
         ("cobblestone", "stone", 200),
-        // Any mod's `ores/<m>` smelts into its `ingots/<m>`.
-        ("#ores/*", "#ingots/*", 200),
-        ("porkchop", "cooked_porkchop", 200),
-        ("beef", "cooked_beef", 200),
         ("#base:logs", "coal", 200),
         ("clay", "bricks", 200),
     ] {

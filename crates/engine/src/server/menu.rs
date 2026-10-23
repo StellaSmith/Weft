@@ -154,10 +154,10 @@ pub fn close(m: OpenMenu, dim: &mut Dim, c: &Content, player: u64) {
 fn armor_ok(c: &Content, flags: u32, item: u32) -> bool {
     let tag = match flags & (sf::ARMOR_HEAD | sf::ARMOR_CHEST | sf::ARMOR_LEGS | sf::ARMOR_FEET) {
         0 => return true,
-        sf::ARMOR_HEAD => "armor/head",
-        sf::ARMOR_CHEST => "armor/chest",
-        sf::ARMOR_LEGS => "armor/legs",
-        _ => "armor/feet",
+        sf::ARMOR_HEAD => "armor_head",
+        sf::ARMOR_CHEST => "armor_chest",
+        sf::ARMOR_LEGS => "armor_legs",
+        _ => "armor_feet",
     };
     item == 0 || c.item_has_tag(item, tag)
 }

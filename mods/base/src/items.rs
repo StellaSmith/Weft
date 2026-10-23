@@ -33,6 +33,8 @@ pub struct Armor {
 pub const FOOD: &str = "base:food";
 pub const FUEL: &str = "base:fuel";
 pub const ARMOR: &str = "base:armor";
+/// Slot tags; `<slot>/<material>` tags pick the recipe (see recipes.rs).
+pub const ARMOR_SLOTS: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
 
 struct Material {
     name: &'static str,
@@ -52,28 +54,32 @@ const MATERIALS: [Material; 5] = [
 
 pub fn register(r: &mut Registry) {
     r.item("stick", &STICK).prop(FUEL, 100 as Fuel).tab("ingredients");
-    r.item("coal", &COAL).prop(FUEL, 1600 as Fuel).tab("ingredients");
-    r.item("iron_ingot", &IRON_INGOT).tag("ingots/iron").tab("ingredients");
-    r.item("gold_ingot", &GOLD_INGOT).tag("ingots/gold").tab("ingredients");
-    r.item("diamond", &DIAMOND).tag("gems/diamond").tab("ingredients");
+    r.item("coal", &COAL).tag("gems/coal").prop(FUEL, 1600 as Fuel).tab("ingredients");
+    r.item("iron_ingot", &IRON_INGOT).tag("ingots/iron").tag("materials/iron").tab("ingredients");
+    r.item("gold_ingot", &GOLD_INGOT).tag("ingots/gold").tag("materials/gold").tab("ingredients");
+    r.item("diamond", &DIAMOND).tag("gems/diamond").tag("materials/diamond").tab("ingredients");
     r.item("wheat_seeds", &WHEAT_SEEDS).places("wheat").tab("natural");
     r.item("wheat", &WHEAT).tab("ingredients");
     r.item("bucket", &BUCKET).stack(16).tab("tools");
     r.item("water_bucket", &WATER_BUCKET).stack(1).tab("tools");
     r.item("lava_bucket", &LAVA_BUCKET).stack(1).prop(FUEL, 20000 as Fuel).tab("tools");
 
-    for (name, hunger, saturation) in [
-        ("apple", 4, 2.4),
-        ("bread", 5, 6.0),
-        ("porkchop", 3, 1.8),
-        ("cooked_porkchop", 8, 12.8),
-        ("beef", 3, 1.8),
-        ("cooked_beef", 8, 12.8),
-        ("rotten_flesh", 4, 0.8),
+    for (name, hunger, saturation, tag) in [
+        ("apple", 4, 2.4, ""),
+        ("bread", 5, 6.0, ""),
+        ("porkchop", 3, 1.8, "raw_meat/pork"),
+        ("cooked_porkchop", 8, 12.8, "cooked_meat/pork"),
+        ("beef", 3, 1.8, "raw_meat/beef"),
+        ("cooked_beef", 8, 12.8, "cooked_meat/beef"),
+        ("rotten_flesh", 4, 0.8, ""),
     ] {
-        r.item(name, leak()).prop(FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab("food");
+        let i = r.item(name, leak()).prop(FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab("food");
+        if !tag.is_empty() {
+            i.tag(tag);
+        }
     }
-    for name in ["leather", "bone", "string", "sugar"] {
+    r.item("leather", leak()).tag("materials/leather").tab("ingredients");
+    for name in ["bone", "string", "sugar"] {
         r.item(name, leak()).tab("ingredients");
     }
 
@@ -84,6 +90,7 @@ pub fn register(r: &mut Registry) {
                 .durability(m.durability)
                 .attack(damage + m.damage)
                 .tag(&format!("tools/{kind}"))
+                .tag(&format!("{kind}s/{}", m.name))
                 .tab(if kind == "sword" { "combat" } else { "tools" });
         };
         tool(r, "pickaxe", "pickaxe", 2.0);
@@ -96,12 +103,13 @@ pub fn register(r: &mut Registry) {
     for (mat, mult, durability) in [("leather", 0u32, 5u32), ("iron", 1, 15), ("gold", 1, 7), ("diamond", 2, 33)] {
         for (slot, piece, points, dur) in [(0, "helmet", 1, 11), (1, "chestplate", 3, 16), (2, "leggings", 2, 15), (3, "boots", 1, 13)] {
             let points = points + mult * (if slot == 1 { 3 } else { 1 });
-            let tag = ["armor/head", "armor/chest", "armor/legs", "armor/feet"][slot as usize];
+            let tag = ARMOR_SLOTS[slot as usize];
             let (parts, inflate, layer) = [(worn_parts::HEAD, 1.0, 1), (worn_parts::BODY | worn_parts::ARMS, 1.0, 1), (worn_parts::BODY | worn_parts::LEGS, 0.5, 2), (worn_parts::LEGS, 1.0, 1)][slot as usize];
             r.item(&format!("{mat}_{piece}"), leak())
                 .durability(durability * dur)
                 .prop(ARMOR, Armor { slot, points })
                 .tag(tag)
+                .tag(&format!("{tag}/{mat}"))
                 .worn(parts, inflate, &format!("armor/{mat}_{layer}"))
                 .tab("combat");
         }

@@ -307,6 +307,9 @@ impl Dim {
         lighter.block_changed(p, old);
         let changed = std::mem::take(&mut lighter.changed);
         self.light_dirty.extend(changed);
+        // The new block hears about itself too (like vanilla's onBlockAdded): a liquid starts
+        // flowing, a plant without support drops, whoever set it.
+        self.neighbor_queue.push_back((p, p));
         for d in DIRS {
             self.neighbor_queue.push_back((p + d, p));
         }
@@ -438,6 +441,10 @@ impl Dim {
                 break;
             }
             self.scheduled.pop();
+            // The same block scheduled several times for one tick runs once.
+            while self.scheduled.peek() == Some(&Reverse((at, x, y, z))) {
+                self.scheduled.pop();
+            }
             let p = IVec3::new(x, y, z);
             if let Some(state) = self.get(p) {
                 self.call_block(c, state, |b| b.on_scheduled, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });

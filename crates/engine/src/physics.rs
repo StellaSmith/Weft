@@ -155,7 +155,8 @@ pub struct Hit {
 
 /// Amanatides-Woo traversal. Non-cube blocks are hit when the ray crosses their collision box
 /// (or selection box); blocks the ray starts inside are skipped.
-pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3, dir: DVec3, max: f64) -> Option<Hit> {
+/// First targetable block along the ray; with `liquids` liquids stop it too.
+pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3, dir: DVec3, max: f64, liquids: bool) -> Option<Hit> {
     let dir = dir.normalize();
     let mut p = origin.floor().as_ivec3();
     let step = dir.signum().as_ivec3();
@@ -169,7 +170,7 @@ pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3
     while t <= max {
         if let Some(state) = block(p) {
             let s = &c.states[state as usize];
-            if s.flags & bf::NOT_TARGETABLE == 0 {
+            if s.flags & bf::NOT_TARGETABLE == 0 || (liquids && s.flags & bf::LIQUID != 0) {
                 let shape: Vec<[f32; 6]> = match s.model {
                     Model::Cube => vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]],
                     Model::Cross => vec![[0.125, 0.0, 0.125, 0.875, 0.8, 0.875]],

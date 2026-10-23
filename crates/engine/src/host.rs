@@ -44,6 +44,7 @@ pub static HOST: Host = Host {
     entity_get,
     entity_set,
     entity_walk,
+    entity_look_at,
     entity_damage,
     entities_near,
     component,
@@ -224,6 +225,23 @@ unsafe extern "C" fn entity_walk(w: *mut abi::WorldCtx, id: u64, dir: *const [f3
         if let Some(e) = dim(w).entities.get_mut(id) {
             e.walk = Some((*dir, speed, jump != 0));
         }
+    }
+}
+
+unsafe extern "C" fn entity_look_at(w: *mut abi::WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32) -> u32 {
+    unsafe {
+        let c = content();
+        let d = dim(w);
+        let Some(e) = d.entities.get(id) else { return 0 };
+        // Eyes at nine tenths of the height: 1.62 for players.
+        let eye = e.pos + DVec3::Y * (c.game.entities[e.kind as usize].height as f64 * 0.9);
+        let (sy, cy) = (e.yaw as f64).sin_cos();
+        let (sp, cp) = (e.pitch as f64).sin_cos();
+        let dir = DVec3::new(-sy * cp, sp, -cy * cp);
+        let Some(hit) = crate::physics::raycast(c, &|p| d.get(p), eye, dir, max, liquids != 0) else { return 0 };
+        *pos = hit.block.to_array();
+        *face = hit.face as u32;
+        hit.state + 1
     }
 }
 

@@ -78,6 +78,13 @@ impl World {
     pub fn walk(&self, id: u64, dir: [f32; 2], speed: f32, jump: bool) {
         unsafe { (host().entity_walk)(self.raw(), id, &dir, speed, jump as u32) }
     }
+    /// The block `id` looks at within `max` blocks (liquids count if `liquids`): position, face
+    /// hit (-X, +X, -Y, +Y, -Z, +Z) and state.
+    pub fn look_at(&self, id: u64, max: f64, liquids: bool) -> Option<([i32; 3], u32, u32)> {
+        let (mut pos, mut face) = ([0; 3], 0);
+        let s = unsafe { (host().entity_look_at)(self.raw(), id, max, liquids as u32, &mut pos, &mut face) };
+        (s != 0).then_some((pos, face, s - 1))
+    }
     pub fn damage(&self, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         unsafe { (host().entity_damage)(self.raw(), id, amount, source, cause) != 0 }
     }

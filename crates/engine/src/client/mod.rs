@@ -547,7 +547,7 @@ impl Client {
 
         let eye = self.player.pos + DVec3::Y * self.player.eye;
         let look = self.camera().forward().as_dvec3();
-        self.target = if spectator { None } else { physics::raycast(c, &block, eye, look, 5.0) };
+        self.target = if spectator { None } else { physics::raycast(c, &block, eye, look, 5.0, false) };
         let block_dist = self.target.map_or(f64::INFINITY, |h| (h.block.as_dvec3() + DVec3::splat(0.5) - eye).length());
         self.target_entity = if spectator { None } else { self.pick_entity(eye, look, block_dist.min(4.5)) };
 
@@ -732,7 +732,7 @@ impl Client {
         let c = content();
         let world = &self.world;
         let block = |p: IVec3| world.block_or_air(p);
-        let dist = physics::raycast(c, &block, eye.pos, back, 4.0).map_or(4.0, |h| ((h.block.as_dvec3() + DVec3::splat(0.5) - eye.pos).length() - 0.8).clamp(0.3, 4.0));
+        let dist = physics::raycast(c, &block, eye.pos, back, 4.0, false).map_or(4.0, |h| ((h.block.as_dvec3() + DVec3::splat(0.5) - eye.pos).length() - 0.8).clamp(0.3, 4.0));
         cam.pos = eye.pos + back * dist;
         cam
     }

@@ -708,7 +708,10 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         for r in &o.replace {
             match r.strip_prefix('#') {
                 Some(tag) => replace.extend(block_defs.iter().enumerate().filter(|(_, b)| b.tags.iter().any(|t| t == tag)).map(|(i, _)| i as u32)),
-                None => replace.extend(block_names.get(r).copied()),
+                None => match block_names.get(r) {
+                    Some(&b) => replace.push(b),
+                    None => errors.push(format!("ore {} in {}: unknown block {r} to replace", o.block, o.dimension)),
+                },
             }
         }
         replace.sort_unstable();

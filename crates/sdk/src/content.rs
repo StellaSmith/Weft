@@ -129,6 +129,7 @@ impl Registry {
     pub fn ore<'a>(&'a mut self, dimension: &str, block: &str) -> OreBuilder<'a> {
         OreBuilder {
             raw: self.raw,
+            ns: self.ns,
             dimension: qualify(self.ns, dimension),
             block: qualify(self.ns, block),
             replace: String::new(),
@@ -799,6 +800,7 @@ impl DimensionBuilder<'_> {
 
 pub struct OreBuilder<'a> {
     raw: *mut abi::Registrar,
+    ns: &'static str,
     dimension: String,
     block: String,
     replace: String,
@@ -824,7 +826,8 @@ impl OreBuilder<'_> {
     }
     /// Blocks or `#tags` the ore may replace, space separated.
     pub fn replace(mut self, blocks: &str) -> Self {
-        self.replace = blocks.to_string();
+        let names: Vec<String> = blocks.split_whitespace().map(|b| if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) }).collect();
+        self.replace = names.join(" ");
         self
     }
 }

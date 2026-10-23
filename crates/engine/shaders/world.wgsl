@@ -216,9 +216,23 @@ fn fs_opaque(in: VOut) -> @location(0) vec4<f32> {
     return vec4(shade(in, albedo).rgb, 1.0);
 }
 
+// Mip level from the smaller screen derivative: a plant quad seen almost edge-on would otherwise
+// pick a tiny mip whose averaged texels cover the whole quad and draw it as a solid strip.
+fn sample_cutout(in: VOut) -> vec4<f32> {
+    let size = f32(textureDimensions(texture_arrays[g.ids.x]).x);
+    let t = in.uv * size;
+    let lod = max(log2(max(min(length(dpdx(t)), length(dpdy(t))), 1e-6)), 0.0);
+    let a = textureSampleLevel(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer, lod);
+    if in.blend <= 0.0 {
+        return a;
+    }
+    let b = textureSampleLevel(texture_arrays[g.ids.x], nearest_mipped, in.uv, in.layer2, lod);
+    return mix(a, b, in.blend);
+}
+
 @fragment
 fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
-    let albedo = sample(in);
+    let albedo = sample_cutout(in);
     if albedo.a < 0.5 {
         discard;
     }

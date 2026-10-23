@@ -74,6 +74,10 @@ pub struct EntityRenderer {
     views: Vec<BufferId>,
     overlay_views: Vec<BufferId>,
     preview: Vec<(BufferId, BufferId)>,
+    /// The inventory figure is drawn into its own texture so the UI can layer it like any image.
+    preview_pipe: PipelineId,
+    /// Colour, depth, size, bindless index.
+    preview_target: Option<(TextureId, TextureId, [u32; 2], u32)>,
     /// Texture, bindless index and size, by name.
     skins: FxHashMap<String, Option<(TextureId, u32, [u32; 2])>>,
     pub fog: ([f32; 4], f32, f32),
@@ -95,6 +99,7 @@ impl EntityRenderer {
     pub fn new(gpu: &mut dyn Backend) -> Result<EntityRenderer, String> {
         let (pipeline, overlay) = Self::pipelines(gpu)?;
         let model_pipe = Self::model_pipeline(gpu)?;
+        let preview_pipe = Self::preview_pipeline(gpu)?;
         let mut table: Vec<GpuCuboid> = Vec::new();
         let mut kind_cuboids = Vec::new();
         for k in &content().game.entities {
@@ -132,6 +137,8 @@ impl EntityRenderer {
             views,
             overlay_views,
             preview,
+            preview_pipe,
+            preview_target: None,
             skins: FxHashMap::default(),
             fog: ([0.0; 4], 0.0, 1.0),
         })
@@ -166,6 +173,22 @@ impl EntityRenderer {
             })
             .map_err(|e| e.0)?;
         Ok((main, overlay))
+    }
+
+    fn preview_pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
+        let s = shader().map_err(|e| e.0)?;
+        gpu.create_pipeline(&PipelineDesc {
+            label: "entity preview",
+            shader: &s,
+            vertex: "vs",
+            fragment: Some("fs"),
+            color: Some(Format::Rgba8Srgb),
+            depth: Some(DepthState { write: true, compare: Compare::GreaterEqual }),
+            blend: Blend::None,
+            cull_back: true,
+            topology: Topology::Triangles,
+        })
+        .map_err(|e| e.0)
     }
 
     fn model_pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
@@ -211,6 +234,11 @@ impl EntityRenderer {
         }
         gpu.destroy_buffer(self.cuboids);
         gpu.destroy_pipeline(self.model_pipe);
+        gpu.destroy_pipeline(self.preview_pipe);
+        if let Some((c, d, ..)) = self.preview_target.take() {
+            gpu.destroy_texture(c);
+            gpu.destroy_texture(d);
+        }
         let preview: Vec<BufferId> = self.preview.drain(..).flat_map(|(a, b)| [a, b]).collect();
         for b in self.views.drain(..).chain(self.overlay_views.drain(..)).chain(preview) {
             gpu.destroy_buffer(b);
@@ -288,7 +316,8 @@ impl EntityRenderer {
         let body = body * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
         for part in &k.parts {
             let angle = match part.role {
-                role::HEAD => Quat::from_rotation_x(-pitch),
+                // Faces look along -Z: tilting the front up is a positive turn about X.
+                role::HEAD => Quat::from_rotation_x(pitch),
                 role::ARM_LEFT | role::LEG_RIGHT | role::LEG_FRONT_LEFT => Quat::from_rotation_x(swing),
                 role::ARM_RIGHT | role::LEG_LEFT | role::LEG_FRONT_RIGHT => Quat::from_rotation_x(-swing),
                 role::ARM_FORWARD_LEFT => Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2 + swing * 0.2),
@@ -318,16 +347,31 @@ impl EntityRenderer {
         }
     }
 
-    /// The local player's model inside `rect` (physical pixels) on top of the UI, turned towards
-    /// `look` like the inventory figure. Needs its own pass with a cleared depth buffer.
-    pub fn draw_preview(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, rect: [f32; 4], look: glam::Vec2, worn: &[u32]) {
+    /// Renders the local player's model into a `size` texture (physical pixels), turned towards
+    /// `look` (relative to the texture's top left) like the inventory figure. Returns the
+    /// texture's bindless index for the UI to draw.
+    pub fn draw_preview(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, size: [u32; 2], look: glam::Vec2, worn: &[u32]) -> Option<u32> {
         let c = content();
-        let [x, y, w, h] = rect;
-        let (sw, sh) = (frame.width as f32, frame.height as f32);
+        if size[0] == 0 || size[1] == 0 {
+            return None;
+        }
+        if self.preview_target.is_none_or(|t| t.2 != size) {
+            if let Some((col, dep, ..)) = self.preview_target.take() {
+                gpu.destroy_texture(col);
+                gpu.destroy_texture(dep);
+            }
+            let desc = |format| TextureDesc { width: size[0], height: size[1], layers: None, mips: 1, format, render_target: true };
+            let col = gpu.create_texture(&desc(Format::Rgba8Srgb), "preview colour");
+            let dep = gpu.create_texture(&desc(Format::Depth32), "preview depth");
+            self.preview_target = Some((col, dep, size, gpu.texture_index(col)));
+        }
+        let (col, dep, _, index) = self.preview_target?;
+        let (x, y, w, h) = (0.0, 0.0, size[0] as f32, size[1] as f32);
+        let (sw, sh) = (w, h);
         let s = h / 2.4;
         let (cx, feet) = (x + w / 2.0, y + h - h * 0.08);
         let head = feet - 1.5 * s;
-        let yaw = std::f32::consts::PI - ((look.x - cx) / (s * 1.6)).atan() * 0.7;
+        let yaw = std::f32::consts::PI + ((look.x - cx) / (s * 1.6)).atan() * 0.7;
         let pitch = ((head - look.y) / (s * 1.6)).atan() * 0.5;
         let proj = Mat4::from_cols(
             Vec4::new(2.0 * s / sw, 0.0, 0.0, 0.0),
@@ -337,17 +381,20 @@ impl EntityRenderer {
         );
         let mut boxes = Vec::new();
         self.model(&mut boxes, c.game.player_kind, Mat4::from_rotation_y(yaw), pitch, 0.0, Vec4::new(1.0, 1.0, 1.0, 0.0), worn);
-        if boxes.is_empty() || boxes.len() > 64 {
-            return;
-        }
+        boxes.truncate(64);
         let (buf, vb) = self.preview[frame.slot];
         gpu.mapped(buf)[..boxes.len() * 128].copy_from_slice(bytemuck::cast_slice(&boxes));
         let v = View { view_proj: proj.to_cols_array_2d(), fog_color: [0.0; 4], fog: [1e9, 2e9, 0.0, 0.0] };
         gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
-        list.pipeline(self.pipeline);
-        list.bind(0, buf);
-        list.bind(1, vb);
-        list.draw(boxes.len() as u32 * 36, 1);
+        list.push(Cmd::BeginPass { color: Some((Target::Texture(col), Some([0.0; 4]))), depth: Some((dep, Some(0.0))) });
+        if !boxes.is_empty() {
+            list.pipeline(self.preview_pipe);
+            list.bind(0, buf);
+            list.bind(1, vb);
+            list.draw(boxes.len() as u32 * 36, 1);
+        }
+        list.push(Cmd::EndPass);
+        Some(index)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -549,7 +596,7 @@ fn item_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, age: f
         let faces = if s.model == Model::Boxes { s.boxes.first().map_or([0; 6], |b| b.textures) } else { s.textures };
         if s.model == Model::Cross {
             let l = layer(faces[0]);
-            let m = spin * Mat4::from_translation(Vec3::new(-0.2, 0.0, -0.01)) * Mat4::from_scale(Vec3::new(0.4, 0.4, 0.02));
+            let m = spin * Mat4::from_translation(Vec3::new(-0.2, 0.0, 0.0)) * Mat4::from_scale(Vec3::new(0.4, 0.4, 0.0));
             out.push(GpuBox { rows: rows(m), color: color.to_array(), ids: [textures.block_index, 1, l | l << 16, l | l << 16], ids2: [l | l << 16, 0, 0, 0], ..Default::default() });
             return;
         }
@@ -563,8 +610,10 @@ fn item_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, age: f
             ..Default::default()
         });
     } else {
+        // A flat sprite: zero thickness, so the side faces (which would smear the edge texels
+        // into lines) have no area.
         let l = textures.item_layers.get(def.icon as usize).map_or(0, |x| x.0);
-        let m = spin * Mat4::from_translation(Vec3::new(-0.2, 0.0, -0.01)) * Mat4::from_scale(Vec3::new(0.4, 0.4, 0.02));
+        let m = spin * Mat4::from_translation(Vec3::new(-0.2, 0.0, 0.0)) * Mat4::from_scale(Vec3::new(0.4, 0.4, 0.0));
         out.push(GpuBox { rows: rows(m), color: color.to_array(), ids: [textures.item_index, 1, l | l << 16, l | l << 16], ids2: [l | l << 16, 0, 0, 0], ..Default::default() });
     }
 }

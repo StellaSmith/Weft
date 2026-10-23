@@ -126,6 +126,8 @@ struct Running {
     bench: Option<crate::bench::Bench>,
     /// Where UI asked for the player model, physical pixels.
     previews: Vec<[f32; 4]>,
+    /// Texture holding the rendered inventory figure, drawn by the UI.
+    preview_tex: Option<u32>,
     autopilot: Option<crate::autopilot::Autopilot>,
     shot_path: Option<PathBuf>,
     ticket_file: Option<PathBuf>,
@@ -231,6 +233,7 @@ impl App {
             prof: [0.0; 5],
             bench: None,
             previews: Vec::new(),
+            preview_tex: None,
             autopilot: self.opts.script.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| crate::autopilot::Autopilot::load(&s)),
             shot_path: None,
             ticket_file: None,
@@ -1056,6 +1059,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let game = r.game.as_ref().map(|_| (content(), &r.textures));
         let client = r.game.as_ref().map(|g| &g.client);
         let mut previews = Vec::new();
+        let preview_tex = r.preview_tex;
         let mut layers: Vec<&Ui> = Vec::new();
         if r.game.is_some() {
             layers.push(&r.hud.ui);
@@ -1074,10 +1078,14 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             let textures = &r.textures;
             let unit = ui.text_unit;
             let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool| {
-                if tag == crate::client::modui::TAG_ENTITY {
-                    previews.push([rect.x + scale, rect.y + scale, rect.w - 2.0 * scale, rect.h - 2.0 * scale]);
-                }
                 crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, scale, unit);
+                if tag == crate::client::modui::TAG_ENTITY {
+                    let inner = crate::ui::Rect { x: rect.x + scale, y: rect.y + scale, w: rect.w - 2.0 * scale, h: rect.h - 2.0 * scale };
+                    previews.push([inner.x, inner.y, inner.w, inner.h]);
+                    if let Some(t) = preview_tex {
+                        ren.image(inner, t, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
+                    }
+                }
             };
             r.ui.build(&mut *r.gpu, &r.assets, ui, &r.theme, scale, game, &mut custom);
             all.append(&mut r.ui.quads);
@@ -1095,6 +1103,17 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
 
     r.list.clear();
+    if let Some(g) = r.game.as_mut().filter(|_| !r.screens.is_empty()) {
+        if let Some(&[x, y, w, h]) = r.previews.first() {
+            let worn = g.client.worn();
+            let look = r.input.cursor - Vec2::new(x, y);
+            let tex = g.client.entity_render.draw_preview(&mut *r.gpu, &mut r.list, &info, [w.round() as u32, h.round() as u32], look, &worn);
+            if tex != r.preview_tex {
+                r.preview_tex = tex;
+                r.quads_dirty = true;
+            }
+        }
+    }
     let clear = r.game.as_ref().map_or([0.02, 0.02, 0.03, 1.0], |g| g.client.fog_color());
     r.list.push(Cmd::BeginPass { color: Some((Target::Surface, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
     if let Some(g) = &mut r.game {
@@ -1105,14 +1124,6 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.ui.draw(&mut *r.gpu, &mut r.list, &info);
     r.list.push(Cmd::Mark);
     r.list.push(Cmd::EndPass);
-    if let Some(g) = r.game.as_mut().filter(|_| !r.previews.is_empty() && !r.screens.is_empty()) {
-        r.list.push(Cmd::BeginPass { color: Some((Target::Surface, None)), depth: Some((r.depth.0, Some(0.0))) });
-        let worn = g.client.worn();
-        for rect in &r.previews {
-            g.client.entity_render.draw_preview(&mut *r.gpu, &mut r.list, &info, *rect, r.input.cursor, &worn);
-        }
-        r.list.push(Cmd::EndPass);
-    }
 
     let capture_now = r.shot_pending;
     if opts.shot.is_some() && opts.script.is_none() && !r.shot_pending {

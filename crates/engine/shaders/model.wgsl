@@ -82,7 +82,7 @@ fn rot_x(a: f32, v: vec3<f32>) -> vec3<f32> {
 // Same angles as the CPU path in entity_render.rs.
 fn part_angle(role: u32, pitch: f32, swing: f32) -> f32 {
     switch role {
-        case 1u: { return -pitch; }
+        case 1u: { return pitch; }
         case 2u, 5u, 6u: { return swing; }
         case 3u, 4u, 7u: { return -swing; }
         case 8u: { return -1.5707964 + swing * 0.2; }

@@ -27,6 +27,9 @@ pub struct LocalPlayer {
     pub yaw: f32,
     pub pitch: f32,
     pub on_ground: bool,
+    /// Touched the ground at any physics step since the last move sent: a quick re-jump can
+    /// leave the ground before the next send, and the server would add up the falls.
+    pub landed: bool,
     pub flying: bool,
     pub in_liquid: bool,
 }
@@ -119,6 +122,7 @@ impl Client {
                 yaw: 0.0,
                 pitch: 0.0,
                 on_ground: false,
+                landed: false,
                 flying: false,
                 in_liquid: false,
             },
@@ -432,11 +436,12 @@ impl Client {
         if self.tick_accum >= 0.05 {
             self.tick_accum = 0.0;
             if self.joined && !self.dead {
+                let landed = std::mem::replace(&mut self.player.landed, false);
                 self.conn.send(ToServer::Move {
                     pos: self.player.pos,
                     yaw: self.player.yaw,
                     pitch: self.player.pitch,
-                    on_ground: self.player.on_ground || self.player.flying,
+                    on_ground: landed || self.player.on_ground || self.player.flying,
                 });
             }
         }
@@ -653,4 +658,5 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         }
     }
     p.on_ground = r.on_ground || (p.pos == before && p.on_ground);
+    p.landed |= p.on_ground;
 }

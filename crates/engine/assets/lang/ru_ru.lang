@@ -24,7 +24,6 @@ settings.sensitivity = Чувствительность мыши: {#ffe070}{0}%{
 settings.on = Вкл
 settings.off = Выкл
 settings.language.current = Текущий язык: {#ffe070}{0}{/}
-settings.language.note = Переводы загружаются только когда вы выбираете язык.
 controls.title = Управление
 controls.press = Нажмите клавишу для действия {#ffe070}{0}{/}...
 controls.conflict = {#ff6060}Конфликт с: {0}{/}

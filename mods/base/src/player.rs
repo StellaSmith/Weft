@@ -83,14 +83,14 @@ pub fn register(r: &mut Registry) {
         .on_change(|m| craft_result(m, 0, 2, 4))
         .on_take(|m| consume_grid(m, 0, 4))
         .screen(|ui| {
-            ui.panel("panel", S::col().pad(7.0).gap(6.0), |ui| {
-                ui.row(S::row().gap(8.0), |ui| {
+            ui.panel("panel", S::col().pad(7.0).gap(5.0), |ui| {
+                ui.row(S::row().gap(1.0), |ui| {
                     ui.column(S::col(), |ui| {
                         for i in 5..9 {
                             ui.slot(i);
                         }
                     });
-                    ui.player_model(52.0, 72.0);
+                    ui.player_model(51.0, 72.0);
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
                         ui.text("container.crafting");
@@ -101,7 +101,7 @@ pub fn register(r: &mut Registry) {
                         });
                     });
                 });
-                player_slots(ui, 9);
+                player_slots(ui, 9, false);
             });
         });
 
@@ -116,7 +116,7 @@ pub fn register(r: &mut Registry) {
         .on_change(|m| craft_result(m, 0, 3, 9))
         .on_take(|m| consume_grid(m, 0, 9))
         .screen(|ui| {
-            ui.panel("panel", S::col().pad(7.0).gap(6.0), |ui| {
+            ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
                 ui.text("container.crafting");
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
@@ -125,18 +125,24 @@ pub fn register(r: &mut Registry) {
                     ui.slot(9);
                     ui.spacer();
                 });
-                player_slots(ui, 10);
+                player_slots(ui, 10, true);
             });
         });
     r.player_menu("inventory");
 }
 
-/// Main inventory (27) and hotbar (9) starting at menu slot `start`.
-pub fn player_slots(ui: &mut Ui, start: u32) {
-    ui.text("container.inventory");
-    ui.slots(start, 27, 9);
-    ui.column(S::col().pad(2.0), |_| {});
-    ui.slots(start + 27, 9, 9);
+/// Main inventory (27) and hotbar (9) starting at menu slot `start`, spaced like vanilla; the
+/// title is left out on the player's own inventory screen.
+pub fn player_slots(ui: &mut Ui, start: u32, title: bool) {
+    ui.column(S::col().gap(2.0), |ui| {
+        if title {
+            ui.text("container.inventory");
+        }
+        ui.column(S::col().gap(4.0), |ui| {
+            ui.slots(start, 27, 9);
+            ui.slots(start + 27, 9, 9);
+        });
+    });
 }
 
 fn craft_result(m: &MenuCtx, start: u32, size: u32, out: u32) {

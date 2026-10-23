@@ -230,7 +230,6 @@ impl Screen for LanguageScreen {
                     }
                 }
             });
-            label(ui, cx, "settings.language.note", &[], "dim");
             button(ui, cx, "menu.done", &[], 200.0, |c| {
                 c.settings.save();
                 c.requests.push(Request::Close);

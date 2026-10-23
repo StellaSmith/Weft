@@ -122,7 +122,7 @@ fn open(menu: &'static Menu) -> impl Fn(&mut Use) -> bool + Send + Sync + 'stati
 
 /// `first`: menu index of the first player slot (after the machine's own slots).
 fn machine_screen(ui: &mut Ui, title: &'static str, first: u32, slots: impl FnOnce(&mut Ui)) {
-    ui.panel("panel", S::col().pad(7.0).gap(6.0), |ui| {
+    ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
         ui.text(title);
         ui.row(S::row().gap(8.0), |ui| {
             ui.column(S::col().gap(2.0), |ui| {
@@ -133,9 +133,10 @@ fn machine_screen(ui: &mut Ui, title: &'static str, first: u32, slots: impl FnOn
             ui.row(S::row().gap(6.0), slots);
         });
         ui.text("container.inventory");
-        ui.slots(first, 27, 9);
-        ui.column(S::col().pad(2.0), |_| {});
-        ui.slots(first + 27, 9, 9);
+        ui.column(S::col().gap(4.0), |ui| {
+            ui.slots(first, 27, 9);
+            ui.slots(first + 27, 9, 9);
+        });
     });
 }
 

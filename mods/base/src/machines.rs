@@ -52,7 +52,7 @@ pub fn register(r: &mut Registry) {
             }
         })
         .screen(|ui| {
-            ui.panel("panel", S::col().pad(7.0).gap(6.0), |ui| {
+            ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
                 ui.text("container.furnace");
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
@@ -65,7 +65,7 @@ pub fn register(r: &mut Registry) {
                     ui.slot(2);
                     ui.spacer();
                 });
-                player_slots(ui, 3);
+                player_slots(ui, 3, true);
             });
         });
 
@@ -79,7 +79,7 @@ pub fn register(r: &mut Registry) {
             ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
                 ui.text("container.chest");
                 ui.slots(0, 27, 9);
-                player_slots(ui, 27);
+                player_slots(ui, 27, true);
             });
         });
 }

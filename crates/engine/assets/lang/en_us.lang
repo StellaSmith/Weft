@@ -24,7 +24,6 @@ settings.sensitivity = Mouse sensitivity: {#ffe070}{0}%{/}
 settings.on = On
 settings.off = Off
 settings.language.current = Current language: {#ffe070}{0}{/}
-settings.language.note = Translations are loaded only when you pick a language.
 controls.title = Controls
 controls.press = Press a key for {#ffe070}{0}{/}...
 controls.conflict = {#ff6060}Conflicts with: {0}{/}

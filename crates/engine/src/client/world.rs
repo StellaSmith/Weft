@@ -25,6 +25,10 @@ pub struct ClientWorld {
     rx: Receiver<MeshResult>,
     pub removed: Vec<IVec3>,
     next_version: u32,
+    /// Per cube, faces whose neighbour the server is not going to send: meshed as solid.
+    hidden: FxHashMap<IVec3, u8>,
+    /// An opaque state standing in for hidden neighbours.
+    filler: u32,
 }
 
 impl ClientWorld {
@@ -41,7 +45,15 @@ impl ClientWorld {
             rx,
             removed: Vec::new(),
             next_version: 0,
+            hidden: FxHashMap::default(),
+            filler: content().states.iter().position(|s| s.flags & voxide_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
         }
+    }
+
+    /// Whether the neighbour of `p` in direction `d` is present or never coming.
+    fn neighbour_known(&self, p: IVec3, d: usize, min_y: i32, max_y: i32) -> bool {
+        let n = p + crate::world::DIRS[d];
+        self.cubes.contains_key(&n) || n.y < min_y || n.y > max_y || self.hidden.get(&p).is_some_and(|h| h & (1 << d) != 0)
     }
 
     pub fn clear(&mut self) {
@@ -49,6 +61,7 @@ impl ClientWorld {
         self.cubes.clear();
         self.dirty.clear();
         self.versions.clear();
+        self.hidden.clear();
     }
 
     /// Versions come from one counter so a mesh job of a removed cube can never match a new cube
@@ -76,13 +89,17 @@ impl ClientWorld {
         }
     }
 
-    pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>) {
+    pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, hidden: u8) {
+        if hidden != crate::net::KEEP_HIDDEN {
+            self.hidden.insert(pos, hidden);
+        }
         self.cubes.insert(pos, cube);
         self.touch(pos, true);
     }
 
     pub fn remove(&mut self, pos: IVec3) {
         if self.cubes.remove(&pos).is_some() {
+            self.hidden.remove(&pos);
             self.dirty.remove(&pos);
             self.versions.remove(&pos);
             self.removed.push(pos);
@@ -119,12 +136,7 @@ impl ClientWorld {
             .iter()
             .copied()
             .filter(|&p| !self.in_flight.contains(&p))
-            .filter(|&p| {
-                crate::world::DIRS.iter().all(|d| {
-                    let n = p + *d;
-                    self.cubes.contains_key(&n) || n.y < def.min_cube_y || n.y > def.max_cube_y
-                })
-            })
+            .filter(|&p| (0..6).all(|d| self.neighbour_known(p, d, def.min_cube_y, def.max_cube_y)))
             .map(|p| ((p - center).length_squared(), p))
             .collect();
         ready.sort_by_key(|r| r.0);
@@ -149,8 +161,10 @@ impl ClientWorld {
             let version = self.versions[&pos];
             let tx = self.tx.clone();
             self.in_flight.insert(pos);
+            let hidden = self.hidden.get(&pos).copied().unwrap_or(0);
+            let filler = self.filler;
             rayon::spawn(move || {
-                let n = neighborhood(&around);
+                let n = neighborhood(&around, hidden, filler);
                 let mesh = mesher::build(content(), &n);
                 let _ = tx.send(MeshResult { pos, version, mesh });
             });
@@ -176,18 +190,13 @@ impl ClientWorld {
         let ready = self
             .dirty
             .iter()
-            .filter(|&&p| {
-                crate::world::DIRS.iter().all(|d| {
-                    let n = p + *d;
-                    self.cubes.contains_key(&n) || n.y < def.min_cube_y || n.y > def.max_cube_y
-                })
-            })
+            .filter(|&&p| (0..6).all(|d| self.neighbour_known(p, d, def.min_cube_y, def.max_cube_y)))
             .count();
         ready + self.in_flight.len()
     }
 }
 
-fn neighborhood(around: &[Option<Arc<Cube>>; 27]) -> Neighborhood {
+fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32) -> Neighborhood {
     let mut states = Box::new([AIR; PAD_VOLUME]);
     let mut light = Box::new([15u32; PAD_VOLUME]);
     let mut biomes = [0u8; 256];
@@ -203,7 +212,24 @@ fn neighborhood(around: &[Option<Arc<Cube>>; 27]) -> Neighborhood {
             let cz = if z < 0 { 0 } else if z > 15 { 2 } else { 1 };
             for x in -1..17i32 {
                 let cx = if x < 0 { 0 } else if x > 15 { 2 } else { 1 };
-                let Some(cube) = &around[cy * 9 + cz * 3 + cx] else { continue };
+                let Some(cube) = &around[cy * 9 + cz * 3 + cx] else {
+                    // A face neighbour that will never be sent is solid ground: no faces toward it.
+                    let face = match (cx, cy, cz) {
+                        (0, 1, 1) => Some(0),
+                        (2, 1, 1) => Some(1),
+                        (1, 0, 1) => Some(2),
+                        (1, 2, 1) => Some(3),
+                        (1, 1, 0) => Some(4),
+                        (1, 1, 2) => Some(5),
+                        _ => None,
+                    };
+                    if face.is_some_and(|f| hidden & (1 << f) != 0) {
+                        let pi = pidx(x, y, z);
+                        states[pi] = filler;
+                        light[pi] = 0;
+                    }
+                    continue;
+                };
                 let li = crate::world::cube::index((x & 15) as usize, (y & 15) as usize, (z & 15) as usize);
                 let pi = pidx(x, y, z);
                 states[pi] = cube.get(li);

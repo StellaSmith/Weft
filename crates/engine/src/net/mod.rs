@@ -29,6 +29,8 @@ pub fn join(ticket: &str, settings: &crate::settings::Settings) -> Result<Client
     p2p::join(ticket, settings)
 }
 
+pub const KEEP_HIDDEN: u8 = 0xFF;
+
 #[derive(Clone, Debug)]
 pub struct EntityView {
     pub id: u64,
@@ -44,7 +46,9 @@ pub struct EntityView {
 #[derive(Clone)]
 pub enum ToClient {
     Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },
-    Cube { dim: u32, pos: IVec3, cube: Arc<Cube> },
+    /// `hidden`: faces whose neighbour the server will not send (not visible from the player);
+    /// `KEEP_HIDDEN` on resends keeps what the client already knows.
+    Cube { dim: u32, pos: IVec3, cube: Arc<Cube>, hidden: u8 },
     Unload { dim: u32, pos: IVec3 },
     Blocks { dim: u32, changes: Vec<(IVec3, u32)> },
     Time { dim: u32, time: u64 },

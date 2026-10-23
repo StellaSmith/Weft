@@ -10,6 +10,8 @@ use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, 
 use voxide_render::*;
 
 const FRAMES: usize = 2;
+/// Timestamp queries per frame: start, after uploads, marks, end.
+const MAX_MARKS: u32 = 16;
 const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
 struct Slab<T> {
@@ -90,6 +92,8 @@ struct Frame {
     staging: Staging,
     deferred: Vec<Deferred>,
     waited: bool,
+    /// Timestamps written by the frame now in flight in this slot.
+    marks: u32,
 }
 
 enum Upload {
@@ -142,6 +146,9 @@ pub struct VulkanBackend {
     capture_requested: bool,
     capture: Option<(vk::Buffer, Allocation, u32, u32, vk::Format)>,
     device_name: String,
+    queries: vk::QueryPool,
+    ts_period: f32,
+    gpu_times: Vec<f32>,
 }
 
 // Raw Vulkan handles are plain integers/pointers that may be used from any thread as long as access
@@ -334,6 +341,7 @@ impl VulkanBackend {
                     staging: Staging { buffer: vk::Buffer::null(), alloc: None, size: 0, used: 0 },
                     deferred: Vec::new(),
                     waited: false,
+                    marks: 0,
                 });
             }
 
@@ -432,6 +440,12 @@ impl VulkanBackend {
                 .collect();
             device.update_descriptor_sets(&writes, &[]);
 
+            let queries = device
+                .create_query_pool(
+                    &vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(MAX_MARKS * FRAMES as u32),
+                    None,
+                )
+                .map_err(err("query pool"))?;
             let mut backend = VulkanBackend {
                 _entry: entry,
                 instance,
@@ -466,6 +480,9 @@ impl VulkanBackend {
                 capture_requested: false,
                 capture: None,
                 device_name,
+                queries,
+                ts_period: props.limits.timestamp_period,
+                gpu_times: Vec::new(),
             };
             backend.recreate_swapchain()?;
             Ok(backend)
@@ -615,6 +632,14 @@ impl VulkanBackend {
         }
         frame.waited = true;
         frame.staging.used = 0;
+        if frame.marks > 1 {
+            let mut ts = vec![0u64; frame.marks as usize];
+            let first = self.slot as u32 * MAX_MARKS;
+            if unsafe { self.device.get_query_pool_results(self.queries, first, &mut ts, vk::QueryResultFlags::TYPE_64) }.is_ok() {
+                let period = self.ts_period as f64 / 1e6;
+                self.gpu_times = ts.windows(2).map(|w| (w[1].saturating_sub(w[0]) as f64 * period) as f32).collect();
+            }
+        }
         let deferred = std::mem::take(&mut frame.deferred);
         for d in deferred {
             self.destroy_now(d);
@@ -1260,7 +1285,12 @@ impl Backend for VulkanBackend {
         }
         let cmd = frame_cmd;
         unsafe {
+            let first_query = self.slot as u32 * MAX_MARKS;
+            self.device.cmd_reset_query_pool(cmd, self.queries, first_query, MAX_MARKS);
+            self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::TOP_OF_PIPE, self.queries, first_query);
             self.record_uploads(cmd);
+            self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, self.queries, first_query + 1);
+            let mut marks = 2;
             let sets = [self.global_set];
             let mut current: Option<u32> = None;
             let mut in_pass_targets: Vec<u32> = Vec::new();
@@ -1414,6 +1444,12 @@ impl Backend for VulkanBackend {
                     }
                     Cmd::Dispatch { x, y, z } => self.device.cmd_dispatch(cmd, x, y, z),
                     Cmd::Barrier => self.memory_barrier(cmd),
+                    Cmd::Mark => {
+                        if marks < MAX_MARKS - 1 {
+                            self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, self.queries, first_query + marks);
+                            marks += 1;
+                        }
+                    }
                 }
             }
 
@@ -1446,6 +1482,8 @@ impl Backend for VulkanBackend {
                 self.barrier_image(cmd, sc_image, color_range(1, 1), old, vk::ImageLayout::PRESENT_SRC_KHR);
             }
             self.swapchain.as_mut().unwrap().layouts[image_index as usize] = vk::ImageLayout::PRESENT_SRC_KHR;
+            self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, self.queries, first_query + marks);
+            self.frames[self.slot].marks = marks + 1;
             self.device.end_command_buffer(cmd).ok();
 
             let frame = &mut self.frames[self.slot];
@@ -1485,6 +1523,10 @@ impl Backend for VulkanBackend {
         self.capture_requested = true;
     }
 
+    fn gpu_times(&self) -> &[f32] {
+        &self.gpu_times
+    }
+
     fn take_capture(&mut self) -> Option<Capture> {
         let (buf, alloc, w, h, fmt) = self.capture.take()?;
         unsafe { self.device.device_wait_idle().ok() };
@@ -1521,6 +1563,7 @@ impl Drop for VulkanBackend {
                 self.device.destroy_semaphore(f.acquired, None);
                 self.device.destroy_fence(f.fence, None);
             }
+            self.device.destroy_query_pool(self.queries, None);
             if let Some((buf, alloc, ..)) = self.capture.take() {
                 self.device.destroy_buffer(buf, None);
                 self.allocator.free(alloc).ok();

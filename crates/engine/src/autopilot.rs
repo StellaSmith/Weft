@@ -10,6 +10,8 @@
 //! look 90 -20         # yaw, pitch in degrees
 //! chat /give stone 10
 //! shot name.png       # into the screenshot directory given with --shot-dir
+//! bench 5 label       # frame/GPU/server statistics over 5 seconds, logged as one BENCH line
+//! idle                # wait until nothing is left to generate, light, send or mesh
 //! quit
 //! ```
 
@@ -20,6 +22,7 @@ use crate::input::{Input, Key};
 pub enum Step {
     Wait(f32),
     Loaded,
+    Idle,
     Press(String),
     Hold(String, f32),
     Click(u8),
@@ -27,6 +30,7 @@ pub enum Step {
     Look(f32, f32),
     Chat(String),
     Shot(String),
+    Bench(f32, String),
     Host(String),
     Join(String),
     Quit,
@@ -37,6 +41,10 @@ pub struct Autopilot {
     next: usize,
     until: Option<Instant>,
     release: Vec<(Key, Instant)>,
+    start: Instant,
+    /// Cubes already sent may still be in flight when the server reports idle, so `idle` must
+    /// hold for a few ticks.
+    idle_since: Option<Instant>,
 }
 
 pub enum Action {
@@ -44,6 +52,9 @@ pub enum Action {
     Look(f32, f32),
     Chat(String),
     Shot(String),
+    Bench(f32, String),
+    /// Reached `idle`: report load statistics.
+    Idle,
     /// Start hosting; the ticket is written to this file once online.
     Host(String),
     /// Join using the ticket stored in this file (waits until it exists).
@@ -64,6 +75,7 @@ impl Autopilot {
             let step = match cmd {
                 "wait" => Step::Wait(nums.first().copied().unwrap_or(1.0)),
                 "loaded" => Step::Loaded,
+                "idle" => Step::Idle,
                 "press" => Step::Press(rest.trim().to_string()),
                 "hold" => {
                     let (a, t) = rest.rsplit_once(' ').unwrap_or((rest, "1"));
@@ -74,6 +86,10 @@ impl Autopilot {
                 "look" if nums.len() == 2 => Step::Look(nums[0], nums[1]),
                 "chat" => Step::Chat(rest.to_string()),
                 "shot" => Step::Shot(rest.trim().to_string()),
+                "bench" => {
+                    let (secs, label) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+                    Step::Bench(secs.parse().unwrap_or(5.0), label.trim().to_string())
+                }
                 "host" => Step::Host(rest.trim().to_string()),
                 "join" => Step::Join(rest.trim().to_string()),
                 "quit" => Step::Quit,
@@ -84,11 +100,12 @@ impl Autopilot {
             };
             steps.push(step);
         }
-        Autopilot { steps, next: 0, until: None, release: Vec::new() }
+        Autopilot { steps, next: 0, until: None, release: Vec::new(), start: Instant::now(), idle_since: None }
     }
 
-    /// Advances the script; `loaded` tells whether the world finished meshing.
-    pub fn frame(&mut self, input: &mut Input, size: (u32, u32), loaded: bool) -> Action {
+    /// Advances the script; `loaded` tells whether the world finished meshing, `idle` whether
+    /// the whole load pipeline is empty.
+    pub fn frame(&mut self, input: &mut Input, size: (u32, u32), loaded: bool, idle: bool) -> Action {
         let now = Instant::now();
         self.release.retain(|(k, at)| {
             if now >= *at {
@@ -113,7 +130,24 @@ impl Autopilot {
             }
             Step::Loaded => {
                 advance = loaded;
+                if loaded {
+                    log::info!("autopilot: loaded at {:.2} s", self.start.elapsed().as_secs_f32());
+                }
                 Action::None
+            }
+            Step::Idle => {
+                let since = if idle { *self.idle_since.get_or_insert(now) } else { now };
+                if !idle {
+                    self.idle_since = None;
+                }
+                advance = now.duration_since(since).as_secs_f32() >= 0.3;
+                if advance {
+                    self.idle_since = None;
+                    log::info!("autopilot: idle at {:.2} s", self.start.elapsed().as_secs_f32());
+                    Action::Idle
+                } else {
+                    Action::None
+                }
             }
             Step::Press(a) => {
                 if let Some(k) = input.key_of(a) {
@@ -141,6 +175,10 @@ impl Autopilot {
             Step::Look(y, p) => Action::Look(*y, *p),
             Step::Chat(t) => Action::Chat(t.clone()),
             Step::Shot(f) => Action::Shot(f.clone()),
+            Step::Bench(s, label) => {
+                self.until = Some(now + std::time::Duration::from_secs_f32(*s));
+                Action::Bench(*s, label.clone())
+            }
             Step::Host(f) => Action::Host(f.clone()),
             Step::Join(f) => match std::fs::read_to_string(f) {
                 Ok(t) if !t.trim().is_empty() => Action::Join(t.trim().to_string()),

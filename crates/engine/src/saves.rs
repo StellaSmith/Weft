@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use glam::IVec3;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::app::{Ctx, Request};
 use crate::content::{AIR, Content};
@@ -221,6 +221,9 @@ pub struct Storage {
     pub ids: IdTable,
     regions: FxHashMap<(u32, IVec3), Region>,
     dim_dirs: Vec<PathBuf>,
+    /// Region files on disk, listed once: most cubes were never saved, and asking the file
+    /// system about each of them costs far more than generating it.
+    on_disk: FxHashSet<(u32, IVec3)>,
 }
 
 fn region_of(cube: IVec3) -> (IVec3, usize) {
@@ -232,8 +235,18 @@ fn region_of(cube: IVec3) -> (IVec3, usize) {
 impl Storage {
     pub fn open(meta: WorldMeta, c: &Content) -> Storage {
         let ids = IdTable::load(&meta.dir, c);
-        let dim_dirs = c.dims.iter().map(|d| meta.dir.join("dims").join(d.name.replace(':', "_"))).collect();
-        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs }
+        let dim_dirs: Vec<PathBuf> = c.dims.iter().map(|d| meta.dir.join("dims").join(d.name.replace(':', "_"))).collect();
+        let mut on_disk = FxHashSet::default();
+        for (dim, dir) in dim_dirs.iter().enumerate() {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let parts: Vec<i32> = name.strip_prefix("r.").and_then(|n| n.strip_suffix(".bin")).map_or(Vec::new(), |n| n.split('.').filter_map(|v| v.parse().ok()).collect());
+                if let [x, y, z] = parts[..] {
+                    on_disk.insert((dim as u32, IVec3::new(x, y, z)));
+                }
+            }
+        }
+        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk }
     }
 
     fn region(&mut self, dim: u32, r: IVec3) -> Option<&mut Region> {
@@ -245,6 +258,7 @@ impl Storage {
                         self.regions.clear();
                     }
                     self.regions.insert((dim, r), reg);
+                    self.on_disk.insert((dim, r));
                 }
                 Err(e) => {
                     log::error!("opening {}: {e}", path.display());
@@ -256,7 +270,7 @@ impl Storage {
     }
 
     fn region_exists(&self, dim: u32, r: IVec3) -> bool {
-        self.regions.contains_key(&(dim, r)) || self.dim_dirs[dim as usize].join(format!("r.{}.{}.{}.bin", r.x, r.y, r.z)).exists()
+        self.on_disk.contains(&(dim, r))
     }
 
     /// The cube and the serialized entities that were in it.

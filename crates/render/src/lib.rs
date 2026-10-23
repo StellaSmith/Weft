@@ -138,6 +138,8 @@ pub enum Cmd {
     Dispatch { x: u32, y: u32, z: u32 },
     /// Makes shader writes visible to later commands. Only needed between compute and its consumers.
     Barrier,
+    /// GPU timestamp, see [`Backend::gpu_times`].
+    Mark,
 }
 
 /// Layout of one non-indexed indirect draw, matches every API we care about.
@@ -257,5 +259,10 @@ pub trait Backend: Send {
     fn request_capture(&mut self);
     /// Stalls until the requested capture is ready. Debug and screenshots only.
     fn take_capture(&mut self) -> Option<Capture>;
+    /// GPU milliseconds of the last finished frame, split at [`Cmd::Mark`]s: uploads, then one
+    /// entry per mark, then the rest of the frame. Empty if the backend cannot measure.
+    fn gpu_times(&self) -> &[f32] {
+        &[]
+    }
     fn wait_idle(&mut self);
 }

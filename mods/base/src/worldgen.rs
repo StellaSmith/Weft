@@ -268,15 +268,22 @@ fn caves(seed: u64, ox: i32, oy: i32, oz: i32) -> Vec<bool> {
     out
 }
 
+/// Heights and biomes of a 16x16 column, shared by all cubes stacked on it.
+static COLUMNS: std::sync::LazyLock<ColumnCache<Vec<Column>>> = std::sync::LazyLock::new(|| ColumnCache::new(16384));
+
 pub fn overworld(g: &mut Gen) {
     let seed = g.seed();
     let [ox, oy, oz] = g.origin();
-    let mut cols: Vec<Column> = Vec::with_capacity(256);
-    for z in 0..16 {
-        for x in 0..16 {
-            cols.push(column(seed, ox + x, oz + z));
+    let [cx, _, cz] = g.cube();
+    let cols = COLUMNS.get(seed, cx, cz, || {
+        let mut cols = Vec::with_capacity(256);
+        for z in 0..16 {
+            for x in 0..16 {
+                cols.push(column(seed, ox + x, oz + z));
+            }
         }
-    }
+        cols
+    });
     let max_h = cols.iter().map(|c| c.height).max().unwrap();
     let min_h = cols.iter().map(|c| c.height).min().unwrap();
     for (i, c) in cols.iter().enumerate() {

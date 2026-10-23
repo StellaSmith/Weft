@@ -110,6 +110,13 @@ impl DimSet {
         self.owner.get(&section_of_cube(pos)).is_some_and(|&r| self.regions[r].has(pos))
     }
 
+    /// Changes whenever a cube was loaded or became settled, or regions were reshaped.
+    pub fn settled_version(&self) -> u64 {
+        let settled: u64 = self.regions.iter().map(|r| r.settled_gen).sum();
+        let cubes: u64 = self.regions.iter().map(|r| r.cubes.len() as u64).sum();
+        settled ^ cubes << 24 ^ (self.regions.len() as u64) << 52
+    }
+
     pub fn settled(&self, pos: IVec3) -> bool {
         self.owner.get(&section_of_cube(pos)).is_some_and(|&r| self.regions[r].settled.contains(&pos))
     }
@@ -124,11 +131,12 @@ impl DimSet {
         self.regions[r].get(p)
     }
 
-    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube, entities: &[u8]) {
+    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube, entities: &[u8], conn: u16) {
         self.generating.remove(&pos);
         let r = self.region_for(c, section_of_cube(pos));
         let d = &mut self.regions[r];
         d.insert(c, pos, cube);
+        d.conn.insert(pos, conn);
         for (e, inv, comps) in super::persist::read(c, entities) {
             let id = e.id;
             if d.entities.get(id).is_some() {
@@ -142,6 +150,68 @@ impl DimSet {
                 d.entities.comps.insert((id, k), v);
             }
         }
+    }
+
+    pub fn connectivity(&mut self, c: &Content, pos: IVec3) -> Option<u16> {
+        let r = *self.owner.get(&section_of_cube(pos))?;
+        self.regions[r].connectivity(c, pos)
+    }
+
+    pub fn settle_down(&mut self, pos: IVec3) {
+        if let Some(&r) = self.owner.get(&section_of_cube(pos)) {
+            self.regions[r].settle_down(pos);
+        }
+    }
+
+    /// What a viewer in cube `center` could see: a flood fill from that cube through loaded
+    /// cubes, leaving each one only by faces its blocks connect to the face it was entered by.
+    /// Solid ground and sealed caves stop the fill, so they are never loaded unless they come
+    /// within `near` cubes. Returns every reached cube (loaded or not) and the unloaded ones.
+    pub fn visible(&mut self, c: &Content, center: IVec3, in_range: impl Fn(IVec3) -> bool, near: i32) -> (FxHashSet<IVec3>, Vec<IVec3>) {
+        let mut seen: FxHashSet<IVec3> = FxHashSet::default();
+        let mut missing = Vec::new();
+        for dy in -near..=near {
+            for dz in -near..=near {
+                for dx in -near..=near {
+                    let p = center + IVec3::new(dx, dy, dz);
+                    if in_range(p) && seen.insert(p) && !self.has(p) {
+                        missing.push(p);
+                    }
+                }
+            }
+        }
+        // Faces already left through, per cube: entering again only explores new exits.
+        let mut explored: FxHashMap<IVec3, u8> = FxHashMap::default();
+        let mut queue: std::collections::VecDeque<(IVec3, usize)> = std::collections::VecDeque::new();
+        if self.has(center) {
+            queue.push_back((center, 6));
+        }
+        while let Some((pos, from)) = queue.pop_front() {
+            let Some(conn) = self.connectivity(c, pos) else { continue };
+            let exits = if from == 6 { 0x3F } else { crate::world::cube::exits(conn, from) };
+            let done = explored.entry(pos).or_default();
+            let new = exits & !*done;
+            *done |= new;
+            for f in 0..6 {
+                if new & (1 << f) == 0 {
+                    continue;
+                }
+                let n = pos + crate::world::DIRS[f];
+                if !in_range(n) {
+                    continue;
+                }
+                let first = seen.insert(n);
+                if !self.has(n) {
+                    if first {
+                        missing.push(n);
+                    }
+                    continue;
+                }
+                // Entered through the face opposite to `f`.
+                queue.push_back((n, f ^ 1));
+            }
+        }
+        (seen, missing)
     }
 
     pub fn spawn_point(&self, c: &Content) -> DVec3 {

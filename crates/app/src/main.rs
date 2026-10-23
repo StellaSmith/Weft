@@ -21,6 +21,8 @@ fn main() {
         size: (1600, 900),
         dev: cfg!(debug_assertions),
         script: None,
+        no_vsync: false,
+        view: None,
     };
     let mut verbose = false;
     let mut args = std::env::args().skip(1);
@@ -43,6 +45,8 @@ fn main() {
             "--seed" => opts.seed = value().parse().ok(),
             "--screen" => opts.screen = Some(value()),
             "--script" => opts.script = Some(PathBuf::from(value())),
+            "--no-vsync" => opts.no_vsync = true,
+            "--view" => opts.view = value().parse().ok(),
             "--size" => {
                 let v: Vec<u32> = value().split('x').filter_map(|s| s.parse().ok()).collect();
                 if v.len() == 2 {

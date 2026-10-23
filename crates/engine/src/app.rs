@@ -49,6 +49,9 @@ pub struct Options {
     pub dev: bool,
     /// Automation: scripted input, see `autopilot.rs`.
     pub script: Option<PathBuf>,
+    /// Benchmarks: force vsync off / a view distance without touching saved settings.
+    pub no_vsync: bool,
+    pub view: Option<i32>,
 }
 
 pub enum Request {
@@ -118,6 +121,9 @@ struct Running {
     quit: bool,
     mods: Vec<LoadedMod>,
     client_hash: u64,
+    /// CPU milliseconds of the last frame, see `bench::CPU_PARTS`.
+    prof: [f32; 5],
+    bench: Option<crate::bench::Bench>,
     /// Where UI asked for the player model, physical pixels.
     previews: Vec<[f32; 4]>,
     autopilot: Option<crate::autopilot::Autopilot>,
@@ -153,7 +159,13 @@ fn engine_assets() -> PathBuf {
 
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
-        let settings = Settings::load(&self.opts.run_dir);
+        let mut settings = Settings::load(&self.opts.run_dir);
+        if self.opts.no_vsync {
+            settings.vsync = false;
+        }
+        if let Some(v) = self.opts.view {
+            settings.view_distance = v;
+        }
         let attrs = Window::default_attributes()
             .with_title("Voxide")
             .with_inner_size(winit::dpi::PhysicalSize::new(self.opts.size.0, self.opts.size.1));
@@ -216,6 +228,8 @@ impl App {
             quit: false,
             mods,
             client_hash: 0,
+            prof: [0.0; 5],
+            bench: None,
             previews: Vec::new(),
             autopilot: self.opts.script.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| crate::autopilot::Autopilot::load(&s)),
             shot_path: None,
@@ -802,9 +816,10 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.last = now;
     let scale = r.gui_scale();
 
-    if let Some(ap) = &mut r.autopilot {
+    if let Some(ap) = r.autopilot.as_mut().filter(|_| r.bench.is_none()) {
         let loaded = r.game.as_ref().is_some_and(|g| g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0);
-        match ap.frame(&mut r.input, r.gpu.surface_size(), loaded) {
+        let idle = loaded && r.game.as_ref().is_some_and(|g| g.server.as_ref().is_none_or(|s| s.idle()) && g.client.world.pending_meshes() == 0);
+        match ap.frame(&mut r.input, r.gpu.surface_size(), loaded, idle) {
             crate::autopilot::Action::Look(yaw, pitch) => {
                 if let Some(g) = &mut r.game {
                     g.client.player.yaw = yaw.to_radians();
@@ -827,7 +842,23 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 r.ticket_file = Some(PathBuf::from(file));
             }
             crate::autopilot::Action::Join(ticket) => r.handle(vec![Request::Join(ticket)]),
-            crate::autopilot::Action::Quit => return true,
+            crate::autopilot::Action::Bench(secs, label) => r.bench = Some(crate::bench::Bench::new(&label, secs)),
+            crate::autopilot::Action::Idle => {
+                if let Some(g) = r.game.as_ref().filter(|_| idle) {
+                    if let Some((made, gen_us, ins, ins_us)) = g.server.as_ref().map(|s| s.load_stats()) {
+                        log::info!(
+                            "load: {} cubes on client, generated {made} ({gen_us:.0} us each on a worker), inserted {ins} ({ins_us:.0} us each on the server thread)",
+                            g.client.world.cubes.len()
+                        );
+                    }
+                }
+            }
+            crate::autopilot::Action::Quit => {
+                if let Some(b) = r.bench.take() {
+                    log::info!("{}", b.report(""));
+                }
+                return true;
+            }
             crate::autopilot::Action::None => {}
         }
         if r.screens.is_empty() && r.game.is_some() {
@@ -903,11 +934,14 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             s.set_paused(paused && !s.is_hosting());
         }
         g.client.fov = r.settings.fov;
+        let t = Instant::now();
         if world_input {
             g.client.update(&mut *r.gpu, &r.input, dt);
         } else {
             g.client.update(&mut *r.gpu, &Input::default(), dt);
         }
+        r.prof[0] = t.elapsed().as_secs_f32() * 1000.0;
+        r.prof[1] = Instant::now().duration_since(now).as_secs_f32() * 1000.0;
         if let Some(cam) = opts.camera {
             g.client.player.pos = DVec3::new(cam[0], cam[1] - 1.62, cam[2]);
             g.client.player.yaw = (cam[3] as f32).to_radians();
@@ -1006,7 +1040,11 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         }
     }
 
+    let t = Instant::now();
+    r.prof[1] = (t.duration_since(now).as_secs_f32() * 1000.0 - r.prof[1]).max(0.0);
     let Some(info) = r.gpu.begin_frame() else { return false };
+    let t2 = Instant::now();
+    r.prof[2] = t2.duration_since(t).as_secs_f32() * 1000.0;
     if (r.depth.1, r.depth.2) != (info.width, info.height) {
         r.gpu.destroy_texture(r.depth.0);
         r.depth = make_depth(&mut *r.gpu, info.width, info.height);
@@ -1064,6 +1102,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         g.client.render(&mut *r.gpu, &mut r.list, &info, &r.textures);
     }
     r.ui.draw(&mut *r.gpu, &mut r.list, &info);
+    r.list.push(Cmd::Mark);
     r.list.push(Cmd::EndPass);
     if let Some(g) = r.game.as_mut().filter(|_| !r.previews.is_empty() && !r.screens.is_empty()) {
         r.list.push(Cmd::BeginPass { color: Some((Target::Surface, None)), depth: Some((r.depth.0, Some(0.0))) });
@@ -1085,7 +1124,33 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.shot_pending = true;
         }
     }
+    let t3 = Instant::now();
+    r.prof[3] = t3.duration_since(t2).as_secs_f32() * 1000.0;
     r.gpu.end_frame(&r.list);
+    r.prof[4] = t3.elapsed().as_secs_f32() * 1000.0;
+    if let Some(b) = &mut r.bench {
+        let server = r.game.as_ref().and_then(|g| g.server.as_ref());
+        let (server_ms, phases) = server.map_or((0.0, [0.0; 6]), |s| (s.tick_ms(), s.phases()));
+        b.sample(dt as f32 * 1000.0, &r.prof, r.gpu.gpu_times(), server_ms, phases);
+        if b.done() {
+            let extra = match &r.game {
+                Some(g) => format!(
+                    "pos {:.1} {:.1} {:.1}, cubes {}, draws {}, faces {}k, entities {}, regions {}",
+                    g.client.player.pos.x,
+                    g.client.player.pos.y,
+                    g.client.player.pos.z,
+                    g.client.world.cubes.len(),
+                    g.client.render.drawn,
+                    g.client.render.faces_drawn / 1000,
+                    g.client.entities.len(),
+                    g.server.as_ref().map_or(0, |s| s.regions())
+                ),
+                None => String::new(),
+            };
+            log::info!("{}", b.report(&extra));
+            r.bench = None;
+        }
+    }
     if capture_now {
         r.shot_pending = false;
         if let Some(cap) = r.gpu.take_capture() {

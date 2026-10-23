@@ -2,6 +2,7 @@
 //! the block selection outline and break progress overlay.
 
 use glam::{DVec3, IVec3, Mat4, Quat, Vec3, Vec4};
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use voxide_abi::{Model, part_role as role};
 use voxide_render::*;
@@ -143,12 +144,18 @@ impl EntityRenderer {
     /// the local player wears.
     pub fn preload(&mut self, gpu: &mut dyn Backend, assets: &Assets, entities: &FxHashMap<u64, ClientEntity>, worn: &[u32]) {
         let c = content();
-        for e in entities.values() {
-            self.load(gpu, assets, &c.game.entities[e.kind as usize].texture);
-            for &i in &e.worn {
-                if let Some((_, t)) = c.worn(i) {
-                    self.load(gpu, assets, t);
-                }
+        let mut kinds: Vec<u32> = entities.values().map(|e| e.kind).collect();
+        let mut items: Vec<u32> = entities.values().flat_map(|e| e.worn.iter().copied()).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        items.sort_unstable();
+        items.dedup();
+        for k in kinds {
+            self.load(gpu, assets, &c.game.entities[k as usize].texture);
+        }
+        for i in items {
+            if let Some((_, t)) = c.worn(i) {
+                self.load(gpu, assets, t);
             }
         }
         self.load(gpu, assets, &c.game.entities[c.game.player_kind as usize].texture);
@@ -183,14 +190,19 @@ impl EntityRenderer {
         let c = content();
         let k = &c.game.entities[kind as usize];
         let Some(Some((_, skin, _))) = self.skins.get(&k.texture) else { return };
-        let mut layers = vec![(*skin, Vec4::new(0.0, 0.0, k.texture_size[0] as f32, k.texture_size[1] as f32), u32::MAX, 0.0)];
-        for &i in worn {
+        // Skin plus up to seven worn layers, without allocating per entity.
+        let mut layers = [(0u32, Vec4::ZERO, 0u32, 0f32); 8];
+        layers[0] = (*skin, Vec4::new(0.0, 0.0, k.texture_size[0] as f32, k.texture_size[1] as f32), u32::MAX, 0.0);
+        let mut n = 1;
+        for &i in worn.iter().take(7) {
             if let Some((w, t)) = c.worn(i) {
                 if let Some(Some((_, idx, size))) = self.skins.get(t) {
-                    layers.push((*idx, Vec4::new(0.0, 0.0, size[0] as f32, size[1] as f32), w.roles, w.inflate));
+                    layers[n] = (*idx, Vec4::new(0.0, 0.0, size[0] as f32, size[1] as f32), w.roles, w.inflate);
+                    n += 1;
                 }
             }
         }
+        let layers = &layers[..n];
         let body = body * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
         for part in &k.parts {
             let angle = match part.role {
@@ -202,7 +214,7 @@ impl EntityRenderer {
                 _ => Quat::IDENTITY,
             };
             let part_m = body * Mat4::from_translation(Vec3::from_array(part.pivot)) * Mat4::from_quat(angle);
-            for &(tex, size, roles, extra) in &layers {
+            for &(tex, size, roles, extra) in layers {
                 if roles & (1 << part.role) == 0 {
                     continue;
                 }
@@ -265,7 +277,7 @@ impl EntityRenderer {
         cam: &Camera,
         entities: &FxHashMap<u64, ClientEntity>,
         textures: &GameTextures,
-        light: &impl Fn(IVec3) -> u32,
+        light: &(impl Fn(IVec3) -> u32 + Sync),
         day: f32,
         target: Option<Hit>,
         breaking: Option<(IVec3, f32)>,
@@ -282,19 +294,31 @@ impl EntityRenderer {
             Vec3::new(sky.max(lightmap(ch(8))), sky.max(lightmap(ch(16))), sky.max(lightmap(ch(24))))
         };
 
-        for e in entities.values() {
-            let base = rel(e.pos);
-            if base.length_squared() > 160.0 * 160.0 {
-                continue;
-            }
-            let color = shade(e.pos + DVec3::Y * 0.5).extend((e.hurt / 0.4).clamp(0.0, 1.0));
-            if !e.item.is_empty() {
-                item_boxes(&mut boxes, textures, base, e.age, e.item.item, color);
-                continue;
-            }
-            let body = Mat4::from_translation(base) * Mat4::from_rotation_y(e.yaw);
-            let swing = (e.walk * 6.0).sin() * 0.9 * e.swing;
-            self.model(&mut boxes, e.kind, body, e.pitch, swing, color, &e.worn);
+        // Thousands of mobs: pose them on all cores.
+        let all: Vec<&ClientEntity> = entities.values().collect();
+        let parts: Vec<Vec<GpuBox>> = all
+            .par_chunks(128)
+            .map(|chunk| {
+                let mut out = Vec::with_capacity(chunk.len() * 8);
+                for e in chunk {
+                    let base = rel(e.pos);
+                    if base.length_squared() > 160.0 * 160.0 {
+                        continue;
+                    }
+                    let color = shade(e.pos + DVec3::Y * 0.5).extend((e.hurt / 0.4).clamp(0.0, 1.0));
+                    if !e.item.is_empty() {
+                        item_boxes(&mut out, textures, base, e.age, e.item.item, color);
+                        continue;
+                    }
+                    let body = Mat4::from_translation(base) * Mat4::from_rotation_y(e.yaw);
+                    let swing = (e.walk * 6.0).sin() * 0.9 * e.swing;
+                    self.model(&mut out, e.kind, body, e.pitch, swing, color, &e.worn);
+                }
+                out
+            })
+            .collect();
+        for p in parts {
+            boxes.extend(p);
         }
 
         // Selection outline: twelve thin dark boxes along the edges of the target's shape.

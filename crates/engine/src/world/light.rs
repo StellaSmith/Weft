@@ -43,6 +43,8 @@ pub struct Lighter<'a, M: CubeMap> {
     /// Last cube looked up. A flood fill stays inside one cube most of the time, so this saves
     /// almost every hash lookup. Null pointer = cached miss.
     cache: Cell<(IVec3, *const Cube)>,
+    /// Last cube added to `changed`, to skip the hash insert on every write.
+    last_changed: IVec3,
 }
 
 #[inline]
@@ -60,6 +62,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
             add: VecDeque::new(),
             remove: VecDeque::new(),
             cache: Cell::new((IVec3::MAX, std::ptr::null())),
+            last_changed: IVec3::MAX,
         }
     }
 
@@ -97,7 +100,10 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
             let cube = self.map.cube_mut(cp).unwrap();
             cube.set_light(i, new);
             self.cache.set((cp, cube as *const Cube));
-            self.changed.insert(cp);
+            if cp != self.last_changed {
+                self.last_changed = cp;
+                self.changed.insert(cp);
+            }
         }
     }
 
@@ -187,15 +193,21 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                     // Open air: the whole cube is full sky, only the borders can spread further.
                     self.map.cube_mut(cp).unwrap().fill_light(SKY_FULL as u32);
                     self.cache.set((IVec3::MAX, std::ptr::null()));
-                    for a in 0..16 {
-                        for b in 0..16 {
-                            for p in [
-                                IVec3::new(a, 0, b),
-                                IVec3::new(0, a, b),
-                                IVec3::new(15, a, b),
-                                IVec3::new(a, b, 0),
-                                IVec3::new(a, b, 15),
-                            ] {
+                    // Only faces whose neighbour can still take light need seeds; missing
+                    // neighbours pull from this cube when they arrive.
+                    for (d, face) in [(2, 0), (0, 1), (1, 2), (4, 3), (5, 4)] {
+                        if !self.accepts(cp + DIRS[d], SKY, SKY_FULL) {
+                            continue;
+                        }
+                        for a in 0..16 {
+                            for b in 0..16 {
+                                let p = match face {
+                                    0 => IVec3::new(a, 0, b),
+                                    1 => IVec3::new(0, a, b),
+                                    2 => IVec3::new(15, a, b),
+                                    3 => IVec3::new(a, b, 0),
+                                    _ => IVec3::new(a, b, 15),
+                                };
                                 self.add.push_back((base + p, SKY_FULL));
                             }
                         }
@@ -242,10 +254,22 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         }
     }
 
+    /// Whether cube `n` may still gain light on channel `c` from a neighbour at `level`: loaded,
+    /// not solid all through, and not already uniformly at that level.
+    fn accepts(&self, n: IVec3, c: usize, level: u8) -> bool {
+        let Some(cube) = self.map.cube(n) else { return false };
+        if cube.uniform_light().is_some_and(|l| ch(l, c) >= level) {
+            return false;
+        }
+        !cube.palette().iter().all(|&s| self.c.states[s as usize].opacity >= 15)
+    }
+
     fn seed_from_neighbours(&mut self, cp: IVec3, c: usize, dirs: &[usize]) {
         let base = cp * 16;
         for &d in dirs {
-            if self.map.cube(cp + DIRS[d]).is_none() {
+            let Some(n) = self.map.cube(cp + DIRS[d]) else { continue };
+            // A uniformly dark neighbour has nothing to give.
+            if n.uniform_light().is_some_and(|l| ch(l, c) <= 1) {
                 continue;
             }
             for a in 0..16 {

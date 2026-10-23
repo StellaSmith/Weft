@@ -333,6 +333,93 @@ fn put(words: &mut [u64], bits: u32, i: usize, v: u32) {
     *w = (*w & !mask) | ((v as u64) << shift);
 }
 
+/// Bit of the face pair (`a`, `b`) in a connectivity mask; faces in `DIRS` order.
+pub const fn face_pair(a: usize, b: usize) -> u16 {
+    let (a, b) = if a < b { (a, b) } else { (b, a) };
+    // Pairs (0,1)..(4,5) numbered in order: 5 + 4 + 3 + 2 + 1 = 15 bits.
+    1 << (a * (11 - a) / 2 + b - a - 1)
+}
+
+pub const ALL_CONNECTED: u16 = 0x7FFF;
+
+/// Faces reachable from face `from` through the inside of a cube with connectivity `conn`.
+pub fn exits(conn: u16, from: usize) -> u8 {
+    (0..6).filter(|&f| f != from && conn & face_pair(from, f) != 0).fold(0, |m, f| m | 1 << f)
+}
+
+impl Cube {
+    /// Which faces see each other through blocks `open` lets through: a `face_pair` bit for every
+    /// pair joined by a path of open blocks. Used to load only what can be seen.
+    pub fn connectivity(&self, open: impl Fn(u32) -> bool) -> u16 {
+        if let Some(s) = self.uniform_state() {
+            return if open(s) { ALL_CONNECTED } else { 0 };
+        }
+        let mut states = [0u32; VOLUME];
+        self.decode(&mut states);
+        let mut free = [0u64; VOLUME / 64];
+        for (i, &s) in states.iter().enumerate() {
+            if open(s) {
+                free[i / 64] |= 1 << (i % 64);
+            }
+        }
+        let mut conn = 0u16;
+        let mut stack: Vec<u16> = Vec::new();
+        for start in 0..VOLUME {
+            if free[start / 64] & 1 << (start % 64) == 0 {
+                continue;
+            }
+            free[start / 64] &= !(1 << (start % 64));
+            stack.push(start as u16);
+            let mut faces = 0u8;
+            while let Some(i) = stack.pop() {
+                let i = i as usize;
+                let (x, y, z) = (i & 15, i >> 8, (i >> 4) & 15);
+                let edge = [x == 0, x == 15, y == 0, y == 15, z == 0, z == 15];
+                for (f, &on) in edge.iter().enumerate() {
+                    if on {
+                        faces |= 1 << f;
+                    }
+                }
+                let mut visit = |n: usize| {
+                    if free[n / 64] & 1 << (n % 64) != 0 {
+                        free[n / 64] &= !(1 << (n % 64));
+                        stack.push(n as u16);
+                    }
+                };
+                if x > 0 {
+                    visit(i - 1);
+                }
+                if x < 15 {
+                    visit(i + 1);
+                }
+                if y > 0 {
+                    visit(i - 256);
+                }
+                if y < 15 {
+                    visit(i + 256);
+                }
+                if z > 0 {
+                    visit(i - 16);
+                }
+                if z < 15 {
+                    visit(i + 16);
+                }
+            }
+            for a in 0..6 {
+                for b in a + 1..6 {
+                    if faces & (1 << a) != 0 && faces & (1 << b) != 0 {
+                        conn |= face_pair(a, b);
+                    }
+                }
+            }
+            if conn == ALL_CONNECTED {
+                break;
+            }
+        }
+        conn
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +439,28 @@ mod tests {
         for i in 0..VOLUME {
             assert_eq!(back.get(i), c.get(i));
         }
+    }
+
+    #[test]
+    fn connectivity() {
+        let mut bits = std::collections::HashSet::new();
+        for a in 0..6 {
+            for b in a + 1..6 {
+                assert!(bits.insert(face_pair(a, b)), "pair bits must be distinct");
+                assert_eq!(face_pair(a, b), face_pair(b, a));
+            }
+        }
+        assert_eq!(bits.iter().fold(0, |m, b| m | b), ALL_CONNECTED);
+        // Solid cube with a straight air tunnel along x: only -X and +X see each other.
+        let mut c = Cube::uniform(1, 0);
+        for x in 0..16 {
+            c.set(index(x, 8, 8), 0);
+        }
+        let conn = c.connectivity(|s| s == 0);
+        assert_eq!(conn, face_pair(0, 1));
+        assert_eq!(exits(conn, 0), 0b10);
+        assert_eq!(Cube::uniform(0, 0).connectivity(|s| s == 0), ALL_CONNECTED);
+        assert_eq!(Cube::uniform(1, 0).connectivity(|s| s == 0), 0);
     }
 
     #[test]

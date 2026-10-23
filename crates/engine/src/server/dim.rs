@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{DVec3, IVec3};
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use voxide_abi::{self as abi, ItemStack, block_flags as bf, damage, entity_flags as ef};
 
@@ -16,6 +17,10 @@ use crate::world::{Cube, DIRS, Rng, cube_of, local_index};
 
 const MAX_NEIGHBOR_UPDATES: usize = 1 << 16;
 const RANDOM_TICKS_PER_CUBE: u32 = 3;
+/// Random ticks only happen this many cubes around a player (like vanilla's ticking distance):
+/// far terrain has nobody to watch grass spread, and scanning every loaded cube each tick costs
+/// more than all the ticks themselves.
+const RANDOM_TICK_RADIUS: i32 = 8;
 const ITEM_LIFETIME: u64 = 20 * 60 * 5;
 
 pub enum DimEvent {
@@ -45,6 +50,10 @@ pub struct Dim {
     /// Cubes whose sky light is final: open sky above, or the cube above is settled. Only these
     /// are sent, so clients never see light being filled in afterwards.
     pub settled: FxHashSet<IVec3>,
+    /// Bumped whenever a cube becomes settled, so senders know when to look again.
+    pub settled_gen: u64,
+    /// Face connectivity of loaded cubes (see `Cube::connectivity`); missing = recompute.
+    pub conn: FxHashMap<IVec3, u16>,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -79,6 +88,11 @@ pub fn generate(c: &Content, dim: u32, seed: u64, pos: IVec3) -> Cube {
         cube.biomes = Some(Box::new(biomes));
     }
     cube
+}
+
+/// Face connectivity through blocks that do not hide what is behind them.
+pub fn see_through(c: &Content, cube: &Cube) -> u16 {
+    cube.connectivity(|s| c.states[s as usize].flags & bf::OPAQUE == 0)
 }
 
 /// Seconds to break `state` holding `tool` (item id, 0 = hand), and whether it drops anything.
@@ -117,6 +131,8 @@ impl Dim {
             next_id,
             grid: Default::default(),
             settled: FxHashSet::default(),
+            settled_gen: 0,
+            conn: FxHashMap::default(),
         }
     }
 
@@ -151,6 +167,7 @@ impl Dim {
         if open_above || !def.sky_light || self.settled.contains(&(pos + IVec3::Y)) {
             let mut p = pos;
             while self.cubes.contains_key(&p) && self.settled.insert(p) {
+                self.settled_gen += 1;
                 p -= IVec3::Y;
             }
         }
@@ -172,6 +189,7 @@ impl Dim {
             let cube = self.cubes.remove(&pos).unwrap();
             self.grid.cube_unloaded(pos);
             self.settled.remove(&pos);
+            self.conn.remove(&pos);
             if self.modified.remove(&pos) || !inside.is_empty() {
                 out.push((pos, cube, inside));
             }
@@ -212,6 +230,7 @@ impl Dim {
         }
         self.changes.push((p, state));
         self.modified.insert(cp);
+        self.conn.remove(&cp);
         let def = &c.dims[self.id as usize];
         let mut map = Cubes(&mut self.cubes);
         let mut lighter = Lighter::new(&mut map, c, def.sky_light);
@@ -351,13 +370,24 @@ impl Dim {
         }
 
         // Sorted so the random stream is consumed in the same order on every run.
-        let mut ticking: Vec<IVec3> = self
-            .cubes
-            .iter()
-            .filter(|(_, cube)| cube.palette().iter().any(|&s| c.states[s as usize].flags & bf::RANDOM_TICKS != 0))
-            .map(|(&p, _)| p)
-            .collect();
+        let mut ticking: Vec<IVec3> = Vec::new();
+        for e in self.entities.list.iter().filter(|e| e.player && !e.removed) {
+            let center = cube_of(e.pos.floor().as_ivec3());
+            let r = RANDOM_TICK_RADIUS;
+            for dy in -r..=r {
+                for dz in -r..=r {
+                    for dx in -r..=r {
+                        let p = center + IVec3::new(dx, dy, dz);
+                        let ticks = self.cubes.get(&p).is_some_and(|cube| cube.palette().iter().any(|&s| c.states[s as usize].flags & bf::RANDOM_TICKS != 0));
+                        if ticks {
+                            ticking.push(p);
+                        }
+                    }
+                }
+            }
+        }
         ticking.sort_by_key(|p| (p.x, p.y, p.z));
+        ticking.dedup();
         for cp in ticking {
             for _ in 0..RANDOM_TICKS_PER_CUBE {
                 let r = self.rng.next();
@@ -401,45 +431,54 @@ impl Dim {
         let gravity = c.dims[self.id as usize].gravity as f64;
         let day = self.daylight(c);
         let players: Vec<DVec3> = self.entities.list.iter().filter(|e| e.player && !e.removed).map(|e| e.pos).collect();
-        let mut landings: Vec<(u64, f32)> = Vec::new();
-        let mut burns: Vec<u64> = Vec::new();
         let cubes = &self.cubes;
         let block = |p: IVec3| cubes.get(&cube_of(p)).map(|cb| cb.get(local_index(p)));
-        for e in self.entities.list.iter_mut() {
-            if e.removed {
-                continue;
-            }
-            e.age += 1;
-            e.hurt_cooldown = e.hurt_cooldown.saturating_sub(1);
-            if e.player {
-                continue;
-            }
-            let k = &c.game.entities[e.kind as usize];
-            if let Some(fall) = step(c, e, gravity, &block) {
-                if k.is(ef::FALL_DAMAGE) && fall > 3.0 {
-                    landings.push((e.id, fall - 3.0));
+        // Physics only reads blocks and writes its own entity, so entities move in parallel;
+        // damage is applied afterwards in list order to stay deterministic.
+        let hits: Vec<(u64, Option<f32>, bool)> = self
+            .entities
+            .list
+            .par_iter_mut()
+            .with_min_len(64)
+            .filter_map(|e| {
+                if e.removed {
+                    return None;
                 }
-            }
-            if k.is(ef::BURNS_IN_SUN) && day > 0.5 && e.age % 20 == 0 && !e.in_liquid {
-                let head = (e.pos + DVec3::Y * k.eye as f64).floor().as_ivec3();
-                let sky = cubes.get(&cube_of(head)).map_or(0, |cb| cb.light(local_index(head)) & 0xFF);
-                if sky >= 15 {
-                    burns.push(e.id);
+                e.age += 1;
+                e.hurt_cooldown = e.hurt_cooldown.saturating_sub(1);
+                if e.player {
+                    return None;
                 }
-            }
-            if k.category == 1 && e.age % 100 == 0 {
-                let near = players.iter().any(|p| (*p - e.pos).length_squared() < 128.0 * 128.0);
-                if !near {
-                    e.removed = true;
+                let k = &c.game.entities[e.kind as usize];
+                let mut land = None;
+                if let Some(fall) = step(c, e, gravity, &block) {
+                    if k.is(ef::FALL_DAMAGE) && fall > 3.0 {
+                        land = Some(fall - 3.0);
+                    }
                 }
-            }
-            if !e.item.is_empty() {
-                e.pickup_delay = e.pickup_delay.saturating_sub(1);
-                if e.age > ITEM_LIFETIME {
-                    e.removed = true;
+                let mut burn = false;
+                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && e.age % 20 == 0 && !e.in_liquid {
+                    let head = (e.pos + DVec3::Y * k.eye as f64).floor().as_ivec3();
+                    let sky = cubes.get(&cube_of(head)).map_or(0, |cb| cb.light(local_index(head)) & 0xFF);
+                    burn = sky >= 15;
                 }
-            }
-        }
+                if k.category == 1 && e.age % 100 == 0 {
+                    let near = players.iter().any(|p| (*p - e.pos).length_squared() < 128.0 * 128.0);
+                    if !near {
+                        e.removed = true;
+                    }
+                }
+                if !e.item.is_empty() {
+                    e.pickup_delay = e.pickup_delay.saturating_sub(1);
+                    if e.age > ITEM_LIFETIME {
+                        e.removed = true;
+                    }
+                }
+                (land.is_some() || burn).then_some((e.id, land, burn))
+            })
+            .collect();
+        let landings: Vec<(u64, f32)> = hits.iter().filter_map(|h| Some((h.0, h.1?))).collect();
+        let burns: Vec<u64> = hits.iter().filter(|h| h.2).map(|h| h.0).collect();
         for (id, amount) in landings {
             self.damage(c, id, amount, 0, damage::FALL);
         }
@@ -613,6 +652,7 @@ impl Dim {
         for pos in cubes {
             let cube = self.cubes.remove(&pos).unwrap();
             self.grid.cube_unloaded(pos);
+            self.conn.remove(&pos);
             p.cubes.push((pos, cube, self.modified.remove(&pos), self.settled.remove(&pos)));
         }
         let ids: Vec<u64> = self.entities.list.iter().filter(|e| take(section_of(e.pos))).map(|e| e.id).collect();
@@ -638,6 +678,7 @@ impl Dim {
             }
             if settled {
                 self.settled.insert(pos);
+                self.settled_gen += 1;
             }
         }
         for (e, inv, comps) in p.entities {
@@ -652,6 +693,25 @@ impl Dim {
         }
         self.entities.sort_by_id();
         self.scheduled.extend(p.scheduled);
+    }
+
+    pub fn connectivity(&mut self, c: &Content, pos: IVec3) -> Option<u16> {
+        if let Some(&v) = self.conn.get(&pos) {
+            return Some(v);
+        }
+        let v = see_through(c, self.cubes.get(&pos)?);
+        self.conn.insert(pos, v);
+        Some(v)
+    }
+
+    /// Marks `pos` and the loaded cubes below it settled: nothing above will ever bring sky
+    /// light (it is not going to be loaded), so their light is final as it is.
+    pub fn settle_down(&mut self, pos: IVec3) {
+        let mut p = pos;
+        while self.cubes.contains_key(&p) && self.settled.insert(p) {
+            self.settled_gen += 1;
+            p -= IVec3::Y;
+        }
     }
 
     pub fn set_rng(&mut self, seed: u64) {

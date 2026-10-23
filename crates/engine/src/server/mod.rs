@@ -58,6 +58,16 @@ pub struct Player {
     last_y: f64,
     dead: bool,
     first_sync: bool,
+    /// View (dim, centre, radius, height) whose cubes were all present at the last check, and the
+    /// same plus the settled version when nothing was left to send. Lets idle ticks skip scanning
+    /// the whole view volume.
+    gen_done: Option<(u32, IVec3, i32, i32, u64)>,
+    /// Cubes the last visibility fill reached; only these (and the sky column) get loaded.
+    visible: FxHashSet<IVec3>,
+    sync_done: Option<(u32, IVec3, i32, i32, u64)>,
+    /// Set by teleports: moves sent before the client saw the teleport are stale and would read
+    /// as a long fall, so they are ignored until one arrives near this point.
+    teleported: Option<DVec3>,
 }
 
 pub struct Generated {
@@ -65,7 +75,12 @@ pub struct Generated {
     pos: IVec3,
     cube: Cube,
     entities: Vec<u8>,
+    conn: u16,
 }
+
+/// Cubes around a player that are loaded whether visible or not, so digging and walking into
+/// sealed ground always finds blocks there.
+const NEAR: i32 = 2;
 
 /// State the client thread may read or poke while the server runs.
 #[derive(Default)]
@@ -75,7 +90,19 @@ pub struct Shared {
     pub tick_us: AtomicU64,
     pub view: AtomicI32,
     pub regions: AtomicU64,
+    /// Load pipeline counters for profiling: cubes generating or waiting for insertion, cubes a
+    /// player should get but has not yet, and work done so far.
+    pub pending: AtomicU64,
+    pub unsent: AtomicU64,
+    pub generated: AtomicU64,
+    pub gen_ns: AtomicU64,
+    pub inserted: AtomicU64,
+    pub insert_ns: AtomicU64,
+    /// Last tick split into `PHASES`, microseconds.
+    pub phase_us: [AtomicU64; 6],
 }
+
+pub const PHASES: [&str; 6] = ["insert", "messages", "regions", "request", "sync", "rest"];
 
 pub struct Server {
     pub cfg: ServerConfig,
@@ -118,6 +145,24 @@ impl ServerHandle {
 
     pub fn tick_ms(&self) -> f32 {
         self.shared.tick_us.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    /// Nothing left to generate, insert or send.
+    pub fn idle(&self) -> bool {
+        self.shared.pending.load(Ordering::Relaxed) == 0 && self.shared.unsent.load(Ordering::Relaxed) == 0
+    }
+
+    /// Cubes generated and their average cost on a worker, cubes inserted and their average
+    /// cost (lighting) on the server thread, in microseconds.
+    pub fn load_stats(&self) -> (u64, f64, u64, f64) {
+        let s = &self.shared;
+        let (g, i) = (s.generated.load(Ordering::Relaxed), s.inserted.load(Ordering::Relaxed));
+        let avg = |ns: u64, n: u64| ns as f64 / n.max(1) as f64 / 1000.0;
+        (g, avg(s.gen_ns.load(Ordering::Relaxed), g), i, avg(s.insert_ns.load(Ordering::Relaxed), i))
+    }
+
+    pub fn phases(&self) -> [f32; 6] {
+        std::array::from_fn(|i| self.shared.phase_us[i].load(Ordering::Relaxed) as f32 / 1000.0)
     }
 
     pub fn regions(&self) -> u32 {
@@ -242,6 +287,10 @@ impl Server {
                 last_y: 0.0,
                 dead: false,
                 first_sync: true,
+                gen_done: None,
+                sync_done: None,
+                visible: FxHashSet::default(),
+                teleported: None,
             });
         }
     }
@@ -250,9 +299,17 @@ impl Server {
         let start = Instant::now();
         let c = content();
         self.cfg.view_radius = self.shared.view.load(Ordering::Relaxed);
+        let mut phase = Instant::now();
+        let mut lap = |i: usize, shared: &Shared| {
+            let now = Instant::now();
+            shared.phase_us[i].store((now - phase).as_micros() as u64, Ordering::Relaxed);
+            phase = now;
+        };
         self.accept();
         self.receive_generated(c);
+        lap(0, &self.shared);
         self.handle_messages(c);
+        lap(1, &self.shared);
 
         // Every region of every dimension is independent: tick them all in parallel.
         for d in &mut self.dims {
@@ -263,6 +320,7 @@ impl Server {
             d.time += 1;
         }
         self.dims.par_iter_mut().flat_map(|d| d.regions.par_iter_mut()).for_each(|r| r.tick(c));
+        lap(2, &self.shared);
 
         self.dim_events(c);
         for pi in 0..self.players.len() {
@@ -273,7 +331,9 @@ impl Server {
             }
         }
         self.request_generation(c);
+        lap(3, &self.shared);
         self.sync_players(c);
+        lap(4, &self.shared);
         self.players.retain(|p| !p.conn.is_closed());
         if self.tick % 10 == 0 {
             for d in &mut self.dims {
@@ -288,6 +348,7 @@ impl Server {
         if self.tick % AUTOSAVE_TICKS == 0 {
             self.save_all(false);
         }
+        lap(5, &self.shared);
         self.shared.tick_us.store(start.elapsed().as_micros() as u64, Ordering::Relaxed);
     }
 
@@ -371,17 +432,25 @@ impl Server {
     }
 
     fn receive_generated(&mut self, c: &'static Content) {
-        let mut batch: Vec<Generated> = self.gen_rx.try_iter().collect();
-        // Top-down so sky light is right the first time; sorted to keep runs reproducible.
-        batch.sort_by_key(|g| (g.dim, -g.pos.y, g.pos.x, g.pos.z));
-        self.backlog.extend(batch);
+        self.backlog.extend(self.gen_rx.try_iter());
+        // Top-down so sky light is right the first time: a cube waits while the one above it is
+        // still generating or waiting itself. Sorted to keep runs reproducible.
+        let mut list: Vec<Generated> = self.backlog.drain(..).collect();
+        list.sort_by_key(|g| (g.dim, -g.pos.y, g.pos.x, g.pos.z));
+        let mut pending: FxHashSet<(u32, IVec3)> = list.iter().map(|g| (g.dim, g.pos)).collect();
         let start = Instant::now();
-        while let Some(g) = self.backlog.pop_front() {
-            if start.elapsed() > Duration::from_millis(15) {
-                self.backlog.push_front(g);
-                break;
+        for g in list {
+            let above = (g.dim, g.pos + IVec3::Y);
+            let late = start.elapsed() > Duration::from_millis(15);
+            if late || pending.contains(&above) || self.dims[g.dim as usize].generating.contains(&above.1) {
+                self.backlog.push_back(g);
+                continue;
             }
-            self.dims[g.dim as usize].insert(c, g.pos, g.cube, &g.entities);
+            pending.remove(&(g.dim, g.pos));
+            let t = Instant::now();
+            self.dims[g.dim as usize].insert(c, g.pos, g.cube, &g.entities, g.conn);
+            self.shared.insert_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            self.shared.inserted.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -408,6 +477,13 @@ impl Server {
                     return;
                 }
                 let p = &mut self.players[pi];
+                if let Some(t) = p.teleported {
+                    if (pos - t).length_squared() > 16.0 {
+                        return;
+                    }
+                    p.teleported = None;
+                    p.last_y = pos.y;
+                }
                 let dy = pos.y - p.last_y;
                 p.last_y = pos.y;
                 let mut land = None;
@@ -702,10 +778,14 @@ impl Server {
         if p.dim != to {
             p.dim = to;
             p.sent.clear();
+            p.gen_done = None;
+            p.sync_done = None;
+            p.visible.clear();
             p.known.clear();
         }
         p.last_y = pos.y;
         p.fall = 0.0;
+        p.teleported = Some(pos);
         p.conn.send(ToClient::Teleport { dim: to, pos });
         p.conn.send(ToClient::Time { dim: to, time: dims[to as usize].time });
     }
@@ -762,11 +842,22 @@ impl Server {
                 }
                 Err(_) => "usage: /time set ticks".into(),
             },
-            ["summon", kind] => match (c.game.entity_names.get(&full(kind)), self.region(pi)) {
+            ["summon", kind, rest @ ..] => match (c.game.entity_names.get(&full(kind)), self.region(pi)) {
                 (Some(&k), Some((r, _))) => {
+                    let count: u32 = rest.first().and_then(|n| n.parse().ok()).unwrap_or(1);
                     let (sy, cy) = (yaw as f64).sin_cos();
-                    r.spawn(c, k, here + DVec3::new(-sy, 0.0, -cy) * 3.0);
-                    format!("summoned {}", full(kind))
+                    if count == 1 {
+                        r.spawn(c, k, here + DVec3::new(-sy, 0.0, -cy) * 3.0);
+                    } else {
+                        // A disc in front of the player, a little above ground so nobody spawns inside it.
+                        let radius = (count as f64).sqrt() * 1.5;
+                        for i in 0..count {
+                            let a = i as f64 * 2.399963;
+                            let d = radius * ((i as f64 + 0.5) / count as f64).sqrt();
+                            r.spawn(c, k, here + DVec3::new(-sy, 0.0, -cy) * (radius + 4.0) + DVec3::new(a.cos() * d, 1.0, a.sin() * d));
+                        }
+                    }
+                    format!("summoned {count} {}", full(kind))
                 }
                 _ => format!("unknown entity {}", full(kind)),
             },
@@ -844,31 +935,69 @@ impl Server {
     /// Cubes players need, nearest columns first and each column top-down; loading and
     /// generation run on the rayon pool.
     fn request_generation(&mut self, c: &'static Content) {
-        let budget = rayon::current_num_threads() * 4;
-        let in_flight: usize = self.dims.iter().map(|d| d.generating.len()).sum();
+        // Enough jobs to keep every worker busy for a whole tick; the backlog counts too so
+        // generation never runs far ahead of lighting.
+        let budget = rayon::current_num_threads() * 16;
+        let in_flight: usize = self.dims.iter().map(|d| d.generating.len()).sum::<usize>() + self.backlog.len();
         if in_flight >= budget {
             return;
         }
         let queued: FxHashSet<(u32, IVec3)> = self.backlog.iter().map(|g| (g.dim, g.pos)).collect();
         let mut wanted: Vec<(i32, u32, IVec3)> = Vec::new();
-        for p in self.players.iter().filter(|p| p.joined) {
+        for pi in 0..self.players.len() {
+            let p = &self.players[pi];
+            if !p.joined {
+                continue;
+            }
             let (center, r, h) = self.view(p);
-            let dim = &self.dims[p.dim as usize];
-            let def = &c.dims[p.dim as usize];
+            let pdim = p.dim;
+            let key = (pdim, center, r, h, self.dims[pdim as usize].settled_version());
+            if p.gen_done == Some(key) {
+                continue;
+            }
+            let def = &c.dims[pdim as usize];
             let (lo, hi) = loaded_y_range(def, center.y, h);
-            for y in lo..=hi {
+            let in_view = |pos: IVec3| {
+                let d = pos - center;
+                d.x * d.x + d.z * d.z <= r * r && d.y.abs() <= h && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
+            };
+            let dim = &mut self.dims[pdim as usize];
+            let (visible, mut missing) = dim.visible(c, center, in_view, NEAR);
+            // Above the view the column is loaded up to open sky, so light coming down is right.
+            let sky_column = |pos: IVec3| {
+                let d = pos - center;
+                d.x * d.x + d.z * d.z <= r * r && pos.y > center.y + h && pos.y <= hi
+            };
+            for y in center.y + h + 1..=hi {
                 for dz in -r..=r {
                     for dx in -r..=r {
-                        if dx * dx + dz * dz > r * r {
-                            continue;
-                        }
                         let pos = IVec3::new(center.x + dx, y, center.z + dz);
-                        if !dim.has(pos) && !dim.generating.contains(&pos) && !queued.contains(&(p.dim, pos)) {
-                            wanted.push(((dx * dx + dz * dz) * 64 - y, p.dim, pos));
+                        if sky_column(pos) && !dim.has(pos) {
+                            missing.push(pos);
                         }
                     }
                 }
             }
+            // Columns capped by ground nobody will load are dark from above: their light is final.
+            let tops: Vec<IVec3> = visible
+                .iter()
+                .copied()
+                .filter(|&p| dim.has(p) && !dim.settled(p) && !dim.has(p + IVec3::Y) && !visible.contains(&(p + IVec3::Y)) && !sky_column(p + IVec3::Y))
+                .collect();
+            for t in tops {
+                dim.settle_down(t);
+            }
+            let _ = lo;
+            for &pos in &missing {
+                if !dim.generating.contains(&pos) && !queued.contains(&(pdim, pos)) {
+                    // Nearest columns first, each from the top down.
+                    let d = pos - center;
+                    wanted.push(((d.x * d.x + d.z * d.z) * 64 - pos.y, pdim, pos));
+                }
+            }
+            let p = &mut self.players[pi];
+            p.gen_done = missing.is_empty().then_some(key);
+            p.visible = visible;
         }
         if wanted.is_empty() {
             return;
@@ -880,10 +1009,15 @@ impl Server {
             let tx = self.gen_tx.clone();
             let seed = self.cfg.seed;
             let storage = self.storage.clone();
+            let shared = self.shared.clone();
             rayon::spawn(move || {
+                let t = Instant::now();
                 let loaded = storage.and_then(|s| s.lock().load(dim, pos));
                 let (cube, entities) = loaded.unwrap_or_else(|| (dim::generate(content(), dim, seed, pos), Vec::new()));
-                let _ = tx.send(Generated { dim, pos, cube, entities });
+                let conn = dim::see_through(content(), &cube);
+                shared.gen_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                shared.generated.fetch_add(1, Ordering::Relaxed);
+                let _ = tx.send(Generated { dim, pos, cube, entities, conn });
             });
         }
     }
@@ -918,6 +1052,7 @@ impl Server {
             worn.push(w);
         }
 
+        let mut unsent = 0u64;
         for pi in 0..self.players.len() {
             if !self.players[pi].joined {
                 continue;
@@ -931,7 +1066,7 @@ impl Server {
             for reg in &dim.regions {
                 for (pos, cube) in &reg.resend {
                     if p.sent.contains(pos) {
-                        p.conn.send(ToClient::Cube { dim: p.dim, pos: *pos, cube: cube.clone() });
+                        p.conn.send(ToClient::Cube { dim: p.dim, pos: *pos, cube: cube.clone(), hidden: crate::net::KEEP_HIDDEN });
                     }
                 }
                 if !reg.changes.is_empty() {
@@ -1026,6 +1161,10 @@ impl Server {
                 }
             }
 
+            let key = (p.dim, center, r, h, dim.settled_version());
+            if p.sync_done == Some(key) {
+                continue;
+            }
             let in_range = |pos: IVec3| {
                 let d = pos - center;
                 d.x * d.x + d.z * d.z <= r * r && d.y.abs() <= h && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
@@ -1041,7 +1180,7 @@ impl Server {
                         }
                         let ready = crate::world::DIRS.iter().all(|d| {
                             let n = pos + *d;
-                            dim.has(n) || !in_range(n)
+                            dim.has(n) || !in_range(n) || !p.visible.contains(&n)
                         });
                         if ready {
                             to_send.push((dx * dx + dz * dz + dy * dy, pos));
@@ -1050,9 +1189,14 @@ impl Server {
                 }
             }
             to_send.sort_by_key(|t| t.0);
+            unsent += to_send.len().saturating_sub(512) as u64;
             for &(_, pos) in to_send.iter().take(512) {
                 if let Some(cube) = dim.snapshot(pos) {
-                    p.conn.send(ToClient::Cube { dim: p.dim, pos, cube });
+                    let hidden = crate::world::DIRS.iter().enumerate().fold(0u8, |m, (i, d)| {
+                        let n = pos + *d;
+                        if dim.has(n) || (in_range(n) && p.visible.contains(&n)) { m } else { m | 1 << i }
+                    });
+                    p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, hidden });
                     p.sent.insert(pos);
                 }
             }
@@ -1065,11 +1209,15 @@ impl Server {
                     d.x * d.x + d.z * d.z > (r + 2) * (r + 2) || d.y.abs() > h + 2
                 })
                 .collect();
+            p.sync_done = (to_send.is_empty() && far.is_empty()).then_some(key);
             for pos in far {
                 p.sent.remove(&pos);
                 p.conn.send(ToClient::Unload { dim: p.dim, pos });
             }
         }
+        self.shared.unsent.store(unsent, Ordering::Relaxed);
+        let pending = self.backlog.len() + self.dims.iter().map(|d| d.generating.len()).sum::<usize>();
+        self.shared.pending.store(pending as u64, Ordering::Relaxed);
         for d in &mut self.dims {
             for r in &mut d.regions {
                 r.resend.clear();

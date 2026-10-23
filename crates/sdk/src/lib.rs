@@ -2,12 +2,14 @@
 
 pub use voxide_abi as abi;
 
+mod cache;
 mod content;
 mod game;
 mod ui;
 mod world;
 
 pub use abi::{ItemStack, worn_parts};
+pub use cache::ColumnCache;
 pub use content::*;
 pub use game::*;
 pub use ui::*;

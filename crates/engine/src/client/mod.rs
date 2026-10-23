@@ -174,7 +174,7 @@ impl Client {
                         self.world.dim = dim;
                     }
                 }
-                ToClient::Cube { dim, pos, cube } if dim == self.world.dim => self.world.insert(pos, cube),
+                ToClient::Cube { dim, pos, cube, hidden } if dim == self.world.dim => self.world.insert(pos, cube, hidden),
                 ToClient::Unload { dim, pos } if dim == self.world.dim => self.world.remove(pos),
                 ToClient::Blocks { dim, changes } if dim == self.world.dim => {
                     for (p, s) in changes {
@@ -535,10 +535,12 @@ impl Client {
         };
         let cam = self.camera();
         self.render.draw(gpu, list, frame, &cam, &params);
+        list.push(voxide_render::Cmd::Mark);
         self.entity_render.fog = (params.fog_color.extend(1.0).to_array(), params.fog_start, params.fog_end);
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
         self.entity_render.draw(gpu, list, frame, &cam, &self.entities, textures, &light, day, self.target, self.breaking);
+        list.push(voxide_render::Cmd::Mark);
     }
 
     pub fn fog_color(&self) -> [f32; 4] {

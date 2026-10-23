@@ -125,10 +125,11 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.dvec(*pos);
             w.u64(*seed);
         }
-        ToClient::Cube { dim, pos, cube } => {
+        ToClient::Cube { dim, pos, cube, hidden } => {
             w.u8(1);
             w.u32(*dim);
             w.ivec(*pos);
+            w.u8(*hidden);
             let mut raw = Vec::new();
             cube.write(&mut raw, |s| s);
             w.bytes(&raw);
@@ -278,10 +279,11 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
         1 => {
             let dim = r.u32()?;
             let pos = r.ivec()?;
+            let hidden = r.u8()?;
             let raw = r.bytes()?;
             let max = crate::content::content().states.len() as u32;
             let cube = Cube::read(&mut &raw[..], |s| if s < max { s } else { 0 })?;
-            ToClient::Cube { dim, pos, cube: Arc::new(cube) }
+            ToClient::Cube { dim, pos, cube: Arc::new(cube), hidden }
         }
         2 => ToClient::Unload { dim: r.u32()?, pos: r.ivec()? },
         3 => {

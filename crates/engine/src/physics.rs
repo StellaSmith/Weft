@@ -58,8 +58,10 @@ pub fn move_box(
     let mut boxes_buf = Vec::new();
     let mut collect = |area: Aabb| -> Vec<Aabb> {
         let mut out = Vec::new();
-        let lo = area.min.floor().as_ivec3() - IVec3::ONE;
-        let hi = area.max.floor().as_ivec3() + IVec3::ONE;
+        // One extra layer below for collision boxes taller than a block (fences); everything
+        // else stays inside its own block.
+        let lo = area.min.floor().as_ivec3() - IVec3::Y;
+        let hi = area.max.floor().as_ivec3();
         for y in lo.y..=hi.y {
             for z in lo.z..=hi.z {
                 for x in lo.x..=hi.x {

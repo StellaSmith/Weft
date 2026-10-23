@@ -17,6 +17,8 @@ pub struct Entity {
     pub pitch: f32,
     pub on_ground: bool,
     pub in_liquid: bool,
+    /// The last move hit something sideways.
+    pub blocked: bool,
     pub fall: f32,
     pub moved: f32,
     pub health: f32,
@@ -46,6 +48,7 @@ impl Entity {
             kind,
             pos,
             vel: DVec3::ZERO,
+            blocked: false,
             yaw: 0.0,
             pitch: 0.0,
             on_ground: false,
@@ -73,7 +76,7 @@ impl Entity {
         let k = &c.game.entities[self.kind as usize];
         voxide_abi::EntityState {
             kind: self.kind,
-            flags: k.flags,
+            flags: k.flags | if self.blocked { ef::BLOCKED } else { 0 },
             pos: self.pos.to_array(),
             vel: self.vel.to_array(),
             yaw: self.yaw,
@@ -266,6 +269,15 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
             e.vel.z *= f;
         }
     }
+    let step_h = if e.item.is_empty() && e.on_ground { 0.6 } else { 0.0 };
+    let r = physics::move_box(c, block, e.pos, k.width as f64 / 2.0, k.height as f64, e.vel * DT, step_h);
+    e.pos = r.pos;
+    for i in 0..3 {
+        if r.hit[i] {
+            e.vel[i] = 0.0;
+        }
+    }
+    // Gravity after the move, like vanilla: a jump then rises its full 1.25 blocks.
     if !k.is(ef::NO_GRAVITY) {
         if e.in_liquid {
             e.vel.y -= gravity * DT * 0.2;
@@ -278,14 +290,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
             e.vel.y *= 0.98;
         }
     }
-    let step_h = if e.item.is_empty() && e.on_ground { 0.6 } else { 0.0 };
-    let r = physics::move_box(c, block, e.pos, k.width as f64 / 2.0, k.height as f64, e.vel * DT, step_h);
-    e.pos = r.pos;
-    for i in 0..3 {
-        if r.hit[i] {
-            e.vel[i] = 0.0;
-        }
-    }
+    e.blocked = r.hit[0] || r.hit[2];
     let was_ground = e.on_ground;
     e.on_ground = r.on_ground;
     let dy = e.pos.y - start.y;

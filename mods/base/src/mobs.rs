@@ -12,8 +12,6 @@ pub struct Brain {
     pub wander: [f32; 2],
     pub cooldown: u32,
     pub panic: u32,
-    /// Position last tick while walking (NaN when it stood still), to notice being stuck.
-    pub last: [f32; 2],
 }
 
 pub static BRAIN: Component<Brain> = Component::new();
@@ -25,7 +23,7 @@ pub static COW: Entity = Entity::new();
 struct Drop(&'static str, u32, u32);
 
 pub fn register(r: &mut Registry) {
-    r.component("brain", &BRAIN, Brain { last: [f32::NAN; 2], ..Default::default() }, 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
+    r.component("brain", &BRAIN, Brain::default(), 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
     r.entity("zombie", &ZOMBIE)
         .size(0.6, 1.95)
         .health(20.0)
@@ -96,6 +94,11 @@ fn yaw_of(dir: [f32; 2]) -> f32 {
     (-dir[0]).atan2(-dir[1])
 }
 
+/// Walked into a wall while on the ground: jump to climb it.
+fn blocked(st: &EntityState) -> bool {
+    st.on_ground != 0 && st.flags & entity_flags::BLOCKED != 0
+}
+
 /// Chase the nearest player in range, hit when close, jump over steps.
 fn hostile_ai(t: &EntityTick, damage: f32, only_dark: bool) {
     let w = t.world();
@@ -113,15 +116,10 @@ fn hostile_ai(t: &EntityTick, damage: f32, only_dark: bool) {
             .map(|(p, s)| (p, s, dir_to(st.pos, s.pos)))
             .filter(|(_, s, (_, d))| *d < 18.0 && (s.pos[1] - st.pos[1]).abs() < 8.0)
             .min_by(|a, b| a.2.1.total_cmp(&b.2.1));
-        let Some(b) = w.component(id, &BRAIN) else { continue };
         match target.filter(|_| aggressive) {
             Some((p, ps, (dir, dist))) => {
-                let stuck = st.on_ground != 0 && (st.pos[0] as f32 - b.last[0]).abs() + (st.pos[2] as f32 - b.last[1]).abs() < 0.02;
-                b.last = [st.pos[0] as f32, st.pos[2] as f32];
                 if dist > 1.0 {
-                    w.walk(id, dir, 1.0, stuck);
-                } else {
-                    b.last = [f32::NAN; 2];
+                    w.walk(id, dir, 1.0, blocked(&st));
                 }
                 st.yaw = yaw_of(dir);
                 st.pitch = 0.0;
@@ -171,12 +169,8 @@ fn wander(w: &World, id: u64, st: &mut EntityState, speed: f32) {
     }
     b.timer -= 1;
     let dir = b.wander;
-    if dir == [0.0, 0.0] {
-        b.last = [f32::NAN; 2];
-    } else {
-        let stuck = st.on_ground != 0 && (st.pos[0] as f32 - b.last[0]).abs() + (st.pos[2] as f32 - b.last[1]).abs() < 0.01;
-        b.last = [st.pos[0] as f32, st.pos[2] as f32];
-        w.walk(id, dir, speed, stuck);
+    if dir != [0.0, 0.0] {
+        w.walk(id, dir, speed, blocked(st));
         st.yaw = yaw_of(dir);
         w.set_entity(id, st);
     }

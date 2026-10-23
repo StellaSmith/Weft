@@ -388,6 +388,8 @@ pub mod entity_flags {
     /// Burns in daylight (undead).
     pub const BURNS_IN_SUN: u32 = 16;
     pub const SWIMS: u32 = 32;
+    /// Not a kind flag: set in `EntityState::flags` when its last move ran into a wall.
+    pub const BLOCKED: u32 = 1 << 31;
 }
 
 /// Which body part a model piece is, so the engine can animate it (walk cycle, head look).

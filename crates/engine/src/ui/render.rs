@@ -117,17 +117,7 @@ fn load_shader() -> Result<Shader, ShaderError> {
 impl UiRenderer {
     pub fn new(gpu: &mut dyn Backend, assets: &Assets) -> Result<UiRenderer, String> {
         let pipeline = Self::pipeline(gpu)?;
-        let src = assets
-            .read("core:fonts/unifont", "", "hex")
-            .or_else(|| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/unifont.hex")).ok())
-            .ok_or("font missing")?;
-        let font = Font::parse_hex(&String::from_utf8_lossy(&src));
-        let font_tex = gpu.create_texture(
-            &TextureDesc { width: font.atlas_width, height: font.atlas_height, layers: None, mips: 1, format: Format::R8Unorm, render_target: false },
-            "font",
-        );
-        gpu.write_texture(font_tex, 0, &font.atlas);
-        let font_idx = gpu.texture_index(font_tex);
+        let (font, font_tex, font_idx) = Self::load_font(gpu, assets).ok_or("font missing")?;
         let frames = gpu.frames_in_flight();
         let screen = (0..frames).map(|_| gpu.create_buffer(16, usage::STORAGE | usage::HOST, "ui screen")).collect();
         Ok(UiRenderer {
@@ -146,6 +136,23 @@ impl UiRenderer {
         })
     }
 
+    /// `core:fonts/default` (atlas and its `.font`) over `core:fonts/unifont`; packs can replace either.
+    fn load_font(gpu: &mut dyn Backend, assets: &Assets) -> Option<(Font, TextureId, u32)> {
+        let builtin = |f: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts").join(f)).ok();
+        let hex = assets.read("core:fonts/unifont", "", "hex").or_else(|| builtin("unifont.hex"))?;
+        let desc = assets.read("core:fonts/default", "", "font").or_else(|| builtin("default.font"));
+        let img = assets.read("core:fonts/default", "", "png").or_else(|| builtin("default.png")).and_then(|b| crate::assets::decode_png(&b));
+        let desc = desc.map(|d| String::from_utf8_lossy(&d).into_owned());
+        let font = Font::new(&String::from_utf8_lossy(&hex), desc.as_deref().zip(img.as_ref()));
+        let tex = gpu.create_texture(
+            &TextureDesc { width: font.atlas_width, height: font.atlas_height, layers: None, mips: 1, format: Format::R8Unorm, render_target: false },
+            "font",
+        );
+        gpu.write_texture(tex, 0, &font.atlas);
+        let idx = gpu.texture_index(tex);
+        Some((font, tex, idx))
+    }
+
     fn pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
         let shader = load_shader().map_err(|e| e.0)?;
         gpu.create_pipeline(&PipelineDesc {
@@ -162,7 +169,11 @@ impl UiRenderer {
         .map_err(|e| e.0)
     }
 
-    pub fn reload(&mut self, gpu: &mut dyn Backend) {
+    pub fn reload(&mut self, gpu: &mut dyn Backend, assets: &Assets) {
+        if let Some((font, tex, idx)) = Self::load_font(gpu, assets) {
+            gpu.destroy_texture(self.font_tex);
+            (self.font, self.font_tex, self.font_idx) = (font, tex, idx);
+        }
         match Self::pipeline(gpu) {
             Ok(p) => {
                 gpu.destroy_pipeline(self.pipeline);
@@ -287,7 +298,7 @@ impl UiRenderer {
             if pass && shadow.is_none() {
                 continue;
             }
-            let off = if pass { px } else { 0.0 };
+            let off = if pass { px * self.font.pixel } else { 0.0 };
             for it in items {
                 match *it {
                     Placed::Glyph { x: gx, y: gy, ch, color } => {
@@ -548,7 +559,8 @@ impl UiRenderer {
                 let state = if t.class == "dim" && surface.is_some_and(|s| theme.get(s, "dim_text").is_some()) { "dim_text" } else { state };
                 let class = if state == "dim_text" { surface.unwrap_or(class) } else { class };
                 let default = t.color.unwrap_or_else(|| theme.color(class, state, theme.color(class, "text", 0xFFFFFFFF)));
-                let shadow = if parent_disabled { None } else { theme.get(class, "shadow").map(|_| theme.color(class, "shadow", 0x3F3F3FFF)) };
+                // `none` turns off a shadow the default class would give (dark text on light panels).
+                let shadow = if parent_disabled { None } else { theme.get(class, "shadow").filter(|v| *v != "none").map(|_| theme.color(class, "shadow", 0x3F3F3FFF)) };
                 let x = if t.center { r.x + (r.w - t.layout.width * px) / 2.0 } else { r.x };
                 self.glyph_run(&t.layout.items, x, r.y, px, default, shadow, icons);
             }

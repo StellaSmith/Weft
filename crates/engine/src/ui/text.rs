@@ -150,10 +150,8 @@ pub fn layout_spaced(spans: &[Span], font: &Font, max_width: Option<f32>, line_h
     layout_with(spans, font, max_width, line_height, false)
 }
 
-/// Every glyph in a cell of the same width (9 font pixels, 17 for wide characters), so changing
+/// With `mono` every glyph takes a cell as wide as a digit (two for wide characters), so changing
 /// numbers do not shift the text after them (debug overlay).
-const MONO: f32 = 9.0;
-
 pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_height: f32, mono: bool) -> TextLayout {
     let lh = line_height;
     let mut out = TextLayout::default();
@@ -219,8 +217,8 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
                         last_break = Some((out.items.len(), x));
                     }
                     if mono {
-                        let cell = if adv > MONO + 1.0 { MONO * 2.0 - 1.0 } else { MONO };
-                        out.items.push(Placed::Glyph { x: x + ((cell - adv) / 2.0).floor(), y, ch, color: span.color });
+                        let cell = if adv > font.mono + 1.0 { font.mono * 2.0 } else { font.mono };
+                        out.items.push(Placed::Glyph { x: x + ((cell - adv) / (2.0 * font.pixel)).floor() * font.pixel, y, ch, color: span.color });
                         x += cell;
                     } else {
                         out.items.push(Placed::Glyph { x, y, ch, color: span.color });

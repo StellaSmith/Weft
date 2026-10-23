@@ -2,6 +2,7 @@
 panel.texture = base:gui/panel
 panel.text = #404040
 panel.dim_text = #6a6a6a
+panel.shadow = none
 button.texture = base:gui/button
 button.hover = base:gui/button_hover
 button.pressed = base:gui/button_pressed
@@ -40,3 +41,4 @@ chat.shadow = #202020
 debug.text = #ffffff
 debug.shadow = #202020
 label.text = #404040
+label.shadow = none

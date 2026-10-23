@@ -1,0 +1,13 @@
+# Each row line lists the characters of one atlas row, left to right.
+cell = 8 8
+row = ABCDEFGHIJKLMNOP
+row = QRSTUVWXYZabcdef
+row = ghijklmnopqrstuv
+row = wxyz0123456789!"
+row = #$%&'()*+,-./:;<
+row = =>?@[\]^_`{|}~«»
+row = —–…°×·АВЕКМНОРСТ
+row = ХаеорсухБГДЁЖЗИЙ
+row = ЛПУФЦЧШЩЪЫЬЭЮЯбв
+row = гдёжзийклмнптфцч
+row = шщъыьэюя

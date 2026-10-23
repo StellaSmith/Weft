@@ -1045,7 +1045,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         crate::packs::set_shader_pack(r.settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
         r.assets.rescan();
         r.hud.load_layout(&opts.run_dir);
-        r.ui.reload(&mut *r.gpu);
+        r.ui.reload(&mut *r.gpu, &r.assets);
         r.theme = Theme::load(&r.assets);
         r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);
         r.textures.destroy(&mut *r.gpu);
@@ -1174,7 +1174,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.poll_bindings();
     let surface = r.gpu.surface_size();
     let gui_size = Vec2::new(surface.0 as f32, surface.1 as f32) / scale;
-    let text_unit = (scale * 0.5).round().max(1.0) / scale;
+    // Whole physical pixels per pixel of the font's design.
+    let p = r.ui.font.pixel;
+    let text_unit = (scale * 0.5 * p).round().max(1.0) / (scale * p);
     {
         let mut uis: Vec<&mut Ui> = Vec::new();
         if r.game.is_some() {

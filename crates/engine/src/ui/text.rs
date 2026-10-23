@@ -86,7 +86,7 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, bas
         } else if tag == "/" {
             color = base;
         } else if let Some(action) = tag.strip_prefix("key:") {
-            let name = cx.input.and_then(|i| i.key_of(action)).map(key_name).unwrap_or_else(|| "?".into());
+            let name = cx.input.and_then(|i| i.key_of(action)).map(|k| display_key(cx.lang, k)).unwrap_or_else(|| "?".into());
             push_text(out, &format!("[{name}]"), Some(color.unwrap_or(0xFFE070)));
         } else if let Some(item) = tag.strip_prefix("item:") {
             if let Some(id) = (cx.item_name)(item) {
@@ -222,6 +222,13 @@ pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout
     out.height = y + lh;
     out.lines = (out.height / lh).round() as u32;
     out
+}
+
+/// A key's name for players: translated (`keyname.ShiftLeft`) when the language has it.
+pub fn display_key(lang: &Lang, k: crate::input::Key) -> String {
+    let raw = key_name(k);
+    let tr = format!("keyname.{raw}");
+    if lang.has(&tr) { lang.get(&tr).to_string() } else { raw }
 }
 
 pub fn plain(s: &str) -> Vec<Span> {

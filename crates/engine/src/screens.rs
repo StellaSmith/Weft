@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use crate::app::{Ctx, Request};
-use crate::input::{Input, Key, key_name};
+use crate::input::{Input, Key};
 use crate::settings::Settings;
 use crate::ui::lang::Lang;
 use crate::ui::text::{self, Arg, Span};
@@ -194,7 +194,7 @@ fn slider(ui: &mut Ui, key: &str, min: f32, max: f32, step: f32, get: fn(&Settin
                     set(c, v.clamp(min, max));
                 }),
             },
-            Style::default().h(12.0).stretch(),
+            Style::default().h(20.0).stretch(),
         );
     });
 }
@@ -269,7 +269,7 @@ impl Screen for Controls {
             if let Some(a) = &waiting {
                 label(ui, cx, "controls.press", &[Arg::Key(format!("key.{}", a.replace(':', ".")))], "default");
             }
-            ui.panel("panel", Style::default().pad(8.0).gap(3.0).stretch().w(380.0), |ui| {
+            let list = ui.panel("panel", Style::default().pad(8.0).gap(3.0).stretch().w(380.0).h(0.0).grow().min_h(60.0).scroll(), |ui| {
                 for b in &cx.input.binds {
                     let action = b.action.clone();
                     let name_key = format!("key.{}", b.action.replace(':', "."));
@@ -277,7 +277,7 @@ impl Screen for Controls {
                         .iter()
                         .filter_map(|(x, y)| if *x == b.action { Some(y.clone()) } else if *y == b.action { Some(x.clone()) } else { None })
                         .collect();
-                    ui.container(Style::row().gap(6.0).stretch(), |ui| {
+                    ui.container(Style::row().gap(6.0).self_align(crate::ui::Align::Stretch), |ui| {
                         let n = ui.text(cx.t(&name_key, &[]), "default");
                         ui.nodes[n].style.grow = 1.0;
                         if !clash.is_empty() {
@@ -285,10 +285,10 @@ impl Screen for Controls {
                             ui.text(cx.t("controls.conflict", &[Arg::Text(names.join(", "))]), "default");
                         }
                         let a2 = action.clone();
-                        let kb = ui.button("button", Style::default().w(70.0).h(16.0), Rc::new(move |c: &mut Ctx| {
+                        let kb = ui.button("button", Style::default().w(70.0).h(20.0), Rc::new(move |c: &mut Ctx| {
                             c.requests.push(Request::WaitKey(a2.clone()));
                         }), |ui| {
-                            ui.text(text::plain(&key_name(b.key)), "button");
+                            ui.text(text::plain(&text::display_key(cx.lang, b.key)), "button");
                         });
                         if let Kind::Button { selected, .. } = &mut ui.nodes[kb].kind {
                             *selected = waiting.as_deref() == Some(action.as_str());
@@ -296,6 +296,7 @@ impl Screen for Controls {
                     });
                 }
             });
+            ui.set_id(list, "controls");
             ui.container(Style::row().gap(6.0), |ui| {
                 button(ui, cx, "controls.reset", &[], 120.0, |c| c.requests.push(Request::ResetBinds));
                 button(ui, cx, "menu.done", &[], 120.0, |c| {

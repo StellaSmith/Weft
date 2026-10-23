@@ -329,6 +329,41 @@ impl Storage {
 
 // ---------------------------------------------------------------- screens
 
+/// Asks before a world is deleted; deleting moves it to `saves/.trash` so a misclick is recoverable.
+pub struct ConfirmDelete {
+    world: WorldMeta,
+}
+
+impl Screen for ConfirmDelete {
+    fn name(&self) -> &str {
+        "core:confirm_delete"
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        let name = self.world.name.clone();
+        frame(ui, cx, "world.delete.title", |ui| {
+            label(ui, cx, "world.delete.question", &[Arg::Text(name)], "default");
+            label(ui, cx, "world.delete.note", &[], "dim");
+            ui.container(Style::row().gap(6.0), |ui| {
+                let dir = self.world.dir.clone();
+                button(ui, cx, "world.delete", &[], 145.0, move |c| {
+                    if let (Some(parent), Some(leaf)) = (dir.parent(), dir.file_name()) {
+                        let trash = parent.join(".trash");
+                        let _ = std::fs::create_dir_all(&trash);
+                        let target = trash.join(format!("{}-{}", leaf.to_string_lossy(), now_secs()));
+                        if std::fs::rename(&dir, &target).is_err() {
+                            let _ = std::fs::remove_dir_all(&dir);
+                        }
+                    }
+                    c.requests.push(Request::Close);
+                    c.requests.push(Request::SelectWorld(usize::MAX));
+                });
+                button(ui, cx, "menu.cancel", &[], 145.0, |c| c.requests.push(Request::Close));
+            });
+        });
+    }
+}
+
 #[derive(Default)]
 pub struct WorldSelect {
     selected: Option<usize>,
@@ -380,8 +415,7 @@ impl Screen for WorldSelect {
                 let sel = selected.and_then(|i| worlds.get(i)).cloned();
                 let del = button(ui, cx, "world.delete", &[], 145.0, move |c| {
                     if let Some(w) = &sel {
-                        let _ = std::fs::remove_dir_all(&w.dir);
-                        c.requests.push(Request::SelectWorld(usize::MAX));
+                        c.requests.push(Request::Open(Box::new(ConfirmDelete { world: w.clone() })));
                     }
                 });
                 if let Kind::Button { enabled, .. } = &mut ui.nodes[del].kind {

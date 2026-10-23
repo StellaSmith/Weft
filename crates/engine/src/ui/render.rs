@@ -294,7 +294,7 @@ impl UiRenderer {
         self.quads.clear();
         self.icon_clips.clear();
         let mut icons = Vec::new();
-        self.node(gpu, assets, ui, theme, 0, scale, &mut icons, custom);
+        self.node(gpu, assets, ui, theme, 0, scale, &mut icons, custom, None);
         if let Some((c, t)) = game {
             let clips = std::mem::take(&mut self.icon_clips);
             for (i, (x, y, s, item)) in icons.into_iter().enumerate() {
@@ -354,6 +354,7 @@ impl UiRenderer {
         scale: f32,
         icons: &mut Vec<(f32, f32, f32, u32)>,
         custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool),
+        surface: Option<&str>,
     ) {
         let n = &ui.nodes[id];
         let r = Rect { x: n.rect.x * scale, y: n.rect.y * scale, w: n.rect.w * scale, h: n.rect.h * scale };
@@ -389,10 +390,20 @@ impl UiRenderer {
             }
             Kind::Text(t) => {
                 let px = scale * ui.text_unit * t.scale;
-                let parent_hover = ui.hovered.is_some_and(|h| ui.nodes[h].children.contains(&id));
-                let state = if parent_hover { "hover_text" } else { "text" };
-                let default = t.color.unwrap_or_else(|| theme.color(&t.class, state, theme.color(&t.class, "text", 0xFFFFFFFF)));
-                let shadow = theme.get(&t.class, "shadow").map(|_| theme.color(&t.class, "shadow", 0x3F3F3FFF));
+                let parent = ui.nodes.iter().position(|p| p.children.contains(&id));
+                let parent_hover = parent.is_some_and(|p| ui.hovered == Some(p));
+                let parent_disabled = parent.is_some_and(|p| matches!(ui.nodes[p].kind, Kind::Button { enabled: false, .. }));
+                let state = if parent_disabled { "disabled_text" } else if parent_hover { "hover_text" } else { "text" };
+                // Generic classes inherit from the surface: `default` its text colour, `dim` its
+                // dim colour.
+                let class = match (t.class.as_str(), surface) {
+                    ("default", Some(s)) => s,
+                    _ => t.class.as_str(),
+                };
+                let state = if t.class == "dim" && surface.is_some_and(|s| theme.get(s, "dim_text").is_some()) { "dim_text" } else { state };
+                let class = if state == "dim_text" { surface.unwrap_or(class) } else { class };
+                let default = t.color.unwrap_or_else(|| theme.color(class, state, theme.color(class, "text", 0xFFFFFFFF)));
+                let shadow = if parent_disabled { None } else { theme.get(class, "shadow").map(|_| theme.color(class, "shadow", 0x3F3F3FFF)) };
                 let x = if t.center { r.x + (r.w - t.layout.width * px) / 2.0 } else { r.x };
                 self.glyph_run(&t.layout.items, x, r.y, px, default, shadow, icons);
             }
@@ -438,10 +449,17 @@ impl UiRenderer {
             }
             Kind::Icons { .. } => {}
             Kind::Slider { value, .. } => {
-                let track = Rect { x: r.x, y: r.y + r.h * 0.4, w: r.w, h: r.h * 0.2 };
-                self.rect(track, theme.color("slider", "track", 0x404040FF));
-                let k = Rect { x: r.x + (r.w - 6.0 * scale) * value.clamp(0.0, 1.0), y: r.y, w: 6.0 * scale, h: r.h };
-                self.rect(k, theme.color("slider", if hovered { "knob_hover" } else { "knob" }, 0xC0C0C0FF));
+                let k = Rect { x: r.x + (r.w - 8.0 * scale) * value.clamp(0.0, 1.0), y: r.y, w: 8.0 * scale, h: r.h };
+                let track = theme.get("slider", "track").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n));
+                let knob = theme.get("slider", if hovered { "knob_hover" } else { "knob" }).or_else(|| theme.get("slider", "knob")).map(str::to_string).and_then(|n| self.texture(gpu, assets, &n));
+                match track {
+                    Some(t) => self.nine(r, t, theme.num("slider", "border", 3.0), scale, 0xFFFFFFFF),
+                    None => self.rect(Rect { x: r.x, y: r.y + r.h * 0.4, w: r.w, h: r.h * 0.2 }, theme.color("slider", "track", 0x404040FF)),
+                }
+                match knob {
+                    Some(t) => self.nine(k, t, theme.num("slider", "border", 3.0), scale, 0xFFFFFFFF),
+                    None => self.rect(k, theme.color("slider", if hovered { "knob_hover" } else { "knob" }, 0xC0C0C0FF)),
+                }
             }
             Kind::Input { value, caret, .. } => {
                 background(self, "input", if ui.focused == Some(id) { "focused" } else { "texture" });
@@ -468,6 +486,12 @@ impl UiRenderer {
             }
             Kind::Custom { tag, data } => custom(self, *tag, *data, r, hovered),
         }
+        // Children of a themed panel or button read text colours from it.
+        let own = match &n.kind {
+            Kind::Container { class: Some(c) } | Kind::Button { class: c, .. } if theme.get(c, "text").is_some() => Some(c.as_str()),
+            _ => None,
+        };
+        let inner_surface = own.or(surface);
         let clip = n.clip.map_or([0.0; 4], |c| [c.x * scale, c.y * scale, (c.x + c.w) * scale, (c.y + c.h) * scale]);
         if n.clip.is_some() {
             for q in &mut self.quads[quad_start..] {
@@ -482,7 +506,7 @@ impl UiRenderer {
         self.icon_clips.resize(icon_start, [0.0; 4]);
         self.icon_clips.resize(icons.len(), clip);
         for &c in &n.children {
-            self.node(gpu, assets, ui, theme, c, scale, icons, custom);
+            self.node(gpu, assets, ui, theme, c, scale, icons, custom, inner_surface);
         }
     }
 

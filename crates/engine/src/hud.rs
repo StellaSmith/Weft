@@ -283,6 +283,7 @@ pub fn draw_custom(
     data: u64,
     r: Rect,
     hovered: bool,
+    icon: Option<u32>,
     scale: f32,
     text_unit: f32,
 ) {
@@ -317,6 +318,10 @@ pub fn draw_custom(
             let Some(client) = client else { return };
             slot_background(ren, theme, r, false, scale);
             let stack = client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default();
+            if let (Some(t), true) = (icon, stack.is_empty()) {
+                let s = 16.0 * scale;
+                ren.image(Rect { x: r.x + (r.w - s) / 2.0, y: r.y + (r.h - s) / 2.0, w: s, h: s }, t, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
+            }
             stack_icon(ren, textures, r, stack, scale, text_unit);
             let dragged = client.drag.as_ref().is_some_and(|d| d.1.contains(&(data as u32)));
             if hovered || dragged {

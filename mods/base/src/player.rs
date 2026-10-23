@@ -95,8 +95,8 @@ pub fn register(r: &mut Registry) {
             ui.panel("panel", S::col().pad(7.0).gap(5.0), |ui| {
                 ui.row(S::row().gap(1.0), |ui| {
                     ui.column(S::col(), |ui| {
-                        for i in 5..9 {
-                            ui.slot(i);
+                        for (i, piece) in (5..9).zip(["helmet", "chestplate", "leggings", "boots"]) {
+                            ui.slot_icon(i, &format!("base:gui/slot_{piece}"));
                         }
                     });
                     ui.player_model(51.0, 72.0);
@@ -106,7 +106,7 @@ pub fn register(r: &mut Registry) {
                         ui.row(S::row().gap(4.0), |ui| {
                             ui.slots(0, 4, 2);
                             ui.image("base:gui/arrow_bg", 24.0, 16.0);
-                            ui.slot(4);
+                            ui.slot_big(4);
                         });
                     });
                 });
@@ -131,7 +131,7 @@ pub fn register(r: &mut Registry) {
                     ui.spacer();
                     ui.slots(0, 9, 3);
                     ui.image("base:gui/arrow_bg", 24.0, 16.0);
-                    ui.slot(9);
+                    ui.slot_big(9);
                     ui.spacer();
                 });
                 player_slots(ui, 10, true);

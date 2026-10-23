@@ -160,7 +160,15 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 });
                 b.ui.open(Kind::Button { class: if class.is_empty() { "button".into() } else { class }, action: Some(action), enabled: true, selected: false }, style)
             }
-            uk::SLOT => b.ui.open(Kind::Custom { tag: TAG_SLOT, data: n.slot as u64 }, Style { w: Len::Px(18.0), h: Len::Px(18.0), ..style }),
+            uk::SLOT => {
+                // Width set: a bigger slot (crafting results), text: the empty slot's silhouette.
+                let size = if n.width.is_nan() { 18.0 } else { n.width };
+                let id = b.ui.open(Kind::Custom { tag: TAG_SLOT, data: n.slot as u64 }, Style { w: Len::Px(size), h: Len::Px(size), ..style });
+                if n.text.len > 0 {
+                    b.ui.nodes[id].icon = Some(n.text.as_str().to_string());
+                }
+                id
+            }
             uk::PROGRESS => {
                 let bind: Box<dyn Fn(&Ctx) -> f32> = if n.bind.is_some() {
                     float_bind(owner, n.bind)

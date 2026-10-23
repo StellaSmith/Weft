@@ -110,6 +110,13 @@ pub struct Client {
     pub mode: GameMode,
     /// When jump was last pressed, for double-tap flight toggling.
     last_jump: Option<Instant>,
+    /// 0 first person, 1 third person from behind, 2 from the front.
+    pub view: u8,
+    /// Arm swing progress 0..1 while swinging.
+    hand_swing: Option<f32>,
+    /// Own walk distance and swing amplitude, for the third person model and view bobbing.
+    self_walk: f32,
+    self_swing: f32,
     /// Held item and when it became held: its name shows above the hotbar for a moment.
     pub held_name: (u32, Instant),
     /// Names of the players online, for completion.
@@ -181,6 +188,10 @@ impl Client {
             held_name: (0, Instant::now()),
             mode: GameMode::Survival,
             last_jump: None,
+            view: 0,
+            hand_swing: None,
+            self_walk: 0.0,
+            self_swing: 0.0,
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -435,6 +446,23 @@ impl Client {
         let moving = input.held("core:forward");
         let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
         self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
+        if input.pressed("core:perspective") && input.captured {
+            self.view = (self.view + 1) % 3;
+        }
+        let speed = self.player.vel.with_y(0.0).length() as f32;
+        self.self_walk += speed * dt as f32;
+        let k_swing = (dt * 10.0).min(1.0) as f32;
+        let amp = if self.player.on_ground || self.player.flying { (speed / 4.3).min(1.0) } else { 0.0 };
+        self.self_swing += (amp - self.self_swing) * k_swing;
+        if let Some(p) = &mut self.hand_swing {
+            *p += dt as f32 / 0.3;
+            if *p >= 1.0 {
+                self.hand_swing = None;
+            }
+        }
+        if input.captured && !spectator && (input.pressed("core:attack") || input.pressed("core:use") || (input.held("core:attack") && self.breaking.is_some())) && self.hand_swing.is_none() {
+            self.hand_swing = Some(0.0);
+        }
         if input.pressed("core:drop") && !spectator {
             self.conn.send(ToServer::Drop { all: input.held("core:sprint") });
         }
@@ -584,6 +612,51 @@ impl Client {
         Camera { pos: self.player.pos + DVec3::Y * self.player.eye, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov * self.player.fov_mul }
     }
 
+    /// The camera drawn from: the eye, or up to 4 blocks behind or in front of it in third person,
+    /// pulled in where a block is in the way.
+    pub fn render_camera(&self) -> Camera {
+        let eye = self.camera();
+        if self.view == 0 {
+            return eye;
+        }
+        let front = self.view == 2;
+        let mut cam = eye;
+        if front {
+            cam.yaw += std::f32::consts::PI;
+            cam.pitch = -cam.pitch;
+        }
+        let back = -cam.forward().as_dvec3();
+        let c = content();
+        let world = &self.world;
+        let block = |p: IVec3| {
+            let s = world.block(p);
+            (s != u32::MAX).then_some(s)
+        };
+        let dist = physics::raycast(c, &block, eye.pos, back, 4.0).map_or(4.0, |h| ((h.block.as_dvec3() + DVec3::splat(0.5) - eye.pos).length() - 0.8).clamp(0.3, 4.0));
+        cam.pos = eye.pos + back * dist;
+        cam
+    }
+
+    /// The local player as an entity, for third person.
+    fn self_entity(&self) -> ClientEntity {
+        let worn: Vec<u32> = self.inventory.get(36..40).map_or(Vec::new(), |s| s.iter().filter(|s| !s.is_empty()).map(|s| s.item).collect());
+        ClientEntity {
+            kind: content().game.player_kind,
+            pos: self.player.pos,
+            target: self.player.pos,
+            yaw: self.player.yaw,
+            target_yaw: self.player.yaw,
+            pitch: self.player.pitch,
+            item: ItemStack::EMPTY,
+            health: self.health,
+            hurt: self.hurt_flash,
+            worn,
+            walk: self.self_walk,
+            swing: self.self_swing,
+            age: 0.0,
+        }
+    }
+
     pub fn set_view_distance(&mut self, r: i32) {
         self.view_radius = r;
     }
@@ -625,13 +698,20 @@ impl Client {
             brightness: self.brightness,
         };
         self.entity_render.brightness = self.brightness;
-        let cam = self.camera();
+        let cam = self.render_camera();
         self.render.draw(gpu, list, frame, &cam, &params);
         list.push(voxide_render::Cmd::Mark);
         self.entity_render.fog = (params.fog_color.extend(1.0).to_array(), params.fog_start, params.fog_end);
+        let me = (self.view != 0 && !self.dead && self.mode != GameMode::Spectator).then(|| self.self_entity());
+        let hand = (self.view == 0 && !self.dead && self.mode != GameMode::Spectator).then(|| entity_render::Hand {
+            stack: self.held(),
+            swing: self.hand_swing,
+            bob: self.self_walk,
+            bob_amount: self.self_swing,
+        });
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
-        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, textures, &light, day, self.target, self.breaking);
+        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, day, self.target, self.breaking);
         list.push(voxide_render::Cmd::Mark);
     }
 

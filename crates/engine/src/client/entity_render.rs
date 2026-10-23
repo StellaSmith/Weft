@@ -24,6 +24,15 @@ struct GpuBox {
     ids2: [u32; 4],
 }
 
+/// What the first person view holds: the item (or the bare arm), the swing progress and the
+/// walk distance for bobbing.
+pub struct Hand {
+    pub stack: voxide_abi::ItemStack,
+    pub swing: Option<f32>,
+    pub bob: f32,
+    pub bob_amount: f32,
+}
+
 /// One entity layer (skin or something worn) for `model.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -63,6 +72,7 @@ struct View {
 }
 
 pub struct EntityRenderer {
+    hand_pipe: PipelineId,
     pipeline: PipelineId,
     overlay: PipelineId,
     model_pipe: PipelineId,
@@ -143,9 +153,11 @@ impl EntityRenderer {
                 (b, v)
             })
             .collect();
+        let hand_pipe = Self::hand_pipeline(gpu)?;
         Ok(EntityRenderer {
             pipeline,
             overlay,
+            hand_pipe,
             model_pipe,
             cuboids,
             kind_cuboids,
@@ -160,6 +172,23 @@ impl EntityRenderer {
             fog: ([0.0; 4], 0.0, 1.0),
             brightness: 0.5,
         })
+    }
+
+    /// The first person hand: drawn last and without depth test so it never sinks into walls.
+    fn hand_pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
+        let s = shader().map_err(|e| e.0)?;
+        gpu.create_pipeline(&PipelineDesc {
+            label: "hand",
+            shader: &s,
+            vertex: "vs",
+            fragment: Some("fs"),
+            color: Some(Format::Surface),
+            depth: None,
+            blend: Blend::None,
+            cull_back: true,
+            topology: Topology::Triangles,
+        })
+        .map_err(|e| e.0)
     }
 
     fn pipelines(gpu: &mut dyn Backend) -> Result<(PipelineId, PipelineId), String> {
@@ -233,6 +262,10 @@ impl EntityRenderer {
             }
             Err(e) => log::error!("model shader: {e}"),
         }
+        if let Ok(h) = Self::hand_pipeline(gpu) {
+            gpu.destroy_pipeline(self.hand_pipe);
+            self.hand_pipe = h;
+        }
         match Self::pipelines(gpu) {
             Ok((a, b)) => {
                 gpu.destroy_pipeline(self.pipeline);
@@ -250,6 +283,7 @@ impl EntityRenderer {
         }
         gpu.destroy_buffer(self.cuboids);
         gpu.destroy_pipeline(self.model_pipe);
+        gpu.destroy_pipeline(self.hand_pipe);
         gpu.destroy_pipeline(self.preview_pipe);
         if let Some((c, d, ..)) = self.preview_target.take() {
             gpu.destroy_texture(c);
@@ -425,6 +459,8 @@ impl EntityRenderer {
         frame: &FrameInfo,
         cam: &Camera,
         entities: &FxHashMap<u64, ClientEntity>,
+        me: Option<&ClientEntity>,
+        hand: Option<Hand>,
         textures: &GameTextures,
         light: &impl Fn(IVec3) -> u32,
         day: f32,
@@ -454,7 +490,7 @@ impl EntityRenderer {
             })
             .collect();
         let mut by_kind: Vec<Vec<ModelInstance>> = vec![Vec::new(); c.game.entities.len()];
-        for e in entities.values() {
+        for e in entities.values().chain(me) {
             let base = rel(e.pos);
             if base.length_squared() > 160.0 * 160.0 {
                 continue;
@@ -572,6 +608,11 @@ impl EntityRenderer {
                 overlay_alpha = 1.0;
             }
         }
+        let hand_start = boxes.len();
+        if let Some(h) = hand {
+            let player_skin = skin_of.get(c.game.player_kind as usize).copied().flatten();
+            hand_boxes(&mut boxes, textures, cam, &h, player_skin, shade(cam.pos));
+        }
         if boxes.is_empty() {
             return;
         }
@@ -598,11 +639,65 @@ impl EntityRenderer {
             list.bind(1, vb);
             list.draw(overlay_start as u32 * 36, 1);
         }
-        if boxes.len() > overlay_start {
+        if hand_start > overlay_start {
             list.pipeline(self.overlay);
             list.bind(0, buf);
             list.bind(1, ob);
-            list.push(Cmd::Draw { vertices: (boxes.len() - overlay_start) as u32 * 36, instances: 1, first_vertex: overlay_start as u32 * 36, first_instance: 0 });
+            list.push(Cmd::Draw { vertices: (hand_start - overlay_start) as u32 * 36, instances: 1, first_vertex: overlay_start as u32 * 36, first_instance: 0 });
+        }
+        if boxes.len() > hand_start {
+            list.pipeline(self.hand_pipe);
+            list.bind(0, buf);
+            list.bind(1, vb);
+            list.push(Cmd::Draw { vertices: (boxes.len() - hand_start) as u32 * 36, instances: 1, first_vertex: hand_start as u32 * 36, first_instance: 0 });
+        }
+    }
+}
+
+/// The held item or the bare right arm in front of the camera, with vanilla's swing and bobbing.
+fn hand_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, cam: &Camera, h: &Hand, skin: Option<(u32, [f32; 2])>, light: Vec3) {
+    use std::f32::consts::PI;
+    let c = content();
+    let p = h.swing.unwrap_or(0.0);
+    let (s, sr) = ((p * PI).sin(), (p.sqrt() * PI).sin());
+    let bob = Vec3::new((h.bob * PI).sin() * 0.03, -(h.bob * PI * 2.0).sin().abs() * 0.03, 0.0) * h.bob_amount;
+    // Camera space: x right, y up, -z forward.
+    let view = Mat4::from_rotation_y(cam.yaw) * Mat4::from_rotation_x(cam.pitch);
+    let swing = Mat4::from_translation(Vec3::new(-0.4 * sr, 0.2 * (p.sqrt() * PI * 2.0).sin(), -0.2 * s) + bob);
+    let color = light.extend(0.0).to_array();
+    let def = c.items.get(h.stack.item as usize).filter(|_| !h.stack.is_empty());
+    match def {
+        None => {
+            let Some((tex, size)) = skin else { return };
+            // Right arm (skin box at 40,16, 4x12x4 pixels), raised and turned in from the right.
+            let m = view
+                * swing
+                * Mat4::from_translation(Vec3::new(0.56, -0.78, -0.36))
+                * Mat4::from_rotation_y(0.32 + sr * 0.3)
+                * Mat4::from_rotation_x(1.85 + s * 0.5)
+                * Mat4::from_rotation_z(0.12)
+                * Mat4::from_scale(Vec3::splat(1.0 / 16.0))
+                * Mat4::from_translation(Vec3::new(-2.0, -10.0, -2.0))
+                * Mat4::from_scale(Vec3::new(4.0, 12.0, 4.0));
+            out.push(GpuBox { rows: rows(m), dims: [4.0, 12.0, 4.0, 0.0], uvo: [40.0, 16.0, size[0], size[1]], color, ids: [tex, 0, 0, 0], ids2: [0; 4] });
+        }
+        Some(def) => {
+            let base = view * swing * Mat4::from_translation(Vec3::new(0.5, -0.45, -0.85)) * Mat4::from_rotation_x(-s * 1.2) * Mat4::from_rotation_y(-sr * 0.6);
+            let layer = |name: u32| textures.block_layers.get(name as usize).map_or(0, |l| l.0);
+            let flat = |out: &mut Vec<GpuBox>, index: u32, l: u32| {
+                let m = base * Mat4::from_rotation_y(-PI / 4.0 + 0.3) * Mat4::from_rotation_z(0.4) * Mat4::from_translation(Vec3::new(-0.2, -0.1, 0.0)) * Mat4::from_scale(Vec3::new(0.4, 0.4, 0.0));
+                out.push(GpuBox { rows: rows(m), color, ids: [index, 1, l | l << 16, l | l << 16], ids2: [l | l << 16, 0, 0, 0], ..Default::default() });
+            };
+            match def.block.map(|st| &c.states[st as usize]) {
+                Some(st) if def.icon == u32::MAX && st.model != Model::Cross => {
+                    let faces = if st.model == Model::Boxes { st.boxes.first().map_or([0; 6], |b| b.textures) } else { st.textures };
+                    let l: Vec<u32> = faces.iter().map(|&f| layer(f)).collect();
+                    let m = base * Mat4::from_rotation_y(PI / 4.0) * Mat4::from_scale(Vec3::splat(0.26)) * Mat4::from_translation(Vec3::splat(-0.5));
+                    out.push(GpuBox { rows: rows(m), color, ids: [textures.block_index, 1, l[0] | l[1] << 16, l[2] | l[3] << 16], ids2: [l[4] | l[5] << 16, 0, 0, 0], ..Default::default() });
+                }
+                Some(st) if def.icon == u32::MAX => flat(out, textures.block_index, layer(st.textures[0])),
+                _ => flat(out, textures.item_index, textures.item_layers.get(def.icon as usize).map_or(0, |x| x.0)),
+            }
         }
     }
 }

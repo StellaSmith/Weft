@@ -224,6 +224,21 @@ impl Ui {
         self.leaf(n)
     }
 
+    /// A slot showing `icon` (a GUI texture) while empty, like the armour slots.
+    pub fn slot_icon(&mut self, slot: u32, icon: &str) {
+        let mut n = node(k::SLOT, S::default());
+        n.slot = slot;
+        n.text = Str::new(icon);
+        self.leaf(n)
+    }
+
+    /// The big slot vanilla uses for crafting results.
+    pub fn slot_big(&mut self, slot: u32) {
+        let mut n = node(k::SLOT, S::default().size(26.0, 26.0));
+        n.slot = slot;
+        self.leaf(n)
+    }
+
     /// `count` menu slots starting at `start`, `per_row` per line.
     pub fn slots(&mut self, start: u32, count: u32, per_row: u32) {
         self.column(S::col(), |ui| {

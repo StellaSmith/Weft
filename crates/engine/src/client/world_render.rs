@@ -88,6 +88,7 @@ pub struct Globals {
     pub cam_cube: [i32; 4],
 }
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     pub pos: DVec3,
     pub yaw: f32,

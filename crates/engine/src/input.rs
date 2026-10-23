@@ -62,7 +62,9 @@ impl Default for Input {
             ("core:chat", Key::Code(KeyT)),
             ("core:debug", Key::Code(F3)),
             ("core:screenshot", Key::Code(F2)),
-            ("core:reload", Key::Code(F5)),
+            ("core:perspective", Key::Code(F5)),
+            // Also F3+T, like vanilla.
+            ("core:reload", Key::Code(F8)),
             ("core:attack", Key::Mouse(0)),
             ("core:use", Key::Mouse(1)),
             ("core:pick", Key::Mouse(2)),

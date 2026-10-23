@@ -400,7 +400,7 @@ impl UiRenderer {
         theme: &Theme,
         scale: f32,
         game: Option<(&Content, &GameTextures)>,
-        custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool),
+        custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool, Option<u32>),
     ) {
         self.quads.clear();
         self.icon_clips.clear();
@@ -464,7 +464,7 @@ impl UiRenderer {
         id: usize,
         scale: f32,
         icons: &mut Vec<(f32, f32, f32, u32)>,
-        custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool),
+        custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool, Option<u32>),
         surface: Option<&str>,
     ) {
         let n = &ui.nodes[id];
@@ -594,7 +594,10 @@ impl UiRenderer {
                     q.clip = field;
                 }
             }
-            Kind::Custom { tag, data } => custom(self, *tag, *data, r, hovered),
+            Kind::Custom { tag, data } => {
+                let icon = n.icon.clone().and_then(|i| self.texture(gpu, assets, &i)).map(|t| t.0);
+                custom(self, *tag, *data, r, hovered, icon)
+            }
         }
         // Children of a themed panel or button read text colours from it.
         let own = match &n.kind {

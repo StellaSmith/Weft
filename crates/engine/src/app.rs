@@ -1010,7 +1010,12 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     if r.input.pressed("core:debug") {
         r.f3_combo = Some(false);
     }
+    let mut f3_reload = false;
     if f3 {
+        if r.input.pressed_key(Key::Code(KeyCode::KeyT)) {
+            f3_reload = true;
+            r.f3_combo = Some(true);
+        }
         for (i, k) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5].into_iter().enumerate() {
             if r.input.pressed_key(Key::Code(k)) {
                 r.settings.debug_groups ^= 1 << i;
@@ -1026,7 +1031,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.hud.invalidate();
         }
     }
-    if r.input.pressed("core:reload") || std::mem::take(&mut r.reload_requested) {
+    if r.input.pressed("core:reload") || f3_reload || std::mem::take(&mut r.reload_requested) {
         r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs));
         crate::packs::set_shader_pack(r.settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
         r.assets.rescan();
@@ -1097,7 +1102,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
     if r.game.is_some() && r.screens.is_empty() {
         let command = r.input.pressed("core:command");
-        if command || r.input.pressed("core:chat") {
+        let f3_held = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k));
+        if command || (r.input.pressed("core:chat") && !f3_held) {
             r.open(Box::new(crate::game_screens::Chat::new(if command { "/" } else { "" })));
             r.input.typed.clear();
         }
@@ -1209,8 +1215,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             let theme = &r.theme;
             let textures = &r.textures;
             let unit = ui.text_unit;
-            let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool| {
-                crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, scale, unit);
+            let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool, icon: Option<u32>| {
+                crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, icon, scale, unit);
                 if tag == crate::client::modui::TAG_ENTITY {
                     let inner = crate::ui::Rect { x: rect.x + scale, y: rect.y + scale, w: rect.w - 2.0 * scale, h: rect.h - 2.0 * scale };
                     previews.push([inner.x, inner.y, inner.w, inner.h]);

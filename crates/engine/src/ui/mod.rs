@@ -221,6 +221,8 @@ pub struct Node {
     pub rect: Rect,
     pub id: Option<String>,
     pub tooltip: Option<Vec<Span>>,
+    /// GUI texture drawn by custom nodes that want one (the silhouette of an empty slot).
+    pub icon: Option<String>,
     measured: [f32; 2],
     /// Visible part when inside a scrolling node, GUI units.
     pub clip: Option<Rect>,
@@ -263,6 +265,7 @@ impl Ui {
             rect: Rect::default(),
             id: None,
             tooltip: None,
+            icon: None,
             measured: [0.0; 2],
             clip: None,
         };
@@ -308,7 +311,7 @@ impl Ui {
 
     pub fn add(&mut self, kind: Kind, style: Style) -> NodeId {
         let id = self.nodes.len();
-        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, measured: [0.0; 2], clip: None });
+        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, icon: None, measured: [0.0; 2], clip: None });
         let parent = *self.stack.last().unwrap();
         self.nodes[parent].children.push(id);
         self.dirty = true;

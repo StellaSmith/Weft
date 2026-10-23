@@ -74,6 +74,8 @@ pub enum Request {
     SendChat(String),
     /// Replace the text of the top screen's input with this id (completion, history).
     SetInput(String, String),
+    /// Re-read packs and assets, as the reload key does.
+    ReloadAssets,
 }
 
 /// What UI actions and bindings can see and change.
@@ -141,6 +143,7 @@ struct Running {
     stats: Stats,
     /// F3 held and used for a combination since it went down (then releasing it does not toggle).
     f3_combo: Option<bool>,
+    reload_requested: bool,
     /// CPU milliseconds of the last frame, see `bench::CPU_PARTS`.
     prof: [f32; 5],
     bench: Option<crate::bench::Bench>,
@@ -185,9 +188,11 @@ impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
         let mut settings = Settings::load(&self.opts.run_dir);
         if self.opts.no_vsync {
+            settings.cli_vsync = Some((false, settings.vsync));
             settings.vsync = false;
         }
         if let Some(v) = self.opts.view {
+            settings.cli_view = Some((v, settings.view_distance));
             settings.view_distance = v;
         }
         let attrs = Window::default_attributes()
@@ -208,13 +213,8 @@ impl App {
         let mods = modloader::load(&self.opts.mod_dirs, &cache)?;
         let mut roots: Vec<(String, PathBuf)> = vec![("core".into(), engine_assets())];
         roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
-        let packs = std::fs::read_dir(self.opts.run_dir.join("resourcepacks"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
+        let packs = crate::packs::enabled(&self.opts.run_dir, &settings.resource_packs);
+        crate::packs::set_shader_pack(settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&self.opts.run_dir).join(p)));
         let assets = Assets::new(roots, packs);
         let lang = Lang::load(&assets, &settings.language, self.opts.dev);
         let theme = Theme::load(&assets);
@@ -264,6 +264,7 @@ impl App {
                 ..Default::default()
             },
             f3_combo: None,
+            reload_requested: false,
             prof: [0.0; 5],
             bench: None,
             ui_cached: Vec::new(),
@@ -439,6 +440,7 @@ impl Running {
                 }
                 Request::Quit => self.quit = true,
                 Request::Rebuild => self.rebuild_all(),
+                Request::ReloadAssets => self.reload_requested = true,
                 Request::SetInput(id, text) => {
                     if let Some((_, ui)) = self.screens.last_mut() {
                         if let Some(n) = ui.find(&id) {
@@ -1066,7 +1068,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.hud.invalidate();
         }
     }
-    if r.input.pressed("core:reload") {
+    if r.input.pressed("core:reload") || std::mem::take(&mut r.reload_requested) {
+        r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs));
+        crate::packs::set_shader_pack(r.settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
         r.assets.rescan();
         r.hud.load_layout(&opts.run_dir);
         r.ui.reload(&mut *r.gpu);

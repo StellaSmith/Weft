@@ -13,6 +13,7 @@ pub mod input;
 pub mod log;
 pub mod modloader;
 pub mod net;
+pub mod packs;
 pub mod physics;
 pub mod registry;
 pub mod saves;

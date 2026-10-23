@@ -22,6 +22,13 @@ pub struct Settings {
     pub binds: Vec<(String, String)>,
     /// Extra iroh relay URLs; empty uses the public defaults.
     pub relays: Vec<String>,
+    /// Enabled resource packs, highest priority first.
+    pub resource_packs: Vec<String>,
+    pub shader_pack: Option<String>,
+    /// Command line values for this run only, with the file's: (given, saved). Saving keeps the
+    /// file's value unless the player changed the setting since.
+    pub cli_vsync: Option<(bool, bool)>,
+    pub cli_view: Option<(i32, i32)>,
 }
 
 impl Settings {
@@ -41,6 +48,10 @@ impl Settings {
             name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "Player".into()),
             binds: Vec::new(),
             relays: Vec::new(),
+            resource_packs: Vec::new(),
+            shader_pack: None,
+            cli_vsync: None,
+            cli_view: None,
         };
         let Ok(src) = std::fs::read_to_string(&path) else { return s };
         for line in src.lines() {
@@ -57,6 +68,8 @@ impl Settings {
                 "debug_groups" => s.debug_groups = v.parse().unwrap_or(0b11111),
                 "name" => s.name = v.to_string(),
                 "relay" => s.relays.push(v.to_string()),
+                "resource_pack" => s.resource_packs.push(v.to_string()),
+                "shader_pack" => s.shader_pack = Some(v.to_string()).filter(|v| !v.is_empty()),
                 _ => {
                     if let Some(action) = k.strip_prefix("key.") {
                         s.binds.push((action.to_string(), v.to_string()));
@@ -72,12 +85,26 @@ impl Settings {
     }
 
     pub fn save(&self) {
+        let vsync = match self.cli_vsync {
+            Some((given, saved)) if self.vsync == given => saved,
+            _ => self.vsync,
+        };
+        let view = match self.cli_view {
+            Some((given, saved)) if self.view_distance == given => saved,
+            _ => self.view_distance,
+        };
         let mut out = format!(
             "language = {}\ngui_scale = {}\nview_distance = {}\nvsync = {}\nfov = {}\nsensitivity = {}\nbrightness = {}\nname = {}\ndebug_groups = {}\n",
-            self.language, self.gui_scale, self.view_distance, self.vsync, self.fov, self.sensitivity, self.brightness, self.name, self.debug_groups
+            self.language, self.gui_scale, view, vsync, self.fov, self.sensitivity, self.brightness, self.name, self.debug_groups
         );
         for r in &self.relays {
             out.push_str(&format!("relay = {r}\n"));
+        }
+        for p in &self.resource_packs {
+            out.push_str(&format!("resource_pack = {p}\n"));
+        }
+        if let Some(p) = &self.shader_pack {
+            out.push_str(&format!("shader_pack = {p}\n"));
         }
         for (a, k) in &self.binds {
             out.push_str(&format!("key.{a} = {k}\n"));

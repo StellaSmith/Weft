@@ -172,6 +172,18 @@ impl Screen for SettingsScreen {
                     let b = button(ui, cx, "settings.controls", &[], 147.0, |c| c.requests.push(Request::Open(Box::new(Controls { waiting: None }))));
                     ui.nodes[b].style.grow = 1.0;
                 });
+                ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
+                    let b = button(ui, cx, "settings.resource_packs", &[], 147.0, |c| {
+                        let current = c.settings.resource_packs.clone();
+                        c.requests.push(Request::Open(Box::new(crate::packs::ResourcePacks::new(&current))));
+                    });
+                    ui.nodes[b].style.grow = 1.0;
+                    let b = button(ui, cx, "settings.shader_packs", &[], 147.0, |c| {
+                        let current = c.settings.shader_pack.clone();
+                        c.requests.push(Request::Open(Box::new(crate::packs::ShaderPacks::new(current))));
+                    });
+                    ui.nodes[b].style.grow = 1.0;
+                });
             });
             button(ui, cx, "menu.done", &[], 200.0, |c| {
                 c.settings.save();

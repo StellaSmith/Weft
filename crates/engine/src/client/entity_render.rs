@@ -85,9 +85,7 @@ pub struct EntityRenderer {
 }
 
 fn shader() -> Result<Shader, ShaderError> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/entity.wgsl");
-    let src = std::fs::read_to_string(path).unwrap_or_else(|_| include_str!("../../shaders/entity.wgsl").to_string());
-    Shader::from_wgsl("entity.wgsl", &src)
+    crate::packs::shader("entity.wgsl", include_str!("../../shaders/entity.wgsl"))
 }
 
 /// Same curve as the world shader's `lightmap`.
@@ -194,9 +192,7 @@ impl EntityRenderer {
     }
 
     fn model_pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/model.wgsl");
-        let src = std::fs::read_to_string(path).unwrap_or_else(|_| include_str!("../../shaders/model.wgsl").to_string());
-        let s = Shader::from_wgsl("model.wgsl", &src).map_err(|e| e.0)?;
+        let s = crate::packs::shader("model.wgsl", include_str!("../../shaders/model.wgsl")).map_err(|e| e.0)?;
         gpu.create_pipeline(&PipelineDesc {
             label: "models",
             shader: &s,

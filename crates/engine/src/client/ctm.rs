@@ -340,6 +340,7 @@ fn hash(x: i32, y: i32, z: i32, f: u32) -> u64 {
 impl Ctm {
     /// Texture for face `dir` of the block at `(x, y, z)` in the cube, `tex` being its plain one.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve(&self, c: &Content, n: &Neighborhood, x: i32, y: i32, z: i32, dir: usize, tex: u32) -> u32 {
         match self.by_texture.get(tex as usize) {
             Some(&(start, len)) if len > 0 => self.resolve_rules(c, n, x, y, z, dir, tex, start as usize..(start + len) as usize),

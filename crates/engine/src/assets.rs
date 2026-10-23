@@ -23,6 +23,11 @@ impl Assets {
         a
     }
 
+    /// Resource pack folders, highest priority first; call `rescan` after.
+    pub fn set_packs(&mut self, packs: Vec<PathBuf>) {
+        self.packs = packs;
+    }
+
     /// Re-lists files after they changed on disk (hot reload).
     pub fn rescan(&mut self) {
         let mut files = FxHashSet::default();

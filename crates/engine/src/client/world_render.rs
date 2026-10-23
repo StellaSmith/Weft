@@ -147,14 +147,8 @@ pub struct WorldRenderer {
     pub faces_drawn: u64,
 }
 
-fn load_shader(name: &str, builtin: &str) -> String {
-    // Development builds read shaders from the source tree so they can be edited live.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders").join(name);
-    std::fs::read_to_string(path).unwrap_or_else(|_| builtin.to_string())
-}
-
 pub fn world_shader() -> Result<Shader, ShaderError> {
-    Shader::from_wgsl("world.wgsl", &load_shader("world.wgsl", include_str!("../../shaders/world.wgsl")))
+    crate::packs::shader("world.wgsl", include_str!("../../shaders/world.wgsl"))
 }
 
 impl WorldRenderer {

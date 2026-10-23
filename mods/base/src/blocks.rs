@@ -349,7 +349,23 @@ pub fn register(r: &mut Registry) {
                 w.set(p, 0);
             }
         });
-    r.block("ladder", &LADDER).model_box([0.0, 0.0, 15.0], [16.0, 16.0, 16.0], "ladder").climbable().not_solid().hardness(0.4).tab("functional");
+    // State = the wall it hangs on, in `Place::horizontal` order (-Z, +X, +Z, -X).
+    r.block("ladder", &LADDER)
+        .states(4, |i, s| {
+            let (min, max) = [([0.0, 0.0, 0.0], [16.0, 16.0, 1.0]), ([15.0, 0.0, 0.0], [16.0, 16.0, 16.0]), ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]), ([0.0, 0.0, 0.0], [1.0, 16.0, 16.0])][i as usize];
+            s.model_box(min, max, "ladder")
+        })
+        .placement(|p| match p.face() {
+            0 => 1,
+            1 => 3,
+            4 => 2,
+            5 => 0,
+            _ => p.horizontal(),
+        })
+        .climbable()
+        .not_solid()
+        .hardness(0.4)
+        .tab("functional");
     r.block("glowstone", &GLOWSTONE).light(15).hardness(0.3).tab("natural");
     r.block("bricks", &BRICKS).hardness(2.0).tool("pickaxe", 1).tab("building");
     r.block("stone_bricks", &STONE_BRICKS).texture("stonebrick").hardness(1.5).tool("pickaxe", 1).tab("building");

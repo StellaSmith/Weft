@@ -268,8 +268,13 @@ impl ClientWorld {
             .filter(|&p| (0..6).all(|d| self.neighbour_known(p, d, def.min_cube_y, def.max_cube_y)))
             .map(|p| ((p - center).length_squared(), p))
             .collect();
-        ready.sort_by_key(|r| r.0);
-        for (_, pos) in ready.into_iter().take(max_in_flight - self.in_flight.len()) {
+        // Only the nearest few are started; no need to order the rest.
+        let take = max_in_flight - self.in_flight.len();
+        if ready.len() > take {
+            ready.select_nth_unstable_by_key(take, |r| r.0);
+            ready.truncate(take);
+        }
+        for (_, pos) in ready {
             self.dirty.remove(&pos);
             let center_cube = self.cubes[&pos].clone();
             // Air cubes never produce faces themselves; neighbours draw the faces facing them.

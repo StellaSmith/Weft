@@ -632,7 +632,8 @@ impl Client {
         for (col, tints) in self.world.take_tints(glam::IVec2::new(center.x, center.z), reach) {
             self.render.upload_tints(gpu, col, &tints);
         }
-        self.world.schedule_meshing(center, rayon::current_num_threads() * 2);
+        // Enough jobs that meshing keeps up at 60 frames per second too, not only at thousands.
+        self.world.schedule_meshing(center, rayon::current_num_threads() * 16);
         for r in self.world.take_meshes() {
             self.render.upload(gpu, r.pos, &r.mesh);
         }

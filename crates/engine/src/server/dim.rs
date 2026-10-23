@@ -52,6 +52,8 @@ pub struct Dim {
     pub settled: FxHashSet<IVec3>,
     /// Bumped whenever a cube becomes settled, so senders know when to look again.
     pub settled_gen: u64,
+    /// Bumped by block changes, which may open or close lines of sight.
+    pub edits: u64,
     /// Face connectivity of loaded cubes (see `Cube::connectivity`); missing = recompute.
     pub conn: FxHashMap<IVec3, u16>,
 }
@@ -178,6 +180,7 @@ impl Dim {
             grid: Default::default(),
             settled: FxHashSet::default(),
             settled_gen: 0,
+            edits: 0,
             conn: FxHashMap::default(),
         }
     }
@@ -194,18 +197,38 @@ impl Dim {
         self.cubes.get(&pos).cloned()
     }
 
-    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube) {
+    /// `prelit`: the cube carries light from `light::prelight`.
+    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube, prelit: bool) {
         self.generating.remove(&pos);
         if self.cubes.contains_key(&pos) {
             return;
         }
         self.grid.cube_loaded(c, pos, &cube);
-        self.cubes.insert(pos, Arc::new(cube));
         let def = &c.dims[self.id as usize];
         let open_above = pos.y + 1 >= def.sky_cube_y || pos.y + 1 > def.max_cube_y;
+        // The worker's light assumed open sky above; true when the cube above lets full sky
+        // through its whole bottom (or there is nothing above).
+        let full_above = |above: &Cube| match above.uniform_light() {
+            Some(l) => l & 0xFF == crate::world::light::SKY_FULL as u32,
+            None => (0..256).all(|i| above.light(crate::world::cube::index(i % 16, 0, i / 16)) & 0xFF == crate::world::light::SKY_FULL as u32),
+        };
+        // Clear cubes have a cheaper path of their own in `light_new`.
+        let clear = cube.palette().iter().all(|&s| c.states[s as usize].opacity == 0);
+        let prelit = prelit
+            && !clear
+            && (!def.sky_light
+                || match self.cubes.get(&(pos + IVec3::Y)) {
+                    Some(a) => full_above(a),
+                    None => open_above,
+                });
+        self.cubes.insert(pos, Arc::new(cube));
         let mut map = Cubes(&mut self.cubes);
         let mut lighter = Lighter::new(&mut map, c, def.sky_light);
-        lighter.light_new(pos, open_above);
+        if prelit {
+            lighter.light_prelit(pos);
+        } else {
+            lighter.light_new(pos, open_above);
+        }
         let changed = std::mem::take(&mut lighter.changed);
         changed.into_iter().filter(|&p| p != pos).for_each(|p| {
             self.light_dirty.insert(p);
@@ -277,6 +300,7 @@ impl Dim {
         self.changes.push((p, state));
         self.modified.insert(cp);
         self.conn.remove(&cp);
+        self.edits += 1;
         let def = &c.dims[self.id as usize];
         let mut map = Cubes(&mut self.cubes);
         let mut lighter = Lighter::new(&mut map, c, def.sky_light);

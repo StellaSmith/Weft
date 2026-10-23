@@ -77,10 +77,12 @@ enum Deferred {
     Pipeline(vk::Pipeline, vk::PipelineLayout, vk::DescriptorSetLayout),
 }
 
+/// Upload memory of one frame slot: a list of chunks filled in order. When a chunk is full the
+/// next one is used (made if needed) instead of growing and copying: reading back mapped upload
+/// memory is very slow (write-combined), a 100 MB copy took half a second.
 struct Staging {
-    buffer: vk::Buffer,
-    alloc: Option<Allocation>,
-    size: u64,
+    chunks: Vec<(vk::Buffer, Allocation, u64)>,
+    current: usize,
     used: u64,
 }
 
@@ -97,8 +99,8 @@ struct Frame {
 }
 
 enum Upload {
-    Buffer { src: u64, dst: u32, offset: u64, size: u64 },
-    Texture { src: u64, dst: u32, mip: u32 },
+    Buffer { src: (u32, u64), dst: u32, offset: u64, size: u64 },
+    Texture { src: (u32, u64), dst: u32, mip: u32 },
     InitTexture(u32),
 }
 
@@ -338,7 +340,7 @@ impl VulkanBackend {
                     fence: device
                         .create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)
                         .map_err(err("fence"))?,
-                    staging: Staging { buffer: vk::Buffer::null(), alloc: None, size: 0, used: 0 },
+                    staging: Staging { chunks: Vec::new(), current: 0, used: 0 },
                     deferred: Vec::new(),
                     waited: false,
                     marks: 0,
@@ -641,6 +643,7 @@ impl VulkanBackend {
             self.device.wait_for_fences(&[frame.fence], true, u64::MAX).ok();
         }
         frame.waited = true;
+        frame.staging.current = 0;
         frame.staging.used = 0;
         if frame.marks > 1 {
             let mut ts = vec![0u64; frame.marks as usize];
@@ -680,28 +683,34 @@ impl VulkanBackend {
         }
     }
 
-    fn stage(&mut self, data: &[u8]) -> u64 {
+    /// Copies `data` into this frame's upload memory: (chunk, offset).
+    fn stage(&mut self, data: &[u8]) -> (u32, u64) {
         self.ensure_slot_ready();
         let size = data.len() as u64;
         let frame = &mut self.frames[self.slot];
-        let offset = (frame.staging.used + 15) & !15;
-        if offset + size > frame.staging.size {
-            let new_size = (frame.staging.size * 2).max(offset + size).max(8 << 20);
-            let (buffer, alloc) =
-                raw_buffer(&self.device, &mut self.allocator, new_size, vk::BufferUsageFlags::TRANSFER_SRC, MemoryLocation::CpuToGpu, "staging");
-            let mut new_alloc = alloc;
-            if let Some(old) = frame.staging.alloc.take() {
-                // Bytes staged earlier in this frame are still pending copies, carry them over.
-                let used = frame.staging.used as usize;
-                new_alloc.mapped_slice_mut().unwrap()[..used].copy_from_slice(&old.mapped_slice().unwrap()[..used]);
-                frame.deferred.push(Deferred::Buffer(frame.staging.buffer, old));
+        let st = &mut frame.staging;
+        let mut offset = (st.used + 15) & !15;
+        if st.chunks.get(st.current).is_none_or(|c| offset + size > c.2) {
+            // Move on to the next chunk that fits, making one if none does.
+            if !st.chunks.is_empty() {
+                st.current += 1;
             }
-            frame.staging = Staging { buffer, alloc: Some(new_alloc), size: new_size, used: frame.staging.used };
+            while st.chunks.get(st.current).is_some_and(|c| size > c.2) {
+                st.current += 1;
+            }
+            if st.current >= st.chunks.len() {
+                let chunk = size.max(st.chunks.last().map_or(8 << 20, |c| c.2 * 2));
+                let (buffer, alloc) =
+                    raw_buffer(&self.device, &mut self.allocator, chunk, vk::BufferUsageFlags::TRANSFER_SRC, MemoryLocation::CpuToGpu, "staging");
+                st.chunks.push((buffer, alloc, chunk));
+                st.current = st.chunks.len() - 1;
+            }
+            offset = 0;
         }
-        let mapped = frame.staging.alloc.as_mut().unwrap().mapped_slice_mut().unwrap();
-        mapped[offset as usize..(offset + size) as usize].copy_from_slice(data);
-        frame.staging.used = offset + size;
-        offset
+        let c = &mut st.chunks[st.current];
+        c.1.mapped_slice_mut().unwrap()[offset as usize..(offset + size) as usize].copy_from_slice(data);
+        st.used = offset + size;
+        (st.current as u32, offset)
     }
 
     unsafe fn barrier_image(
@@ -739,16 +748,18 @@ impl VulkanBackend {
         }
         unsafe {
             self.memory_barrier(cmd);
-            let staging = self.frames[self.slot].staging.buffer;
+            let chunks: Vec<vk::Buffer> = self.frames[self.slot].staging.chunks.iter().map(|c| c.0).collect();
             let uploads = std::mem::take(&mut self.uploads);
             for u in &uploads {
                 match *u {
                     Upload::Buffer { src, dst, offset, size } => {
                         let Some(Some(b)) = self.buffers.items.get(dst as usize) else { continue };
-                        let region = [vk::BufferCopy { src_offset: src, dst_offset: offset, size }];
-                        self.device.cmd_copy_buffer(cmd, staging, b.raw, &region);
+                        let region = [vk::BufferCopy { src_offset: src.1, dst_offset: offset, size }];
+                        self.device.cmd_copy_buffer(cmd, chunks[src.0 as usize], b.raw, &region);
                     }
                     Upload::Texture { src, dst, mip } => {
+                        let staging = chunks[src.0 as usize];
+                        let src = src.1;
                         let Some(Some(t)) = self.textures.items.get(dst as usize) else { continue };
                         let layers = t.desc.layers.unwrap_or(1);
                         let range = color_range(t.desc.mips, layers);
@@ -1579,9 +1590,9 @@ impl Drop for VulkanBackend {
                 for d in deferred {
                     self.destroy_now(d);
                 }
-                if let Some(a) = self.frames[i].staging.alloc.take() {
-                    self.device.destroy_buffer(self.frames[i].staging.buffer, None);
-                    self.allocator.free(a).ok();
+                for (buffer, alloc, _) in std::mem::take(&mut self.frames[i].staging.chunks) {
+                    self.device.destroy_buffer(buffer, None);
+                    self.allocator.free(alloc).ok();
                 }
                 let f = &self.frames[i];
                 self.device.destroy_command_pool(f.pool, None);

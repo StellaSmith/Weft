@@ -267,6 +267,60 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         }
     }
 
+    /// Finishes a cube lit on its own by `prelight` (open sky above, its own emitters): pulls
+    /// light in from loaded neighbours and pushes its own out to them. The caller checked that
+    /// the cube above gives full sky (or is open), so the inside light needs no redo.
+    pub fn light_prelit(&mut self, cp: IVec3) {
+        self.cache.set((IVec3::MAX, std::ptr::null()));
+        self.changed.insert(cp);
+        let base = cp * 16;
+        let Some(cube) = self.map.cube(cp) else { return };
+        let all_opaque = cube.palette().iter().all(|&s| self.c.states[s as usize].opacity >= 15);
+        if all_opaque {
+            return;
+        }
+        let uniform = cube.uniform_light();
+        for &c in self.channels() {
+            // Sky from above is already in; from below and the sides it may still come.
+            let dirs: &[usize] = if c == SKY { &[0, 1, 2, 4, 5] } else { &[0, 1, 2, 3, 4, 5] };
+            if !(c == SKY && uniform.is_some_and(|l| ch(l, SKY) == SKY_FULL)) {
+                self.seed_from_neighbours(cp, c, dirs);
+            }
+            for d in 0..6 {
+                if c == SKY && d == 3 {
+                    continue;
+                }
+                let n = cp + DIRS[d];
+                if !self.accepts(n, c, 2) {
+                    continue;
+                }
+                for a in 0..16 {
+                    for b in 0..16 {
+                        let local = match d {
+                            0 => IVec3::new(0, a, b),
+                            1 => IVec3::new(15, a, b),
+                            2 => IVec3::new(a, 0, b),
+                            3 => IVec3::new(a, 15, b),
+                            4 => IVec3::new(a, b, 0),
+                            _ => IVec3::new(a, b, 15),
+                        };
+                        let p = base + local;
+                        let Some(v) = self.get(p, c) else { continue };
+                        if v <= 1 {
+                            continue;
+                        }
+                        let reach = if c == SKY && d == 2 && v == SKY_FULL { SKY_FULL } else { v - 1 };
+                        let Some((state, light)) = self.read(p + DIRS[d]) else { continue };
+                        if ch(light, c) < reach && self.c.states[state as usize].opacity < 15 {
+                            self.add.push_back((p, v));
+                        }
+                    }
+                }
+            }
+            self.propagate(c);
+        }
+    }
+
     /// Whether cube `n` may still gain light on channel `c` from a neighbour at `level`: loaded,
     /// not solid all through, and not already uniformly at that level.
     fn accepts(&self, n: IVec3, c: usize, level: u8) -> bool {
@@ -333,6 +387,22 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
             self.propagate(c);
         }
     }
+}
+
+/// Lights a cube alone, as if open sky were above it and nothing beside it: the expensive
+/// inside part of `light_new`, done on a generation worker.
+pub fn prelight(c: &Content, cube: &mut Cube, sky: bool) {
+    struct One<'a>(&'a mut Cube);
+    impl CubeMap for One<'_> {
+        fn cube(&self, p: IVec3) -> Option<&Cube> {
+            (p == IVec3::ZERO).then_some(&*self.0)
+        }
+        fn cube_mut(&mut self, p: IVec3) -> Option<&mut Cube> {
+            (p == IVec3::ZERO).then_some(&mut *self.0)
+        }
+    }
+    let mut one = One(cube);
+    Lighter::new(&mut one, c, sky).light_new(IVec3::ZERO, true);
 }
 
 #[cfg(test)]

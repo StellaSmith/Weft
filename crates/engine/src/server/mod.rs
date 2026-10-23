@@ -7,6 +7,7 @@ pub mod entity;
 pub mod menu;
 pub mod persist;
 pub mod regions;
+mod visibility;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -63,8 +64,8 @@ pub struct Player {
     /// same plus the settled version when nothing was left to send. Lets idle ticks skip scanning
     /// the whole view volume.
     gen_done: Option<(u32, IVec3, i32, i32, u64)>,
-    /// Cubes the last visibility fill reached; only these (and the sky column) get loaded.
-    visible: FxHashSet<IVec3>,
+    /// What the player can see; only these cubes (and the sky column) get loaded.
+    vis: Option<visibility::Visibility>,
     sync_done: Option<(u32, IVec3, i32, i32, u64)>,
     /// Set by teleports: moves sent before the client saw the teleport are stale and would read
     /// as a long fall, so they are ignored until one arrives near this point.
@@ -106,7 +107,7 @@ pub struct Shared {
 pub const PHASES: [&str; 6] = ["insert", "messages", "regions", "request", "sync", "rest"];
 
 /// Cubes sent to one player per tick; a client meshes about this many per frame anyway.
-const SEND_PER_TICK: usize = 2048;
+const SEND_PER_TICK: usize = 8192;
 
 pub struct Server {
     pub cfg: ServerConfig,
@@ -277,9 +278,14 @@ impl Server {
             if now >= deadline {
                 break;
             }
-            let generating: usize = self.dims.iter().map(|d| d.generating.len()).sum();
-            if self.backlog.is_empty() && generating == 0 {
-                break;
+            let busy = |s: &Self| !s.backlog.is_empty() || s.dims.iter().any(|d| !d.generating.is_empty());
+            if !busy(self) {
+                // What just arrived may have opened up more to load: look before sleeping.
+                self.request_generation(c);
+                refilled = Instant::now();
+                if !busy(self) {
+                    break;
+                }
             }
             let before = self.backlog.len();
             self.receive_generated(c, deadline);
@@ -332,7 +338,7 @@ impl Server {
                 first_sync: true,
                 gen_done: None,
                 sync_done: None,
-                visible: FxHashSet::default(),
+                vis: None,
                 teleported: None,
             });
         }
@@ -499,7 +505,7 @@ impl Server {
             pending.remove(&(g.dim, g.pos));
             self.wanted.remove(&(g.dim, g.pos));
             let t = Instant::now();
-            self.dims[g.dim as usize].insert(c, g.pos, g.cube, &g.entities, g.conn);
+            self.dims[g.dim as usize].insert(c, g.pos, g.cube, &g.entities, g.conn, true);
             self.shared.insert_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             self.shared.inserted.fetch_add(1, Ordering::Relaxed);
         }
@@ -880,7 +886,7 @@ impl Server {
             p.sent.clear();
             p.gen_done = None;
             p.sync_done = None;
-            p.visible.clear();
+            p.vis = None;
             p.known.clear();
         }
         p.last_y = pos.y;
@@ -1245,8 +1251,23 @@ impl Server {
                 let d = pos - center;
                 d.x * d.x + d.z * d.z <= r * r && d.y.abs() <= h && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
             };
-            let dim = &mut self.dims[pdim as usize];
-            let (visible, mut missing) = dim.visible(c, center, in_view, NEAR);
+            let Server { players, dims, wanted: wanted_set, .. } = &mut *self;
+            let dim = &mut dims[pdim as usize];
+            let p = &mut players[pi];
+            let vkey = (pdim, center, r, h, dim.edit_version());
+            // The visibility fill goes on from cubes that arrived; it starts over only when the
+            // player moved to another cube, the view changed or blocks were edited.
+            let arrived = match &mut p.vis {
+                Some(v) if v.key == vkey => v.update(dim, c, &in_view),
+                _ => {
+                    let v = visibility::Visibility::new(vkey, dim, c, center, &in_view, NEAR);
+                    let loaded: Vec<IVec3> = v.seen.iter().copied().filter(|&q| dim.has(q)).collect();
+                    p.vis = Some(v);
+                    loaded
+                }
+            };
+            let vis = p.vis.as_ref().unwrap();
+            let mut missing: Vec<IVec3> = vis.waiting.keys().copied().collect();
             // Above the view the column is loaded up to open sky, so light coming down is right.
             let sky_column = |pos: IVec3| {
                 let d = pos - center;
@@ -1263,10 +1284,10 @@ impl Server {
                 }
             }
             // Columns capped by ground nobody will load are dark from above: their light is final.
-            let tops: Vec<IVec3> = visible
+            let tops: Vec<IVec3> = arrived
                 .iter()
                 .copied()
-                .filter(|&p| dim.has(p) && !dim.settled(p) && !dim.has(p + IVec3::Y) && !visible.contains(&(p + IVec3::Y)) && !sky_column(p + IVec3::Y))
+                .filter(|&q| dim.has(q) && !dim.settled(q) && !dim.has(q + IVec3::Y) && !vis.seen.contains(&(q + IVec3::Y)) && !sky_column(q + IVec3::Y))
                 .collect();
             for t in tops {
                 dim.settle_down(t);
@@ -1279,10 +1300,10 @@ impl Server {
                 let mut seen: FxHashSet<IVec3> = missing.iter().copied().collect();
                 let mut above = Vec::new();
                 for &pos in &missing {
-                    let mut p = pos + IVec3::Y;
-                    while p.y <= hi && !dim.has(p) && seen.insert(p) {
-                        above.push(p);
-                        p += IVec3::Y;
+                    let mut q = pos + IVec3::Y;
+                    while q.y <= hi && !dim.has(q) && seen.insert(q) {
+                        above.push(q);
+                        q += IVec3::Y;
                     }
                 }
                 missing.extend(above);
@@ -1292,12 +1313,10 @@ impl Server {
                     // Nearest columns first, each from the top down.
                     let d = pos - center;
                     wanted.push(((d.x * d.x + d.z * d.z) * 64 - pos.y, pdim, pos));
-                    self.wanted.insert((pdim, pos));
+                    wanted_set.insert((pdim, pos));
                 }
             }
-            let p = &mut self.players[pi];
-            p.gen_done = missing.is_empty().then_some(key);
-            p.visible = visible;
+            self.players[pi].gen_done = missing.is_empty().then_some(key);
         }
         if wanted.is_empty() {
             return;
@@ -1313,8 +1332,9 @@ impl Server {
             rayon::spawn(move || {
                 let t = Instant::now();
                 let loaded = storage.and_then(|s| s.lock().load(dim, pos));
-                let (cube, entities) = loaded.unwrap_or_else(|| (dim::generate(content(), dim, seed, pos), Vec::new()));
+                let (mut cube, entities) = loaded.unwrap_or_else(|| (dim::generate(content(), dim, seed, pos), Vec::new()));
                 let conn = dim::see_through(content(), &cube);
+                crate::world::light::prelight(content(), &mut cube, content().dims[dim as usize].sky_light);
                 shared.gen_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 shared.generated.fetch_add(1, Ordering::Relaxed);
                 let _ = tx.send(Generated { dim, pos, cube, entities, conn });
@@ -1489,7 +1509,7 @@ impl Server {
                         }
                         let ready = crate::world::DIRS.iter().all(|d| {
                             let n = pos + *d;
-                            dim.has(n) || !in_range(n) || !p.visible.contains(&n)
+                            dim.has(n) || !in_range(n) || !p.vis.as_ref().is_some_and(|v| v.seen.contains(&n))
                         });
                         if ready {
                             to_send.push((dx * dx + dz * dz + dy * dy, pos));
@@ -1503,7 +1523,7 @@ impl Server {
                 if let Some(cube) = dim.snapshot(pos) {
                     let hidden = crate::world::DIRS.iter().enumerate().fold(0u8, |m, (i, d)| {
                         let n = pos + *d;
-                        if dim.has(n) || (in_range(n) && p.visible.contains(&n)) { m } else { m | 1 << i }
+                        if dim.has(n) || (in_range(n) && p.vis.as_ref().is_some_and(|v| v.seen.contains(&n))) { m } else { m | 1 << i }
                     });
                     p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, hidden });
                     p.sent.insert(pos);

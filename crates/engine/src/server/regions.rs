@@ -110,6 +110,10 @@ impl DimSet {
         self.owner.get(&section_of_cube(pos)).is_some_and(|&r| self.regions[r].has(pos))
     }
 
+    pub fn edit_version(&self) -> u64 {
+        self.regions.iter().map(|r| r.edits).sum::<u64>() ^ (self.regions.len() as u64) << 52
+    }
+
     /// Changes whenever a cube was loaded or became settled, or regions were reshaped.
     pub fn settled_version(&self) -> u64 {
         let settled: u64 = self.regions.iter().map(|r| r.settled_gen).sum();
@@ -131,11 +135,11 @@ impl DimSet {
         self.regions[r].get(p)
     }
 
-    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube, entities: &[u8], conn: u16) {
+    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube, entities: &[u8], conn: u16, prelit: bool) {
         self.generating.remove(&pos);
         let r = self.region_for(c, section_of_cube(pos));
         let d = &mut self.regions[r];
-        d.insert(c, pos, cube);
+        d.insert(c, pos, cube, prelit);
         d.conn.insert(pos, conn);
         for (e, inv, comps) in super::persist::read(c, entities) {
             let id = e.id;

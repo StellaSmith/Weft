@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn indented_lines_continue_the_value() {
         let mut m = FxHashMap::default();
-        parse("# c\na = one\n    two\n\n\tthree\nb = x\ny\n", &mut m);
+        parse("# c\na = one\n    two\n\n\tthree\nb = x\\ny\n", &mut m);
         assert_eq!(m["a"], "one\ntwo\nthree");
         assert_eq!(m["b"], "x\ny");
     }

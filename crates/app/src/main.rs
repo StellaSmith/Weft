@@ -57,6 +57,7 @@ fn main() {
         }
     }
     voxide_engine::log::init(Some(&opts.run_dir.join("logs").join("latest.log")), verbose);
+    voxide_engine::init_workers();
     if let Err(e) = voxide_engine::run(vulkan, opts) {
         log::error!("{e}");
         std::process::exit(1);

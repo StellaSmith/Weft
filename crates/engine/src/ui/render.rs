@@ -171,6 +171,8 @@ impl UiRenderer {
             gpu.destroy_texture(t);
         }
         self.textures.clear();
+        // How textures slice comes with them: a pack's `.mcmeta` must not outlive the pack.
+        self.slicing.clear();
     }
 
     /// Bindless index and size of a theme/GUI texture, loaded the first time it is used.

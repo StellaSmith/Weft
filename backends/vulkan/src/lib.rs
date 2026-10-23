@@ -924,6 +924,10 @@ impl Backend for VulkanBackend {
         "vulkan"
     }
 
+    fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
     fn frames_in_flight(&self) -> usize {
         FRAMES
     }

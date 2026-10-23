@@ -13,6 +13,8 @@ pub struct Settings {
     pub vsync: bool,
     pub fov: f32,
     pub sensitivity: f32,
+    /// Bit per debug overlay group shown (F3 + number).
+    pub debug_groups: u32,
     pub name: String,
     /// action -> key name, only for actions the player rebound.
     pub binds: Vec<(String, String)>,
@@ -32,6 +34,7 @@ impl Settings {
             vsync: true,
             fov: 70.0,
             sensitivity: 1.0,
+            debug_groups: 0b11111,
             name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "Player".into()),
             binds: Vec::new(),
             relays: Vec::new(),
@@ -47,6 +50,7 @@ impl Settings {
                 "vsync" => s.vsync = v == "true",
                 "fov" => s.fov = v.parse().unwrap_or(70.0),
                 "sensitivity" => s.sensitivity = v.parse().unwrap_or(1.0),
+                "debug_groups" => s.debug_groups = v.parse().unwrap_or(0b11111),
                 "name" => s.name = v.to_string(),
                 "relay" => s.relays.push(v.to_string()),
                 _ => {

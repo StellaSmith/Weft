@@ -13,3 +13,7 @@ background.fill = #101018ff
 overlay.fill = #00000080
 suggest.fill = #000000d0
 label.text = #e0e0e0
+
+debug_panel.fill = #00000090
+debug_title.text = #ffffff
+debug.text = #e0e0e0

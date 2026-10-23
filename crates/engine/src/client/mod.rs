@@ -32,6 +32,13 @@ pub struct LocalPlayer {
     pub landed: bool,
     pub flying: bool,
     pub in_liquid: bool,
+    /// Physics steps until the next jump while the key stays held (vanilla's 10 ticks), so a
+    /// two-block gap cannot be used to bounce at full speed.
+    pub jump_cooldown: u32,
+    /// Smoothed eye height (lower while sneaking) and field of view multiplier (wider while
+    /// sprinting or flying).
+    pub eye: f64,
+    pub fov_mul: f32,
 }
 
 pub struct ClientEntity {
@@ -92,6 +99,8 @@ pub struct Client {
     pub inventory: Vec<ItemStack>,
     pub health: f32,
     pub max_health: f32,
+    /// Held item and when it became held: its name shows above the hotbar for a moment.
+    pub held_name: (u32, Instant),
     /// Names of the players online, for completion.
     pub players: Vec<String>,
     /// Lines this player sent, oldest first (chat history).
@@ -129,6 +138,9 @@ impl Client {
                 pitch: 0.0,
                 on_ground: false,
                 landed: false,
+                jump_cooldown: 0,
+                eye: EYE,
+                fov_mul: 1.0,
                 flying: false,
                 in_liquid: false,
             },
@@ -152,6 +164,7 @@ impl Client {
             drag: None,
             players: Vec::new(),
             sent: Vec::new(),
+            held_name: (0, Instant::now()),
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -372,6 +385,18 @@ impl Client {
         if old != self.selected {
             self.conn.send(ToServer::Select(self.selected as u32));
         }
+        let held = self.inventory.get(self.selected).map_or(0, |s| s.item);
+        if held != self.held_name.0 || old != self.selected {
+            self.held_name = (held, Instant::now());
+        }
+        // Eye and view widen or drop over a few frames like vanilla, not in one jump.
+        let k = (dt * 12.0).min(1.0);
+        let sneaking = input.held("core:sneak") && !self.player.flying;
+        let eye_target = if sneaking { EYE - 0.08 } else { EYE };
+        self.player.eye += (eye_target - self.player.eye) * k;
+        let moving = input.held("core:forward");
+        let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
+        self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
         if input.pressed("core:drop") {
             self.conn.send(ToServer::Drop { all: input.held("core:sprint") });
         }
@@ -394,7 +419,7 @@ impl Client {
             }
         }
 
-        let eye = self.player.pos + DVec3::Y * EYE;
+        let eye = self.player.pos + DVec3::Y * self.player.eye;
         let look = self.camera().forward().as_dvec3();
         self.target = physics::raycast(c, &block, eye, look, 5.0);
         let block_dist = self.target.map_or(f64::INFINITY, |h| (h.block.as_dvec3() + DVec3::splat(0.5) - eye).length());
@@ -509,7 +534,7 @@ impl Client {
     }
 
     pub fn camera(&self) -> Camera {
-        Camera { pos: self.player.pos + DVec3::Y * EYE, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov }
+        Camera { pos: self.player.pos + DVec3::Y * self.player.eye, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov * self.player.fov_mul }
     }
 
     pub fn set_view_distance(&mut self, r: i32) {
@@ -643,8 +668,12 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         p.vel.z += (target.z - p.vel.z) * accel;
         p.vel.y -= gravity * STEP;
         p.vel.y *= 0.993;
-        if input.held("core:jump") && p.on_ground {
+        p.jump_cooldown = p.jump_cooldown.saturating_sub(1);
+        if !input.held("core:jump") {
+            p.jump_cooldown = 0;
+        } else if p.on_ground && p.jump_cooldown == 0 {
             p.vel.y = 9.0;
+            p.jump_cooldown = 30;
         }
         let climbing = at(feet) & bf::CLIMBABLE != 0;
         if climbing {

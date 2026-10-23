@@ -82,11 +82,26 @@ pub struct Ctx<'a> {
     pub client: Option<&'a mut Client>,
     pub input: &'a Input,
     pub requests: &'a mut Vec<Request>,
+    pub stats: &'a Stats,
+    pub debug: bool,
+}
+
+/// Numbers the debug overlay shows, refreshed every frame.
+#[derive(Default, Clone)]
+pub struct Stats {
     pub fps: f32,
     pub frame_ms: f32,
+    /// CPU parts of the last frame (`bench::CPU_PARTS`) and GPU passes (`bench::GPU_PARTS`).
+    pub cpu: [f32; 5],
+    pub gpu: Vec<f32>,
     pub server_ms: f32,
+    pub phases: [f32; 6],
     pub regions: u32,
-    pub debug: bool,
+    pub gpu_name: String,
+    pub cpu_name: String,
+    pub threads: usize,
+    pub window: (u32, u32),
+    pub gui_scale: f32,
 }
 
 pub struct Game {
@@ -123,6 +138,9 @@ struct Running {
     quit: bool,
     mods: Vec<LoadedMod>,
     client_hash: u64,
+    stats: Stats,
+    /// F3 held and used for a combination since it went down (then releasing it does not toggle).
+    f3_combo: Option<bool>,
     /// CPU milliseconds of the last frame, see `bench::CPU_PARTS`.
     prof: [f32; 5],
     bench: Option<crate::bench::Bench>,
@@ -205,6 +223,7 @@ impl App {
         let mut input = Input::default();
         settings.apply_binds(&mut input);
         let depth = make_depth(&mut *gpu, size.width, size.height);
+        let gpu_name = gpu.device_name().to_string();
         let mut r = Running {
             gpu,
             window,
@@ -238,6 +257,13 @@ impl App {
             quit: false,
             mods,
             client_hash: 0,
+            stats: Stats {
+                gpu_name: gpu_name.clone(),
+                cpu_name: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default(),
+                threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+                ..Default::default()
+            },
+            f3_combo: None,
             prof: [0.0; 5],
             bench: None,
             ui_cached: Vec::new(),
@@ -706,10 +732,7 @@ impl Running {
             client: self.game.as_mut().map(|g| &mut g.client),
             input: &self.input,
             requests,
-            fps: self.fps,
-            frame_ms: self.frame_ms,
-            server_ms: 0.0,
-            regions: 0,
+            stats: &self.stats,
             debug: self.debug,
         };
         for a in actions {
@@ -727,16 +750,20 @@ impl Running {
     fn poll_bindings(&mut self) {
         let mut reqs = Vec::new();
         let server = self.game.as_ref().and_then(|g| g.server.as_ref());
-        let (server_ms, regions) = server.map_or((0.0, 0), |s| (s.tick_ms(), s.regions()));
+        let gui_scale = self.gui_scale();
+        let st = &mut self.stats;
+        (st.fps, st.frame_ms, st.cpu) = (self.fps, self.frame_ms, self.prof);
+        st.gpu.clear();
+        st.gpu.extend_from_slice(self.gpu.gpu_times());
+        (st.server_ms, st.regions, st.phases) = server.map_or((0.0, 0, [0.0; 6]), |s| (s.tick_ms(), s.regions(), s.phases()));
+        st.window = self.gpu.surface_size();
+        st.gui_scale = gui_scale;
         let ctx = Ctx {
             settings: &mut self.settings,
             client: self.game.as_mut().map(|g| &mut g.client),
             input: &self.input,
             requests: &mut reqs,
-            fps: self.fps,
-            frame_ms: self.frame_ms,
-            server_ms,
-            regions,
+            stats: &self.stats,
             debug: self.debug,
         };
         let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
@@ -967,10 +994,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 client: None,
                 input: &r.input,
                 requests: &mut requests,
-                fps: r.fps,
-                frame_ms: r.frame_ms,
-                    server_ms: 0.0,
-                regions: 0,
+                stats: &r.stats,
                 debug: r.debug,
             };
             if let Some((s, _)) = r.screens.last_mut() {
@@ -988,10 +1012,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 client: r.game.as_mut().map(|g| &mut g.client),
                 input: &r.input,
                 requests: &mut requests,
-                fps: r.fps,
-                frame_ms: r.frame_ms,
-                server_ms: 0.0,
-                regions: 0,
+                stats: &r.stats,
                 debug: r.debug,
             };
             if let Some((s, _)) = r.screens.last_mut() {
@@ -1012,9 +1033,26 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.open(Box::new(screens::Pause));
         }
     }
+    // F3 alone toggles the overlay on release; F3 + digit toggles one group instead.
+    let f3 = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k));
     if r.input.pressed("core:debug") {
-        r.debug = !r.debug;
-        r.hud.invalidate();
+        r.f3_combo = Some(false);
+    }
+    if f3 {
+        for (i, k) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5].into_iter().enumerate() {
+            if r.input.pressed_key(Key::Code(k)) {
+                r.settings.debug_groups ^= 1 << i;
+                r.settings.save();
+                r.f3_combo = Some(true);
+                r.debug = true;
+                r.hud.invalidate();
+            }
+        }
+    } else if let Some(combo) = r.f3_combo.take() {
+        if !combo {
+            r.debug = !r.debug;
+            r.hud.invalidate();
+        }
     }
     if r.input.pressed("core:reload") {
         r.assets.rescan();
@@ -1125,7 +1163,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
 
     if let Some(g) = &r.game {
         let chat_open = r.screens.last().is_some_and(|(s, _)| s.name() == "core:chat");
-        if r.hud.update(&g.client, r.debug, chat_open, &r.lang) {
+        if r.hud.update(&g.client, r.debug, r.settings.debug_groups, chat_open, &r.lang) {
             r.quads_dirty = true;
         }
         let mut h = g.client.selected as u64;
@@ -1210,6 +1248,21 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     // The stack held by the mouse follows it every frame, outside the cached quads.
     r.ui.quads.clear();
     r.ui.quads.extend_from_slice(&r.ui_cached);
+    if let Some((_, ui)) = r.screens.last() {
+        let game = r.game.as_ref().map(|_| (content(), &r.textures));
+        r.ui.tooltip(&mut *r.gpu, &r.assets, ui, &r.theme, scale, r.input.cursor, game);
+    }
+    // Name of a newly held item above the hotbar, fading out.
+    if let Some(g) = r.game.as_ref().filter(|_| r.screens.is_empty()) {
+        let (item, at) = g.client.held_name;
+        let age = at.elapsed().as_secs_f32();
+        if item != 0 && age < 2.0 {
+            let alpha = ((2.0 - age) / 0.5).min(1.0);
+            let name = crate::ui::text::plain(&crate::hud::item_name(&r.lang, item));
+            let (w, h) = r.gpu.surface_size();
+            r.ui.label(&name, w as f32 / 2.0, h as f32 - 59.0 * scale, scale * text_unit, (alpha * 255.0) as u32);
+        }
+    }
     if let Some(cursor) = r.game.as_ref().and_then(|g| g.client.menu.as_ref()).map(|m| m.cursor).filter(|s| !s.is_empty()) {
         let p = r.input.cursor;
         let rect = crate::ui::Rect { x: p.x - 9.0 * scale, y: p.y - 9.0 * scale, w: 18.0 * scale, h: 18.0 * scale };

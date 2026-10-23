@@ -245,6 +245,10 @@ pub struct BackendDesc<'a> {
 
 pub trait Backend: Send {
     fn name(&self) -> &str;
+    /// The GPU in use, for diagnostics.
+    fn device_name(&self) -> &str {
+        ""
+    }
     fn frames_in_flight(&self) -> usize;
     fn surface_size(&self) -> (u32, u32);
     fn resize(&mut self, width: u32, height: u32);

@@ -20,7 +20,7 @@ pub const TAG_CROSSHAIR: u32 = 2;
 #[derive(Default)]
 pub struct Hud {
     pub ui: Ui,
-    key: Option<(bool, usize, usize, bool)>,
+    key: Option<(bool, usize, usize, bool, u32)>,
     /// Player overrides from `config/hud.txt`: element name -> (anchor, order).
     layout: rustc_hash::FxHashMap<String, (String, i32)>,
 }
@@ -46,9 +46,10 @@ impl Hud {
 
     /// Returns true if the tree was rebuilt.
     /// `chat_open`: the chat screen shows the messages itself.
-    pub fn update(&mut self, client: &Client, debug: bool, chat_open: bool, lang: &Lang) -> bool {
+    /// `groups`: bit per `DEBUG_GROUPS` entry shown with the debug overlay.
+    pub fn update(&mut self, client: &Client, debug: bool, groups: u32, chat_open: bool, lang: &Lang) -> bool {
         let chat_visible = if chat_open { 0 } else { client.chat.iter().filter(|(_, t)| t.elapsed().as_secs() < 10).count() };
-        let key = (debug, chat_visible, client.chat.len(), client.dead);
+        let key = (debug, chat_visible, client.chat.len(), client.dead, groups);
         if self.key == Some(key) {
             return false;
         }
@@ -89,21 +90,19 @@ impl Hud {
         // Both halves start at zero height and split the rest evenly, so the crosshair sits at the
         // exact screen centre whatever they contain.
         ui.container(Style::row().h(0.0).grow().pad(4.0).align(Align::Start), |ui| {
-            ui.container(Style::default().w(0.0).gap(1.0).align(Align::Start), |ui| {
+            ui.container(Style::default().gap(1.0).align(Align::Start), |ui| {
                 if debug {
-                    for (key, f) in DEBUG_LINES {
-                        let key = key.to_string();
-                        ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
-                    }
-                    ui.text_bound("debug", Box::new(|_: &Ctx| ("hud.debug.mods".into(), vec![Arg::Text(mod_profile())])));
+                    debug_groups(ui, groups, false);
                 }
                 for p in at(a::TOP_LEFT, false) {
                     draw(ui, p);
                 }
             });
             ui.container(Style::default().grow(), |_| {});
-            // Zero width, content hanging to the left: corners never push the centre around.
-            ui.container(Style::default().w(0.0).gap(1.0).align(Align::End), |ui| {
+            ui.container(Style::default().gap(1.0).align(Align::End), |ui| {
+                if debug {
+                    debug_groups(ui, groups, true);
+                }
                 for p in at(a::TOP_RIGHT, false) {
                     draw(ui, p);
                 }
@@ -156,48 +155,121 @@ impl Hud {
     }
 }
 
-fn mod_profile() -> String {
-    let c = content();
-    let mut parts = Vec::new();
-    for (i, m) in c.mods.iter().enumerate() {
-        let s = crate::host::stats(voxide_abi::ModId(i as u32));
-        let ns = s.nanos.swap(0, std::sync::atomic::Ordering::Relaxed);
-        let calls = s.calls.swap(0, std::sync::atomic::Ordering::Relaxed);
-        parts.push(format!("{} {:.2}ms/{}c", m.id, ns as f64 / 1e6, calls));
-    }
-    parts.join(", ")
-}
 
 type DebugLine = (&'static str, fn(&Ctx) -> Vec<Arg>);
 
-const DEBUG_LINES: &[DebugLine] = &[
-    ("hud.debug.fps", |c| vec![Arg::Int(c.fps.round() as i64), Arg::Float(c.frame_ms as f64, 2)]),
+/// Debug overlay groups in F3+number order: title key, right side, lines.
+pub const DEBUG_GROUPS: &[(&str, bool, &[DebugLine])] = &[
+    ("hud.debug.group.performance", true, PERFORMANCE),
+    ("hud.debug.group.position", false, POSITION),
+    ("hud.debug.group.world", false, WORLD),
+    ("hud.debug.group.mods", true, MODS),
+    ("hud.debug.group.system", true, SYSTEM),
+];
+
+const PERFORMANCE: &[DebugLine] = &[
+    ("hud.debug.fps", |c| vec![Arg::Int(c.stats.fps.round() as i64), Arg::Float(c.stats.frame_ms as f64, 2)]),
+    ("hud.debug.cpu", |c| c.stats.cpu.iter().map(|v| Arg::Float(*v as f64, 2)).collect()),
+    ("hud.debug.gpu", |c| {
+        let g = &c.stats.gpu;
+        let at = |i: usize| Arg::Float(g.get(i).copied().unwrap_or(0.0) as f64, 2);
+        vec![Arg::Float(g.iter().sum::<f32>() as f64, 2), at(1), at(2), at(3)]
+    }),
+    ("hud.debug.server", |c| vec![Arg::Float(c.stats.server_ms as f64, 2), Arg::Int(c.stats.regions as i64)]),
+    ("hud.debug.phases", |c| {
+        let p = c.stats.phases;
+        vec![Arg::Float(p[0] as f64, 2), Arg::Float(p[2] as f64, 2), Arg::Float((p[3] + p[4]) as f64, 2)]
+    }),
+];
+
+const POSITION: &[DebugLine] = &[
     ("hud.debug.pos", |c| {
         let p = c.client.as_ref().map_or(glam::DVec3::ZERO, |cl| cl.player.pos);
-        vec![Arg::Float(p.x, 2), Arg::Float(p.y, 2), Arg::Float(p.z, 2)]
+        vec![Arg::Float(p.x, 3), Arg::Float(p.y, 3), Arg::Float(p.z, 3)]
+    }),
+    ("hud.debug.block", |c| {
+        let p = c.client.as_ref().map_or(glam::IVec3::ZERO, |cl| cl.player.pos.floor().as_ivec3());
+        vec![Arg::Int(p.x as i64), Arg::Int(p.y as i64), Arg::Int(p.z as i64)]
     }),
     ("hud.debug.cube", |c| {
-        let Some(cl) = c.client.as_ref() else { return vec![] };
-        let p = cl.player.pos.floor().as_ivec3() >> 4i32;
-        let dim = content().dims[cl.world.dim as usize].name.clone();
-        vec![Arg::Int(p.x as i64), Arg::Int(p.y as i64), Arg::Int(p.z as i64), Arg::Text(dim)]
+        let p = c.client.as_ref().map_or(glam::IVec3::ZERO, |cl| cl.player.pos.floor().as_ivec3() >> 4i32);
+        vec![Arg::Int(p.x as i64), Arg::Int(p.y as i64), Arg::Int(p.z as i64)]
     }),
-    ("hud.debug.world", |c| {
-        let Some(cl) = c.client.as_ref() else { return vec![] };
-        vec![
-            Arg::Int(cl.world.cubes.len() as i64),
-            Arg::Int(cl.world.pending_meshes() as i64),
-            Arg::Int(cl.render.drawn as i64),
-            Arg::Int((cl.render.faces_drawn / 1000) as i64),
-        ]
+    ("hud.debug.facing", |c| {
+        let (yaw, pitch) = c.client.as_ref().map_or((0.0, 0.0), |cl| (cl.player.yaw, cl.player.pitch));
+        // Yaw 0 looks along -Z (north); turning right goes to east (+X).
+        let deg = (-yaw.to_degrees()).rem_euclid(360.0);
+        let dir = ["north", "east", "south", "west"][(((deg + 45.0) / 90.0) as usize) % 4];
+        vec![Arg::Key(format!("hud.debug.dir.{dir}")), Arg::Float(deg as f64, 1), Arg::Float(pitch.to_degrees() as f64, 1)]
     }),
-    ("hud.debug.entities", |c| vec![Arg::Int(c.client.as_ref().map_or(0, |cl| cl.entities.len()) as i64)]),
-    ("hud.debug.server", |c| vec![Arg::Float(c.server_ms as f64, 2), Arg::Int(c.regions as i64)]),
+    ("hud.debug.biome", |c| {
+        let Some(cl) = c.client.as_ref() else { return vec![Arg::Text("-".into())] };
+        let p = cl.player.pos.floor().as_ivec3();
+        let id = cl.world.cubes.get(&(p >> 4i32)).map_or(0, |cube| cube.biome((p.x & 15) as usize, (p.z & 15) as usize));
+        vec![Arg::Text(content().biomes.get(id as usize).map_or("-".into(), |b| b.name.clone()))]
+    }),
+    ("hud.debug.dimension", |c| {
+        let d = c.client.as_ref().map_or(0, |cl| cl.world.dim);
+        vec![Arg::Text(content().dims[d as usize].name.clone())]
+    }),
+    ("hud.debug.light", |c| {
+        let l = c.client.as_ref().map_or(0, |cl| cl.world.light((cl.player.pos + glam::DVec3::Y * 0.5).floor().as_ivec3()));
+        let ch = |s: u32| Arg::Int(((l >> s) & 255) as i64);
+        vec![ch(0), ch(8), ch(16), ch(24)]
+    }),
     ("hud.debug.looking", |c| {
         let name = c.client.as_ref().and_then(|cl| cl.target).map(|h| content().state_name(h.state)).unwrap_or_else(|| "-".into());
         vec![Arg::Text(name)]
     }),
 ];
+
+const WORLD: &[DebugLine] = &[
+    ("hud.debug.world", |c| {
+        let Some(cl) = c.client.as_ref() else { return vec![] };
+        vec![Arg::Int(cl.world.cubes.len() as i64), Arg::Int(cl.world.pending_meshes() as i64)]
+    }),
+    ("hud.debug.draws", |c| {
+        let Some(cl) = c.client.as_ref() else { return vec![] };
+        vec![Arg::Int(cl.render.drawn as i64), Arg::Int((cl.render.faces_drawn / 1000) as i64)]
+    }),
+    ("hud.debug.entities", |c| vec![Arg::Int(c.client.as_ref().map_or(0, |cl| cl.entities.len()) as i64)]),
+];
+
+const MODS: &[DebugLine] = &[("core.raw", |_| vec![Arg::Text(mod_profile())])];
+
+const SYSTEM: &[DebugLine] = &[
+    ("hud.debug.gpu_name", |c| vec![Arg::Text(c.stats.gpu_name.clone())]),
+    ("hud.debug.cpu_name", |c| vec![Arg::Text(c.stats.cpu_name.clone()), Arg::Int(c.stats.threads as i64)]),
+    ("hud.debug.window", |c| vec![Arg::Int(c.stats.window.0 as i64), Arg::Int(c.stats.window.1 as i64), Arg::Float(c.stats.gui_scale as f64, 1)]),
+];
+
+/// Milliseconds per server tick and calls per tick for each mod, averaged over the last second.
+fn mod_profile() -> String {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<(std::time::Instant, String)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    if let Some((at, text)) = last.as_ref() {
+        if at.elapsed().as_secs_f32() < 1.0 {
+            return text.clone();
+        }
+    }
+    let ticks = last.as_ref().map_or(1.0, |(at, _)| at.elapsed().as_secs_f64() * 20.0);
+    let c = content();
+    let lines: Vec<String> = c
+        .mods
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let s = crate::host::stats(voxide_abi::ModId(i as u32));
+            let ns = s.nanos.swap(0, std::sync::atomic::Ordering::Relaxed);
+            let calls = s.calls.swap(0, std::sync::atomic::Ordering::Relaxed);
+            format!("{}: {:.2} ms, {:.0} calls", m.id, ns as f64 / 1e6 / ticks, calls as f64 / ticks)
+        })
+        .collect();
+    let text = lines.join("\n");
+    *last = Some((std::time::Instant::now(), text.clone()));
+    text
+}
 
 /// Engine-drawn nodes: crosshair, hotbar slots, menu slots.
 #[allow(clippy::too_many_arguments)]
@@ -304,4 +376,46 @@ pub fn item_name(lang: &Lang, item: u32) -> String {
         }
     }
     d.name.clone()
+}
+
+/// The debug overlay groups of one side, each a dark panel with a title; the help panel on the
+/// left lists the F3 combinations.
+fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
+    let align = if right { Align::End } else { Align::Start };
+    for (i, (title, side, lines)) in DEBUG_GROUPS.iter().enumerate() {
+        if *side != right || groups & (1 << i) == 0 {
+            continue;
+        }
+        ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
+            ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
+            let t = ui.text_bound("debug_title", Box::new(move |_: &Ctx| (title.to_string(), vec![])));
+            if let Some(t) = ui.text_mut(t) {
+                t.wrap = false;
+            }
+            for (key, f) in lines.iter() {
+                let key = key.to_string();
+                let n = ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
+                if let Some(t) = ui.text_mut(n) {
+                    t.wrap = false;
+                }
+            }
+        });
+    }
+    if !right {
+        ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
+            ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
+            ui.text_bound("debug_title", Box::new(|_: &Ctx| ("hud.debug.group.help".into(), vec![])));
+            for (i, (title, ..)) in DEBUG_GROUPS.iter().enumerate() {
+                let on = groups & (1 << i) != 0;
+                let state = if on { "hud.debug.shown" } else { "hud.debug.hidden" };
+                let n = ui.text_bound(
+                    "debug",
+                    Box::new(move |_: &Ctx| ("hud.debug.toggle".into(), vec![Arg::Int(i as i64 + 1), Arg::Key(title.to_string()), Arg::Key(state.into())])),
+                );
+                if let Some(t) = ui.text_mut(n) {
+                    t.wrap = false;
+                }
+            }
+        });
+    }
 }

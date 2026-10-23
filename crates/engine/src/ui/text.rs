@@ -161,10 +161,13 @@ pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout
                         continue;
                     }
                     let adv = font.glyph(ch).advance as f32;
-                    if ch == ' ' {
-                        last_break = Some((out.items.len(), x));
-                    }
                     if x + adv > limit && x > 0.0 {
+                        if ch == ' ' {
+                            // Wrapping right at a space: the space just disappears.
+                            newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start);
+                            last_break = None;
+                            continue;
+                        }
                         match last_break.take() {
                             Some((idx, bx)) if idx > line_start => {
                                 // Move everything after the space to the next line.
@@ -185,15 +188,15 @@ pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout
                                 }
                                 x -= shift;
                                 line_start = idx;
-                                if ch == ' ' {
-                                    continue;
-                                }
                             }
                             _ => newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start),
                         }
                     }
-                    if ch == ' ' && x == 0.0 && out.items.len() == line_start && y > 0.0 {
-                        continue;
+                    if ch == ' ' {
+                        if x == 0.0 && out.items.len() == line_start && y > 0.0 {
+                            continue;
+                        }
+                        last_break = Some((out.items.len(), x));
                     }
                     out.items.push(Placed::Glyph { x, y, ch, color: span.color });
                     x += adv;
@@ -223,4 +226,21 @@ pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout
 
 pub fn plain(s: &str) -> Vec<Span> {
     vec![Span { piece: Piece::Text(s.to_string()), color: None }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrapping_never_loses_or_panics() {
+        let font = Font::parse_hex(include_str!("../../assets/fonts/unifont.hex"));
+        let text = "Cubes: 5583 loaded, 0 meshing, 725 draws  double  spaces and a_very_long_word_without_breaks";
+        let inked = text.chars().filter(|c| *c != ' ').count();
+        for width in [0.0, 8.0, 13.0, 40.0, 100.0, 1000.0] {
+            let l = layout(&plain(text), &font, Some(width));
+            let glyphs = l.items.iter().filter(|i| matches!(i, Placed::Glyph { ch, .. } if *ch != ' ')).count();
+            assert_eq!(glyphs, inked, "width {width}");
+        }
+    }
 }

@@ -306,28 +306,41 @@ impl UiRenderer {
                 }
             }
         }
-        if let Some(h) = ui.hovered {
-            if let Some(tip) = &ui.nodes[h].tooltip {
-                let layout = super::text::layout(tip, &self.font, Some(200.0));
-                let px = scale * ui.text_unit;
-                let r = ui.nodes[h].rect;
-                let (w, hgt) = ((layout.width + 8.0) * px, (layout.height + 6.0) * px);
-                let mut x = (r.x + r.w) * scale + 6.0 * scale;
-                let mut y = r.y * scale;
-                if x + w > ui.size.x * scale {
-                    x = (r.x * scale - w - 6.0 * scale).max(0.0);
-                }
-                y = y.min(ui.size.y * scale - hgt).max(0.0);
-                let bg = Rect { x, y, w, h: hgt };
-                match theme.get("tooltip", "texture").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n)) {
-                    Some(t) => self.nine(bg, t, theme.num("tooltip", "border", 3.0), scale, 0xFFFFFFFF),
-                    None => self.rect(bg, 0x100010F0),
-                }
-                let mut tip_icons = Vec::new();
-                let color = theme.color("tooltip", "text", 0xFFFFFFFF);
-                self.glyph_run(&layout.items, x + 4.0 * px, y + 3.0 * px, px, color, Some(0x3F3F3FFF), &mut tip_icons);
+    }
+
+    /// The hovered node's tooltip next to the mouse (physical pixels), drawn every frame on top.
+    pub fn tooltip(&mut self, gpu: &mut dyn Backend, assets: &Assets, ui: &Ui, theme: &Theme, scale: f32, at: glam::Vec2, game: Option<(&Content, &GameTextures)>) {
+        let Some(tip) = ui.hovered.and_then(|h| ui.nodes.get(h)).and_then(|n| n.tooltip.as_ref()) else { return };
+        let layout = super::text::layout(tip, &self.font, Some(200.0));
+        let px = scale * ui.text_unit;
+        let (w, hgt) = ((layout.width + 8.0) * px, (layout.height + 6.0) * px);
+        // Like vanilla: right of and slightly above the cursor, flipped to the left near the edge.
+        let mut x = at.x + 12.0 * scale;
+        let y = (at.y - 12.0 * scale).min(ui.size.y * scale - hgt).max(0.0);
+        if x + w > ui.size.x * scale {
+            x = (at.x - w - 12.0 * scale).max(0.0);
+        }
+        let bg = Rect { x, y, w, h: hgt };
+        match theme.get("tooltip", "texture").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n)) {
+            Some(t) => self.nine(bg, t, theme.num("tooltip", "border", 3.0), scale, 0xFFFFFFFF),
+            None => self.rect(bg, 0x100010F0),
+        }
+        let mut icons = Vec::new();
+        let color = theme.color("tooltip", "text", 0xFFFFFFFF);
+        self.glyph_run(&layout.items, x + 4.0 * px, y + 3.0 * px, px, color, Some(0x3F3F3FFF), &mut icons);
+        if let Some((c, t)) = game {
+            for (ix, iy, s, item) in icons {
+                self.item_icon(c, t, ix, iy, s, item);
             }
         }
+    }
+
+    /// One line of text centred on `cx` with its top at `y` (physical pixels); `alpha` fades it.
+    pub fn label(&mut self, spans: &[super::text::Span], cx: f32, y: f32, px: f32, alpha: u32) {
+        let layout = super::text::layout(spans, &self.font, None);
+        let mut icons = Vec::new();
+        let x = (cx - layout.width * px / 2.0).round();
+        self.glyph_run(&layout.items, x, y, px, 0xFFFFFF00 | alpha, Some(0x3F3F3F00 | alpha), &mut icons);
     }
 
     #[allow(clippy::too_many_arguments)]

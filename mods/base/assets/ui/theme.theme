@@ -16,6 +16,7 @@ slider.knob_hover = base:gui/button_hover
 input.texture = base:gui/input
 input.focused = base:gui/input_focused
 tooltip.texture = base:gui/tooltip
+tooltip.frame = base:gui/tooltip_frame
 background.texture = base:gui/background
 background.color = #ffffff
 hearts.full = base:gui/heart_full

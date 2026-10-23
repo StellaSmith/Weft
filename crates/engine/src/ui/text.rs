@@ -142,7 +142,12 @@ const ICON: f32 = 16.0;
 
 /// Lays out spans, wrapping at spaces when a line would exceed `max_width` (font pixels).
 pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout {
-    let lh = font.line_height;
+    layout_spaced(spans, font, max_width, font.line_height)
+}
+
+/// `layout` with lines `line_height` font pixels apart (tooltips leave room between lines).
+pub fn layout_spaced(spans: &[Span], font: &Font, max_width: Option<f32>, line_height: f32) -> TextLayout {
+    let lh = line_height;
     let mut out = TextLayout::default();
     let (mut x, mut y) = (0.0f32, 0.0f32);
     let mut line_start = 0usize;
@@ -226,8 +231,8 @@ pub fn layout(spans: &[Span], font: &Font, max_width: Option<f32>) -> TextLayout
     }
     max_x = max_x.max(x);
     out.width = max_x;
-    out.height = y + lh;
-    out.lines = (out.height / lh).round() as u32;
+    out.height = y + font.line_height;
+    out.lines = (y / lh).round() as u32 + 1;
     out
 }
 

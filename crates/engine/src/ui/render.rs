@@ -96,8 +96,10 @@ pub struct UiRenderer {
     font_tex: TextureId,
     font_idx: u32,
     textures: FxHashMap<String, Option<(u32, u32, u32)>>,
-    /// Slicing a texture declares for itself.
+    /// Slicing a texture declares for itself, and how far it reaches outside the box it is
+    /// drawn for (`outset` in its `.gui`: shadows, frames drawn around the content).
     slicing: FxHashMap<String, Option<Slicing>>,
+    outset: FxHashMap<String, f32>,
     owned: Vec<TextureId>,
     buffers: Vec<(BufferId, u32)>,
     screen: Vec<BufferId>,
@@ -135,6 +137,7 @@ impl UiRenderer {
             font_idx,
             textures: FxHashMap::default(),
             slicing: FxHashMap::default(),
+            outset: FxHashMap::default(),
             owned: Vec::new(),
             buffers: Vec::new(),
             screen,
@@ -173,6 +176,7 @@ impl UiRenderer {
         self.textures.clear();
         // How textures slice comes with them: a pack's `.mcmeta` must not outlive the pack.
         self.slicing.clear();
+        self.outset.clear();
     }
 
     /// Bindless index and size of a theme/GUI texture, loaded the first time it is used.
@@ -201,7 +205,12 @@ impl UiRenderer {
             return *s;
         }
         let read = |ext: &str| assets.read(name, "textures", ext).map(|b| String::from_utf8_lossy(&b).into_owned());
-        let s = read("gui").map(|src| parse_gui(&src, pixels)).or_else(|| read("png.mcmeta").and_then(|src| parse_mcmeta(&src)));
+        let gui = read("gui");
+        let outset = gui.as_deref().and_then(|src| {
+            src.lines().find_map(|l| l.split('#').next()?.split_once('=').filter(|(k, _)| k.trim() == "outset").and_then(|(_, v)| v.trim().parse().ok()))
+        });
+        self.outset.insert(name.to_string(), outset.unwrap_or(0.0));
+        let s = gui.map(|src| parse_gui(&src, pixels)).or_else(|| read("png.mcmeta").and_then(|src| parse_mcmeta(&src)));
         self.slicing.insert(name.to_string(), s);
         s
     }
@@ -211,7 +220,10 @@ impl UiRenderer {
     pub fn draw_gui(&mut self, gpu: &mut dyn Backend, assets: &Assets, name: &str, r: Rect, scale: f32, color: u32, fallback: Slicing) -> bool {
         let Some(tex) = self.texture(gpu, assets, name) else { return false };
         let pixels = [tex.1 as f32, tex.2 as f32];
-        let slicing = self.declared_slicing(assets, name, pixels).unwrap_or(match fallback {
+        let declared = self.declared_slicing(assets, name, pixels);
+        let o = self.outset.get(name).copied().unwrap_or(0.0) * scale;
+        let r = Rect { x: r.x - o, y: r.y - o, w: r.w + 2.0 * o, h: r.h + 2.0 * o };
+        let slicing = declared.unwrap_or(match fallback {
             Slicing::Nine { border, .. } => Slicing::Nine { size: pixels, border },
             f => f,
         });
@@ -444,9 +456,11 @@ impl UiRenderer {
     /// The hovered node's tooltip next to the mouse (physical pixels), drawn every frame on top.
     pub fn tooltip(&mut self, gpu: &mut dyn Backend, assets: &Assets, ui: &Ui, theme: &Theme, scale: f32, at: glam::Vec2, game: Option<(&Content, &GameTextures)>) {
         let Some(tip) = ui.hovered.and_then(|h| ui.nodes.get(h)).and_then(|n| n.tooltip.as_ref()) else { return };
-        let layout = super::text::layout(tip, &self.font, Some(200.0));
+        // Vanilla's spacing: lines 10 GUI pixels apart, 3 pixels of padding inside the frame.
         let px = scale * ui.text_unit;
-        let (w, hgt) = ((layout.width + 8.0) * px, (layout.height + 6.0) * px);
+        let layout = super::text::layout_spaced(tip, &self.font, Some(320.0), 10.0 * scale / px);
+        let pad = 4.0 * scale;
+        let (w, hgt) = (layout.width * px + 2.0 * pad, layout.height * px + 2.0 * pad);
         // Like vanilla: right of and slightly above the cursor, flipped to the left near the edge.
         let mut x = at.x + 12.0 * scale;
         let y = (at.y - 12.0 * scale).min(ui.size.y * scale - hgt).max(0.0);
@@ -458,9 +472,12 @@ impl UiRenderer {
         if !drawn {
             self.rect(bg, 0x100010F0);
         }
+        if let Some(frame) = theme.get("tooltip", "frame").map(str::to_string) {
+            self.draw_gui(gpu, assets, &frame, bg, scale, 0xFFFFFFFF, theme_slicing(theme, "tooltip"));
+        }
         let mut icons = Vec::new();
         let color = theme.color("tooltip", "text", 0xFFFFFFFF);
-        self.glyph_run(&layout.items, x + 4.0 * px, y + 3.0 * px, px, color, Some(0x3F3F3FFF), &mut icons);
+        self.glyph_run(&layout.items, x + pad, y + pad, px, color, Some(0x3F3F3FFF), &mut icons);
         if let Some((c, t)) = game {
             for (ix, iy, s, item) in icons {
                 self.item_icon(c, t, ix, iy, s, item);

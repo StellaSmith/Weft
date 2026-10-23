@@ -12,6 +12,7 @@ pub struct Brain {
     pub wander: [f32; 2],
     pub cooldown: u32,
     pub panic: u32,
+    /// Position last tick while walking (NaN when it stood still), to notice being stuck.
     pub last: [f32; 2],
 }
 
@@ -24,7 +25,7 @@ pub static COW: Entity = Entity::new();
 struct Drop(&'static str, u32, u32);
 
 pub fn register(r: &mut Registry) {
-    r.component("brain", &BRAIN, Brain::default(), 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
+    r.component("brain", &BRAIN, Brain { last: [f32::NAN; 2], ..Default::default() }, 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
     r.entity("zombie", &ZOMBIE)
         .size(0.6, 1.95)
         .health(20.0)
@@ -119,6 +120,8 @@ fn hostile_ai(t: &EntityTick, damage: f32, only_dark: bool) {
                 b.last = [st.pos[0] as f32, st.pos[2] as f32];
                 if dist > 1.0 {
                     w.walk(id, dir, 1.0, stuck);
+                } else {
+                    b.last = [f32::NAN; 2];
                 }
                 st.yaw = yaw_of(dir);
                 st.pitch = 0.0;
@@ -168,7 +171,9 @@ fn wander(w: &World, id: u64, st: &mut EntityState, speed: f32) {
     }
     b.timer -= 1;
     let dir = b.wander;
-    if dir != [0.0, 0.0] {
+    if dir == [0.0, 0.0] {
+        b.last = [f32::NAN; 2];
+    } else {
         let stuck = st.on_ground != 0 && (st.pos[0] as f32 - b.last[0]).abs() + (st.pos[2] as f32 - b.last[1]).abs() < 0.01;
         b.last = [st.pos[0] as f32, st.pos[2] as f32];
         w.walk(id, dir, speed, stuck);

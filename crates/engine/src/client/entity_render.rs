@@ -531,7 +531,8 @@ impl EntityRenderer {
                 pos: base.to_array(),
                 yaw: e.yaw,
                 pitch: e.pitch,
-                swing: (e.walk * 6.0).sin() * 0.9 * e.swing,
+                // Vanilla's limb swing: 0.6662 rad per tick of limbSwing, which grows 4 per block.
+                swing: (e.walk * 2.66).sin() * 1.2 * e.swing,
                 hurt,
                 inflate: 0.0,
                 color: color.to_array(),

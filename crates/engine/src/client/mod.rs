@@ -8,7 +8,7 @@ pub mod world_render;
 
 use std::time::Instant;
 
-use glam::{DVec3, IVec3, Vec3};
+use glam::{DVec2, DVec3, IVec3, Vec3};
 use rustc_hash::FxHashMap;
 use voxide_abi::{ItemStack, block_flags as bf};
 use voxide_render::{Backend, CommandList, FrameInfo};
@@ -361,7 +361,6 @@ impl Client {
                 }
                 ToClient::Health { health, max } => {
                     if health < self.health {
-                        self.player.vel.y = self.player.vel.y.max(2.0);
                         self.hurt_flash = 0.5;
                     }
                     self.health = health;
@@ -407,6 +406,16 @@ impl Client {
                 ToClient::CloseMenu => {
                     self.menu = None;
                     self.events.push(ClientEvent::CloseMenu);
+                }
+                ToClient::Knockback([x, z]) => {
+                    // Vanilla's knockBack: half the speed, 0.4 away from the hit and up.
+                    let d = DVec2::new(x as f64, z as f64);
+                    let d = if d.length_squared() < 1e-8 { DVec2::X } else { d.normalize() };
+                    let v = &mut self.player.vel;
+                    *v /= 2.0;
+                    v.x -= d.x * 0.4;
+                    v.z -= d.y * 0.4;
+                    v.y = (v.y + 0.4).min(0.4);
                 }
                 ToClient::Died => {
                     self.dead = true;
@@ -500,9 +509,9 @@ impl Client {
         let speed = moved / (dt as f32).max(1e-4);
         self.self_walk += moved;
         let k_swing = (dt * 10.0).min(1.0) as f32;
+        // Limbs swing with horizontal speed in the air too, like vanilla.
+        self.self_swing += ((speed / 5.0).min(1.0) - self.self_swing) * k_swing;
         let walking = self.player.on_ground && !self.player.flying;
-        let amp = if walking { (speed / 4.3).min(1.0) } else { 0.0 };
-        self.self_swing += (amp - self.self_swing) * k_swing;
         // Vanilla: amplitude follows the per-tick speed capped at 0.1, eased by 0.4 per tick.
         self.walk_dist += moved * 0.6;
         let target = if walking { (speed / 20.0).min(0.1) } else { 0.0 };
@@ -614,7 +623,7 @@ impl Client {
             e.yaw += dyaw * k as f32;
             let speed = ((e.pos - before).with_y(0.0).length() / dt.max(1e-4)) as f32;
             e.walk += speed * dt as f32;
-            e.swing += ((speed / 4.0).min(1.0) - e.swing) * (k as f32);
+            e.swing += ((speed / 5.0).min(1.0) - e.swing) * (k as f32);
             e.hurt = (e.hurt - dt as f32).max(0.0);
             e.age += dt as f32;
             if let Some(d) = &mut e.dying {
@@ -739,8 +748,8 @@ impl Client {
         let worn: Vec<u32> = self.inventory.get(36..40).map_or(Vec::new(), |s| s.iter().filter(|s| !s.is_empty()).map(|s| s.item).collect());
         ClientEntity {
             kind: content().game.player_kind,
-            pos: self.player.pos,
-            target: self.player.pos,
+            pos: self.smooth_pos(),
+            target: self.smooth_pos(),
             yaw: self.player.yaw,
             target_yaw: self.player.yaw,
             pitch: self.player.pitch,

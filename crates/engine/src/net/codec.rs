@@ -256,6 +256,11 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
         }
         ToClient::CloseMenu => w.u8(17),
         ToClient::Died => w.u8(18),
+        ToClient::Knockback([x, z]) => {
+            w.u8(25);
+            w.f32(*x);
+            w.f32(*z);
+        }
         ToClient::Chat(t) => {
             w.u8(19);
             w.str(t);
@@ -420,6 +425,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             }
             ToClient::Burning(ids)
         }
+        25 => ToClient::Knockback([r.f32()?, r.f32()?]),
         _ => return None,
     })
 }

@@ -472,6 +472,10 @@ fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
                     t.wrap = false;
                 }
             }
+            let n = ui.text_bound("debug", Box::new(|_: &Ctx| ("hud.debug.gamemode".into(), vec![])));
+            if let Some(t) = ui.text_mut(n) {
+                t.wrap = false;
+            }
         });
     }
 }

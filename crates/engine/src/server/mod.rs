@@ -1455,6 +1455,9 @@ impl Server {
                         p.conn.send(ToClient::Health { health: hp, max: c.game.entities[c.game.player_kind as usize].max_health });
                     }
                 }
+                if let Some(&(_, dir)) = reg.entities.knocked.iter().rev().find(|h| h.0 == p.entity) {
+                    p.conn.send(ToClient::Knockback(dir));
+                }
                 // Own inventory and synced components.
                 if p.first_sync || reg.entities.dirty_inv.contains(&p.entity) {
                     if let Some(inv) = reg.entities.inventories.get(&p.entity) {
@@ -1552,6 +1555,7 @@ impl Server {
                 r.resend.clear();
                 r.changes.clear();
                 r.entities.hurt.clear();
+                r.entities.knocked.clear();
                 r.entities.dirty_comp.clear();
                 // Block entity inventory changes must reach the save.
                 let anchored: Vec<IVec3> = r

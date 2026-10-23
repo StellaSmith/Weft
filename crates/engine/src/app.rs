@@ -1016,6 +1016,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             f3_reload = true;
             r.f3_combo = Some(true);
         }
+        // F3+F4: next game mode, through the command so permissions still apply.
+        if r.input.pressed_key(Key::Code(KeyCode::F4)) {
+            if let Some(g) = &mut r.game {
+                let all = crate::world::GameMode::ALL;
+                let next = all[(all.iter().position(|&m| m == g.client.mode).unwrap_or(0) + 1) % all.len()];
+                g.client.send(net::ToServer::Chat(format!("/gamemode {}", next.name())));
+            }
+            r.f3_combo = Some(true);
+        }
         for (i, k) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5].into_iter().enumerate() {
             if r.input.pressed_key(Key::Code(k)) {
                 r.settings.debug_groups ^= 1 << i;

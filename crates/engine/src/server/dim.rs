@@ -397,11 +397,16 @@ impl Dim {
         let Some(e) = self.entities.get_mut(id) else { return false };
         e.health -= amount;
         e.hurt_cooldown = 10;
+        let mut knocked = None;
         if let Some(from) = knock {
             let d = (e.pos - from).with_y(0.0).normalize_or_zero();
             e.vel += d * 6.0 + DVec3::Y * 5.0;
+            knocked = e.player.then(|| [(from.x - e.pos.x) as f32, (from.z - e.pos.z) as f32]);
         }
         let (health, player) = (e.health, e.player);
+        if let Some(dir) = knocked {
+            self.entities.knocked.push((id, dir));
+        }
         self.entities.hurt.push((id, health));
         if health <= 0.0 {
             for &(owner, cb) in &k.on_death {

@@ -69,6 +69,8 @@ pub enum ToClient {
     /// Own synced components: (component id, bytes).
     Components(Vec<(u32, Vec<u8>)>),
     Health { health: f32, max: f32 },
+    /// Hit by something at this horizontal direction from the player.
+    Knockback([f32; 2]),
     OpenMenu { kind: u32, window: u32, slots: u32 },
     MenuSlots(Vec<(u32, ItemStack)>),
     MenuData(Vec<(u32, i32)>),

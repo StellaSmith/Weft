@@ -117,6 +117,8 @@ pub struct Server {
     storage: Option<Arc<Mutex<Storage>>>,
     shared: Arc<Shared>,
     next_id: Arc<AtomicU64>,
+    /// Names last sent to clients as the online list.
+    online: Vec<String>,
 }
 
 /// Handle the client side uses to reach a running server thread.
@@ -251,6 +253,7 @@ impl Server {
             storage: storage.map(|s| Arc::new(Mutex::new(s))),
             shared,
             next_id,
+            online: Vec::new(),
         }
     }
 
@@ -335,6 +338,13 @@ impl Server {
         self.sync_players(c);
         lap(4, &self.shared);
         self.players.retain(|p| !p.conn.is_closed());
+        let online: Vec<String> = self.players.iter().filter(|p| p.joined).map(|p| p.name.clone()).collect();
+        if online != self.online {
+            for p in self.players.iter_mut().filter(|p| p.joined) {
+                p.conn.send(ToClient::Players(online.clone()));
+            }
+            self.online = online;
+        }
         if self.tick % 10 == 0 {
             for d in &mut self.dims {
                 if d.dirty || self.tick % 100 == 0 {
@@ -797,117 +807,143 @@ impl Server {
         p.conn.send(ToClient::Time { dim: to, time: dims[to as usize].time });
     }
 
-    fn command(&mut self, c: &'static Content, pi: usize, cmd: &str) -> String {
-        let args: Vec<&str> = cmd.split_whitespace().collect();
+    fn command(&mut self, c: &'static Content, pi: usize, line: &str) -> String {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let Some(&name) = tokens.first() else { return String::new() };
+        let Some(def) = c.commands.iter().find(|d| d.name == name) else { return format!("unknown command /{name}, try /help") };
         let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
-        let (here, yaw) = self.dims[dim as usize].entity_region_ref(entity).and_then(|r| r.entities.get(entity)).map_or((DVec3::ZERO, 0.0), |e| (e.pos, e.yaw));
-        let full = |n: &str| if n.contains(':') { n.to_string() } else { format!("base:{n}") };
-        match args.as_slice() {
-            ["tp", x, y, z] => match (x.parse(), y.parse(), z.parse()) {
-                (Ok(x), Ok(y), Ok(z)) => {
-                    self.change_dim(c, pi, dim, DVec3::new(x, y, z));
-                    format!("teleported to {x} {y} {z}")
-                }
-                _ => "usage: /tp x y z".into(),
+        let here = self.dims[dim as usize].entity_region_ref(entity).and_then(|r| r.entities.get(entity)).map_or(DVec3::ZERO, |e| e.pos);
+        let players: Vec<String> = self.players.iter().filter(|p| p.joined).map(|p| p.name.clone()).collect();
+        let args = match crate::commands::parse_args(c, &def.alts, &tokens[1..], here, &players) {
+            Ok(a) => a,
+            Err(e) => return format!("{e}. usage: /{} {}", def.name, def.usage),
+        };
+        match def.handler {
+            None => self.builtin(c, pi, name, &args, here),
+            Some((owner, cb)) => {
+                let Some((r, player)) = self.region(pi) else { return String::new() };
+                let values: Vec<abi::CommandValue> = args
+                    .values
+                    .iter()
+                    .map(|v| {
+                        use crate::commands::Value;
+                        let mut out = abi::CommandValue { kind: abi::command_value::NONE, int: 0, float: 0.0, text: abi::Str::new(""), pos: [0.0; 3] };
+                        match v {
+                            None => {}
+                            Some(Value::Int(i)) => (out.kind, out.int, out.float) = (abi::command_value::INT, *i, *i as f64),
+                            Some(Value::Float(f)) => (out.kind, out.float) = (abi::command_value::FLOAT, *f),
+                            Some(Value::Text(t)) => (out.kind, out.text) = (abi::command_value::TEXT, abi::Str::new(t)),
+                            Some(Value::Id(i, n)) => (out.kind, out.int, out.text) = (abi::command_value::ID, *i as i64, abi::Str::new(n)),
+                            Some(Value::Pos(p)) => (out.kind, out.pos) = (abi::command_value::POS, p.to_array()),
+                        }
+                        out
+                    })
+                    .collect();
+                let mut reply = String::new();
+                let reply_ptr = &mut reply as *mut String as *mut core::ffi::c_void;
+                r.call(owner, cb, |w| abi::CommandArgs { world: w, player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr });
+                r.flush_neighbors(c);
+                r.finish_tick();
+                reply
+            }
+        }
+    }
+
+    fn builtin(&mut self, c: &'static Content, pi: usize, name: &str, a: &crate::commands::Args, here: DVec3) -> String {
+        let dim = self.players[pi].dim;
+        let block_at = |a: &crate::commands::Args| a.pos("pos").map(|p| p.floor().as_ivec3());
+        match name {
+            "help" => match a.text("command") {
+                Some(n) => c.commands.iter().find(|d| d.name == n).map_or(format!("unknown command /{n}"), |d| format!("/{} {}", d.name, d.usage)),
+                None => c.commands.iter().map(|d| format!("/{} {}", d.name, d.usage)).collect::<Vec<_>>().join("\n"),
             },
-            ["tp", name] => {
-                let target = self.players.iter().find(|p| p.joined && p.name == *name).map(|p| (p.dim, p.entity));
-                let pos = target.and_then(|(d, e)| self.dims[d as usize].entity_region_ref(e)?.entities.get(e).map(|e| (d, e.pos)));
-                match pos {
+            "tp" => {
+                if let Some(p) = a.pos("pos") {
+                    self.change_dim(c, pi, dim, p);
+                    return format!("teleported to {:.1} {:.1} {:.1}", p.x, p.y, p.z);
+                }
+                let target = a.text("target").unwrap_or_default().to_string();
+                let found = self.players.iter().find(|p| p.joined && p.name == target).map(|p| (p.dim, p.entity));
+                match found.and_then(|(d, e)| self.dims[d as usize].entity_region_ref(e)?.entities.get(e).map(|e| (d, e.pos))) {
                     Some((d, pos)) => {
                         self.change_dim(c, pi, d, pos);
-                        format!("teleported to {name}")
+                        format!("teleported to {target}")
                     }
-                    None => format!("no player {name}"),
+                    None => format!("no player {target}"),
                 }
             }
-            ["dim", name] => match c.dim_names.get(&full(name)) {
-                Some(&d) => {
-                    let spawn = self.dims[d as usize].spawn_point(c);
-                    self.change_dim(c, pi, d, spawn);
-                    format!("now in {}", full(name))
-                }
-                None => format!("unknown dimension {}", full(name)),
-            },
-            ["give", item, rest @ ..] => {
-                let count = rest.first().and_then(|n| n.parse().ok()).unwrap_or(1);
-                match (c.item_names.get(&full(item)), self.region(pi)) {
-                    (Some(&i), Some((r, e))) => {
-                        let left = r.entities.insert_item(c, e, ItemStack::new(i, count));
-                        format!("gave {} x {}", count - left.count, full(item))
-                    }
-                    _ => format!("unknown item {}", full(item)),
-                }
+            "dim" => {
+                let d = a.id("dim").unwrap_or(0);
+                let spawn = self.dims[d as usize].spawn_point(c);
+                self.change_dim(c, pi, d, spawn);
+                format!("now in {}", a.text("dim").unwrap_or_default())
             }
-            ["time", "set", t] => match t.parse::<u64>() {
-                Ok(t) => {
-                    let d = &mut self.dims[dim as usize];
-                    let len = c.dims[d.id as usize].day_length.max(1) as u64;
-                    let now = d.time - d.time % len + t;
-                    d.set_time(now);
-                    format!("time set to {t}")
+            "give" => {
+                let count = a.int("count").unwrap_or(1).clamp(1, 1 << 20) as u32;
+                let (item, iname) = (a.id("item").unwrap_or(0), a.text("item").unwrap_or_default().to_string());
+                let Some((r, e)) = self.region(pi) else { return String::new() };
+                let left = r.entities.insert_item(c, e, ItemStack::new(item, count));
+                format!("gave {} x {iname}", count - left.count)
+            }
+            "time" => {
+                let t = a.int("ticks").unwrap_or(0).max(0) as u64;
+                let d = &mut self.dims[dim as usize];
+                let len = c.dims[d.id as usize].day_length.max(1) as u64;
+                let now = d.time - d.time % len + t;
+                d.set_time(now);
+                format!("time set to {t}")
+            }
+            "summon" => {
+                let count = a.int("count").unwrap_or(1).clamp(1, 100_000);
+                let (kind, kname) = (a.id("entity").unwrap_or(0), a.text("entity").unwrap_or_default().to_string());
+                let Some((r, _)) = self.region(pi) else { return String::new() };
+                for _ in 0..count {
+                    r.spawn(c, kind, here);
                 }
-                Err(_) => "usage: /time set ticks".into(),
-            },
-            ["summon", kind, rest @ ..] => match (c.game.entity_names.get(&full(kind)), self.region(pi)) {
-                (Some(&k), Some((r, _))) => {
-                    let count: u32 = rest.first().and_then(|n| n.parse().ok()).unwrap_or(1);
-                    let (sy, cy) = (yaw as f64).sin_cos();
-                    if count == 1 {
-                        r.spawn(c, k, here + DVec3::new(-sy, 0.0, -cy) * 3.0);
-                    } else {
-                        // A disc in front of the player, a little above ground so nobody spawns inside it.
-                        let radius = (count as f64).sqrt() * 1.5;
-                        for i in 0..count {
-                            let a = i as f64 * 2.399963;
-                            let d = radius * ((i as f64 + 0.5) / count as f64).sqrt();
-                            r.spawn(c, k, here + DVec3::new(-sy, 0.0, -cy) * (radius + 4.0) + DVec3::new(a.cos() * d, 1.0, a.sin() * d));
-                        }
-                    }
-                    format!("summoned {count} {}", full(kind))
-                }
-                _ => format!("unknown entity {}", full(kind)),
-            },
-            ["setblock", x, y, z, name] => match (x.parse(), y.parse(), z.parse(), c.state_by_name(&full(name))) {
-                (Ok(x), Ok(y), Ok(z), Some(state)) => match self.dims[dim as usize].region_at(IVec3::new(x, y, z)) {
+                format!("summoned {count} {kname}")
+            }
+            "setblock" => {
+                let (Some(p), Some(state)) = (block_at(a), a.id("block")) else { return String::new() };
+                match self.dims[dim as usize].region_at(p) {
                     Some(r) => {
-                        r.set(c, IVec3::new(x, y, z), state);
+                        r.set(c, p, state);
                         r.flush_neighbors(c);
                         r.finish_tick();
-                        format!("set {}", full(name))
+                        format!("set {}", a.text("block").unwrap_or_default())
                     }
                     None => "not loaded".into(),
-                },
-                _ => "usage: /setblock x y z block".into(),
-            },
-            ["insert", x, y, z, item, rest @ ..] => {
-                let count = rest.first().and_then(|n| n.parse().ok()).unwrap_or(1);
-                match (x.parse(), y.parse(), z.parse(), c.item_names.get(&full(item))) {
-                    (Ok(x), Ok(y), Ok(z), Some(&i)) => {
-                        let p = IVec3::new(x, y, z);
-                        match self.dims[dim as usize].region_at(p) {
-                            Some(r) => match r.entities.anchors.get(&p).copied() {
-                                Some(owner) => {
-                                    let left = r.entities.insert_item(c, owner, ItemStack::new(i, count));
-                                    format!("inserted {} x {}", count - left.count, full(item))
-                                }
-                                None => "no block entity there".into(),
-                            },
-                            None => "not loaded".into(),
-                        }
-                    }
-                    _ => "usage: /insert x y z item [count]".into(),
                 }
             }
-            ["block", x, y, z] => match (x.parse(), y.parse(), z.parse()) {
-                (Ok(x), Ok(y), Ok(z)) => {
-                    let d = &self.dims[dim as usize];
-                    let s = d.get(IVec3::new(x, y, z));
-                    format!("{} in {}", s.map_or("unloaded".into(), |s| c.state_name(s)), c.dims[d.id as usize].name)
+            "insert" => {
+                let (Some(p), Some(item)) = (block_at(a), a.id("item")) else { return String::new() };
+                let count = a.int("count").unwrap_or(1).clamp(1, 1 << 20) as u32;
+                match self.dims[dim as usize].region_at(p) {
+                    Some(r) => match r.entities.anchors.get(&p).copied() {
+                        Some(owner) => {
+                            let left = r.entities.insert_item(c, owner, ItemStack::new(item, count));
+                            format!("inserted {} x {}", count - left.count, a.text("item").unwrap_or_default())
+                        }
+                        None => "no block entity there".into(),
+                    },
+                    None => "not loaded".into(),
                 }
-                _ => "usage: /block x y z".into(),
-            },
-            ["regions"] => {
+            }
+            "block" => {
+                let Some(p) = block_at(a) else { return String::new() };
+                let d = &self.dims[dim as usize];
+                format!("{} in {}", d.get(p).map_or("unloaded".into(), |s| c.state_name(s)), c.dims[d.id as usize].name)
+            }
+            "heal" => {
+                let max = c.game.entities[c.game.player_kind as usize].max_health;
+                if let Some((r, e)) = self.region(pi) {
+                    if let Some(e) = r.entities.get_mut(e) {
+                        e.health = max;
+                    }
+                }
+                self.players[pi].conn.send(ToClient::Health { health: max, max });
+                "healed".into()
+            }
+            "regions" => {
                 let parts: Vec<String> = self
                     .dims
                     .iter()
@@ -919,17 +955,7 @@ impl Server {
                     .collect();
                 format!("regions {}", parts.join(", "))
             }
-            ["heal"] => {
-                let max = c.game.entities[c.game.player_kind as usize].max_health;
-                if let Some((r, e)) = self.region(pi) {
-                    if let Some(e) = r.entities.get_mut(e) {
-                        e.health = max;
-                    }
-                }
-                self.players[pi].conn.send(ToClient::Health { health: max, max });
-                "healed".into()
-            }
-            _ => format!("unknown command /{cmd}"),
+            _ => format!("unknown command /{name}"),
         }
     }
 

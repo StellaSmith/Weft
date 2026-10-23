@@ -135,6 +135,8 @@ pub struct Content {
     pub block_textures: Vec<String>,
     /// Block breaking stages, indices into `block_textures`.
     pub crack_textures: [u32; 10],
+    /// Engine commands first, then mods' in name order.
+    pub commands: Vec<crate::commands::CommandDef>,
     /// Item icon names, index = array layer.
     pub item_textures: Vec<String>,
     pub block_names: FxHashMap<String, u32>,
@@ -679,6 +681,23 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         })
         .collect();
     let dim_names = dim_defs.iter().enumerate().map(|(i, d)| (d.name.clone(), i as u32)).collect();
+    let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
+    for (name, usage) in crate::commands::BUILTIN {
+        let alts = crate::commands::parse_usage(usage).expect("engine command usage");
+        commands.push(crate::commands::CommandDef { name: name.to_string(), usage: usage.to_string(), alts, handler: None });
+    }
+    let mut mod_commands: Vec<(ModId, String, String, Callback)> = games.iter().flat_map(|g| g.commands.iter().cloned()).collect();
+    mod_commands.sort_by(|a, b| a.1.cmp(&b.1));
+    for (owner, name, usage, cb) in mod_commands {
+        if commands.iter().any(|d| d.name == name) {
+            errors.push(format!("{}: command /{name} is already taken", mod_name(owner)));
+            continue;
+        }
+        match crate::commands::parse_usage(&usage) {
+            Ok(alts) => commands.push(crate::commands::CommandDef { name, usage, alts, handler: Some((owner, cb)) }),
+            Err(e) => errors.push(format!("{}: command /{name}: {e}", mod_name(owner))),
+        }
+    }
     let game = crate::registry::freeze(games, &block_names, &item_names, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -692,6 +711,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         dims: dim_defs,
         block_textures,
         crack_textures,
+        commands,
         item_textures,
         block_names,
         item_names,

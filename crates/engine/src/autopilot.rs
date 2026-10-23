@@ -8,6 +8,8 @@
 //! click 0             # mouse button
 //! cursor 0.5 0.4      # move the mouse to a fraction of the window
 //! scroll -3           # mouse wheel, negative = down
+//! type /give dia      # text typed into the focused field
+//! key Tab             # one key press by its settings name (Tab, ArrowUp, Enter, Slash...)
 //! look 90 -20         # yaw, pitch in degrees
 //! chat /give stone 10
 //! shot name.png       # into the screenshot directory given with --shot-dir
@@ -29,6 +31,8 @@ pub enum Step {
     Click(u8),
     Cursor(f32, f32),
     Scroll(f32),
+    Type(String),
+    Key(String),
     Look(f32, f32),
     Chat(String),
     Shot(String),
@@ -86,6 +90,8 @@ impl Autopilot {
                 "click" => Step::Click(nums.first().copied().unwrap_or(0.0) as u8),
                 "cursor" if nums.len() == 2 => Step::Cursor(nums[0], nums[1]),
                 "scroll" => Step::Scroll(nums.first().copied().unwrap_or(-1.0)),
+                "type" => Step::Type(rest.to_string()),
+                "key" => Step::Key(rest.trim().to_string()),
                 "look" if nums.len() == 2 => Step::Look(nums[0], nums[1]),
                 "chat" => Step::Chat(rest.to_string()),
                 "shot" => Step::Shot(rest.trim().to_string()),
@@ -169,6 +175,17 @@ impl Autopilot {
             Step::Click(b) => {
                 input.key_down(Key::Mouse(*b));
                 self.release.push((Key::Mouse(*b), now + std::time::Duration::from_millis(50)));
+                Action::None
+            }
+            Step::Type(t) => {
+                input.typed.push_str(t);
+                Action::None
+            }
+            Step::Key(name) => {
+                if let Some(k) = crate::settings::parse_key(name) {
+                    input.key_down(k);
+                    self.release.push((k, now + std::time::Duration::from_millis(50)));
+                }
                 Action::None
             }
             Step::Scroll(lines) => {

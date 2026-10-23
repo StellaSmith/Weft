@@ -257,6 +257,13 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.u8(20);
             w.str(t);
         }
+        ToClient::Players(names) => {
+            w.u8(22);
+            w.len(names.len());
+            for n in names {
+                w.str(n);
+            }
+        }
         ToClient::Worn(list) => {
             w.u8(21);
             w.len(list.len());
@@ -384,6 +391,14 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
                 list.push((id, items));
             }
             ToClient::Worn(list)
+        }
+        22 => {
+            let n = r.len()?;
+            let mut names = Vec::with_capacity(n.min(1024));
+            for _ in 0..n {
+                names.push(r.str()?);
+            }
+            ToClient::Players(names)
         }
         _ => return None,
     })

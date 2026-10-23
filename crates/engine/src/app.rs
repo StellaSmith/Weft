@@ -72,6 +72,8 @@ pub enum Request {
     Join(String),
     Respawn,
     SendChat(String),
+    /// Replace the text of the top screen's input with this id (completion, history).
+    SetInput(String, String),
 }
 
 /// What UI actions and bindings can see and change.
@@ -310,26 +312,33 @@ impl Running {
         let mut screens = std::mem::take(&mut self.screens);
         for (s, ui) in &mut screens {
             let (hover, focus) = (ui.hovered, ui.focused);
-            let inputs: Vec<(String, String)> = ui
+            let focus_id = focus.and_then(|f| ui.nodes.get(f)).and_then(|n| n.id.clone());
+            let inputs: Vec<(String, String, usize)> = ui
                 .nodes
                 .iter()
                 .filter_map(|n| match (&n.id, &n.kind) {
-                    (Some(id), Kind::Input { value, .. }) => Some((id.clone(), value.clone())),
+                    (Some(id), Kind::Input { value, caret, .. }) => Some((id.clone(), value.clone(), *caret)),
                     _ => None,
                 })
                 .collect();
             ui.clear();
             s.build(ui, &self.build_cx());
             // Typed text survives rebuilds (language switch, resize).
-            for (id, v) in inputs {
+            for (id, v, c) in inputs {
                 if let Some(n) = ui.find(&id) {
-                    if let Kind::Input { value, .. } = &mut ui.nodes[n].kind {
+                    if let Kind::Input { value, caret, .. } = &mut ui.nodes[n].kind {
                         *value = v;
+                        *caret = c;
                     }
                 }
             }
             ui.hovered = hover.filter(|&h| h < ui.nodes.len());
-            ui.focused = focus.filter(|&h| h < ui.nodes.len());
+            // Focus follows the same input (by id), or whatever the screen focused itself.
+            if let Some(id) = focus_id {
+                ui.focused = ui.find(&id).or(ui.focused);
+            } else if ui.focused.is_none() {
+                ui.focused = focus.filter(|&h| h < ui.nodes.len());
+            }
         }
         self.screens = screens;
         self.hud.invalidate();
@@ -404,6 +413,18 @@ impl Running {
                 }
                 Request::Quit => self.quit = true,
                 Request::Rebuild => self.rebuild_all(),
+                Request::SetInput(id, text) => {
+                    if let Some((_, ui)) = self.screens.last_mut() {
+                        if let Some(n) = ui.find(&id) {
+                            if let Kind::Input { value, caret, .. } = &mut ui.nodes[n].kind {
+                                *caret = text.chars().count();
+                                *value = text;
+                                ui.dirty = true;
+                                self.quads_dirty = true;
+                            }
+                        }
+                    }
+                }
                 Request::ApplySettings => {
                     self.gpu.set_vsync(self.settings.vsync);
                     if let Some(g) = &mut self.game {
@@ -617,25 +638,59 @@ impl Running {
             self.quads_dirty = true;
         }
         if let Some(f) = ui.focused {
-            if let Kind::Input { value, max, on_change } = &mut ui.nodes[f].kind {
+            if let Kind::Input { value, caret, max, on_change } = &mut ui.nodes[f].kind {
                 let mut changed = false;
+                let mut moved = false;
+                let len = value.chars().count();
+                *caret = (*caret).min(len);
+                let byte = |s: &str, c: usize| s.char_indices().nth(c).map_or(s.len(), |(i, _)| i);
                 let ctrl = self.input.held_key(Key::Code(KeyCode::ControlLeft)) || self.input.held_key(Key::Code(KeyCode::ControlRight));
-                if ctrl && self.input.pressed_key(Key::Code(KeyCode::KeyV)) {
-                    if let Some(clip) = crate::clipboard::get() {
-                        value.extend(clip.trim().chars().take(max.saturating_sub(value.chars().count())));
+                let mut insert = |value: &mut String, caret: &mut usize, text: &str| {
+                    for ch in text.chars().filter(|c| !c.is_control()) {
+                        if value.chars().count() >= *max {
+                            break;
+                        }
+                        value.insert(byte(value, *caret), ch);
+                        *caret += 1;
                         changed = true;
                     }
-                } else {
-                    for ch in self.input.typed.chars() {
-                        if !ch.is_control() && value.chars().count() < *max {
-                            value.push(ch);
-                            changed = true;
-                        }
+                };
+                if ctrl && self.input.pressed_key(Key::Code(KeyCode::KeyV)) {
+                    if let Some(clip) = crate::clipboard::get() {
+                        insert(value, caret, clip.trim());
                     }
+                } else {
+                    let typed = self.input.typed.clone();
+                    insert(value, caret, &typed);
                 }
-                if self.input.pressed_key(Key::Code(KeyCode::Backspace)) {
-                    value.pop();
+                let key = |k: KeyCode| self.input.pressed_key(Key::Code(k));
+                if key(KeyCode::Backspace) && *caret > 0 {
+                    *caret -= 1;
+                    value.remove(byte(value, *caret));
                     changed = true;
+                }
+                if key(KeyCode::Delete) && *caret < value.chars().count() {
+                    value.remove(byte(value, *caret));
+                    changed = true;
+                }
+                if key(KeyCode::ArrowLeft) && *caret > 0 {
+                    *caret -= 1;
+                    moved = true;
+                }
+                if key(KeyCode::ArrowRight) && *caret < value.chars().count() {
+                    *caret += 1;
+                    moved = true;
+                }
+                if key(KeyCode::Home) {
+                    *caret = 0;
+                    moved = true;
+                }
+                if key(KeyCode::End) {
+                    *caret = value.chars().count();
+                    moved = true;
+                }
+                if moved {
+                    self.quads_dirty = true;
                 }
                 if changed {
                     ui.dirty = true;
@@ -925,7 +980,26 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 }
             }
         }
-    } else if r.input.pressed_key(Key::Code(KeyCode::Escape)) {
+    } else if r.screens.last().is_some_and(|(s, _)| s.name() == "core:chat") {
+        // Keys the chat screen wants first (completion, history); Escape still closes it below.
+        for k in r.input.pressed_list() {
+            let mut ctx = Ctx {
+                settings: &mut r.settings,
+                client: r.game.as_mut().map(|g| &mut g.client),
+                input: &r.input,
+                requests: &mut requests,
+                fps: r.fps,
+                frame_ms: r.frame_ms,
+                server_ms: 0.0,
+                regions: 0,
+                debug: r.debug,
+            };
+            if let Some((s, _)) = r.screens.last_mut() {
+                s.key(k, &mut ctx);
+            }
+        }
+    }
+    if r.waiting_key.is_none() && r.input.pressed_key(Key::Code(KeyCode::Escape)) {
         if r.screens.last().is_some_and(|(s, _)| s.name() == "core:death") {
         } else if r.screens.len() > 1 || (r.game.is_some() && !r.screens.is_empty()) {
             if r.screens.last().is_some_and(|(s, _)| s.name() == "core:menu") {
@@ -1004,9 +1078,12 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
         }
     }
-    if r.game.is_some() && r.screens.is_empty() && r.input.pressed("core:chat") {
-        r.open(Box::new(crate::game_screens::Chat));
-        r.input.typed.clear();
+    if r.game.is_some() && r.screens.is_empty() {
+        let command = r.input.pressed("core:command");
+        if command || r.input.pressed("core:chat") {
+            r.open(Box::new(crate::game_screens::Chat::new(if command { "/" } else { "" })));
+            r.input.typed.clear();
+        }
     }
     let top = r.screens.last().map(|(s, _)| s.name().to_string());
     if top.as_deref() == Some("core:chat") && r.input.pressed_key(Key::Code(KeyCode::Enter)) {
@@ -1019,7 +1096,12 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.screens.pop();
         r.set_capture(true);
         r.quads_dirty = true;
-        if let Some(t) = text {
+        if let Some(t) = text.filter(|t| !t.trim().is_empty()) {
+            if let Some(g) = &mut r.game {
+                if g.client.sent.last() != Some(&t) {
+                    g.client.sent.push(t.clone());
+                }
+            }
             r.handle(vec![Request::SendChat(t)]);
         }
     }
@@ -1042,7 +1124,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.input.end_frame();
 
     if let Some(g) = &r.game {
-        if r.hud.update(&g.client, r.debug, &r.lang) {
+        let chat_open = r.screens.last().is_some_and(|(s, _)| s.name() == "core:chat");
+        if r.hud.update(&g.client, r.debug, chat_open, &r.lang) {
             r.quads_dirty = true;
         }
         let mut h = g.client.selected as u64;

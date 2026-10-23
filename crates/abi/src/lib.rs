@@ -807,6 +807,45 @@ pub struct Host {
     /// HUD element `name` placed at `anchor` (see `hud_anchor`), `order` 0 nearest the anchor's
     /// edge. Players can move any element to another anchor in `config/hud.txt`.
     pub reg_hud_element: unsafe extern "C" fn(reg: *mut Registrar, name: Str, anchor: Str, order: i32, cb: Callback),
+    /// Chat command `/name`, arguments described by `usage` (see the engine's command syntax);
+    /// `cb` gets `CommandArgs` with one value per named parameter.
+    pub reg_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
+    /// Text shown to the player who ran the command.
+    pub command_reply: unsafe extern "C" fn(args: *mut CommandArgs, text: Str),
+}
+
+/// One command argument; kinds in `command_value`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CommandValue {
+    pub kind: u32,
+    pub int: i64,
+    pub float: f64,
+    /// Text, or the full registry name for ids.
+    pub text: Str,
+    pub pos: [f64; 3],
+}
+
+pub mod command_value {
+    /// Optional parameter left out.
+    pub const NONE: u32 = 0;
+    pub const INT: u32 = 1;
+    pub const FLOAT: u32 = 2;
+    pub const TEXT: u32 = 3;
+    pub const POS: u32 = 4;
+    /// `int` is the registry id (item, block state, entity kind, dimension), `text` its name.
+    pub const ID: u32 = 5;
+}
+
+#[repr(C)]
+pub struct CommandArgs {
+    pub world: *mut WorldCtx,
+    /// Entity id of the player who ran it.
+    pub player: u64,
+    pub values: *const CommandValue,
+    pub count: u32,
+    /// Engine side reply buffer, written through `Host::command_reply`.
+    pub reply: *mut core::ffi::c_void,
 }
 
 /// Places for HUD elements. `HOTBAR_LEFT`/`HOTBAR_RIGHT` stack upwards above the hotbar's halves.

@@ -591,6 +591,13 @@ impl Registry {
         unsafe { (host().reg_hud)(self.raw, ui_callback(f)) }
     }
 
+    /// Chat command `/name`; `usage` declares its arguments (`<name:type>`, `[name:type]`,
+    /// literal words, `|` alternatives), which the engine parses, checks and completes.
+    pub fn command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
+        let cb = crate::command::command_cb(usage, f);
+        unsafe { (host().reg_command)(self.raw, Str::new(name), Str::new(usage), cb) }
+    }
+
     /// HUD element at `anchor` (`hud_anchor::*`); `order` 0 sits nearest the anchor's edge.
     pub fn hud_element(&mut self, name: &str, anchor: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
         let name = qualify(self.ns, name);

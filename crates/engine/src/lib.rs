@@ -3,6 +3,7 @@ pub mod assets;
 pub mod autopilot;
 pub mod bench;
 pub mod client;
+pub mod commands;
 pub mod game_screens;
 pub mod clipboard;
 pub mod content;

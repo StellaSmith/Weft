@@ -430,23 +430,41 @@ impl UiRenderer {
                 let k = Rect { x: r.x + (r.w - 6.0 * scale) * value.clamp(0.0, 1.0), y: r.y, w: 6.0 * scale, h: r.h };
                 self.rect(k, theme.color("slider", if hovered { "knob_hover" } else { "knob" }, 0xC0C0C0FF));
             }
-            Kind::Input { value, .. } => {
+            Kind::Input { value, caret, .. } => {
                 background(self, "input", if ui.focused == Some(id) { "focused" } else { "texture" });
                 let px = scale * ui.text_unit;
                 let spans = super::text::plain(value);
                 let layout = super::text::layout(&spans, &self.font, None);
-                let tx = r.x + 4.0 * scale;
+                let before: String = value.chars().take(*caret).collect();
+                let caret_x = super::text::layout(&super::text::plain(&before), &self.font, None).width * px;
+                // Text longer than the field slides left so the caret stays visible; the rest is
+                // clipped to the field.
+                let room = r.w - 8.0 * scale;
+                let shift = (caret_x - room + px).max(0.0);
+                let tx = r.x + 4.0 * scale - shift;
                 let ty = r.y + (r.h - 16.0 * px) / 2.0;
+                let start = self.quads.len();
                 self.glyph_run(&layout.items, tx, ty, px, theme.color("input", "text", 0xFFFFFFFF), None, icons);
                 if ui.focused == Some(id) {
-                    self.rect(Rect { x: tx + layout.width * px, y: ty, w: px.max(1.0), h: 16.0 * px }, 0xFFFFFFFF);
+                    self.rect(Rect { x: tx + caret_x, y: ty, w: px.max(1.0), h: 16.0 * px }, 0xFFFFFFFF);
+                }
+                let field = [r.x + 2.0 * scale, r.y, r.x + r.w - 2.0 * scale, r.y + r.h];
+                for q in &mut self.quads[start..] {
+                    q.clip = field;
                 }
             }
             Kind::Custom { tag, data } => custom(self, *tag, *data, r, hovered),
         }
         let clip = n.clip.map_or([0.0; 4], |c| [c.x * scale, c.y * scale, (c.x + c.w) * scale, (c.y + c.h) * scale]);
-        for q in &mut self.quads[quad_start..] {
-            q.clip = clip;
+        if n.clip.is_some() {
+            for q in &mut self.quads[quad_start..] {
+                // Quads may carry their own clip (text fields): keep the overlap of both.
+                q.clip = if q.clip[2] > q.clip[0] {
+                    [q.clip[0].max(clip[0]), q.clip[1].max(clip[1]), q.clip[2].min(clip[2]), q.clip[3].min(clip[3])]
+                } else {
+                    clip
+                };
+            }
         }
         self.icon_clips.resize(icon_start, [0.0; 4]);
         self.icon_clips.resize(icons.len(), clip);

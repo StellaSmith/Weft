@@ -59,6 +59,8 @@ pub enum ToClient {
     Despawn(Vec<u64>),
     Hurt(Vec<(u64, f32)>),
     Worn(Vec<(u64, Vec<u32>)>),
+    /// Everyone online, sent when someone joins or leaves.
+    Players(Vec<String>),
     /// Own inventory: (slot, stack) for changed slots.
     Inventory(Vec<(u32, ItemStack)>),
     /// Own synced components: (component id, bytes).

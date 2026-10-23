@@ -45,8 +45,9 @@ impl Hud {
     }
 
     /// Returns true if the tree was rebuilt.
-    pub fn update(&mut self, client: &Client, debug: bool, lang: &Lang) -> bool {
-        let chat_visible = client.chat.iter().filter(|(_, t)| t.elapsed().as_secs() < 10).count();
+    /// `chat_open`: the chat screen shows the messages itself.
+    pub fn update(&mut self, client: &Client, debug: bool, chat_open: bool, lang: &Lang) -> bool {
+        let chat_visible = if chat_open { 0 } else { client.chat.iter().filter(|(_, t)| t.elapsed().as_secs() < 10).count() };
         let key = (debug, chat_visible, client.chat.len(), client.dead);
         if self.key == Some(key) {
             return false;
@@ -113,7 +114,7 @@ impl Hud {
             ui.container(Style::default().gap(1.0).pad(2.0).align(Align::Start).self_align(Align::Start), |ui| {
                 let now = std::time::Instant::now();
                 for (line, at) in client.chat.iter().rev().take(10).rev() {
-                    if now.duration_since(*at).as_secs() < 10 {
+                    if chat_visible > 0 && now.duration_since(*at).as_secs() < 10 {
                         ui.text(text::plain(line), "chat");
                     }
                 }

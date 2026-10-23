@@ -39,6 +39,7 @@ key.core.fly = Режим полёта
 key.core.inventory = Инвентарь
 key.core.drop = Выбросить предмет
 key.core.chat = Чат
+key.core.command = Команда
 key.core.debug = Отладочная информация
 key.core.screenshot = Скриншот
 key.core.reload = Перезагрузить ассеты и шейдеры

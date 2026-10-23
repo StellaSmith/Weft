@@ -41,7 +41,7 @@ impl Screen for Multiplayer {
             }
             ui.panel("panel", Style::default().pad(8.0).gap(4.0).stretch().w(340.0), |ui| {
                 label(ui, cx, "multiplayer.ticket", &[], "default");
-                let input = ui.add(Kind::Input { value: String::new(), max: 4096, on_change: None }, Style::default().h(18.0).stretch());
+                let input = ui.add(Kind::input("", 4096), Style::default().h(18.0).stretch());
                 ui.set_id(input, "ticket");
                 ui.button(
                     "button",

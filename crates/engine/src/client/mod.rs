@@ -92,6 +92,10 @@ pub struct Client {
     pub inventory: Vec<ItemStack>,
     pub health: f32,
     pub max_health: f32,
+    /// Names of the players online, for completion.
+    pub players: Vec<String>,
+    /// Lines this player sent, oldest first (chat history).
+    pub sent: Vec<String>,
     /// Mouse button and slots of a drag in progress in a menu.
     pub drag: Option<(u8, Vec<u32>)>,
     /// Seconds left of the red screen flash after taking damage.
@@ -146,6 +150,8 @@ impl Client {
             max_health: 20.0,
             hurt_flash: 0.0,
             drag: None,
+            players: Vec::new(),
+            sent: Vec::new(),
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -242,6 +248,7 @@ impl Client {
                         }
                     }
                 }
+                ToClient::Players(names) => self.players = names,
                 ToClient::Worn(list) => {
                     for (id, items) in list {
                         if let Some(e) = self.entities.get_mut(&id) {
@@ -316,7 +323,9 @@ impl Client {
                 }
                 ToClient::Chat(text) => {
                     log::info!("[chat] {text}");
-                    self.chat.push((text, Instant::now()));
+                    for line in text.lines() {
+                        self.chat.push((line.to_string(), Instant::now()));
+                    }
                     if self.chat.len() > 50 {
                         self.chat.remove(0);
                     }

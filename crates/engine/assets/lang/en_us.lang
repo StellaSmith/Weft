@@ -39,6 +39,7 @@ key.core.fly = Toggle flight
 key.core.inventory = Inventory
 key.core.drop = Drop item
 key.core.chat = Chat
+key.core.command = Command
 key.core.debug = Debug overlay
 key.core.screenshot = Screenshot
 key.core.reload = Reload assets and shaders

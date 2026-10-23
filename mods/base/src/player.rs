@@ -54,6 +54,15 @@ pub fn register(r: &mut Registry) {
         e.set_amount(reduced);
     });
 
+    r.command("feed", "[food:int]", |cmd| {
+        let food = cmd.int("food").unwrap_or(20).clamp(0, 20) as f32;
+        if let Some(h) = cmd.world().component(cmd.player(), &HUNGER) {
+            h.food = food;
+            h.saturation = h.saturation.min(food);
+        }
+        cmd.reply(&format!("food set to {food}"));
+    });
+
     r.hud_element("health", hud_anchor::HOTBAR_LEFT, 0, |ui| ui.icons("hearts", 10, |c| c.me().map_or(20.0, |s| s.health.ceil())));
     r.hud_element("armor", hud_anchor::HOTBAR_LEFT, 1, |ui| {
         ui.icons("armor", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.armor > 0.0 { h.armor } else { -1.0 }))

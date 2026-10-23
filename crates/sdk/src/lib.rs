@@ -3,6 +3,7 @@
 pub use voxide_abi as abi;
 
 mod cache;
+mod command;
 mod content;
 mod game;
 mod ui;
@@ -10,6 +11,7 @@ mod world;
 
 pub use abi::{ItemStack, hud_anchor, worn_parts};
 pub use cache::ColumnCache;
+pub use command::Command;
 pub use content::*;
 pub use game::*;
 pub use ui::*;

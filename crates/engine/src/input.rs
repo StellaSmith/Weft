@@ -56,6 +56,7 @@ impl Default for Input {
             ("core:fly", Key::Code(KeyF)),
             ("core:inventory", Key::Code(KeyE)),
             ("core:drop", Key::Code(KeyQ)),
+            ("core:command", Key::Code(Slash)),
             ("core:chat", Key::Code(KeyT)),
             ("core:debug", Key::Code(F3)),
             ("core:screenshot", Key::Code(F2)),

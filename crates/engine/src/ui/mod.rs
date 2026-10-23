@@ -206,7 +206,8 @@ pub enum Kind {
     Progress { class: String, bind: FloatBind, value: f32 },
     /// `count` icons showing `value` in half steps (hearts): theme `class.full/half/empty`.
     Icons { class: String, count: u32, bind: FloatBind, value: f32, rtl: bool },
-    Input { value: String, max: usize, on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>> },
+    /// Single-line text field; `caret` is a char index.
+    Input { value: String, caret: usize, max: usize, on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>> },
     Slider { value: f32, bind: FloatBind, on_change: Rc<dyn Fn(&mut Ctx, f32)> },
     /// Engine-drawn content (slots, 3D previews) identified by a tag.
     Custom { tag: u32, data: u64 },
@@ -241,6 +242,12 @@ pub struct Ui {
 impl Default for Ui {
     fn default() -> Self {
         Ui::new()
+    }
+}
+
+impl Kind {
+    pub fn input(value: &str, max: usize) -> Kind {
+        Kind::Input { value: value.to_string(), caret: value.chars().count(), max, on_change: None }
     }
 }
 

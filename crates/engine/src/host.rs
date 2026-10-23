@@ -78,6 +78,8 @@ pub static HOST: Host = Host {
     energy_extract,
     reg_attach,
     reg_hud_element,
+    reg_command,
+    command_reply,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -509,6 +511,24 @@ unsafe extern "C" fn reg_hud(r: *mut abi::Registrar, cb: Callback) {
         let owner = r.owner;
         let name = format!("{}:hud{}", crate::modloader::mod_id_name(owner), r.game.huds.len());
         r.game.huds.push(registry::HudElement { name, anchor: abi::hud_anchor::HOTBAR_LEFT.into(), order: 0, owner, cb });
+    }
+}
+
+unsafe extern "C" fn reg_command(r: *mut abi::Registrar, name: Str, usage: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.commands.push((owner, name.as_str().to_string(), usage.as_str().to_string(), cb));
+    }
+}
+
+unsafe extern "C" fn command_reply(args: *mut abi::CommandArgs, text: Str) {
+    unsafe {
+        let reply = &mut *((*args).reply as *mut String);
+        if !reply.is_empty() {
+            reply.push('\n');
+        }
+        reply.push_str(text.as_str());
     }
 }
 

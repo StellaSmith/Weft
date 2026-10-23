@@ -12,7 +12,7 @@
 //!         .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.5, 9.0).surface(&STONE, &STONE, 1))
 //!         .biome(BiomeRule::new(&DESERT).temperature(0.35, 9.0).surface(&SAND, &SAND, 3))
 //!         .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
-//!         .caves(Caves::new(&LAVA, 1, 11))
+//!         .caves(Caves::new(&LAVA, i32::MIN, 11))
 //! });
 //! r.dimension("overworld", &OVERWORLD).generator(|g| {
 //!     TERRAIN.generate(g);
@@ -297,7 +297,8 @@ impl BiomeRule {
     }
 }
 
-/// Two-noise tunnels plus large caverns; lava fills open space from `lava_from` up to `lava_to`.
+/// Two-noise tunnels plus large caverns. Below `lava_to` (and from `lava_from`) some layers of
+/// height hold lava lakes (see `lake`).
 pub struct Caves {
     lava: &'static Block,
     lava_from: i32,
@@ -309,9 +310,10 @@ impl Caves {
         Caves { lava, lava_from, lava_to }
     }
 
-    /// Cave density sampled on a 4-block grid and trilinearly interpolated: whether a tunnel
-    /// passes, and how far inside a cavern (> 0) the block is.
-    fn carve(&self, seed: u64, ox: i32, oy: i32, oz: i32) -> Vec<(bool, f32)> {
+    /// Cave fields for the cube, sampled every 4 blocks on a grid aligned to the world and
+    /// trilinearly interpolated: whether a tunnel passes, and how far inside a cavern (> 0) the
+    /// block is.
+    fn fields(&self, seed: u64, ox: i32, oy: i32, oz: i32) -> Vec<(bool, f32)> {
         const G: usize = 5;
         let mut grid = [[[(0f64, 0f64); G]; G]; G];
         for (gy, row) in grid.iter_mut().enumerate() {
@@ -325,25 +327,51 @@ impl Caves {
         for y in 0..16 {
             for z in 0..16 {
                 for x in 0..16 {
-                    let (gx, gy, gz) = (x / 4, y / 4, z / 4);
-                    let (fx, fy, fz) = ((x % 4) as f64 / 4.0, (y % 4) as f64 / 4.0, (z % 4) as f64 / 4.0);
-                    let l = |a: f64, b: f64, t: f64| a + (b - a) * t;
-                    let field = |k: usize| {
-                        let c = |dy: usize, dz: usize, dx: usize| {
-                            let v = grid[gy + dy][gz + dz][gx + dx];
-                            if k == 0 { v.0 } else { v.1 }
-                        };
-                        l(
-                            l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz),
-                            l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz),
-                            fy,
-                        )
-                    };
-                    out[(y * 16 + z) * 16 + x] = (field(0) > 0.0, field(1) as f32);
+                    let (t, c) = interpolate(|dy, dz, dx| grid[y / 4 + dy][z / 4 + dz][x / 4 + dx], x % 4, y % 4, z % 4);
+                    out[(y * 16 + z) * 16 + x] = (t > 0.0, c as f32);
                 }
             }
         }
         out
+    }
+}
+
+/// Trilinear blend of grid nodes (`node(dy, dz, dx)`) at offset (x, y, z) inside a 4-block cell.
+fn interpolate(node: impl Fn(usize, usize, usize) -> (f64, f64), x: usize, y: usize, z: usize) -> (f64, f64) {
+    let (fx, fy, fz) = (x as f64 / 4.0, y as f64 / 4.0, z as f64 / 4.0);
+    let l = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    let field = |k: usize| {
+        let c = |dy, dz, dx| {
+            let v = node(dy, dz, dx);
+            if k == 0 { v.0 } else { v.1 }
+        };
+        l(l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz), l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz), fy)
+    };
+    (field(0), field(1))
+}
+
+/// Whether a cave takes a block `depth` blocks under the smoothed surface. Near the surface a
+/// cavern needs to be ever deeper inside its noise, so its ceiling domes over instead of breaking
+/// through; where `cavern_roof` opens (`closed` < 1) it widens towards the surface into a pit.
+fn carves(tunnel: bool, cavern: f32, closed: f32, depth: f32) -> bool {
+    let need = closed * 0.25 * (1.0 - depth / 12.0).max(0.0) - (1.0 - closed) * PIT * (1.0 - depth / 24.0).max(0.0);
+    tunnel || cavern > need
+}
+
+/// What a cave holds at height `wy` instead of air: in about half of the 64-block bands of height
+/// a lake crosses every cave at one level, 4 blocks of lava on 2 of stone, so lakes are flat,
+/// span the whole cave and never hang over open space. `Some(true)` lava, `Some(false)` stone.
+fn lake(seed: u64, wy: i32) -> Option<bool> {
+    let band = wy.div_euclid(64);
+    let h = hash(seed ^ 0x1A7A, 0, band as i64, 0);
+    if h & 1 == 0 {
+        return None;
+    }
+    let level = band * 64 + 16 + ((h >> 8) % 32) as i32;
+    match level - wy {
+        1..=4 => Some(true),
+        5..=6 => Some(false),
+        _ => None,
     }
 }
 
@@ -362,11 +390,15 @@ pub struct Terrain {
     biomes: Vec<BiomeRule>,
     caves: Option<Caves>,
     cache: ColumnCache<Vec<Column>>,
+    /// Column heights every 4 blocks over a cube's columns and its +X/+Z edge (5 x 5): caves
+    /// measure depth from this smoothed surface, so steep slopes do not leave single-column
+    /// pillars.
+    corners: ColumnCache<[f32; 25]>,
 }
 
 impl Terrain {
     pub fn new(stone: &'static Block, base_height: f64) -> Terrain {
-        Terrain { stone, base: base_height, sea: None, features: Vec::new(), biomes: Vec::new(), caves: None, cache: ColumnCache::new(16384) }
+        Terrain { stone, base: base_height, sea: None, features: Vec::new(), biomes: Vec::new(), caves: None, cache: ColumnCache::new(16384), corners: ColumnCache::new(16384) }
     }
 
     pub fn sea(mut self, level: i32, water: &'static Block) -> Self {
@@ -427,7 +459,7 @@ impl Terrain {
     }
 
     /// Whether caves took the block at the surface of column (`x`, `z`): decorations placed from
-    /// outside the cube (trees) check it so they do not float over pits.
+    /// outside the cube (trees) and spawn search check it so they do not float over pits.
     pub fn surface_carved(&self, seed: u64, x: i32, z: i32) -> bool {
         if self.caves.is_none() {
             return false;
@@ -437,19 +469,18 @@ impl Terrain {
             return false;
         }
         let (gx, gy, gz) = (x.div_euclid(4) * 4, h.div_euclid(4) * 4, z.div_euclid(4) * 4);
-        let (fx, fy, fz) = ((x - gx) as f64 / 4.0, (h - gy) as f64 / 4.0, (z - gz) as f64 / 4.0);
-        let l = |a: f64, b: f64, t: f64| a + (b - a) * t;
-        let n = |dy: i32, dz: i32, dx: i32| cave_node(seed, gx + dx * 4, gy + dy * 4, gz + dz * 4);
-        let field = |k: usize| {
-            let c = |dy, dz, dx| {
-                let v = n(dy, dz, dx);
-                if k == 0 { v.0 } else { v.1 }
-            };
-            l(l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz), l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz), fy)
-        };
-        let closed = cavern_roof(seed, x, z);
-        let need = closed * 0.25 - (1.0 - closed) * PIT;
-        field(0) > 0.0 || field(1) as f32 > need
+        let (t, c) = interpolate(|dy, dz, dx| cave_node(seed, gx + dx as i32 * 4, gy + dy as i32 * 4, gz + dz as i32 * 4), (x - gx) as usize, (h - gy) as usize, (z - gz) as usize);
+        let corner = |dx: i32, dz: i32| self.column(seed, gx + dx * 4, gz + dz * 4).height as f32;
+        let (fx, fz) = ((x - gx) as f32 / 4.0, (z - gz) as f32 / 4.0);
+        let smooth = (corner(0, 0) * (1.0 - fx) + corner(1, 0) * fx) * (1.0 - fz) + (corner(0, 1) * (1.0 - fx) + corner(1, 1) * fx) * fz;
+        carves(t > 0.0, c as f32, cavern_roof(seed, x, z), smooth - h as f32)
+    }
+
+    /// Smoothed surface height at local column (x, z) from the cube's corner grid.
+    fn smooth(corners: &[f32; 25], x: usize, z: usize) -> f32 {
+        let (cx, cz, fx, fz) = (x / 4, z / 4, (x % 4) as f32 / 4.0, (z % 4) as f32 / 4.0);
+        let c = |dx: usize, dz: usize| corners[(cz + dz) * 5 + cx + dx];
+        (c(0, 0) * (1.0 - fx) + c(1, 0) * fx) * (1.0 - fz) + (c(0, 1) * (1.0 - fx) + c(1, 1) * fx) * fz
     }
 
     /// Fills the cube with stone, surface layers, water and caves and sets its biomes. Returns the
@@ -478,9 +509,10 @@ impl Terrain {
         // Decided per block from its column alone, so neighbouring cubes agree: tunnels may open
         // onto the surface, caverns close up under it except where `cavern_roof` lets them out.
         let cave = match &self.caves {
-            Some(c) if oy <= max_h => Some(c.carve(seed, ox, oy, oz)),
+            Some(c) if oy <= max_h => Some(c.fields(seed, ox, oy, oz)),
             _ => None,
         };
+        let corners = self.corners.get(seed, cx, cz, || std::array::from_fn(|i| self.column(seed, ox + (i % 5) as i32 * 4, oz + (i / 5) as i32 * 4).height as f32));
         let stone = self.stone.id();
         let water = self.sea.map_or(0, |s| s.1.id());
         for z in 0..16usize {
@@ -500,6 +532,14 @@ impl Terrain {
                 let under = rule.and_then(|r| r.under);
                 let ice = rule.and_then(|r| r.ice).map(|b| b.id());
                 let closed = if cave.is_some() { cavern_roof(seed, ox + x as i32, oz + z as i32) } else { 0.0 };
+                let smooth = Self::smooth(&corners, x, z);
+                // Keeps a seal under water so seas and canyons do not drain into caves.
+                let carved = |ly: usize| {
+                    let Some(cave) = &cave else { return false };
+                    let wy = oy + ly as i32;
+                    let (tunnel, cavern) = cave[(ly * 16 + z) * 16 + x];
+                    wy <= h && !(h <= sea && wy > h - 4) && carves(tunnel, cavern, closed, smooth - wy as f32)
+                };
                 for y in 0..16usize {
                     let wy = oy + y as i32;
                     let mut s = if wy > h {
@@ -520,18 +560,12 @@ impl Terrain {
                     } else {
                         stone
                     };
-                    // Keep a seal under water so seas and canyons do not drain into caves.
-                    let sealed = h <= sea && wy > h - 4;
-                    if let (Some(cave), Some(c)) = (&cave, &self.caves) {
-                        let (tunnel, cavern) = cave[(y * 16 + z) * 16 + x];
-                        // Near the surface a cavern needs to be ever deeper inside its noise, so its
-                        // ceiling domes over instead of breaking through.
-                        // Where they may open they widen towards the surface instead, into a pit.
-                        let depth = (h - wy) as f32;
-                        let need = closed * 0.25 * (1.0 - depth / 12.0).max(0.0) - (1.0 - closed) * PIT * (1.0 - depth / 24.0).max(0.0);
-                        if (tunnel || cavern > need) && wy <= h && !sealed {
-                            s = if (c.lava_from..c.lava_to).contains(&wy) { c.lava.id() } else { 0 };
-                        }
+                    if let Some(c) = self.caves.as_ref().filter(|_| carved(y)) {
+                        s = match lake(seed, wy).filter(|_| (c.lava_from..c.lava_to).contains(&wy)) {
+                            Some(true) => c.lava.id(),
+                            Some(false) => stone,
+                            None => 0,
+                        };
                     }
                     g.set(x, y, z, s);
                 }
@@ -637,6 +671,41 @@ mod tests {
             }
         }
         assert_eq!(checked, 16384);
+    }
+
+    /// Lava used to fill every open block between two heights, hanging over caves below.
+    #[test]
+    fn lava_lakes_rest_on_stone() {
+        static S: Block = Block::new();
+        static L: Block = Block::new();
+        unsafe { (*L.cell()).store(7, std::sync::atomic::Ordering::Relaxed) };
+        let t = Terrain::new(&S, 64.0).feature(preset::hills(16.0, 110.0)).caves(Caves::new(&L, i32::MIN, 11));
+        let (mut lava, mut hanging) = (0, 0);
+        for cx in -3..3 {
+            for cz in -3..3 {
+                let mut column: std::collections::HashMap<i32, Vec<u32>> = std::collections::HashMap::new();
+                for cy in -32..1 {
+                    let mut blocks = vec![0u32; 4096];
+                    let mut biomes = vec![0u8; 256];
+                    let mut args = crate::abi::GenArgs { seed: 9, cube: [cx, cy, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
+                    t.generate(Gen::wrap(&mut args));
+                    column.insert(cy, blocks);
+                }
+                let at = |i: usize, y: i32| column.get(&(y >> 4)).map(|b| b[((y & 15) as usize * 16 + i / 16) * 16 + i % 16]);
+                for i in 0..256 {
+                    for y in -511..16 {
+                        if at(i, y) == Some(7) {
+                            lava += 1;
+                            if at(i, y - 1) == Some(0) {
+                                hanging += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(lava > 0, "no lakes at all");
+        assert_eq!(hanging, 0, "{hanging} of {lava} lava blocks over air");
     }
 
     #[test]

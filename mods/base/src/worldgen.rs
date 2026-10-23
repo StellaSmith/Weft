@@ -95,7 +95,7 @@ static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
         .biome(BiomeRule::new(&FOREST).humidity(0.25, f64::INFINITY).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&BIRCH_FOREST).humidity(0.05, f64::INFINITY).temperature(f64::NEG_INFINITY, 0.1).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
-        .caves(Caves::new(&LAVA, 1, 11))
+        .caves(Caves::new(&LAVA, i32::MIN, 11))
 });
 
 pub struct Column {
@@ -300,7 +300,7 @@ pub fn spawn(seed: u64) -> [i32; 3] {
             let a = k as f64 / 8.0 * std::f64::consts::TAU;
             let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
             let c = column(seed, x, z);
-            if c.height > SEA + 1 && c.biome == B::Plains && tree_free(seed, x, z) {
+            if c.height > SEA + 1 && c.biome == B::Plains && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
                 return [x, c.height, z];
             }
         }
@@ -310,7 +310,7 @@ pub fn spawn(seed: u64) -> [i32; 3] {
             let a = k as f64 / 8.0 * std::f64::consts::TAU;
             let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
             let c = column(seed, x, z);
-            if c.height > SEA + 1 && !matches!(c.biome, B::Ocean | B::Beach | B::Mountains) && tree_free(seed, x, z) {
+            if c.height > SEA + 1 && !matches!(c.biome, B::Ocean | B::Beach | B::Mountains) && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
                 return [x, c.height, z];
             }
         }

@@ -372,6 +372,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("heal", "[who:targets]"),
     ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]"),
     ("regions", ""),
+    ("debugblocks", "[floor:block]"),
 ];
 
 /// What the chat input can complete to: suggestions for the word being typed, the byte offset

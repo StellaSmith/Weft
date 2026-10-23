@@ -1128,6 +1128,31 @@ impl Server {
                 }
                 "healed".into()
             }
+            "debugblocks" => {
+                // Every block state in a grid two blocks apart, on a floor, like vanilla's
+                // debug world: for checking textures and models at a glance.
+                let floor = a.id("floor").unwrap_or_else(|| c.states.iter().position(|s| s.flags & abi::block_flags::OPAQUE != 0 && s.model == abi::Model::Cube).unwrap_or(0) as u32);
+                let n = c.states.len() as i32 - 1;
+                let side = (n as f64).sqrt().ceil() as i32;
+                // In the air above the player, so terrain does not hide anything.
+                let o = here.floor().as_ivec3() + IVec3::new(2, 12, 2);
+                let d = &mut self.dims[dim as usize];
+                let mut placed = 0;
+                for i in 0..n {
+                    let p = o + IVec3::new((i % side) * 2, 0, (i / side) * 2);
+                    for (q, s) in [(p - IVec3::Y, floor), (p, i as u32 + 1)] {
+                        if let Some(r) = d.region_at(q) {
+                            r.set(c, q, s);
+                            placed += (q == p) as u32;
+                        }
+                    }
+                }
+                for r in &mut d.regions {
+                    r.flush_neighbors(c);
+                    r.finish_tick();
+                }
+                format!("placed {placed} of {n} states in a {side}x{side} grid")
+            }
             "regions" => {
                 let parts: Vec<String> = self
                     .dims

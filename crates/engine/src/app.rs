@@ -881,8 +881,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 requests: &mut requests,
                 fps: r.fps,
                 frame_ms: r.frame_ms,
-                server_ms: 0.0,
-            regions: 0,
+                    server_ms: 0.0,
+                regions: 0,
                 debug: r.debug,
             };
             if let Some((s, _)) = r.screens.last_mut() {
@@ -910,6 +910,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.hud.invalidate();
     }
     if r.input.pressed("core:reload") {
+        r.assets.rescan();
         r.ui.reload(&mut *r.gpu);
         r.theme = Theme::load(&r.assets);
         r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);

@@ -2,6 +2,7 @@
 
 use std::sync::OnceLock;
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use voxide_abi::{self as abi, Callback, Layer, Model, ModId};
 
@@ -429,8 +430,8 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         biomes.extend(r.biomes);
         dims.extend(r.dims);
     }
-    blocks.sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.1.replace.cmp(&b.1.replace)));
-    items.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    blocks.par_sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.1.replace.cmp(&b.1.replace)));
+    items.par_sort_by(|a, b| a.1.name.cmp(&b.1.name));
     // A replacement wins over the original if its mod depends on the original's mod. The
     // original's item stays (it already points at the block by name).
     let depends = |m: ModId, on: ModId| mods[m.0 as usize].deps.contains(&mods[on.0 as usize].id);
@@ -592,6 +593,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         block_defs.iter().enumerate().map(|(i, b)| (b.name.clone(), i as u32)).collect();
 
     let mut item_textures: Vec<String> = vec!["core:missing".into()];
+    let mut item_tex_index: FxHashMap<String, u32> = FxHashMap::default();
     let mut item_defs = vec![ItemDef {
         name: "core:empty".into(),
         owner: ModId(u32::MAX),
@@ -624,8 +626,10 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         let icon = if it.texture.is_empty() && block.is_some() {
             u32::MAX
         } else {
-            item_textures.push(it.texture.clone());
-            item_textures.len() as u32 - 1
+            *item_tex_index.entry(it.texture.clone()).or_insert_with(|| {
+                item_textures.push(it.texture.clone());
+                item_textures.len() as u32 - 1
+            })
         };
         item_defs.push(ItemDef {
             name: it.name,

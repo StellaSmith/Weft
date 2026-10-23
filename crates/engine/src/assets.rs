@@ -4,17 +4,34 @@
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub struct Assets {
     mods: FxHashMap<String, PathBuf>,
     /// Highest priority first.
     packs: Vec<PathBuf>,
+    /// Every file under the roots, listed once: a content-heavy mod asks for thousands of files
+    /// (and for optional ones like `.anim` that mostly do not exist), and each existence check
+    /// costs a system call.
+    files: FxHashSet<PathBuf>,
 }
 
 impl Assets {
     pub fn new(mods: impl IntoIterator<Item = (String, PathBuf)>, packs: Vec<PathBuf>) -> Assets {
-        Assets { mods: mods.into_iter().collect(), packs }
+        let mut a = Assets { mods: mods.into_iter().collect(), packs, files: FxHashSet::default() };
+        a.rescan();
+        a
+    }
+
+    /// Re-lists files after they changed on disk (hot reload).
+    pub fn rescan(&mut self) {
+        let mut files = FxHashSet::default();
+        for root in self.mods.values().chain(&self.packs) {
+            walk(root, &mut |p| {
+                files.insert(p.to_path_buf());
+            });
+        }
+        self.files = files;
     }
 
     /// `kind` is the top folder ("textures", "lang", "ui", "shaders").
@@ -23,12 +40,12 @@ impl Assets {
         let file = format!("{kind}/{rel}.{ext}");
         for p in &self.packs {
             let candidate = p.join(ns).join(&file);
-            if candidate.exists() {
+            if self.files.contains(&candidate) {
                 return Some(candidate);
             }
         }
         let candidate = self.mods.get(ns)?.join(&file);
-        candidate.exists().then_some(candidate)
+        self.files.contains(&candidate).then_some(candidate)
     }
 
     pub fn read(&self, name: &str, kind: &str, ext: &str) -> Option<Vec<u8>> {
@@ -241,7 +258,7 @@ pub fn build_array(assets: &Assets, names: &[String]) -> TextureArray {
         if s == 1 {
             break;
         }
-        current = current.iter().map(|l| downsample(l, s)).collect();
+        current = current.par_iter().map(|l| downsample(l, s)).collect();
         s /= 2;
     }
     TextureArray { size, layers: entries.last().map_or(0, |e| e.0 + e.1), mips, entries, anims }

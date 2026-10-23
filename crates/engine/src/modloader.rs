@@ -114,6 +114,26 @@ pub fn pack(dir: &Path, out: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// `pack`, unless `<out>/<name>.zip` is already newer than the library and every asset. Returns
+/// the archive and whether it was written.
+pub fn pack_if_stale(dir: &Path, out: &Path) -> Result<(PathBuf, bool), String> {
+    let name = dir.file_name().ok_or("not a mod folder")?.to_string_lossy().into_owned();
+    let zip = out.join(format!("{name}.zip"));
+    let file = libloading::library_filename(&name);
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+    let mut inputs = Vec::new();
+    collect(&dir.join("assets"), &mut inputs);
+    inputs.extend([Some(dir.join(&file)), exe_dir.map(|d| d.join(&file))].into_iter().flatten().filter(|p| p.exists()));
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let newest = inputs.iter().filter_map(|p| modified(p)).max();
+    if let (Some(z), Some(n)) = (modified(&zip), newest) {
+        if z >= n {
+            return Ok((zip, false));
+        }
+    }
+    pack(dir, out).map(|p| (p, true))
+}
+
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {

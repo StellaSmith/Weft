@@ -29,12 +29,75 @@ pub struct Quad {
     pub clip: [f32; 4],
 }
 
+/// How a GUI texture fills a rectangle of another size. Set by the texture itself: a `.gui` file
+/// next to it (`scaling = nine_slice | tile | stretch`, `border = 3` or `border = l t r b`,
+/// `size = w h` when the image is a higher resolution than the GUI pixels it stands for), or
+/// vanilla's `.png.mcmeta` with `gui.scaling`. Themes only give a fallback for bare images.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Slicing {
+    /// Corners keep their size, edges and centre stretch; borders left, top, right, bottom in GUI
+    /// pixels of an image `size` GUI pixels big.
+    Nine { size: [f32; 2], border: [f32; 4] },
+    Tile { size: [f32; 2] },
+    Stretch,
+}
+
+/// The number after `"key":` in a JSON text, without a full parser.
+fn json_num(src: &str, key: &str) -> Option<f32> {
+    let i = src.find(&format!("\"{key}\""))?;
+    let rest = src[i + key.len() + 2..].trim_start().strip_prefix(':')?.trim_start();
+    let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+fn parse_mcmeta(src: &str) -> Option<Slicing> {
+    let s = &src[src.find("\"scaling\"")?..];
+    let kind = s.find("\"type\"").map(|i| &s[i + 6..]).and_then(|r| r.split('"').nth(1)).unwrap_or("stretch");
+    let size = [json_num(s, "width")?, json_num(s, "height")?];
+    Some(match kind {
+        "nine_slice" => {
+            let border = match json_num(s, "border") {
+                Some(b) => [b; 4],
+                None => [json_num(s, "left")?, json_num(s, "top")?, json_num(s, "right")?, json_num(s, "bottom")?],
+            };
+            Slicing::Nine { size, border }
+        }
+        "tile" => Slicing::Tile { size },
+        _ => Slicing::Stretch,
+    })
+}
+
+fn parse_gui(src: &str, pixels: [f32; 2]) -> Slicing {
+    let mut kind = "nine_slice";
+    let mut border = [0.0f32; 4];
+    let mut size = pixels;
+    for line in src.lines() {
+        let line = line.split('#').next().unwrap_or("");
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let nums: Vec<f32> = v.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+        match k.trim() {
+            "scaling" => kind = if v.trim() == "tile" { "tile" } else if v.trim() == "stretch" { "stretch" } else { "nine_slice" },
+            "border" if nums.len() == 1 => border = [nums[0]; 4],
+            "border" if nums.len() == 4 => border = [nums[0], nums[1], nums[2], nums[3]],
+            "size" if nums.len() == 2 => size = [nums[0], nums[1]],
+            _ => {}
+        }
+    }
+    match kind {
+        "tile" => Slicing::Tile { size },
+        "stretch" => Slicing::Stretch,
+        _ => Slicing::Nine { size, border },
+    }
+}
+
 pub struct UiRenderer {
     pipeline: PipelineId,
     pub font: Font,
     font_tex: TextureId,
     font_idx: u32,
     textures: FxHashMap<String, Option<(u32, u32, u32)>>,
+    /// Slicing a texture declares for itself.
+    slicing: FxHashMap<String, Option<Slicing>>,
     owned: Vec<TextureId>,
     buffers: Vec<(BufferId, u32)>,
     screen: Vec<BufferId>,
@@ -71,6 +134,7 @@ impl UiRenderer {
             font_tex,
             font_idx,
             textures: FxHashMap::default(),
+            slicing: FxHashMap::default(),
             owned: Vec::new(),
             buffers: Vec::new(),
             screen,
@@ -130,6 +194,33 @@ impl UiRenderer {
         loaded
     }
 
+    fn declared_slicing(&mut self, assets: &Assets, name: &str, pixels: [f32; 2]) -> Option<Slicing> {
+        if let Some(s) = self.slicing.get(name) {
+            return *s;
+        }
+        let read = |ext: &str| assets.read(name, "textures", ext).map(|b| String::from_utf8_lossy(&b).into_owned());
+        let s = read("gui").map(|src| parse_gui(&src, pixels)).or_else(|| read("png.mcmeta").and_then(|src| parse_mcmeta(&src)));
+        self.slicing.insert(name.to_string(), s);
+        s
+    }
+
+    /// Draws GUI texture `name` over `r` the way the texture asks for, or with `fallback` (from the
+    /// theme) when it says nothing. False if the texture is missing.
+    pub fn draw_gui(&mut self, gpu: &mut dyn Backend, assets: &Assets, name: &str, r: Rect, scale: f32, color: u32, fallback: Slicing) -> bool {
+        let Some(tex) = self.texture(gpu, assets, name) else { return false };
+        let pixels = [tex.1 as f32, tex.2 as f32];
+        let slicing = self.declared_slicing(assets, name, pixels).unwrap_or(match fallback {
+            Slicing::Nine { border, .. } => Slicing::Nine { size: pixels, border },
+            f => f,
+        });
+        match slicing {
+            Slicing::Nine { size, border } => self.nine_sliced(r, tex.0, size, border, scale, color),
+            Slicing::Tile { size } => self.tile(r, tex, size[0] * scale, color),
+            Slicing::Stretch => self.image(r, tex.0, [0.0, 0.0, 1.0, 1.0], color),
+        }
+        true
+    }
+
     pub fn rect(&mut self, r: Rect, color: u32) {
         self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv: [0.0; 4], color, mode: 0, ..Default::default() });
     }
@@ -140,13 +231,18 @@ impl UiRenderer {
 
     /// 9-slice: corners keep their size (scaled), edges and centre stretch.
     pub fn nine(&mut self, r: Rect, tex: (u32, u32, u32), border: f32, scale: f32, color: u32) {
-        let (idx, tw, th) = tex;
-        let b = border * scale;
-        let (bu, bv) = (border / tw as f32, border / th as f32);
-        let xs = [r.x, r.x + b.min(r.w / 2.0), r.x + r.w - b.min(r.w / 2.0), r.x + r.w];
-        let ys = [r.y, r.y + b.min(r.h / 2.0), r.y + r.h - b.min(r.h / 2.0), r.y + r.h];
-        let us = [0.0, bu, 1.0 - bu, 1.0];
-        let vs = [0.0, bv, 1.0 - bv, 1.0];
+        self.nine_sliced(r, tex.0, [tex.1 as f32, tex.2 as f32], [border; 4], scale, color);
+    }
+
+    /// 9-slice with its own border per side, in GUI pixels of an image `size` GUI pixels big.
+    pub fn nine_sliced(&mut self, r: Rect, idx: u32, size: [f32; 2], border: [f32; 4], scale: f32, color: u32) {
+        let [l, t, rr, b] = border.map(|v| v * scale);
+        let (l, rr) = (l.min(r.w / 2.0), rr.min(r.w / 2.0));
+        let (t, b) = (t.min(r.h / 2.0), b.min(r.h / 2.0));
+        let xs = [r.x, r.x + l, r.x + r.w - rr, r.x + r.w];
+        let ys = [r.y, r.y + t, r.y + r.h - b, r.y + r.h];
+        let us = [0.0, border[0] / size[0], 1.0 - border[2] / size[0], 1.0];
+        let vs = [0.0, border[1] / size[1], 1.0 - border[3] / size[1], 1.0];
         for j in 0..3 {
             for i in 0..3 {
                 let rr = Rect { x: xs[i], y: ys[j], w: xs[i + 1] - xs[i], h: ys[j + 1] - ys[j] };
@@ -336,9 +432,9 @@ impl UiRenderer {
             x = (at.x - w - 12.0 * scale).max(0.0);
         }
         let bg = Rect { x, y, w, h: hgt };
-        match theme.get("tooltip", "texture").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n)) {
-            Some(t) => self.nine(bg, t, theme.num("tooltip", "border", 3.0), scale, 0xFFFFFFFF),
-            None => self.rect(bg, 0x100010F0),
+        let drawn = theme.get("tooltip", "texture").map(str::to_string).is_some_and(|n| self.draw_gui(gpu, assets, &n, bg, scale, 0xFFFFFFFF, theme_slicing(theme, "tooltip")));
+        if !drawn {
+            self.rect(bg, 0x100010F0);
         }
         let mut icons = Vec::new();
         let color = theme.color("tooltip", "text", 0xFFFFFFFF);
@@ -378,15 +474,9 @@ impl UiRenderer {
         let mut background = |me: &mut UiRenderer, class: &str, state: &str| {
             let name = theme.get(class, state).or_else(|| theme.get(class, "texture")).map(str::to_string);
             let color = theme.color(class, "color", 0xFFFFFFFF);
-            match name.and_then(|n| me.texture(gpu, assets, &n)) {
-                Some(t) if theme.get(class, "tile").is_some() => me.tile(r, t, theme.num(class, "tile", 32.0) * scale, color),
-                Some(t) => me.nine(r, t, theme.num(class, "border", 3.0), scale, color),
-                None => {
-                    if let Some(fill) = theme.get(class, "fill") {
-                        let _ = fill;
-                        me.rect(r, theme.color(class, "fill", 0));
-                    }
-                }
+            let drawn = name.is_some_and(|n| me.draw_gui(gpu, assets, &n, r, scale, color, theme_slicing(theme, class)));
+            if !drawn && theme.get(class, "fill").is_some() {
+                me.rect(r, theme.color(class, "fill", 0));
             }
         };
         match &n.kind {
@@ -466,15 +556,14 @@ impl UiRenderer {
             Kind::Icons { .. } => {}
             Kind::Slider { value, .. } => {
                 let k = Rect { x: r.x + (r.w - 8.0 * scale) * value.clamp(0.0, 1.0), y: r.y, w: 8.0 * scale, h: r.h };
-                let track = theme.get("slider", "track").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n));
-                let knob = theme.get("slider", if hovered { "knob_hover" } else { "knob" }).or_else(|| theme.get("slider", "knob")).map(str::to_string).and_then(|n| self.texture(gpu, assets, &n));
-                match track {
-                    Some(t) => self.nine(r, t, theme.num("slider", "border", 3.0), scale, 0xFFFFFFFF),
-                    None => self.rect(Rect { x: r.x, y: r.y + r.h * 0.4, w: r.w, h: r.h * 0.2 }, theme.color("slider", "track", 0x404040FF)),
+                let fallback = theme_slicing(theme, "slider");
+                let track = theme.get("slider", "track").map(str::to_string);
+                if !track.is_some_and(|n| self.draw_gui(gpu, assets, &n, r, scale, 0xFFFFFFFF, fallback)) {
+                    self.rect(Rect { x: r.x, y: r.y + r.h * 0.4, w: r.w, h: r.h * 0.2 }, theme.color("slider", "track", 0x404040FF));
                 }
-                match knob {
-                    Some(t) => self.nine(k, t, theme.num("slider", "border", 3.0), scale, 0xFFFFFFFF),
-                    None => self.rect(k, theme.color("slider", if hovered { "knob_hover" } else { "knob" }, 0xC0C0C0FF)),
+                let knob = theme.get("slider", if hovered { "knob_hover" } else { "knob" }).or_else(|| theme.get("slider", "knob")).map(str::to_string);
+                if !knob.is_some_and(|n| self.draw_gui(gpu, assets, &n, k, scale, 0xFFFFFFFF, fallback)) {
+                    self.rect(k, theme.color("slider", if hovered { "knob_hover" } else { "knob" }, 0xC0C0C0FF));
                 }
             }
             Kind::Input { value, caret, .. } => {
@@ -557,5 +646,36 @@ impl UiRenderer {
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         gpu.destroy_texture(self.font_tex);
+    }
+}
+
+/// What the theme says for textures that declare nothing: `<class>.tile = n` or `<class>.border`.
+fn theme_slicing(theme: &Theme, class: &str) -> Slicing {
+    match theme.get(class, "tile") {
+        Some(_) => {
+            let t = theme.num(class, "tile", 32.0);
+            Slicing::Tile { size: [t, t] }
+        }
+        None => Slicing::Nine { size: [0.0; 2], border: [theme.num(class, "border", 3.0); 4] },
+    }
+}
+
+#[cfg(test)]
+mod slicing_tests {
+    use super::*;
+
+    #[test]
+    fn vanilla_mcmeta() {
+        let s = r#"{"gui": {"scaling": {"type": "nine_slice", "width": 200, "height": 20, "border": 3}}}"#;
+        assert_eq!(parse_mcmeta(s), Some(Slicing::Nine { size: [200.0, 20.0], border: [3.0; 4] }));
+        let s = r#"{"gui":{"scaling":{"type":"nine_slice","width":32,"height":32,"border":{"left":4,"top":5,"right":6,"bottom":7}}}}"#;
+        assert_eq!(parse_mcmeta(s), Some(Slicing::Nine { size: [32.0, 32.0], border: [4.0, 5.0, 6.0, 7.0] }));
+        assert_eq!(parse_mcmeta(r#"{"gui":{"scaling":{"type":"tile","width":16,"height":16}}}"#), Some(Slicing::Tile { size: [16.0, 16.0] }));
+    }
+
+    #[test]
+    fn gui_sidecar() {
+        assert_eq!(parse_gui("border = 2 3 4 5\n", [16.0, 16.0]), Slicing::Nine { size: [16.0, 16.0], border: [2.0, 3.0, 4.0, 5.0] });
+        assert_eq!(parse_gui("scaling = tile\nsize = 32 32", [64.0, 64.0]), Slicing::Tile { size: [32.0, 32.0] });
     }
 }

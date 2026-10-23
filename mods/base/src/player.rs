@@ -63,11 +63,16 @@ pub fn register(r: &mut Registry) {
         cmd.reply(&format!("food set to {food}"));
     });
 
-    r.hud_element("health", hud_anchor::HOTBAR_LEFT, 0, |ui| ui.icons("hearts", 10, |c| c.me().map_or(20.0, |s| s.health.ceil())));
-    r.hud_element("armor", hud_anchor::HOTBAR_LEFT, 1, |ui| {
-        ui.icons("armor", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.armor > 0.0 { h.armor } else { -1.0 }))
+    // Survival bars; a negative value hides them (creative).
+    r.hud_element("health", hud_anchor::HOTBAR_LEFT, 0, |ui| {
+        ui.icons("hearts", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
     });
-    r.hud_element("food", hud_anchor::HOTBAR_RIGHT, 0, |ui| ui.icons_rtl("food", 10, |c| c.component(&HUNGER).map_or(20.0, |h| h.food.ceil())));
+    r.hud_element("armor", hud_anchor::HOTBAR_LEFT, 1, |ui| {
+        ui.icons("armor", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.armor > 0.0 && !c.creative() { h.armor } else { -1.0 }))
+    });
+    r.hud_element("food", hud_anchor::HOTBAR_RIGHT, 0, |ui| {
+        ui.icons_rtl("food", 10, |c| if c.creative() { -1.0 } else { c.component(&HUNGER).map_or(20.0, |h| h.food.ceil()) })
+    });
     r.hud_element("air", hud_anchor::HOTBAR_RIGHT, 1, |ui| {
         ui.icons_rtl("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }))
     });
@@ -167,6 +172,9 @@ fn tick_players(t: &EntityTick) {
     let w = t.world();
     for &id in t.ids() {
         let Some(mut st) = w.entity(id) else { continue };
+        if w.creative(id) {
+            continue;
+        }
         let Some(h) = w.component(id, &HUNGER) else { continue };
         h.exhaustion += st.moved * 0.01 + if st.vel[1] > 3.0 { 0.01 } else { 0.0 };
         if h.exhaustion > 4.0 {

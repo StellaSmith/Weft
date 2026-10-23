@@ -80,6 +80,8 @@ pub static HOST: Host = Host {
     reg_hud_element,
     reg_command,
     command_reply,
+    is_creative,
+    client_creative: crate::client::modui::client_creative,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -530,6 +532,10 @@ unsafe extern "C" fn command_reply(args: *mut abi::CommandArgs, text: Str) {
         }
         reply.push_str(text.as_str());
     }
+}
+
+unsafe extern "C" fn is_creative(w: *mut abi::WorldCtx, entity: u64) -> u32 {
+    unsafe { dim(w).entities.get(entity).is_some_and(|e| e.creative) as u32 }
 }
 
 unsafe extern "C" fn reg_hud_element(r: *mut abi::Registrar, name: Str, anchor: Str, order: i32, cb: Callback) {

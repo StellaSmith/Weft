@@ -97,6 +97,10 @@ impl World {
         let p = unsafe { (host().component)(self.raw(), id, c.id()) };
         (!p.is_null()).then(|| unsafe { &mut *(p as *mut T) })
     }
+    /// A player in creative mode: no damage, hunger or item costs.
+    pub fn creative(&self, id: u64) -> bool {
+        unsafe { (host().is_creative)(self.raw(), id) != 0 }
+    }
     /// The entity's `core:energy` state, if it takes part in the energy contract.
     pub fn energy(&self, id: u64) -> Option<&mut Energy> {
         let p = unsafe { (host().component)(self.raw(), id, energy_component()) };

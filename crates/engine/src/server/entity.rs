@@ -28,6 +28,8 @@ pub struct Entity {
     pub item: ItemStack,
     pub pickup_delay: u32,
     pub player: bool,
+    /// Player in creative mode.
+    pub creative: bool,
     /// Hotbar slot the player holds.
     pub selected: u32,
     pub anchor: Option<IVec3>,
@@ -57,6 +59,7 @@ impl Entity {
             item: ItemStack::EMPTY,
             pickup_delay: 0,
             player: false,
+            creative: false,
             selected: 0,
             anchor: None,
             sent: None,

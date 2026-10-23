@@ -24,6 +24,10 @@ impl ClientView {
         let mut s = abi::EntityState::default();
         (unsafe { (host().client_entity)(self.raw, 0, &mut s) } != 0).then_some(s)
     }
+    /// The local player is in creative mode.
+    pub fn creative(&self) -> bool {
+        unsafe { (host().client_creative)(self.raw) != 0 }
+    }
     pub fn menu_data(&self, i: u32) -> i32 {
         unsafe { (host().client_menu_data)(self.raw, i) }
     }

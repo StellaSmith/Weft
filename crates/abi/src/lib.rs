@@ -812,6 +812,10 @@ pub struct Host {
     pub reg_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
     /// Text shown to the player who ran the command.
     pub command_reply: unsafe extern "C" fn(args: *mut CommandArgs, text: Str),
+    /// Non-zero for a player in creative mode (no damage, hunger or item use costs).
+    pub is_creative: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64) -> u32,
+    /// Non-zero when the local player is in creative mode (client side, for HUDs and screens).
+    pub client_creative: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
 }
 
 /// One command argument; kinds in `command_value`.

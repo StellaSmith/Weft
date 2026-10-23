@@ -304,6 +304,13 @@ pub fn draw_custom(
             ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - scale, h: r.h - scale }, 0xFFFFFFFF);
             ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, 0x000000FF);
         }
+        modui::TAG_CREATIVE => {
+            slot_background(ren, theme, r, false, scale);
+            stack_icon(ren, textures, r, ItemStack::new(data as u32, 1), scale, text_unit);
+            if hovered {
+                ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, 0xFFFFFF50);
+            }
+        }
         TAG_SLOT => {
             let Some(client) = client else { return };
             slot_background(ren, theme, r, false, scale);

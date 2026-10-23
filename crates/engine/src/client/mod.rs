@@ -99,6 +99,7 @@ pub struct Client {
     pub inventory: Vec<ItemStack>,
     pub health: f32,
     pub max_health: f32,
+    pub creative: bool,
     /// Held item and when it became held: its name shows above the hotbar for a moment.
     pub held_name: (u32, Instant),
     /// Names of the players online, for completion.
@@ -165,6 +166,7 @@ impl Client {
             players: Vec::new(),
             sent: Vec::new(),
             held_name: (0, Instant::now()),
+            creative: false,
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -262,6 +264,12 @@ impl Client {
                     }
                 }
                 ToClient::Players(names) => self.players = names,
+                ToClient::GameMode(creative) => {
+                    self.creative = creative;
+                    if !creative {
+                        self.player.flying = false;
+                    }
+                }
                 ToClient::Worn(list) => {
                     for (id, items) in list {
                         if let Some(e) = self.entities.get_mut(&id) {
@@ -370,7 +378,7 @@ impl Client {
             self.player.yaw -= input.mouse_delta.x * sens;
             self.player.pitch = (self.player.pitch - input.mouse_delta.y * sens).clamp(-1.55, 1.55);
         }
-        if input.pressed("core:fly") {
+        if input.pressed("core:fly") && self.creative {
             self.player.flying = !self.player.flying;
         }
         let old = self.selected;
@@ -437,6 +445,7 @@ impl Client {
                 } else if let Some(hit) = self.target {
                     let held = self.held().item;
                     let (time, _) = crate::server::break_time(c, hit.state, held);
+                    let time = if self.creative { 0.0 } else { time };
                     let progress = match self.breaking {
                         Some((p, v)) if p == hit.block => v,
                         _ => 0.0,

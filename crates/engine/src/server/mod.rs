@@ -533,7 +533,8 @@ impl Server {
                 }
                 let sel = e.selected;
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
-                if r.player_break(c, pos, entity, held.item) {
+                let free = c.states.get(r.get(pos).unwrap_or(0) as usize).is_some_and(|s| s.hardness <= 0.0);
+                if r.player_break(c, pos, entity, held.item) && !free {
                     wear(c, r, entity, sel, 1);
                 }
             }
@@ -560,7 +561,9 @@ impl Server {
                         let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
                         let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
                         if (!solid || !player_box.intersects(&block_box)) && r.place(c, target, face, state, look, entity) {
-                            r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
+                            if !r.entities.get(entity).is_some_and(|e| e.creative) {
+                                r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
+                            }
                         }
                     }
                     _ => self.handle(c, pi, ToServer::UseItem { target: Some((pos, face)) }),
@@ -629,6 +632,15 @@ impl Server {
                 let p = &mut players[pi];
                 if let (Some(m), Some(r)) = (&mut p.menu, dims[p.dim as usize].entity_region(p.entity)) {
                     menu::click(m, r, c, p.entity, slot, button, shift);
+                }
+            }
+            ToServer::CreativeTake { item } => {
+                let Server { players, dims, .. } = self;
+                let p = &mut players[pi];
+                let creative = dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).is_some_and(|e| e.creative);
+                if let (true, Some(m), Some(def)) = (creative, &mut p.menu, c.items.get(item as usize).filter(|_| item != 0)) {
+                    let _ = def;
+                    m.cursor = ItemStack::new(item, c.max_stack(item));
                 }
             }
             ToServer::Drag { slots, button } => {
@@ -739,6 +751,8 @@ impl Server {
         let kind = &c.game.entities[c.game.player_kind as usize];
         let mut e = Entity::new(id, c.game.player_kind, pos, if health > 0.0 { health } else { kind.max_health });
         e.player = true;
+        e.creative = self.storage.as_ref().is_some_and(|s| saved_creative(&s.lock(), &key));
+        let creative = e.creative;
         r.entities.insert(c, e);
         if let Some(inv) = inv {
             r.entities.inventories.insert(id, inv);
@@ -763,6 +777,15 @@ impl Server {
         p.conn.send(ToClient::Welcome { player: id, dim, pos, seed: self.cfg.seed });
         p.conn.send(ToClient::Time { dim, time });
         p.conn.send(ToClient::Health { health, max: kind.max_health });
+        p.conn.send(ToClient::GameMode(creative));
+    }
+
+    fn set_creative(&mut self, pi: usize, creative: bool) {
+        let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
+        if let Some(e) = self.dims[dim as usize].entity_region(entity).and_then(|r| r.entities.get_mut(entity)) {
+            e.creative = creative;
+        }
+        self.players[pi].conn.send(ToClient::GameMode(creative));
     }
 
     /// Moves a player (with inventory and components) to a position, possibly in another
@@ -932,6 +955,11 @@ impl Server {
                 let Some(p) = block_at(a) else { return String::new() };
                 let d = &self.dims[dim as usize];
                 format!("{} in {}", d.get(p).map_or("unloaded".into(), |s| c.state_name(s)), c.dims[d.id as usize].name)
+            }
+            "gamemode" => {
+                let creative = a.get("creative").is_some();
+                self.set_creative(pi, creative);
+                format!("game mode: {}", if creative { "creative" } else { "survival" })
             }
             "heal" => {
                 let max = c.game.entities[c.game.player_kind as usize].max_health;
@@ -1367,6 +1395,9 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
         "name = {}\ndim = {}\npos = {} {} {}\nlook = {} {}\nhealth = {}\n",
         p.name, c.dims[p.dim as usize].name, e.pos.x, e.pos.y, e.pos.z, e.yaw, e.pitch, e.health
     );
+    if e.creative {
+        text.push_str("mode = creative\n");
+    }
     if let Some(inv) = d.entities.inventories.get(&p.entity) {
         let items: Vec<String> = inv
             .iter()
@@ -1382,6 +1413,10 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
     if let Err(err) = std::fs::write(&path, text) {
         log::error!("saving player {}: {err}", p.name);
     }
+}
+
+fn saved_creative(s: &Storage, key: &str) -> bool {
+    std::fs::read_to_string(s.player_path(key)).is_ok_and(|src| src.lines().any(|l| l.replace(' ', "") == "mode=creative"))
 }
 
 type PlayerData = (u32, DVec3, f32, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);

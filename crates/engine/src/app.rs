@@ -613,10 +613,22 @@ impl Running {
                         self.quads_dirty = true;
                     }
                 }
+                // Creative entries put a full stack on the cursor.
+                let creative_item = hovered.and_then(|h| match ui.nodes[h].kind {
+                    Kind::Custom { tag: crate::client::modui::TAG_CREATIVE, data } => Some(data as u32),
+                    _ => None,
+                });
+                if let (Some(item), true) = (creative_item, self.input.pressed_button(0)) {
+                    g.client.send(net::ToServer::CreativeTake { item });
+                }
                 // Tooltip with the hovered item's name.
                 if let Some(h) = hovered {
-                    if let Kind::Custom { data, .. } = ui.nodes[h].kind {
-                        let stack = g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default();
+                    if let Kind::Custom { tag, data } = ui.nodes[h].kind {
+                        let stack = if tag == crate::client::modui::TAG_CREATIVE {
+                            voxide_abi::ItemStack::new(data as u32, 1)
+                        } else {
+                            g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default()
+                        };
                         let tip = (!stack.is_empty()).then(|| text::plain(&crate::hud::item_name(&self.lang, stack.item)));
                         if ui.nodes[h].tooltip != tip {
                             ui.nodes[h].tooltip = tip;
@@ -1103,7 +1115,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             crate::client::ClientEvent::OpenMenu => {
                 let kind = r.game.as_ref().and_then(|g| g.client.menu.as_ref()).map_or(0, |m| m.kind);
                 r.screens.retain(|(s, _)| s.name() != "core:menu");
-                r.open(Box::new(crate::game_screens::MenuScreen { kind }));
+                r.open(Box::new(crate::game_screens::MenuScreen::new(kind)));
             }
             crate::client::ClientEvent::CloseMenu => {
                 r.screens.retain(|(s, _)| s.name() != "core:menu");
@@ -1143,7 +1155,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.handle(vec![Request::SendChat(t)]);
         }
     }
-    if top.as_deref() == Some("core:menu") && r.input.pressed("core:inventory") {
+    let typing = r.screens.last().is_some_and(|(_, ui)| ui.focused.is_some_and(|f| matches!(ui.nodes.get(f).map(|n| &n.kind), Some(Kind::Input { .. }))));
+    if top.as_deref() == Some("core:menu") && r.input.pressed("core:inventory") && !typing {
         if let Some(g) = &mut r.game {
             g.client.close_menu();
         }

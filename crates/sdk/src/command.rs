@@ -54,6 +54,11 @@ impl Command<'_> {
         self.value(name).filter(|v| v.kind == cv::POS).map(|v| v.pos)
     }
 
+    /// Whether a literal word of the usage (or an optional parameter) was given.
+    pub fn has(&self, name: &str) -> bool {
+        self.value(name).is_some()
+    }
+
     pub fn reply(&mut self, text: &str) {
         unsafe { (host().command_reply)(self.args, Str::new(text)) }
     }
@@ -63,11 +68,14 @@ impl Command<'_> {
 fn names(usage: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for tok in usage.split_whitespace() {
+        if tok == "|" {
+            continue;
+        }
         let inner = tok.strip_prefix('<').or_else(|| tok.strip_prefix('[')).and_then(|t| t.strip_suffix('>').or_else(|| t.strip_suffix(']')));
-        if let Some(name) = inner.and_then(|t| t.split_once(':')).map(|(n, _)| n) {
-            if !out.iter().any(|o| o == name) {
-                out.push(name.to_string());
-            }
+        // Literal words are slots too: present when that word was typed.
+        let name = inner.and_then(|t| t.split_once(':')).map_or(tok, |(n, _)| n);
+        if !out.iter().any(|o| o == name) {
+            out.push(name.to_string());
         }
     }
     out

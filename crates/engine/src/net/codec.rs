@@ -257,6 +257,10 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.u8(20);
             w.str(t);
         }
+        ToClient::GameMode(creative) => {
+            w.u8(23);
+            w.u8(*creative as u8);
+        }
         ToClient::Players(names) => {
             w.u8(22);
             w.len(names.len());
@@ -400,6 +404,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             }
             ToClient::Players(names)
         }
+        23 => ToClient::GameMode(r.u8()? != 0),
         _ => return None,
     })
 }
@@ -473,6 +478,10 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.str(t);
         }
         ToServer::Leave => w.u8(14),
+        ToServer::CreativeTake { item } => {
+            w.u8(16);
+            w.u32(*item);
+        }
         ToServer::Drag { slots, button } => {
             w.u8(15);
             w.u8(*button);
@@ -517,6 +526,7 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
             }
             ToServer::Drag { slots, button }
         }
+        16 => ToServer::CreativeTake { item: r.u32()? },
         _ => return None,
     })
 }

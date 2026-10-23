@@ -15,6 +15,52 @@ use crate::ui::{Kind, Style, Ui};
 
 pub struct MenuScreen {
     pub kind: u32,
+    /// Creative inventory filter.
+    search: Rc<RefCell<String>>,
+}
+
+impl MenuScreen {
+    pub fn new(kind: u32) -> MenuScreen {
+        MenuScreen { kind, search: Default::default() }
+    }
+}
+
+/// Every item matching `filter` (in the registry or translated name) as a scrolling grid of
+/// creative entries, with the search field above.
+fn creative_panel(ui: &mut Ui, cx: &BuildCx, search: &Rc<RefCell<String>>) {
+    let c = content();
+    let filter = search.borrow().to_lowercase();
+    let items: Vec<u32> = (1..c.items.len() as u32)
+        .filter(|&i| {
+            filter.is_empty() || c.items[i as usize].name.to_lowercase().contains(&filter) || crate::hud::item_name(cx.lang, i).to_lowercase().contains(&filter)
+        })
+        .collect();
+    ui.panel("panel", Style::default().pad(7.0).gap(4.0), |ui| {
+        let s = search.clone();
+        let input = ui.add(
+            Kind::Input {
+                value: search.borrow().clone(),
+                caret: search.borrow().chars().count(),
+                max: 32,
+                on_change: Some(Rc::new(move |ctx: &mut Ctx, v: &str| {
+                    *s.borrow_mut() = v.to_string();
+                    ctx.requests.push(Request::Rebuild);
+                })),
+            },
+            Style::default().h(14.0).w(162.0),
+        );
+        ui.set_id(input, "creative_search");
+        let grid = ui.container(Style::default().w(162.0).h(18.0 * 8.0).scroll(), |ui| {
+            for row in items.chunks(9) {
+                ui.container(Style::row(), |ui| {
+                    for &i in row {
+                        ui.add(Kind::Custom { tag: modui::TAG_CREATIVE, data: i as u64 }, Style::default().size(18.0, 18.0));
+                    }
+                });
+            }
+        });
+        ui.set_id(grid, "creative_grid");
+    });
 }
 
 impl Screen for MenuScreen {
@@ -25,12 +71,18 @@ impl Screen for MenuScreen {
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let c = content();
         ui.root_style(Style::default().stretch());
+        let creative = cx.client.is_some_and(|cl| cl.creative) && c.game.player_menu == Some(self.kind);
         ui.panel("overlay", Style::default().grow().center(), |ui| {
-            if let Some(def) = c.game.menus.get(self.kind as usize) {
-                if let Some(cb) = def.screen {
-                    modui::build(ui, cx.lang, def.owner, cb, cx.client);
+            ui.container(Style::row().gap(4.0).align(crate::ui::Align::Start), |ui| {
+                if creative {
+                    creative_panel(ui, cx, &self.search);
                 }
-            }
+                if let Some(def) = c.game.menus.get(self.kind as usize) {
+                    if let Some(cb) = def.screen {
+                        modui::build(ui, cx.lang, def.owner, cb, cx.client);
+                    }
+                }
+            });
         });
     }
 }

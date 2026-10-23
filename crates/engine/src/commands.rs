@@ -70,12 +70,12 @@ pub fn parse_usage(usage: &str) -> Result<Vec<Alt>, String> {
     Ok(alts)
 }
 
-/// Parameter names in order of first appearance across alternatives: the slots of `Args` and of
-/// the values handed to mods.
+/// Parameter names (and literal words) in order of first appearance across alternatives: the
+/// slots of `Args` and of the values handed to mods.
 pub fn slots(alts: &[Alt]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for p in alts.iter().flatten() {
-        if !matches!(p.kind, Kind::Literal(_)) && !names.contains(&p.name) {
+        if !names.contains(&p.name) {
             names.push(p.name.clone());
         }
     }
@@ -162,12 +162,13 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: DVec3, players: &[St
         let slot = slots.iter().position(|n| n == &p.name);
         let tok = tokens[i];
         let value = match &p.kind {
+            // A matched literal shows up as a value under its own name, so alternatives such
+            // as `add <x> | remove <x>` can be told apart.
             Kind::Literal(l) => {
                 if tok != l {
                     return Err(format!("expected {l}"));
                 }
-                i += 1;
-                continue;
+                Value::Text(l.clone())
             }
             Kind::Int => Value::Int(tok.parse().map_err(|_| format!("{} must be a whole number", p.name))?),
             Kind::Float => Value::Float(tok.parse().map_err(|_| format!("{} must be a number", p.name))?),
@@ -259,6 +260,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("insert", "<pos:pos> <item:item> [count:int]"),
     ("block", "<pos:pos>"),
     ("heal", ""),
+    ("gamemode", "creative | survival"),
     ("regions", ""),
 ];
 

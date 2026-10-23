@@ -59,6 +59,8 @@ pub enum ToClient {
     Despawn(Vec<u64>),
     Hurt(Vec<(u64, f32)>),
     Worn(Vec<(u64, Vec<u32>)>),
+    /// Creative (true) or survival.
+    GameMode(bool),
     /// Everyone online, sent when someone joins or leaves.
     Players(Vec<String>),
     /// Own inventory: (slot, stack) for changed slots.
@@ -91,6 +93,8 @@ pub enum ToServer {
     Interact(u64),
     OpenInventory,
     Click { slot: u32, button: u8, shift: bool },
+    /// Creative inventory: a full stack of this item onto the menu cursor.
+    CreativeTake { item: u32 },
     /// The cursor stack spread over these slots by dragging (button 0 evenly, 1 one each).
     Drag { slots: Vec<u32>, button: u8 },
     CloseMenu,

@@ -312,7 +312,7 @@ impl Dim {
     pub fn damage(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         let Some(e) = self.entities.get(id) else { return false };
         let k = &c.game.entities[e.kind as usize];
-        if (k.is(ef::INVULNERABLE) && cause != damage::VOID) || e.hurt_cooldown > 0 || e.health <= 0.0 {
+        if ((k.is(ef::INVULNERABLE) || e.creative) && cause != damage::VOID) || e.hurt_cooldown > 0 || e.health <= 0.0 {
             return false;
         }
         let mut amount = amount;
@@ -563,6 +563,7 @@ impl Dim {
             return false;
         }
         let (_, harvest) = break_time(c, state, tool);
+        let harvest = harvest && !self.entities.get(player).is_some_and(|e| e.creative);
         self.set(c, p, AIR);
         let block = c.block_of(state);
         if harvest {

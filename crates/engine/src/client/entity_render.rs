@@ -2,7 +2,6 @@
 //! the block selection outline and break progress overlay.
 
 use glam::{DVec3, IVec3, Mat4, Quat, Vec3, Vec4};
-use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use voxide_abi::{Model, part_role as role};
 use voxide_render::*;
@@ -25,6 +24,36 @@ struct GpuBox {
     ids2: [u32; 4],
 }
 
+/// One entity layer (skin or something worn) for `model.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct ModelInstance {
+    pos: [f32; 3],
+    yaw: f32,
+    pitch: f32,
+    swing: f32,
+    hurt: f32,
+    inflate: f32,
+    color: [f32; 3],
+    tex: u32,
+    tex_size: [f32; 2],
+    roles: u32,
+    first_cuboid: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuCuboid {
+    pivot: [f32; 3],
+    role: u32,
+    origin: [f32; 3],
+    inflate: f32,
+    size: [f32; 3],
+    _pad: f32,
+    uv: [f32; 2],
+    _pad2: [f32; 2],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct View {
@@ -36,6 +65,11 @@ struct View {
 pub struct EntityRenderer {
     pipeline: PipelineId,
     overlay: PipelineId,
+    model_pipe: PipelineId,
+    /// Every entity kind's cuboids, and where each kind starts and how many it has.
+    cuboids: BufferId,
+    kind_cuboids: Vec<(u32, u32)>,
+    instances: Vec<(BufferId, u32)>,
     buffers: Vec<(BufferId, u32)>,
     views: Vec<BufferId>,
     overlay_views: Vec<BufferId>,
@@ -60,6 +94,23 @@ fn lightmap(v: f32) -> f32 {
 impl EntityRenderer {
     pub fn new(gpu: &mut dyn Backend) -> Result<EntityRenderer, String> {
         let (pipeline, overlay) = Self::pipelines(gpu)?;
+        let model_pipe = Self::model_pipeline(gpu)?;
+        let mut table: Vec<GpuCuboid> = Vec::new();
+        let mut kind_cuboids = Vec::new();
+        for k in &content().game.entities {
+            let first = table.len() as u32;
+            for part in &k.parts {
+                for cu in &part.cuboids {
+                    table.push(GpuCuboid { pivot: part.pivot, role: part.role, origin: cu.origin, inflate: cu.inflate, size: cu.size, uv: cu.uv, ..Default::default() });
+                }
+            }
+            kind_cuboids.push((first, table.len() as u32 - first));
+        }
+        if table.is_empty() {
+            table.push(GpuCuboid::default());
+        }
+        let cuboids = gpu.create_buffer((table.len() * size_of::<GpuCuboid>()) as u64, usage::STORAGE, "model cuboids");
+        gpu.write_buffer(cuboids, 0, bytemuck::cast_slice(&table));
         let frames = gpu.frames_in_flight();
         let views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "entity view")).collect();
         let overlay_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "overlay view")).collect();
@@ -73,6 +124,10 @@ impl EntityRenderer {
         Ok(EntityRenderer {
             pipeline,
             overlay,
+            model_pipe,
+            cuboids,
+            kind_cuboids,
+            instances: Vec::new(),
             buffers: Vec::new(),
             views,
             overlay_views,
@@ -113,7 +168,32 @@ impl EntityRenderer {
         Ok((main, overlay))
     }
 
+    fn model_pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/model.wgsl");
+        let src = std::fs::read_to_string(path).unwrap_or_else(|_| include_str!("../../shaders/model.wgsl").to_string());
+        let s = Shader::from_wgsl("model.wgsl", &src).map_err(|e| e.0)?;
+        gpu.create_pipeline(&PipelineDesc {
+            label: "models",
+            shader: &s,
+            vertex: "vs",
+            fragment: Some("fs"),
+            color: Some(Format::Surface),
+            depth: Some(DepthState { write: true, compare: Compare::GreaterEqual }),
+            blend: Blend::None,
+            cull_back: true,
+            topology: Topology::Triangles,
+        })
+        .map_err(|e| e.0)
+    }
+
     pub fn reload(&mut self, gpu: &mut dyn Backend) {
+        match Self::model_pipeline(gpu) {
+            Ok(p) => {
+                gpu.destroy_pipeline(self.model_pipe);
+                self.model_pipe = p;
+            }
+            Err(e) => log::error!("model shader: {e}"),
+        }
         match Self::pipelines(gpu) {
             Ok((a, b)) => {
                 gpu.destroy_pipeline(self.pipeline);
@@ -126,9 +206,11 @@ impl EntityRenderer {
     }
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
-        for (b, _) in self.buffers.drain(..) {
+        for (b, _) in self.buffers.drain(..).chain(self.instances.drain(..)) {
             gpu.destroy_buffer(b);
         }
+        gpu.destroy_buffer(self.cuboids);
+        gpu.destroy_pipeline(self.model_pipe);
         let preview: Vec<BufferId> = self.preview.drain(..).flat_map(|(a, b)| [a, b]).collect();
         for b in self.views.drain(..).chain(self.overlay_views.drain(..)).chain(preview) {
             gpu.destroy_buffer(b);
@@ -277,7 +359,7 @@ impl EntityRenderer {
         cam: &Camera,
         entities: &FxHashMap<u64, ClientEntity>,
         textures: &GameTextures,
-        light: &(impl Fn(IVec3) -> u32 + Sync),
+        light: &impl Fn(IVec3) -> u32,
         day: f32,
         target: Option<Hit>,
         breaking: Option<(IVec3, f32)>,
@@ -294,31 +376,89 @@ impl EntityRenderer {
             Vec3::new(sky.max(lightmap(ch(8))), sky.max(lightmap(ch(16))), sky.max(lightmap(ch(24))))
         };
 
-        // Thousands of mobs: pose them on all cores.
-        let all: Vec<&ClientEntity> = entities.values().collect();
-        let parts: Vec<Vec<GpuBox>> = all
-            .par_chunks(128)
-            .map(|chunk| {
-                let mut out = Vec::with_capacity(chunk.len() * 8);
-                for e in chunk {
-                    let base = rel(e.pos);
-                    if base.length_squared() > 160.0 * 160.0 {
-                        continue;
-                    }
-                    let color = shade(e.pos + DVec3::Y * 0.5).extend((e.hurt / 0.4).clamp(0.0, 1.0));
-                    if !e.item.is_empty() {
-                        item_boxes(&mut out, textures, base, e.age, e.item.item, color);
-                        continue;
-                    }
-                    let body = Mat4::from_translation(base) * Mat4::from_rotation_y(e.yaw);
-                    let swing = (e.walk * 6.0).sin() * 0.9 * e.swing;
-                    self.model(&mut out, e.kind, body, e.pitch, swing, color, &e.worn);
-                }
-                out
+        // Models are posed by the vertex shader: one small record per entity and layer, grouped by
+        // kind so each kind is a single instanced draw.
+        let skin_of: Vec<Option<(u32, [f32; 2])>> = c
+            .game
+            .entities
+            .iter()
+            .map(|k| match self.skins.get(&k.texture) {
+                Some(Some((_, idx, _))) => Some((*idx, [k.texture_size[0] as f32, k.texture_size[1] as f32])),
+                _ => None,
             })
             .collect();
-        for p in parts {
-            boxes.extend(p);
+        let mut by_kind: Vec<Vec<ModelInstance>> = vec![Vec::new(); c.game.entities.len()];
+        for e in entities.values() {
+            let base = rel(e.pos);
+            if base.length_squared() > 160.0 * 160.0 {
+                continue;
+            }
+            let color = shade(e.pos + DVec3::Y * 0.5);
+            let hurt = (e.hurt / 0.4).clamp(0.0, 1.0);
+            if !e.item.is_empty() {
+                item_boxes(&mut boxes, textures, base, e.age, e.item.item, color.extend(hurt));
+                continue;
+            }
+            let Some((tex, tex_size)) = skin_of[e.kind as usize] else { continue };
+            let inst = ModelInstance {
+                pos: base.to_array(),
+                yaw: e.yaw,
+                pitch: e.pitch,
+                swing: (e.walk * 6.0).sin() * 0.9 * e.swing,
+                hurt,
+                inflate: 0.0,
+                color: color.to_array(),
+                tex,
+                tex_size,
+                roles: u32::MAX,
+                first_cuboid: self.kind_cuboids[e.kind as usize].0,
+            };
+            let list = &mut by_kind[e.kind as usize];
+            list.push(inst);
+            for &i in &e.worn {
+                if let Some((w, t)) = c.worn(i) {
+                    if let Some(Some((_, idx, size))) = self.skins.get(t) {
+                        list.push(ModelInstance { tex: *idx, tex_size: [size[0] as f32, size[1] as f32], roles: w.roles, inflate: w.inflate, ..inst });
+                    }
+                }
+            }
+        }
+        let (fog_color, fog_start, fog_end) = self.fog;
+        let v = View { view_proj: view_proj.to_cols_array_2d(), fog_color, fog: [fog_start, fog_end, 0.0, 0.0] };
+        let vb = self.views[frame.slot];
+        gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
+        let total: usize = by_kind.iter().map(Vec::len).sum();
+        if total > 0 {
+            let frames = gpu.frames_in_flight();
+            let stride = size_of::<ModelInstance>() as u64;
+            while self.instances.len() < frames {
+                self.instances.push((gpu.create_buffer(stride * 1024, usage::STORAGE | usage::HOST, "model instances"), 1024));
+            }
+            if (self.instances[frame.slot].1 as usize) < total {
+                gpu.destroy_buffer(self.instances[frame.slot].0);
+                let cap = total.next_power_of_two() as u32;
+                self.instances[frame.slot] = (gpu.create_buffer(stride * cap as u64, usage::STORAGE | usage::HOST, "model instances"), cap);
+            }
+            let ibuf = self.instances[frame.slot].0;
+            let mapped = gpu.mapped(ibuf);
+            let mut at = 0usize;
+            let mut draws = Vec::new();
+            for (kind, list) in by_kind.iter().enumerate() {
+                if list.is_empty() {
+                    continue;
+                }
+                let bytes: &[u8] = bytemuck::cast_slice(list);
+                mapped[at * stride as usize..at * stride as usize + bytes.len()].copy_from_slice(bytes);
+                draws.push((self.kind_cuboids[kind].1 * 36, list.len() as u32, at as u32));
+                at += list.len();
+            }
+            list.pipeline(self.model_pipe);
+            list.bind(0, ibuf);
+            list.bind(1, vb);
+            list.bind(2, self.cuboids);
+            for (vertices, instances, first_instance) in draws {
+                list.push(Cmd::Draw { vertices, instances, first_vertex: 0, first_instance });
+            }
         }
 
         // Selection outline: twelve thin dark boxes along the edges of the target's shape.
@@ -373,10 +513,6 @@ impl EntityRenderer {
         }
         let buf = self.buffers[frame.slot].0;
         gpu.mapped(buf)[..boxes.len() * 128].copy_from_slice(bytemuck::cast_slice(&boxes));
-        let (fog_color, fog_start, fog_end) = self.fog;
-        let v = View { view_proj: view_proj.to_cols_array_2d(), fog_color, fog: [fog_start, fog_end, 0.0, 0.0] };
-        let vb = self.views[frame.slot];
-        gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
         let ov = View { fog: [fog_start, fog_end, overlay_alpha, 0.0], ..v };
         let ob = self.overlay_views[frame.slot];
         gpu.mapped(ob)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&ov));

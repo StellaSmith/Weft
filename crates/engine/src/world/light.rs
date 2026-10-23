@@ -188,8 +188,10 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                 None if open_above => Some([SKY_FULL; 256]),
                 None => None,
             };
+            let mut full = false;
             if let Some(src) = from_above {
                 if all_clear && src.iter().all(|&v| v == SKY_FULL) {
+                    full = true;
                     // Open air: the whole cube is full sky, only the borders can spread further.
                     self.map.cube_mut(cp).unwrap().fill_light(SKY_FULL as u32);
                     self.cache.set((IVec3::MAX, std::ptr::null()));
@@ -199,16 +201,24 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                         if !self.accepts(cp + DIRS[d], SKY, SKY_FULL) {
                             continue;
                         }
+                        // Straight down keeps full strength, sideways loses one.
+                        let reach = if d == 2 { SKY_FULL } else { SKY_FULL - 1 };
                         for a in 0..16 {
                             for b in 0..16 {
-                                let p = match face {
-                                    0 => IVec3::new(a, 0, b),
-                                    1 => IVec3::new(0, a, b),
-                                    2 => IVec3::new(15, a, b),
-                                    3 => IVec3::new(a, b, 0),
-                                    _ => IVec3::new(a, b, 15),
-                                };
-                                self.add.push_back((base + p, SKY_FULL));
+                                let p = base
+                                    + match face {
+                                        0 => IVec3::new(a, 0, b),
+                                        1 => IVec3::new(0, a, b),
+                                        2 => IVec3::new(15, a, b),
+                                        3 => IVec3::new(a, b, 0),
+                                        _ => IVec3::new(a, b, 15),
+                                    };
+                                // Seed only where the cell across can still get brighter: a
+                                // neighbour lit earlier is usually full already.
+                                let Some((state, light)) = self.read(p + DIRS[d]) else { continue };
+                                if ch(light, SKY) < reach && self.c.states[state as usize].opacity < 15 {
+                                    self.add.push_back((p, SKY_FULL));
+                                }
                             }
                         }
                     }
@@ -231,7 +241,10 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                     }
                 }
             }
-            self.seed_from_neighbours(cp, SKY, &[0, 1, 2, 4, 5]);
+            // Full sky everywhere already: neighbours cannot raise anything here.
+            if !full {
+                self.seed_from_neighbours(cp, SKY, &[0, 1, 2, 4, 5]);
+            }
             self.propagate(SKY);
         }
 

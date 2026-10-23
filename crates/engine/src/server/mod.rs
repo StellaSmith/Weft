@@ -105,6 +105,9 @@ pub struct Shared {
 
 pub const PHASES: [&str; 6] = ["insert", "messages", "regions", "request", "sync", "rest"];
 
+/// Cubes sent to one player per tick; a client meshes about this many per frame anyway.
+const SEND_PER_TICK: usize = 2048;
+
 pub struct Server {
     pub cfg: ServerConfig,
     pub dims: Vec<DimSet>,
@@ -115,6 +118,9 @@ pub struct Server {
     incoming: Receiver<ServerConn>,
     /// Generated cubes waiting for insertion (lighting is budgeted per tick).
     backlog: std::collections::VecDeque<Generated>,
+    /// Cubes some player still needs, as of the last request: a cube whose upper neighbour is
+    /// among them waits for it, or it would be lit dark and relit when the sky arrives.
+    wanted: FxHashSet<(u32, IVec3)>,
     storage: Option<Arc<Mutex<Storage>>>,
     shared: Arc<Shared>,
     next_id: Arc<AtomicU64>,
@@ -205,6 +211,8 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
                     server.tick();
                 }
                 next += step;
+                // The rest of the tick goes to loading instead of sleeping.
+                server.load_until(next.checked_sub(Duration::from_millis(2)).unwrap_or(next));
                 let now = Instant::now();
                 if next > now {
                     std::thread::sleep(next - now);
@@ -251,6 +259,7 @@ impl Server {
             gen_rx,
             incoming,
             backlog: Default::default(),
+            wanted: FxHashSet::default(),
             storage: storage.map(|s| Arc::new(Mutex::new(s))),
             shared,
             next_id,
@@ -259,10 +268,40 @@ impl Server {
     }
 
     /// Paused single player: keep talking to the client but do not advance the world.
+    /// Inserts generated cubes and keeps the workers fed until `deadline`, between ticks.
+    fn load_until(&mut self, deadline: Instant) {
+        let c = content();
+        let mut refilled = Instant::now();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let generating: usize = self.dims.iter().map(|d| d.generating.len()).sum();
+            if self.backlog.is_empty() && generating == 0 {
+                break;
+            }
+            let before = self.backlog.len();
+            self.receive_generated(c, deadline);
+            // Keep the queue full without redoing the visibility walk on every pass.
+            if now - refilled > Duration::from_millis(5) {
+                self.request_generation(c);
+                refilled = Instant::now();
+            }
+            if self.backlog.len() == before {
+                // Nothing could be inserted: wait for the next cube from the workers.
+                match self.gen_rx.recv_timeout((deadline - Instant::now().min(deadline)).min(Duration::from_millis(2))) {
+                    Ok(g) => self.backlog.push_back(g),
+                    Err(_) => continue,
+                }
+            }
+        }
+    }
+
     fn idle(&mut self) {
         let c = content();
         self.accept();
-        self.receive_generated(c);
+        self.receive_generated(c, Instant::now() + Duration::from_millis(15));
         self.handle_messages(c);
         self.sync_players(c);
     }
@@ -310,7 +349,7 @@ impl Server {
             phase = now;
         };
         self.accept();
-        self.receive_generated(c);
+        self.receive_generated(c, start + Duration::from_millis(15));
         lap(0, &self.shared);
         self.handle_messages(c);
         lap(1, &self.shared);
@@ -442,22 +481,23 @@ impl Server {
         }
     }
 
-    fn receive_generated(&mut self, c: &'static Content) {
+    fn receive_generated(&mut self, c: &'static Content, deadline: Instant) {
         self.backlog.extend(self.gen_rx.try_iter());
         // Top-down so sky light is right the first time: a cube waits while the one above it is
         // still generating or waiting itself. Sorted to keep runs reproducible.
         let mut list: Vec<Generated> = self.backlog.drain(..).collect();
         list.sort_by_key(|g| (g.dim, -g.pos.y, g.pos.x, g.pos.z));
         let mut pending: FxHashSet<(u32, IVec3)> = list.iter().map(|g| (g.dim, g.pos)).collect();
-        let start = Instant::now();
         for g in list {
             let above = (g.dim, g.pos + IVec3::Y);
-            let late = start.elapsed() > Duration::from_millis(15);
-            if late || pending.contains(&above) || self.dims[g.dim as usize].generating.contains(&above.1) {
+            let late = Instant::now() >= deadline;
+            let above_coming = pending.contains(&above) || self.dims[g.dim as usize].generating.contains(&above.1) || self.wanted.contains(&above);
+            if late || above_coming {
                 self.backlog.push_back(g);
                 continue;
             }
             pending.remove(&(g.dim, g.pos));
+            self.wanted.remove(&(g.dim, g.pos));
             let t = Instant::now();
             self.dims[g.dim as usize].insert(c, g.pos, g.cube, &g.entities, g.conn);
             self.shared.insert_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1180,13 +1220,14 @@ impl Server {
     fn request_generation(&mut self, c: &'static Content) {
         // Enough jobs to keep every worker busy for a whole tick; the backlog counts too so
         // generation never runs far ahead of lighting.
-        let budget = rayon::current_num_threads() * 16;
+        let budget = rayon::current_num_threads() * 64;
         let in_flight: usize = self.dims.iter().map(|d| d.generating.len()).sum::<usize>() + self.backlog.len();
         if in_flight >= budget {
             return;
         }
         let queued: FxHashSet<(u32, IVec3)> = self.backlog.iter().map(|g| (g.dim, g.pos)).collect();
         let mut wanted: Vec<(i32, u32, IVec3)> = Vec::new();
+        self.wanted.clear();
         for pi in 0..self.players.len() {
             let p = &self.players[pi];
             if !p.joined {
@@ -1231,11 +1272,27 @@ impl Server {
                 dim.settle_down(t);
             }
             let _ = lo;
+            // Everything above a wanted cube up to the top of the range comes first, so light
+            // always arrives from above before a cube is lit; otherwise it would be lit dark and
+            // the whole column relit when the sky shows up. Solid cubes cost almost nothing.
+            if def.sky_light {
+                let mut seen: FxHashSet<IVec3> = missing.iter().copied().collect();
+                let mut above = Vec::new();
+                for &pos in &missing {
+                    let mut p = pos + IVec3::Y;
+                    while p.y <= hi && !dim.has(p) && seen.insert(p) {
+                        above.push(p);
+                        p += IVec3::Y;
+                    }
+                }
+                missing.extend(above);
+            }
             for &pos in &missing {
                 if !dim.generating.contains(&pos) && !queued.contains(&(pdim, pos)) {
                     // Nearest columns first, each from the top down.
                     let d = pos - center;
                     wanted.push(((d.x * d.x + d.z * d.z) * 64 - pos.y, pdim, pos));
+                    self.wanted.insert((pdim, pos));
                 }
             }
             let p = &mut self.players[pi];
@@ -1441,8 +1498,8 @@ impl Server {
                 }
             }
             to_send.sort_by_key(|t| t.0);
-            unsent += to_send.len().saturating_sub(512) as u64;
-            for &(_, pos) in to_send.iter().take(512) {
+            unsent += to_send.len().saturating_sub(SEND_PER_TICK) as u64;
+            for &(_, pos) in to_send.iter().take(SEND_PER_TICK) {
                 if let Some(cube) = dim.snapshot(pos) {
                     let hidden = crate::world::DIRS.iter().enumerate().fold(0u8, |m, (i, d)| {
                         let n = pos + *d;

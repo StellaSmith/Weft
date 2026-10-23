@@ -89,6 +89,8 @@ pub enum ToServer {
     Interact(u64),
     OpenInventory,
     Click { slot: u32, button: u8, shift: bool },
+    /// The cursor stack spread over these slots by dragging (button 0 evenly, 1 one each).
+    Drag { slots: Vec<u32>, button: u8 },
     CloseMenu,
     Drop { all: bool },
     Respawn,

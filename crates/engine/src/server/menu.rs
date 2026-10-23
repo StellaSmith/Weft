@@ -187,11 +187,26 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
             return;
         }
         if shift {
-            // Move the result straight into the player inventory, once.
-            let rest = dim.entities.insert_item(c, player, cur);
-            if !rest.is_empty() {
-                return;
+            // Craft into the inventory as long as the result stays the same and fits entirely;
+            // a result that does not fit is not taken (no partial inserts, no lost ingredients).
+            for _ in 0..max(cur.item).max(64) {
+                let now = get(m, dim, player, slot);
+                if now.is_empty() || now.item != cur.item || now.damage != cur.damage {
+                    break;
+                }
+                let backup = dim.entities.inventories.get(&player).cloned();
+                if !dim.entities.insert_item(c, player, now).is_empty() {
+                    if let Some(b) = backup {
+                        dim.entities.inventories.insert(player, b);
+                    }
+                    break;
+                }
+                dim.entities.dirty_inv.insert(player);
+                set(m, dim, player, slot, ItemStack::EMPTY);
+                call(m, dim, c, player, slot, |d| d.on_take);
+                call(m, dim, c, player, slot, |d| d.on_change);
             }
+            return;
         } else if m.cursor.is_empty() {
             m.cursor = cur;
         } else if m.cursor.item == cur.item && m.cursor.damage == cur.damage && m.cursor.count + cur.count <= max(cur.item) {
@@ -307,6 +322,45 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
     m.cursor = cursor;
     set(m, dim, player, slot, slot_stack);
     call(m, dim, c, player, slot, |d| d.on_change);
+}
+
+/// Dragging the cursor stack over `slots`: button 0 splits it evenly, button 1 leaves one item in
+/// each. Slots that cannot take the item are skipped; whatever is left stays on the cursor.
+pub fn drag(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, slots: &[u32], button: u8) {
+    let cur = m.cursor;
+    if cur.is_empty() {
+        return;
+    }
+    let max = c.max_stack(cur.item);
+    let mut seen = rustc_hash::FxHashSet::default();
+    let valid: Vec<u32> = slots
+        .iter()
+        .copied()
+        .filter(|&s| seen.insert(s))
+        .filter(|&s| {
+            let Some(r) = m.slots.get(s as usize) else { return false };
+            let t = get(m, dim, player, s);
+            r.flags & sf::OUTPUT == 0 && armor_ok(c, r.flags, cur.item) && (t.is_empty() || (t.item == cur.item && t.damage == cur.damage && t.count < max))
+        })
+        .take(cur.count as usize)
+        .collect();
+    if valid.is_empty() {
+        return;
+    }
+    let per = if button == 1 { 1 } else { cur.count / valid.len() as u32 };
+    let mut left = cur.count;
+    for &s in &valid {
+        let t = get(m, dim, player, s);
+        let n = per.min(max - t.count.min(max)).min(left);
+        if n > 0 {
+            set(m, dim, player, s, ItemStack { count: t.count + n, ..cur });
+            left -= n;
+        }
+    }
+    m.cursor = if left == 0 { ItemStack::EMPTY } else { ItemStack { count: left, ..cur } };
+    for &s in &valid {
+        call(m, dim, c, player, s, |d| d.on_change);
+    }
 }
 
 /// Slots, data and cursor that changed since the last call.

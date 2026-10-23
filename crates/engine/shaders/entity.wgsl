@@ -115,5 +115,13 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_overlay(in: VOut) -> @location(0) vec4<f32> {
+    // Block faces mode: the breaking cracks, lit like the block.
+    if in.mode == 1u {
+        let t = textureSample(texture_arrays[in.tex], nearest_mipped, in.uv, in.layer);
+        if t.a < 0.1 {
+            discard;
+        }
+        return vec4(t.rgb * in.color.rgb, t.a * view.fog.z);
+    }
     return vec4(in.color.rgb, view.fog.z);
 }

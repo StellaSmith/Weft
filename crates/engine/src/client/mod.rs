@@ -92,6 +92,8 @@ pub struct Client {
     pub inventory: Vec<ItemStack>,
     pub health: f32,
     pub max_health: f32,
+    /// Mouse button and slots of a drag in progress in a menu.
+    pub drag: Option<(u8, Vec<u32>)>,
     /// Seconds left of the red screen flash after taking damage.
     pub hurt_flash: f32,
     pub dead: bool,
@@ -143,6 +145,7 @@ impl Client {
             health: 20.0,
             max_health: 20.0,
             hurt_flash: 0.0,
+            drag: None,
             dead: false,
             components: FxHashMap::default(),
             menu: None,
@@ -331,6 +334,7 @@ impl Client {
     }
 
     pub fn close_menu(&mut self) {
+        self.drag = None;
         if self.menu.take().is_some() {
             self.conn.send(ToServer::CloseMenu);
         }

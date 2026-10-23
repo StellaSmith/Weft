@@ -540,8 +540,17 @@ impl EntityRenderer {
             if progress > 0.0 {
                 let o = rel(p.as_dvec3()) - Vec3::splat(0.004);
                 let m = Mat4::from_translation(o) * Mat4::from_scale(Vec3::splat(1.008));
-                boxes.push(GpuBox { rows: rows(m), color: [0.0, 0.0, 0.0, 0.0], ids: [0, 2, 0, 0], ..Default::default() });
-                overlay_alpha = progress * 0.6;
+                let stage = ((progress * 10.0) as usize).min(9);
+                let l = textures.block_layers.get(c.crack_textures[stage] as usize).map_or(0, |x| x.0);
+                let color = shade(p.as_dvec3() + DVec3::splat(0.5));
+                boxes.push(GpuBox {
+                    rows: rows(m),
+                    color: color.extend(0.0).to_array(),
+                    ids: [textures.block_index, 1, l | l << 16, l | l << 16],
+                    ids2: [l | l << 16, 0, 0, 0],
+                    ..Default::default()
+                });
+                overlay_alpha = 1.0;
             }
         }
         if boxes.is_empty() {

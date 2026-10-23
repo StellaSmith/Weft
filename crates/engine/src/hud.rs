@@ -236,7 +236,8 @@ pub fn draw_custom(
             slot_background(ren, theme, r, false, scale);
             let stack = client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default();
             stack_icon(ren, textures, r, stack, scale, text_unit);
-            if hovered {
+            let dragged = client.drag.as_ref().is_some_and(|d| d.1.contains(&(data as u32)));
+            if hovered || dragged {
                 ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, 0xFFFFFF50);
             }
         }

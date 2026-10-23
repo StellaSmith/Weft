@@ -124,6 +124,8 @@ struct Running {
     /// CPU milliseconds of the last frame, see `bench::CPU_PARTS`.
     prof: [f32; 5],
     bench: Option<crate::bench::Bench>,
+    /// UI quads as of the last rebuild; per-frame parts are added on top.
+    ui_cached: Vec<crate::ui::render::Quad>,
     /// Where UI asked for the player model, physical pixels.
     previews: Vec<[f32; 4]>,
     /// Texture holding the rendered inventory figure, drawn by the UI.
@@ -236,6 +238,7 @@ impl App {
             client_hash: 0,
             prof: [0.0; 5],
             bench: None,
+            ui_cached: Vec::new(),
             previews: Vec::new(),
             preview_tex: None,
             autopilot: self.opts.script.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| crate::autopilot::Autopilot::load(&s)),
@@ -533,14 +536,34 @@ impl Running {
             });
             if let Some(g) = &mut self.game {
                 let shift = self.input.held_key(Key::Code(KeyCode::ShiftLeft)) || self.input.held_key(Key::Code(KeyCode::ShiftRight));
+                // Pressing with a stack on the cursor starts a drag; releasing over one slot is
+                // a plain click, over several it spreads the stack.
+                let holding = g.client.menu.as_ref().is_some_and(|m| !m.cursor.is_empty());
                 for button in [0u8, 1] {
                     if self.input.pressed_button(button) {
                         let inside = ui.nodes.iter().any(|n| matches!(n.kind, Kind::Container { class: Some(_) }) && n.rect.contains(cursor) && n.rect.w < ui.size.x);
                         match slot {
+                            Some(s) if holding && !shift && g.client.drag.is_none() => g.client.drag = Some((button, vec![s])),
                             Some(s) => g.client.send(net::ToServer::Click { slot: s, button, shift }),
                             None if !inside => g.client.send(net::ToServer::Click { slot: u32::MAX, button, shift: false }),
                             None => {}
                         }
+                    }
+                }
+                if let Some((button, slots)) = &mut g.client.drag {
+                    if self.input.held_button(*button) {
+                        if let Some(s) = slot.filter(|s| !slots.contains(s)) {
+                            slots.push(s);
+                            self.quads_dirty = true;
+                        }
+                    } else {
+                        let (button, slots) = g.client.drag.take().unwrap();
+                        if slots.len() == 1 {
+                            g.client.send(net::ToServer::Click { slot: slots[0], button, shift: false });
+                        } else {
+                            g.client.send(net::ToServer::Drag { slots, button });
+                        }
+                        self.quads_dirty = true;
                     }
                 }
                 // Tooltip with the hovered item's name.
@@ -1098,16 +1121,16 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.ui.build(&mut *r.gpu, &r.assets, ui, &r.theme, scale, game, &mut custom);
             all.append(&mut r.ui.quads);
         }
-        // The stack held by the mouse in container menus.
-        if let Some(cursor) = client.and_then(|c| c.menu.as_ref()).map(|m| m.cursor).filter(|s| !s.is_empty()) {
-            let unit = text_unit;
-            let p = r.input.cursor;
-            let rect = crate::ui::Rect { x: p.x - 9.0 * scale, y: p.y - 9.0 * scale, w: 18.0 * scale, h: 18.0 * scale };
-            crate::hud::stack_icon(&mut r.ui, &r.textures, rect, cursor, scale, unit);
-            all.append(&mut r.ui.quads);
-        }
-        r.ui.quads = all;
+        r.ui_cached = all;
         r.previews = previews;
+    }
+    // The stack held by the mouse follows it every frame, outside the cached quads.
+    r.ui.quads.clear();
+    r.ui.quads.extend_from_slice(&r.ui_cached);
+    if let Some(cursor) = r.game.as_ref().and_then(|g| g.client.menu.as_ref()).map(|m| m.cursor).filter(|s| !s.is_empty()) {
+        let p = r.input.cursor;
+        let rect = crate::ui::Rect { x: p.x - 9.0 * scale, y: p.y - 9.0 * scale, w: 18.0 * scale, h: 18.0 * scale };
+        crate::hud::stack_icon(&mut r.ui, &r.textures, rect, cursor, scale, text_unit);
     }
 
     r.list.clear();

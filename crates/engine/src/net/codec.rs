@@ -458,6 +458,14 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.str(t);
         }
         ToServer::Leave => w.u8(14),
+        ToServer::Drag { slots, button } => {
+            w.u8(15);
+            w.u8(*button);
+            w.len(slots.len());
+            for s in slots {
+                w.u32(*s);
+            }
+        }
     }
     w.0
 }
@@ -485,6 +493,15 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
         12 => ToServer::Respawn,
         13 => ToServer::Chat(r.str()?),
         14 => ToServer::Leave,
+        15 => {
+            let button = r.u8()?;
+            let n = r.len()?;
+            let mut slots = Vec::with_capacity(n.min(256));
+            for _ in 0..n {
+                slots.push(r.u32()?);
+            }
+            ToServer::Drag { slots, button }
+        }
         _ => return None,
     })
 }
@@ -499,6 +516,7 @@ mod tests {
             ToServer::Join { name: "Ann".into(), key: "k".into() },
             ToServer::Use { pos: IVec3::new(-5, 70, 3), face: 3, look: [0.1, -0.5, 0.8], sneak: true },
             ToServer::Click { slot: 7, button: 1, shift: true },
+            ToServer::Drag { slots: vec![3, 4, 9], button: 0 },
             ToServer::Chat("/give stone 5".into()),
         ];
         for m in msgs {

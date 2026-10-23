@@ -621,6 +621,13 @@ impl Server {
                     menu::click(m, r, c, p.entity, slot, button, shift);
                 }
             }
+            ToServer::Drag { slots, button } => {
+                let Server { players, dims, .. } = self;
+                let p = &mut players[pi];
+                if let (Some(m), Some(r)) = (&mut p.menu, dims[p.dim as usize].entity_region(p.entity)) {
+                    menu::drag(m, r, c, p.entity, &slots, button);
+                }
+            }
             ToServer::CloseMenu => {
                 let Server { players, dims, .. } = self;
                 let p = &mut players[pi];

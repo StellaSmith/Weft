@@ -133,6 +133,8 @@ pub struct Content {
     pub dims: Vec<DimensionDef>,
     /// Block texture names, index = array layer.
     pub block_textures: Vec<String>,
+    /// Block breaking stages, indices into `block_textures`.
+    pub crack_textures: [u32; 10],
     /// Item icon names, index = array layer.
     pub item_textures: Vec<String>,
     pub block_names: FxHashMap<String, u32>,
@@ -484,6 +486,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         tex_index.insert(name.to_string(), i);
         i
     };
+    let crack_textures: [u32; 10] = std::array::from_fn(|i| tex(&format!("core:block/destroy_{i}")));
 
     let mut states = vec![StateInfo {
         block: 0,
@@ -688,6 +691,7 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
         biomes: biome_defs,
         dims: dim_defs,
         block_textures,
+        crack_textures,
         item_textures,
         block_names,
         item_names,

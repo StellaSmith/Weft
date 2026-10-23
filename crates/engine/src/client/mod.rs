@@ -8,7 +8,7 @@ pub mod world_render;
 
 use std::time::Instant;
 
-use glam::{DVec3, IVec3, Vec2, Vec3};
+use glam::{DVec3, IVec3, Vec3};
 use rustc_hash::FxHashMap;
 use voxide_abi::{ItemStack, block_flags as bf};
 use voxide_render::{Backend, CommandList, FrameInfo};
@@ -26,6 +26,8 @@ use world_render::{Camera, FrameParams, WorldRenderer};
 pub struct LocalPlayer {
     pub pos: DVec3,
     pub vel: DVec3,
+    /// Position at the previous physics tick.
+    pub prev: DVec3,
     pub yaw: f32,
     pub pitch: f32,
     pub on_ground: bool,
@@ -93,7 +95,8 @@ pub enum ClientEvent {
 const HALF_WIDTH: f64 = 0.3;
 const HEIGHT: f64 = 1.8;
 const EYE: f64 = 1.62;
-const STEP: f64 = 1.0 / 60.0;
+/// Player physics runs at vanilla's tick rate; the camera is interpolated between ticks.
+const STEP: f64 = 1.0 / 20.0;
 
 pub struct Client {
     conn: ClientConn,
@@ -165,6 +168,7 @@ impl Client {
             player: LocalPlayer {
                 pos: DVec3::new(0.0, 80.0, 0.0),
                 vel: DVec3::ZERO,
+                prev: DVec3::new(0.0, 80.0, 0.0),
                 yaw: 0.0,
                 pitch: 0.0,
                 on_ground: false,
@@ -236,6 +240,7 @@ impl Client {
                     self.player_id = player;
                     self.joined = true;
                     self.player.pos = pos;
+                    self.player.prev = pos;
                     if dim != self.world.dim {
                         self.world.clear();
                         self.world.dim = dim;
@@ -256,6 +261,7 @@ impl Client {
                         self.entities.clear();
                     }
                     self.player.pos = pos;
+                    self.player.prev = pos;
                     self.player.vel = DVec3::ZERO;
                 }
                 ToClient::Spawn(list) => {
@@ -513,6 +519,7 @@ impl Client {
             self.accum += dt.min(0.25);
             while self.accum >= STEP {
                 self.accum -= STEP;
+                self.player.prev = self.player.pos;
                 step_player(&mut self.player, input, &block, c.dims[world.dim as usize].gravity as f64);
             }
         }
@@ -665,8 +672,14 @@ impl Client {
         slots.iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()
     }
 
+    /// Position drawn this frame, between the last two physics ticks.
+    pub fn smooth_pos(&self) -> DVec3 {
+        let t = (self.accum / STEP).clamp(0.0, 1.0);
+        self.player.prev.lerp(self.player.pos, t)
+    }
+
     pub fn camera(&self) -> Camera {
-        Camera { pos: self.player.pos + DVec3::Y * self.player.eye, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov * self.player.fov_mul }
+        Camera { pos: self.smooth_pos() + DVec3::Y * self.player.eye, yaw: self.player.yaw, pitch: self.player.pitch, fov: self.fov * self.player.fov_mul }
     }
 
     /// The camera drawn from: the eye, or up to 4 blocks behind or in front of it in third person,
@@ -801,101 +814,144 @@ fn ray_aabb(o: DVec3, d: DVec3, b: &physics::Aabb) -> Option<f64> {
     (t0 <= t1).then_some(t0)
 }
 
+/// One 20 Hz tick of player movement with vanilla's numbers (blocks per tick): acceleration
+/// scaled by ground slipperiness, 0.91 air drag, 0.98 vertical drag, 0.08 gravity, 0.42 jump,
+/// so jumps, sprint-jumps and parkur distances match.
 fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Option<u32>, gravity: f64) {
     let c = content();
-    let mut wish = Vec2::ZERO;
+    let mut fwd_in = 0.0f64;
+    let mut side_in = 0.0f64;
     if input.held("core:forward") {
-        wish.y += 1.0;
+        fwd_in += 1.0;
     }
     if input.held("core:back") {
-        wish.y -= 1.0;
+        fwd_in -= 1.0;
     }
     if input.held("core:left") {
-        wish.x -= 1.0;
+        side_in -= 1.0;
     }
     if input.held("core:right") {
-        wish.x += 1.0;
+        side_in += 1.0;
     }
-    let wish = wish.normalize_or_zero();
+    let sneak = input.held("core:sneak");
+    let jump = input.held("core:jump");
+    // Sprinting needs forward movement and stops when walking backwards or sneaking.
+    let sprint = input.held("core:sprint") && fwd_in > 0.0 && !sneak;
+    if sneak && !p.flying {
+        fwd_in *= 0.3;
+        side_in *= 0.3;
+    }
+    let (fwd_in, side_in) = (fwd_in * 0.98, side_in * 0.98);
     let (sy, cy) = (p.yaw as f64).sin_cos();
-    let fwd = DVec3::new(-sy, 0.0, -cy);
+    let forward = DVec3::new(-sy, 0.0, -cy);
     let right = DVec3::new(cy, 0.0, -sy);
-    let dir = fwd * wish.y as f64 + right * wish.x as f64;
+    // Vanilla's moveRelative: the input vector, normalised only when longer than 1.
+    let accelerate = |vel: &mut DVec3, speed: f64| {
+        let len2 = fwd_in * fwd_in + side_in * side_in;
+        if len2 < 1e-7 {
+            return;
+        }
+        let k = speed / len2.sqrt().max(1.0);
+        *vel += (forward * fwd_in + right * side_in) * k;
+    };
 
     let feet = p.pos.floor().as_ivec3();
     let at = |q: IVec3| block(q).map_or(0, |s| c.states[s as usize].flags);
     p.in_liquid = at(feet) & bf::LIQUID != 0 || at(feet + IVec3::Y) & bf::LIQUID != 0;
     let drag = block(feet).map_or(1.0, |s| c.states[s as usize].drag as f64);
+    let g = 0.08 * gravity / 32.0;
 
-    let sprint = input.held("core:sprint");
     if p.flying {
-        let speed = if sprint { 30.0 } else { 11.0 } * p.fly_speed as f64;
-        let mut v = dir * speed;
-        if input.held("core:jump") {
-            v.y += speed * 0.8;
+        let fly = 0.05 * p.fly_speed as f64 * if sprint { 2.0 } else { 1.0 };
+        if jump {
+            p.vel.y += fly * 3.0;
         }
-        if input.held("core:sneak") {
-            v.y -= speed * 0.8;
+        if sneak {
+            p.vel.y -= fly * 3.0;
         }
-        p.vel = p.vel.lerp(v, 0.25);
+        accelerate(&mut p.vel, fly);
     } else if p.in_liquid {
-        let speed = 3.0;
-        let target = dir * speed;
-        p.vel.x += (target.x - p.vel.x) * 0.15;
-        p.vel.z += (target.z - p.vel.z) * 0.15;
-        p.vel.y -= gravity * 0.15 * STEP;
-        if input.held("core:jump") {
-            p.vel.y = (p.vel.y + 25.0 * STEP).min(4.0);
+        accelerate(&mut p.vel, 0.02 * drag);
+        if jump {
+            p.vel.y += 0.04;
         }
-        p.vel.y *= 0.96;
     } else {
-        let speed = if sprint { 5.6 } else if input.held("core:sneak") { 1.3 } else { 4.3 } * drag;
-        let target = dir * speed;
-        let accel = if p.on_ground { 0.35 } else { 0.06 };
-        p.vel.x += (target.x - p.vel.x) * accel;
-        p.vel.z += (target.z - p.vel.z) * accel;
-        p.vel.y -= gravity * STEP;
-        p.vel.y *= 0.993;
+        let slip = block(IVec3::new(feet.x, (p.pos.y - 0.5).floor() as i32, feet.z)).map_or(0.6, |s| c.states[s as usize].friction as f64);
+        let speed = if p.on_ground {
+            let walk = if sprint { 0.13 } else { 0.1 };
+            walk * (0.216 / (slip * slip * slip))
+        } else if sprint {
+            0.026
+        } else {
+            0.02
+        };
         p.jump_cooldown = p.jump_cooldown.saturating_sub(1);
-        if !input.held("core:jump") {
+        if !jump {
             p.jump_cooldown = 0;
         } else if p.on_ground && p.jump_cooldown == 0 {
-            p.vel.y = 9.0;
-            p.jump_cooldown = 30;
+            p.vel.y = 0.42;
+            if sprint {
+                p.vel += forward * 0.2;
+            }
+            p.jump_cooldown = 10;
         }
+        accelerate(&mut p.vel, speed * drag);
         let climbing = at(feet) & bf::CLIMBABLE != 0;
         if climbing {
-            p.vel.y = if input.held("core:jump") || wish.y > 0.0 { 2.5 } else { p.vel.y.max(-2.0) };
+            p.vel.x = p.vel.x.clamp(-0.15, 0.15);
+            p.vel.z = p.vel.z.clamp(-0.15, 0.15);
+            p.vel.y = p.vel.y.max(if sneak { 0.0 } else { -0.15 });
         }
     }
 
-    if p.noclip {
-        p.pos += p.vel * STEP;
-        p.on_ground = false;
-        return;
-    }
-    let step_h = if p.on_ground && !p.flying { 0.6 } else { 0.0 };
     let before = p.pos;
-    let r = physics::move_box(c, block, p.pos, HALF_WIDTH, HEIGHT, p.vel * STEP, step_h);
-    p.pos = r.pos;
-    // Sneaking on an edge: do not walk off.
-    if input.held("core:sneak") && p.on_ground && !p.flying && !r.on_ground {
-        let below = |pos: DVec3| physics::move_box(c, block, pos, HALF_WIDTH, HEIGHT, DVec3::new(0.0, -0.6, 0.0), 0.0).on_ground;
-        if !below(p.pos) {
-            p.pos = before;
-            p.vel.x = 0.0;
-            p.vel.z = 0.0;
+    if p.noclip {
+        p.pos += p.vel;
+        p.on_ground = false;
+    } else {
+        let step_h = if p.on_ground && !p.flying { 0.6 } else { 0.0 };
+        let r = physics::move_box(c, block, p.pos, HALF_WIDTH, HEIGHT, p.vel, step_h);
+        p.pos = r.pos;
+        // Sneaking on an edge: do not walk off.
+        if sneak && p.on_ground && !p.flying && !r.on_ground {
+            let below = |pos: DVec3| physics::move_box(c, block, pos, HALF_WIDTH, HEIGHT, DVec3::new(0.0, -0.6, 0.0), 0.0).on_ground;
+            if !below(p.pos) {
+                p.pos = before;
+                p.vel.x = 0.0;
+                p.vel.z = 0.0;
+            }
+        }
+        for i in 0..3 {
+            if r.hit[i] {
+                p.vel[i] = 0.0;
+            }
+        }
+        if (r.hit[0] || r.hit[2] || jump) && !p.flying && at(feet) & bf::CLIMBABLE != 0 {
+            p.vel.y = 0.2;
+        }
+        p.on_ground = r.on_ground || (p.pos == before && p.on_ground);
+        p.landed |= p.on_ground;
+        // Flying creative players stop flying when they come down onto the ground.
+        if p.flying && r.on_ground && r.hit[1] {
+            p.flying = false;
         }
     }
-    for i in 0..3 {
-        if r.hit[i] {
-            p.vel[i] = 0.0;
-        }
-    }
-    p.on_ground = r.on_ground || (p.pos == before && p.on_ground);
-    p.landed |= p.on_ground;
-    // Flying creative players stop flying when they come down onto the ground.
-    if p.flying && r.on_ground && r.hit[1] {
-        p.flying = false;
+
+    if p.flying {
+        p.vel.y *= 0.6;
+        p.vel.x *= 0.91;
+        p.vel.z *= 0.91;
+    } else if p.in_liquid {
+        p.vel *= 0.8;
+        p.vel.y -= g / 4.0;
+    } else {
+        let slip = if p.on_ground {
+            block(IVec3::new(feet.x, (before.y - 0.5).floor() as i32, feet.z)).map_or(0.6, |s| c.states[s as usize].friction as f64)
+        } else {
+            1.0
+        };
+        p.vel.y = (p.vel.y - g) * 0.98;
+        p.vel.x *= slip * 0.91;
+        p.vel.z *= slip * 0.91;
     }
 }

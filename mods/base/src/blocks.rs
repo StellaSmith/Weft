@@ -244,8 +244,8 @@ pub fn register(r: &mut Registry) {
     r.block("ice", &ICE).hardness(0.5).translucent().opacity(2).friction(0.98).tool("pickaxe", 0).drops_nothing().tab("natural");
     r.block("obsidian", &OBSIDIAN).hardness(50.0).tool("pickaxe", 4).tab("natural");
     r.block("coal_ore", &COAL_ORE).hardness(3.0).tool("pickaxe", 1).drops("coal", 1).tag("base:ores").tab("natural");
-    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores").tab("natural");
-    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).tag("base:ores").tab("natural");
+    r.block("iron_ore", &IRON_ORE).hardness(3.0).tool("pickaxe", 2).tag("base:ores").tag("ores/iron").tab("natural");
+    r.block("gold_ore", &GOLD_ORE).hardness(3.0).tool("pickaxe", 3).tag("base:ores").tag("ores/gold").tab("natural");
     r.block("diamond_ore", &DIAMOND_ORE).hardness(3.0).tool("pickaxe", 3).drops("diamond", 1).tag("base:ores").tab("natural");
 
     log(r, "oak_log", &OAK_LOG, "oak");
@@ -352,8 +352,8 @@ pub fn register(r: &mut Registry) {
     r.block("glowstone", &GLOWSTONE).light(15).hardness(0.3).tab("natural");
     r.block("bricks", &BRICKS).hardness(2.0).tool("pickaxe", 1).tab("building");
     r.block("stone_bricks", &STONE_BRICKS).texture("stonebrick").hardness(1.5).tool("pickaxe", 1).tab("building");
-    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 2).tab("building");
-    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 3).tab("building");
+    r.block("iron_block", &IRON_BLOCK).hardness(5.0).tool("pickaxe", 2).tag("blocks/iron").tab("building");
+    r.block("gold_block", &GOLD_BLOCK).hardness(3.0).tool("pickaxe", 3).tag("blocks/gold").tab("building");
     r.block("diamond_block", &DIAMOND_BLOCK).hardness(5.0).tool("pickaxe", 3).tab("building");
     r.block("coal_block", &COAL_BLOCK).hardness(5.0).tool("pickaxe", 1).prop("base:fuel", 16000u32).tab("building");
     r.block("wool", &WOOL).texture("wool_white").hardness(0.8).prop("base:flammable", 30u32).tab("colored");

@@ -8,3 +8,4 @@ testmod.energy = {#ffe070}{0}{/} / {1} ЭЕ
 block.testmod.regolith = Реголит
 block.testmod.basalt = Красный базальт
 block.testmod.tin_ore = Оловянная руда
+item.testmod.tin_ingot = Оловянный слиток

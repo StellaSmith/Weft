@@ -8,3 +8,4 @@ testmod.energy = {#ffe070}{0}{/} / {1} FE
 block.testmod.regolith = Regolith
 block.testmod.basalt = Red Basalt
 block.testmod.tin_ore = Tin Ore
+item.testmod.tin_ingot = Tin Ingot

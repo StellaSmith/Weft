@@ -797,8 +797,16 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
             Err(e) => errors.push(format!("{}: command /{name}: {e}", mod_name(owner))),
         }
     }
+    for g in &games {
+        for (tag, item) in &g.tags {
+            match item_names.get(item) {
+                Some(&i) => item_defs[i as usize].tags.push(tag.clone()),
+                None => errors.push(format!("tag {tag}: unknown item {item}")),
+            }
+        }
+    }
     let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &mut errors);
-    let game = crate::registry::freeze(games, &block_names, &item_names, &mut errors);
+    let game = crate::registry::freeze(games, &block_names, &item_names, &item_defs, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }

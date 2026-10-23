@@ -825,6 +825,8 @@ pub struct Host {
     /// Creative inventory tab shown with `icon` (an item name); items join it with the tag
     /// `tab/<name>`. Tabs appear in mod load order, then registration order.
     pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
+    /// Adds `tag` to an item (or block item) any mod registered, like Forge's ore dictionary.
+    pub reg_tag: unsafe extern "C" fn(reg: *mut Registrar, tag: Str, item: Str),
 }
 
 /// Ore veins a mod adds to any dimension, its own or another mod's. The engine scatters them after

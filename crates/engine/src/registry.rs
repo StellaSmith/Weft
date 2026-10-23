@@ -169,6 +169,8 @@ pub struct RawGame {
     pub ores: Vec<RawOre>,
     /// (name, icon item) in registration order.
     pub creative_tabs: Vec<(String, String)>,
+    /// (tag, item) added to items of any mod.
+    pub tags: Vec<(String, String)>,
 }
 
 pub struct RawOre {
@@ -316,6 +318,7 @@ pub fn freeze(
     raws: Vec<RawGame>,
     block_names: &FxHashMap<String, u32>,
     item_names: &FxHashMap<String, u32>,
+    items: &[crate::content::ItemDef],
     errors: &mut Vec<String>,
 ) -> Game {
     let mut g = Game::default();
@@ -447,6 +450,17 @@ pub fn freeze(
         }
     }
 
+    // Items per tag, most preferred first (mod load order, then registration order): a tag as
+    // a recipe output gives its first item.
+    let mut by_tag: FxHashMap<&str, Vec<u32>> = FxHashMap::default();
+    let mut ordered: Vec<u32> = (1..items.len() as u32).collect();
+    ordered.sort_by_key(|&i| items[i as usize].order);
+    for &i in &ordered {
+        for t in &items[i as usize].tags {
+            by_tag.entry(t.as_str()).or_default().push(i);
+        }
+    }
+    let recipes: Vec<RawRecipe> = recipes.into_iter().flat_map(|r| expand_wildcards(r, &by_tag)).collect();
     let ing = |s: &str, errors: &mut Vec<String>| -> Ingredient {
         if let Some(t) = s.strip_prefix('#') {
             Ingredient::Tag(t.to_string())
@@ -463,7 +477,11 @@ pub fn freeze(
         }
     };
     for r in recipes {
-        let Some(&output) = item_names.get(&r.output) else {
+        let output = match r.output.strip_prefix('#') {
+            Some(t) => by_tag.get(t).and_then(|v| v.first()).copied(),
+            None => item_names.get(&r.output).copied(),
+        };
+        let Some(output) = output else {
             errors.push(format!("recipe makes unknown item {}", r.output));
             continue;
         };
@@ -562,5 +580,54 @@ impl Game {
 
     pub fn process(&self, kind: &str, input: u32, tags: &dyn Fn(u32, &str) -> bool) -> Option<&Recipe> {
         self.recipes.get(kind)?.iter().find(|r| r.inputs.first().is_some_and(|i| i.matches(input, tags)))
+    }
+}
+
+/// A recipe naming `#a/*` tags stands for one recipe per material: `*` takes every value for which
+/// the first such tag exists, and the copies whose other tags have no items are dropped. So
+/// `#ores/* -> #ingots/*` smelts every mod's ores into the matching ingots.
+fn expand_wildcards(r: RawRecipe, by_tag: &FxHashMap<&str, Vec<u32>>) -> Vec<RawRecipe> {
+    let names: Vec<&String> = r.keys.iter().map(|k| &k.1).chain(&r.inputs).chain(std::iter::once(&r.output)).collect();
+    let Some(pattern) = names.iter().find_map(|n| n.strip_prefix('#').filter(|t| t.contains('*'))) else { return vec![r] };
+    let (pre, post) = pattern.split_once('*').unwrap();
+    let mut values: Vec<&str> = by_tag
+        .keys()
+        .filter_map(|t| t.strip_prefix(pre).and_then(|rest| rest.strip_suffix(post)))
+        .filter(|v| !v.is_empty())
+        .collect();
+    values.sort_unstable();
+    let mut out = Vec::new();
+    for v in values {
+        let sub = |s: &String| s.replace('*', v);
+        let usable = names.iter().all(|n| n.strip_prefix('#').is_none_or(|t| by_tag.contains_key(t.replace('*', v).as_str())));
+        if usable {
+            out.push(RawRecipe {
+                kind: r.kind.clone(),
+                pattern: r.pattern.clone(),
+                keys: r.keys.iter().map(|(c, n)| (*c, sub(n))).collect(),
+                inputs: r.inputs.iter().map(sub).collect(),
+                output: sub(&r.output),
+                count: r.count,
+                time: r.time,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_recipes_expand_per_material() {
+        let mut by_tag: FxHashMap<&str, Vec<u32>> = FxHashMap::default();
+        for (t, i) in [("ores/iron", 1), ("ingots/iron", 2), ("ores/tin", 3), ("ingots/tin", 4), ("ores/ruby", 5)] {
+            by_tag.entry(t).or_default().push(i);
+        }
+        let r = RawRecipe { kind: "smelting".into(), pattern: vec![], keys: vec![], inputs: vec!["#ores/*".into()], output: "#ingots/*".into(), count: 1, time: 200 };
+        let out: Vec<(String, String)> = expand_wildcards(r, &by_tag).into_iter().map(|r| (r.inputs[0].clone(), r.output)).collect();
+        // Ruby has no ingot, so it is left out.
+        assert_eq!(out, vec![("#ores/iron".into(), "#ingots/iron".into()), ("#ores/tin".into(), "#ingots/tin".into())]);
     }
 }

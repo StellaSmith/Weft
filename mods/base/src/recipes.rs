@@ -28,7 +28,8 @@ pub fn register(r: &mut Registry) {
     r.shapeless(C, "green_stained_glass", 1, &["glass", "cactus"], 0);
     r.shapeless(C, "blue_stained_glass", 1, &["glass", "ice"], 0);
 
-    for (block, item) in [("iron_block", "iron_ingot"), ("gold_block", "gold_ingot"), ("diamond_block", "diamond"), ("coal_block", "coal")] {
+    // Storage blocks for every metal any mod tags as `ingots/<m>` and `blocks/<m>`.
+    for (block, item) in [("#blocks/*", "#ingots/*"), ("diamond_block", "diamond"), ("coal_block", "coal")] {
         r.shaped(C, block, 1, &["###", "###", "###"], &[('#', item)]);
         r.shapeless(C, item, 9, &[block], 0);
     }
@@ -52,8 +53,8 @@ pub fn register(r: &mut Registry) {
     for (input, output, ticks) in [
         ("sand", "glass", 200),
         ("cobblestone", "stone", 200),
-        ("iron_ore", "iron_ingot", 200),
-        ("gold_ore", "gold_ingot", 200),
+        // Any mod's `ores/<m>` smelts into its `ingots/<m>`.
+        ("#ores/*", "#ingots/*", 200),
         ("porkchop", "cooked_porkchop", 200),
         ("beef", "cooked_beef", 200),
         ("#base:logs", "coal", 200),

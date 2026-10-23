@@ -29,6 +29,7 @@ static DUST: Biome = Biome::new();
 static REGOLITH: Block = Block::new();
 static BASALT: Block = Block::new();
 static TIN_ORE: Block = Block::new();
+static TIN_INGOT: Item = Item::new();
 
 static MARS_TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
     Terrain::new(&BASALT, 60.0)
@@ -118,7 +119,9 @@ fn init(r: &mut Registry) {
 
     r.block("regolith", &REGOLITH).hardness(0.5).tool("shovel", 0);
     r.block("basalt", &BASALT).hardness(1.5).tool("pickaxe", 0);
-    r.block("tin_ore", &TIN_ORE).hardness(3.0).tool("pickaxe", 1);
+    // Only tags: the base game's `#ores/*` smelting recipe and tools pick these up.
+    r.block("tin_ore", &TIN_ORE).hardness(3.0).tool("pickaxe", 1).tag("ores/tin");
+    r.item("tin_ingot", &TIN_INGOT).tag("ingots/tin");
     r.biome("dust", &DUST, 0xb5764a, 0x9a6040, 0x8a5a40, 1.5, 0.0);
     r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("base:stone");
     r.ore("mars", "tin_ore").y(-64, 90).veins(6).size(8).replace("basalt");

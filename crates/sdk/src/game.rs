@@ -636,7 +636,7 @@ impl Registry {
         let pattern: Vec<Str> = pattern.iter().map(|p| Str::new(p)).collect();
         let key_names: Vec<String> = keys.iter().map(|(_, n)| self.ingredient(n)).collect();
         let keys: Vec<abi::RecipeKey> = keys.iter().zip(&key_names).map(|((c, _), n)| abi::RecipeKey { ch: *c as u32, item: Str::new(n) }).collect();
-        let output = qualify(self.ns, output);
+        let output = self.ingredient(output);
         let kind = qualify(self.ns, kind);
         let desc = abi::RecipeDesc {
             kind: Str::new(&kind),
@@ -654,7 +654,7 @@ impl Registry {
     pub fn shapeless(&mut self, kind: &str, output: &str, count: u32, inputs: &[&str], time: u32) {
         let names: Vec<String> = inputs.iter().map(|n| self.ingredient(n)).collect();
         let inputs: Vec<Str> = names.iter().map(|n| Str::new(n)).collect();
-        let output = qualify(self.ns, output);
+        let output = self.ingredient(output);
         let kind = qualify(self.ns, kind);
         let desc = abi::RecipeDesc {
             kind: Str::new(&kind),
@@ -666,6 +666,14 @@ impl Registry {
             time,
         };
         unsafe { (host().reg_recipe)(self.raw, &desc) }
+    }
+
+    /// Adds `tag` to items of any mod, e.g. `r.tag("ingots/tin", &["othermod:tin_ingot"])`.
+    pub fn tag(&mut self, tag: &str, items: &[&str]) {
+        for item in items {
+            let item = qualify(self.ns, item);
+            unsafe { (host().reg_tag)(self.raw, Str::new(tag), Str::new(&item)) }
+        }
     }
 
     fn ingredient(&self, n: &str) -> String {

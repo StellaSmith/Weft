@@ -404,6 +404,9 @@ pub mod part_role {
     /// Arms held forward (zombies).
     pub const ARM_FORWARD_LEFT: u32 = 8;
     pub const ARM_FORWARD_RIGHT: u32 = 9;
+    /// Legs that sweep sideways while walking (spiders), in opposite phase.
+    pub const LEG_SWEEP_A: u32 = 10;
+    pub const LEG_SWEEP_B: u32 = 11;
 }
 
 /// Box in model pixels (1/16 block) relative to the part pivot; `uv` is the top-left texel of the
@@ -424,6 +427,8 @@ pub struct ModelPart {
     pub pivot: [f32; 3],
     pub role: u32,
     pub cuboids: Slice<ModelCuboid>,
+    /// Resting rotation in radians about x, y, z, applied x first; the role's animation adds to it.
+    pub rest: [f32; 3],
 }
 
 #[repr(C)]

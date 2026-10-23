@@ -250,11 +250,17 @@ pub struct Part {
     pub pivot: [f32; 3],
     pub role: u32,
     pub boxes: Vec<abi::ModelCuboid>,
+    pub rest: [f32; 3],
 }
 
 impl Part {
     pub fn new(pivot: [f32; 3], role: u32) -> Part {
-        Part { pivot, role, boxes: Vec::new() }
+        Part { pivot, role, boxes: Vec::new(), rest: [0.0; 3] }
+    }
+    /// Resting rotation in radians about x, y, z (applied in that order).
+    pub fn rotate(mut self, x: f32, y: f32, z: f32) -> Part {
+        self.rest = [x, y, z];
+        self
     }
     /// Box relative to the pivot in model pixels, `uv` = top-left texel of its unwrap.
     pub fn cube(mut self, origin: [f32; 3], size: [f32; 3], uv: [f32; 2]) -> Part {
@@ -274,6 +280,23 @@ pub fn biped(arms_forward: bool) -> Vec<Part> {
         Part::new([-2.0, 12.0, 0.0], part_role::LEG_LEFT).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
         Part::new([2.0, 12.0, 0.0], part_role::LEG_RIGHT).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
     ]
+}
+
+/// Vanilla's spider on a 64x32 skin: head, thorax, abdomen and eight splayed legs.
+pub fn spider() -> Vec<Part> {
+    use std::f32::consts::FRAC_PI_4 as Q;
+    let mut parts = vec![
+        Part::new([0.0, 9.0, -3.0], part_role::HEAD).cube([-4.0, -4.0, -8.0], [8.0, 8.0, 8.0], [32.0, 4.0]),
+        Part::new([0.0, 9.0, 0.0], part_role::STATIC).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0]),
+        Part::new([0.0, 9.0, 9.0], part_role::STATIC).cube([-5.0, -4.0, -6.0], [10.0, 8.0, 12.0], [0.0, 12.0]),
+    ];
+    // (z, sideways splay, fan) back to front; right legs mirror the left ones.
+    for (i, (z, splay, fan)) in [(2.0, 1.0, 2.0), (1.0, 0.74, 1.0), (0.0, 0.74, -1.0), (-1.0, 1.0, -2.0)].into_iter().enumerate() {
+        let (a, b) = if i % 2 == 0 { (part_role::LEG_SWEEP_A, part_role::LEG_SWEEP_B) } else { (part_role::LEG_SWEEP_B, part_role::LEG_SWEEP_A) };
+        parts.push(Part::new([-4.0, 9.0, z], a).cube([-15.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotate(0.0, fan * Q / 2.0, splay * Q));
+        parts.push(Part::new([4.0, 9.0, z], b).cube([-1.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotate(0.0, -fan * Q / 2.0, -splay * Q));
+    }
+    parts
 }
 
 /// Four-legged animal: body (width, height, length), leg height and head size in model pixels.
@@ -385,7 +408,7 @@ impl Drop for EntityBuilder<'_> {
             return;
         }
         let parts: Vec<abi::ModelPart> =
-            self.parts.iter().map(|p| abi::ModelPart { pivot: p.pivot, role: p.role, cuboids: Slice::new(&p.boxes) }).collect();
+            self.parts.iter().map(|p| abi::ModelPart { pivot: p.pivot, role: p.role, cuboids: Slice::new(&p.boxes), rest: p.rest }).collect();
         let desc = abi::EntityDesc {
             name: Str::new(&self.name),
             cell: self.handle.cell(),

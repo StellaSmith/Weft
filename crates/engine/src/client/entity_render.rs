@@ -49,9 +49,9 @@ struct GpuCuboid {
     origin: [f32; 3],
     inflate: f32,
     size: [f32; 3],
-    _pad: f32,
+    rest_x: f32,
     uv: [f32; 2],
-    _pad2: [f32; 2],
+    rest_yz: [f32; 2],
 }
 
 #[repr(C)]
@@ -114,7 +114,16 @@ impl EntityRenderer {
             let first = table.len() as u32;
             for part in &k.parts {
                 for cu in &part.cuboids {
-                    table.push(GpuCuboid { pivot: part.pivot, role: part.role, origin: cu.origin, inflate: cu.inflate, size: cu.size, uv: cu.uv, ..Default::default() });
+                    table.push(GpuCuboid {
+                        pivot: part.pivot,
+                        role: part.role,
+                        origin: cu.origin,
+                        inflate: cu.inflate,
+                        size: cu.size,
+                        rest_x: part.rest[0],
+                        uv: cu.uv,
+                        rest_yz: [part.rest[1], part.rest[2]],
+                    });
                 }
             }
             kind_cuboids.push((first, table.len() as u32 - first));
@@ -322,15 +331,19 @@ impl EntityRenderer {
         let layers = &layers[..n];
         let body = body * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
         for part in &k.parts {
-            let angle = match part.role {
+            let [ax, ay] = match part.role {
                 // Faces look along -Z: tilting the front up is a positive turn about X.
-                role::HEAD => Quat::from_rotation_x(pitch),
-                role::ARM_LEFT | role::LEG_RIGHT | role::LEG_FRONT_LEFT => Quat::from_rotation_x(swing),
-                role::ARM_RIGHT | role::LEG_LEFT | role::LEG_FRONT_RIGHT => Quat::from_rotation_x(-swing),
-                role::ARM_FORWARD_LEFT => Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2 + swing * 0.2),
-                role::ARM_FORWARD_RIGHT => Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2 - swing * 0.2),
-                _ => Quat::IDENTITY,
+                role::HEAD => [pitch, 0.0],
+                role::ARM_LEFT | role::LEG_RIGHT | role::LEG_FRONT_LEFT => [swing, 0.0],
+                role::ARM_RIGHT | role::LEG_LEFT | role::LEG_FRONT_RIGHT => [-swing, 0.0],
+                role::ARM_FORWARD_LEFT => [std::f32::consts::FRAC_PI_2 + swing * 0.2, 0.0],
+                role::ARM_FORWARD_RIGHT => [std::f32::consts::FRAC_PI_2 - swing * 0.2, 0.0],
+                role::LEG_SWEEP_A => [0.0, swing * 0.6],
+                role::LEG_SWEEP_B => [0.0, -swing * 0.6],
+                _ => [0.0, 0.0],
             };
+            let [rx, ry, rz] = part.rest;
+            let angle = Quat::from_rotation_z(rz) * Quat::from_rotation_y(ry + ay) * Quat::from_rotation_x(rx + ax);
             let part_m = body * Mat4::from_translation(Vec3::from_array(part.pivot)) * Mat4::from_quat(angle);
             for &(tex, size, roles, extra) in layers {
                 if roles & (1 << part.role) == 0 {

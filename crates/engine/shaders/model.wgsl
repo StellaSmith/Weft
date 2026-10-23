@@ -24,9 +24,9 @@ struct Cuboid {
     origin: vec3<f32>,
     inflate: f32,
     size: vec3<f32>,
-    _pad: f32,
+    rest_x: f32,
     uv: vec2<f32>,
-    _pad2: vec2<f32>,
+    rest_yz: vec2<f32>,
 }
 
 struct View {
@@ -79,15 +79,30 @@ fn rot_x(a: f32, v: vec3<f32>) -> vec3<f32> {
     return vec3(v.x, v.y * c - v.z * s, v.y * s + v.z * c);
 }
 
-// Same angles as the CPU path in entity_render.rs.
-fn part_angle(role: u32, pitch: f32, swing: f32) -> f32 {
+fn rot_y(a: f32, v: vec3<f32>) -> vec3<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
+}
+
+fn rot_z(a: f32, v: vec3<f32>) -> vec3<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+}
+
+// Animation about x and y on top of the resting rotation; same angles as the CPU path in
+// entity_render.rs.
+fn part_angle(role: u32, pitch: f32, swing: f32) -> vec2<f32> {
     switch role {
-        case 1u: { return pitch; }
-        case 2u, 5u, 6u: { return swing; }
-        case 3u, 4u, 7u: { return -swing; }
-        case 8u: { return -1.5707964 + swing * 0.2; }
-        case 9u: { return -1.5707964 - swing * 0.2; }
-        default: { return 0.0; }
+        case 1u: { return vec2(pitch, 0.0); }
+        case 2u, 5u, 6u: { return vec2(swing, 0.0); }
+        case 3u, 4u, 7u: { return vec2(-swing, 0.0); }
+        case 8u: { return vec2(1.5707964 + swing * 0.2, 0.0); }
+        case 9u: { return vec2(1.5707964 - swing * 0.2, 0.0); }
+        case 10u: { return vec2(0.0, swing * 0.6); }
+        case 11u: { return vec2(0.0, -swing * 0.6); }
+        default: { return vec2(0.0); }
     }
 }
 
@@ -105,7 +120,9 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let p = CORNERS[face * 4u + c];
     let grow = cub.inflate + inst.inflate;
     let local = cub.origin - vec3(grow) + p * (cub.size + vec3(2.0 * grow));
-    let posed = (cub.pivot + rot_x(part_angle(cub.role, inst.pitch, inst.swing), local)) / 16.0;
+    let a = part_angle(cub.role, inst.pitch, inst.swing);
+    let turned = rot_z(cub.rest_yz.y, rot_y(cub.rest_yz.x + a.y, rot_x(cub.rest_x + a.x, local)));
+    let posed = (cub.pivot + turned) / 16.0;
     let cy = cos(inst.yaw);
     let sy = sin(inst.yaw);
     let world = inst.pos + vec3(posed.x * cy + posed.z * sy, posed.y, -posed.x * sy + posed.z * cy);

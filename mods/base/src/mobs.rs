@@ -40,8 +40,8 @@ pub fn register(r: &mut Registry) {
         .health(16.0)
         .speed(3.6)
         .hostile()
-        .texture("spider", 64, 64)
-        .model(quadruped([12.0, 6.0, 14.0], 6.0, [8.0, 8.0, 8.0]))
+        .texture("spider", 64, 32)
+        .model(spider())
         .on_tick(|t| hostile_ai(t, 2.0, true))
         .on_death(|e| drops(e, &[Drop("string", 0, 2)]));
     r.entity("pig", &PIG)

@@ -32,6 +32,7 @@ pub struct Part {
     pub pivot: [f32; 3],
     pub role: u32,
     pub cuboids: Vec<Cuboid>,
+    pub rest: [f32; 3],
 }
 
 pub struct EntityKind {
@@ -191,6 +192,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
             .map(|p| Part {
                 pivot: p.pivot,
                 role: p.role,
+                rest: p.rest,
                 cuboids: p
                     .cuboids
                     .as_slice()
@@ -299,12 +301,12 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
 fn player_parts() -> Vec<Part> {
     let c = |o: [f32; 3], s: [f32; 3], uv: [f32; 2]| Cuboid { origin: o, size: s, uv, inflate: 0.0 };
     vec![
-        Part { pivot: [0.0, 24.0, 0.0], role: part_role::HEAD, cuboids: vec![c([-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0])] },
-        Part { pivot: [0.0, 24.0, 0.0], role: part_role::STATIC, cuboids: vec![c([-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0])] },
-        Part { pivot: [-6.0, 22.0, 0.0], role: part_role::ARM_LEFT, cuboids: vec![c([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0])] },
-        Part { pivot: [6.0, 22.0, 0.0], role: part_role::ARM_RIGHT, cuboids: vec![c([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0])] },
-        Part { pivot: [-2.0, 12.0, 0.0], role: part_role::LEG_LEFT, cuboids: vec![c([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0])] },
-        Part { pivot: [2.0, 12.0, 0.0], role: part_role::LEG_RIGHT, cuboids: vec![c([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0])] },
+        Part { pivot: [0.0, 24.0, 0.0], role: part_role::HEAD, rest: [0.0; 3], cuboids: vec![c([-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0])] },
+        Part { pivot: [0.0, 24.0, 0.0], role: part_role::STATIC, rest: [0.0; 3], cuboids: vec![c([-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0])] },
+        Part { pivot: [-6.0, 22.0, 0.0], role: part_role::ARM_LEFT, rest: [0.0; 3], cuboids: vec![c([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0])] },
+        Part { pivot: [6.0, 22.0, 0.0], role: part_role::ARM_RIGHT, rest: [0.0; 3], cuboids: vec![c([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0])] },
+        Part { pivot: [-2.0, 12.0, 0.0], role: part_role::LEG_LEFT, rest: [0.0; 3], cuboids: vec![c([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0])] },
+        Part { pivot: [2.0, 12.0, 0.0], role: part_role::LEG_RIGHT, rest: [0.0; 3], cuboids: vec![c([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0])] },
     ]
 }
 

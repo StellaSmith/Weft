@@ -340,7 +340,13 @@ impl Screen for Message {
         ui.root_style(Style::default().stretch());
         ui.panel(if cx.in_game { "overlay" } else { "background" }, Style::default().grow().center().pad(12.0).gap(10.0), |ui| {
             label(ui, cx, &title, &args, "title");
-            button(ui, cx, "menu.back", &[], 200.0, |c| c.requests.push(Request::Close));
+            let in_game = cx.in_game;
+            button(ui, cx, "menu.back", &[], 200.0, move |c| {
+                c.requests.push(Request::Close);
+                if !in_game {
+                    c.requests.push(Request::Open(Box::new(Title)));
+                }
+            });
         });
     }
 }

@@ -499,6 +499,10 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.str(t);
         }
         ToServer::Leave => w.u8(14),
+        ToServer::Pick { item } => {
+            w.u8(17);
+            w.u32(*item);
+        }
         ToServer::CreativeTake { item, button } => {
             w.u8(16);
             w.u32(*item);
@@ -549,6 +553,7 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
             ToServer::Drag { slots, button }
         }
         16 => ToServer::CreativeTake { item: r.u32()?, button: r.u8()? },
+        17 => ToServer::Pick { item: r.u32()? },
         _ => return None,
     })
 }

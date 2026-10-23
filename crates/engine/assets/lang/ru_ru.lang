@@ -74,6 +74,8 @@ multiplayer.copy = Копировать
 multiplayer.copied = Скопировано!
 multiplayer.connecting = Подключение...
 multiplayer.disconnected = Отключено: {0}
+world.open_failed = Не удалось открыть мир: {0}
+{0}
 death.title = Вы погибли!
 death.respawn = Возродиться
 core.raw = {0}

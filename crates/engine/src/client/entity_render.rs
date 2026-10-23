@@ -194,10 +194,10 @@ impl EntityRenderer {
         gpu.create_pipeline(&PipelineDesc {
             label: "hand",
             shader: &s,
-            vertex: "vs",
+            vertex: "vs_hand",
             fragment: Some("fs"),
             color: Some(Format::Surface),
-            depth: None,
+            depth: Some(DepthState { write: true, compare: Compare::GreaterEqual }),
             blend: Blend::None,
             cull_back: true,
             topology: Topology::Triangles,

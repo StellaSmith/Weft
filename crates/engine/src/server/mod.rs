@@ -642,6 +642,20 @@ impl Server {
                 r.flush_neighbors(c);
                 r.finish_tick();
             }
+            ToServer::Pick { item } => {
+                let Some((r, entity)) = self.region(pi) else { return };
+                let Some(e) = r.entities.get(entity) else { return };
+                let (sel, creative) = (e.selected, e.mode == GameMode::Creative);
+                let Some(inv) = r.entities.inventories.get(&entity) else { return };
+                let current = inv.get(sel as usize).copied().unwrap_or_default();
+                if let Some(j) = (9..36).find(|&j| inv.get(j).is_some_and(|s| s.item == item && !s.is_empty())) {
+                    let found = inv[j];
+                    r.entities.set_slot(entity, j as u32, current);
+                    r.entities.set_slot(entity, sel, found);
+                } else if creative && c.items.get(item as usize).is_some() {
+                    r.entities.set_slot(entity, sel, ItemStack::new(item, 1));
+                }
+            }
             ToServer::Select(slot) => {
                 if slot < 9 {
                     if let Some((r, entity)) = self.region(pi) {

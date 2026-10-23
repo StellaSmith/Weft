@@ -64,6 +64,10 @@ fn face_rect(face: u32, d: vec3<f32>, o: vec2<f32>) -> vec4<f32> {
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+    return vertex(vi);
+}
+
+fn vertex(vi: u32) -> VOut {
     let b = boxes[vi / 36u];
     let face = (vi % 36u) / 6u;
     let c = TRI[vi % 6u];
@@ -113,6 +117,15 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     let hurt = b.color.a;
     // Gamma-space shading applied in linear space, as in the world shader.
     out.color = vec4(pow(b.color.rgb * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), hurt), vec3(2.2)), 1.0);
+    return out;
+}
+
+// The held item: depth squeezed into the near half (reverse Z), in front of the world (nothing the
+// player collides with comes closer than ~0.2 blocks, depth 0.3) but still sorted within itself.
+@vertex
+fn vs_hand(@builtin(vertex_index) vi: u32) -> VOut {
+    var out = vertex(vi);
+    out.clip.z = (0.5 + 0.5 * out.clip.z / out.clip.w) * out.clip.w;
     return out;
 }
 

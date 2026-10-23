@@ -548,6 +548,22 @@ impl Client {
         let eye = self.player.pos + DVec3::Y * self.player.eye;
         let look = self.camera().forward().as_dvec3();
         self.target = if spectator { None } else { physics::raycast(c, &block, eye, look, 5.0, false) };
+        if input.captured && !spectator && input.pressed("core:pick") {
+            if let Some(item) = self.target.and_then(|h| c.pick_item(h.state)) {
+                let hotbar = &self.inventory[..9];
+                // Already in the hotbar: select it. Otherwise creative fills an empty slot first.
+                let slot = hotbar.iter().position(|s| s.item == item && !s.is_empty()).or_else(|| {
+                    (self.mode == GameMode::Creative && !hotbar[self.selected].is_empty()).then(|| hotbar.iter().position(|s| s.is_empty())).flatten()
+                });
+                if let Some(i) = slot.filter(|&i| i != self.selected) {
+                    self.selected = i;
+                    self.conn.send(ToServer::Select(i as u32));
+                }
+                if !hotbar.iter().any(|s| s.item == item && !s.is_empty()) {
+                    self.conn.send(ToServer::Pick { item });
+                }
+            }
+        }
         let block_dist = self.target.map_or(f64::INFINITY, |h| (h.block.as_dvec3() + DVec3::splat(0.5) - eye).length());
         self.target_entity = if spectator { None } else { self.pick_entity(eye, look, block_dist.min(4.5)) };
 

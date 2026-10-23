@@ -403,7 +403,12 @@ impl Running {
                 self.quads_dirty = true;
                 self.set_capture(true);
             }
-            Err(e) => log::error!("{e}"),
+            Err(e) => {
+                log::error!("{e}");
+                // Something to look at instead of an empty window; the server stops with `server`.
+                self.screens.clear();
+                self.open(Box::new(screens::Message { title: "world.open_failed".into(), args: vec![Arg::Text(e.to_string())] }));
+            }
         }
     }
 

@@ -223,6 +223,12 @@ impl Content {
         self.block_names.get(name).map(|&b| self.blocks[b as usize].first_state)
     }
 
+    /// The item a middle click on this block picks: the block's own item, else what it drops.
+    pub fn pick_item(&self, state: u32) -> Option<u32> {
+        let b = self.block_of(state);
+        self.items.iter().position(|i| i.block == Some(b.first_state)).map(|i| i as u32).filter(|&i| i != 0).or(b.drop)
+    }
+
     pub fn block_has_tag(&self, state: u32, tag: &str) -> bool {
         self.states.get(state as usize).is_some_and(|_| self.block_of(state).tags.iter().any(|t| t == tag))
     }

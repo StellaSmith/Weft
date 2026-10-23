@@ -99,6 +99,9 @@ pub enum ToServer {
     /// Creative inventory: a full stack of this item onto the menu cursor.
     /// Click on a creative entry: 0 left (stack), 1 right (one).
     CreativeTake { item: u32, button: u8 },
+    /// Middle click on a block whose item is not in the hotbar: bring it into the selected slot
+    /// from the inventory, or in creative make one.
+    Pick { item: u32 },
     /// The cursor stack spread over these slots by dragging (button 0 evenly, 1 one each).
     Drag { slots: Vec<u32>, button: u8 },
     CloseMenu,

@@ -74,6 +74,8 @@ multiplayer.copy = Copy
 multiplayer.copied = Copied!
 multiplayer.connecting = Connecting...
 multiplayer.disconnected = Disconnected: {0}
+world.open_failed = Could not open the world: {0}
+{0}
 death.title = You Died!
 death.respawn = Respawn
 core.raw = {0}

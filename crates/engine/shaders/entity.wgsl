@@ -3,7 +3,8 @@ struct Box {
     r0: vec4<f32>,
     r1: vec4<f32>,
     r2: vec4<f32>,
-    // Box size in texels (w, h, d) for the classic unwrap.
+    // Box size in texels (w, h, d) for the classic unwrap; block faces: min corner in the block,
+    // w = 1 when set.
     dims: vec4<f32>,
     // Texel origin and texture size.
     uvo: vec4<f32>,
@@ -88,6 +89,19 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
         }
         out.layer = (packed >> ((face & 1u) * 16u)) & 65535u;
         out.uv = uv;
+        if b.dims.w > 0.5 {
+            // A box inside a block (dims = min, uvo = max): the part of the texture the world
+            // mesher would show there.
+            let q = mix(b.dims.xyz, b.uvo.xyz, p);
+            switch face {
+                case 0u: { out.uv = vec2(q.z, 1.0 - q.y); }
+                case 1u: { out.uv = vec2(1.0 - q.z, 1.0 - q.y); }
+                case 2u: { out.uv = vec2(q.x, q.z); }
+                case 3u: { out.uv = vec2(q.x, q.z); }
+                case 4u: { out.uv = vec2(1.0 - q.x, 1.0 - q.y); }
+                default: { out.uv = vec2(q.x, 1.0 - q.y); }
+            }
+        }
     } else {
         let r = face_rect(face, b.dims.xyz, b.uvo.xy);
         out.uv = (r.xy + uv * r.zw) / b.uvo.zw;

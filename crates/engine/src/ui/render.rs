@@ -2,7 +2,6 @@
 //! across frames otherwise.
 
 use rustc_hash::FxHashMap;
-use voxide_abi::Model;
 use voxide_render::*;
 
 use super::font::Font;
@@ -372,65 +371,48 @@ impl UiRenderer {
             let ch = |s: u32| (((c >> s) & 255) as f32 * k) as u32;
             ch(24) << 24 | ch(16) << 16 | ch(8) << 8 | 0xFF
         };
-        match s.model {
-            Model::Cross | Model::Liquid | Model::None => {
-                let t = if s.model == Model::Liquid { s.textures[3] } else { s.textures[0] };
-                self.quads.push(Quad {
-                    p0: [x, y],
-                    u: [size, 0.0],
-                    v: [0.0, size],
-                    uv: [0.0, 0.0, 1.0, 1.0],
-                    color: tint(0),
-                    tex: tex.block_index,
-                    layer: layer(t),
-                    mode: 2,
-                    ..Default::default()
-                });
-            }
-            _ => {
-                let faces = if s.model == Model::Boxes {
-                    s.boxes.first().map_or([0; 6], |b| b.textures)
-                } else {
-                    s.textures
-                };
-                let h = size / 2.0;
-                let q = size / 4.0;
-                let (cx, top) = (x + h, y + size * 0.03);
-                let mut push = |p0: [f32; 2], u: [f32; 2], v: [f32; 2], face: usize, k: f32| {
-                    self.quads.push(Quad {
-                        p0,
-                        u,
-                        v,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        color: shade(tint(face), k),
-                        tex: tex.block_index,
-                        layer: layer(faces[face]),
-                        mode: 2,
-                        ..Default::default()
-                    });
-                };
-                push([x, top + q], [h, q], [0.0, h], 5, 0.8);
-                push([cx, top + h], [h, -q], [0.0, h], 1, 0.62);
-                push([cx, top], [h, q], [-h, q], 3, 1.0);
-                // Tinted overlays on top of their faces.
-                let grass = shade(match s.tint {
-                    1 => 0x8db360,
-                    2 => 0x77ab2f,
-                    _ => 0x3f76e4,
-                } << 8 | 0xFF, 1.0);
-                for (p0, u, v, face, k) in [([x, top + q], [h, q], [0.0, h], 5, 0.8), ([cx, top + h], [h, -q], [0.0, h], 1, 0.62), ([cx, top], [h, q], [-h, q], 3, 1.0)] {
-                    let Some(&o) = tex.overlays.get(faces[face] as usize).filter(|&&o| o != 0) else { continue };
-                    self.quads.push(Quad {
-                        p0,
-                        u,
-                        v,
-                        uv: [0.0, 0.0, 1.0, 1.0],
-                        color: shade(if s.tint == 0 { 0xFFFFFFFF } else { grass }, k),
-                        tex: tex.block_index,
-                        layer: layer(o - 1),
-                        mode: 2,
-                        ..Default::default()
-                    });
+        if let Some(t) = s.item_sprite() {
+            self.quads.push(Quad {
+                p0: [x, y],
+                u: [size, 0.0],
+                v: [0.0, size],
+                uv: [0.0, 0.0, 1.0, 1.0],
+                color: tint(0),
+                tex: tex.block_index,
+                layer: layer(t),
+                mode: 2,
+                ..Default::default()
+            });
+            return;
+        }
+        // Isometric: block point (X, Y, Z) lands at origin + X*ex + Y*ey + Z*ez.
+        let (h, q) = (size / 2.0, size / 4.0);
+        let o = [x + h, y + size * 0.03 + h];
+        let at = |p: [f32; 3]| [o[0] + (p[0] - p[2]) * h, o[1] + (p[0] + p[2]) * q - p[1] * h];
+        let grass = match s.tint {
+            1 => 0x8db360,
+            2 => 0x77ab2f,
+            _ => 0x3f76e4,
+        } << 8 | 0xFF;
+        let mut shape = s.item_shape();
+        // Back to front.
+        shape.sort_by(|a, b| (a.min[0] + a.min[1] + a.min[2]).total_cmp(&(b.min[0] + b.min[1] + b.min[2])));
+        for b in &shape {
+            let (n, m) = (b.min, b.max);
+            let (dx, dy, dz) = (m[0] - n[0], m[1] - n[1], m[2] - n[2]);
+            // (corner, u edge, v edge, face, shade, uv rect): the faces seen from the front, with
+            // the part of the texture the world mesher shows there.
+            let faces = [
+                (at([n[0], m[1], m[2]]), [dx * h, dx * q], [0.0, dy * h], 5, 0.8, [n[0], 1.0 - m[1], m[0], 1.0 - n[1]]),
+                (at([m[0], m[1], m[2]]), [dz * h, -dz * q], [0.0, dy * h], 1, 0.62, [1.0 - m[2], 1.0 - m[1], 1.0 - n[2], 1.0 - n[1]]),
+                (at([n[0], m[1], n[2]]), [dx * h, dx * q], [-dz * h, dz * q], 3, 1.0, [n[0], n[2], m[0], m[2]]),
+            ];
+            for (p0, u, v, face, k, uv) in faces {
+                self.quads.push(Quad { p0, u, v, uv, color: shade(tint(face), k), tex: tex.block_index, layer: layer(b.textures[face]), mode: 2, ..Default::default() });
+                // Tinted overlay on top of its face.
+                if let Some(&ov) = tex.overlays.get(b.textures[face] as usize).filter(|&&ov| ov != 0) {
+                    let color = shade(if s.tint == 0 { 0xFFFFFFFF } else { grass }, k);
+                    self.quads.push(Quad { p0, u, v, uv, color, tex: tex.block_index, layer: layer(ov - 1), mode: 2, ..Default::default() });
                 }
             }
         }

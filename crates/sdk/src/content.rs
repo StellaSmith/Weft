@@ -83,6 +83,7 @@ impl Registry {
             drop_count: 1,
             item: true,
             item_handle: None,
+            item_texture: String::new(),
             callbacks: BlockCallbacks::default(),
             replace: false,
         }
@@ -438,6 +439,7 @@ pub struct BlockBuilder<'a> {
     drop_count: u32,
     item: bool,
     item_handle: Option<&'static Item>,
+    item_texture: String,
     callbacks: BlockCallbacks,
     replace: bool,
 }
@@ -495,6 +497,13 @@ impl<'a> BlockBuilder<'a> {
 
     pub fn drops_nothing(mut self) -> Self {
         self.drop = "-".into();
+        self
+    }
+
+    /// The block's item shows this flat texture (a block texture name, or `ns:path`) instead of
+    /// the block model.
+    pub fn item_texture(mut self, t: &str) -> Self {
+        self.item_texture = if t.contains(':') { t.to_string() } else { format!("{}:block/{t}", self.reg.ns) };
         self
     }
 
@@ -633,7 +642,7 @@ impl Drop for BlockBuilder<'_> {
                 _p: std::marker::PhantomData,
                 raw: self.reg.raw,
                 name: self.name.clone(),
-                texture: String::new(),
+                texture: std::mem::take(&mut self.item_texture),
                 handle: self.item_handle,
                 max_stack: 64,
                 durability: 0,

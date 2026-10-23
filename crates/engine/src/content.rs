@@ -46,6 +46,25 @@ impl StateInfo {
     pub fn is(&self, flag: u32) -> bool {
         self.flags & flag != 0
     }
+
+    /// The block texture an item of this block shows as a flat sprite (vanilla's generated item
+    /// models): plants and liquids. Other shapes are drawn as their model.
+    pub fn item_sprite(&self) -> Option<u32> {
+        match self.model {
+            Model::Cross | Model::None => Some(self.textures[0]),
+            Model::Liquid => Some(self.textures[3]),
+            _ => None,
+        }
+    }
+
+    /// Boxes an item of this block is drawn with when it is not a sprite (block units).
+    pub fn item_shape(&self) -> Vec<ModelBox> {
+        if self.model == Model::Boxes && !self.boxes.is_empty() {
+            self.boxes.iter().map(|b| ModelBox { min: b.min, max: b.max, textures: b.textures }).collect()
+        } else {
+            vec![ModelBox { min: [0.0; 3], max: [1.0; 3], textures: self.textures }]
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]

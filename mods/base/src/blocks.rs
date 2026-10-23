@@ -337,6 +337,7 @@ pub fn register(r: &mut Registry) {
         .tab("functional");
     r.block("torch", &TORCH)
         .model_box([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], "torch")
+        .item_texture("torch")
         .not_solid()
         .light_rgb(15, 13, 10)
         .hardness(0.0)

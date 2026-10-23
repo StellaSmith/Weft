@@ -90,6 +90,9 @@ pub struct EntityRenderer {
     buffers: Vec<(BufferId, u32)>,
     views: Vec<BufferId>,
     overlay_views: Vec<BufferId>,
+    /// The held item's projection: a fixed field of view, like vanilla, so it keeps its shape
+    /// whatever the player's setting.
+    hand_views: Vec<BufferId>,
     preview: Vec<(BufferId, BufferId)>,
     /// The inventory figure is drawn into its own texture so the UI can layer it like any image.
     preview_pipe: PipelineId,
@@ -154,6 +157,7 @@ impl EntityRenderer {
         let frames = gpu.frames_in_flight();
         let views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "entity view")).collect();
         let overlay_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "overlay view")).collect();
+        let hand_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "hand view")).collect();
         let preview = (0..frames)
             .map(|_| {
                 let b = gpu.create_buffer(128 * 64, usage::STORAGE | usage::HOST, "preview boxes");
@@ -173,6 +177,7 @@ impl EntityRenderer {
             buffers: Vec::new(),
             views,
             overlay_views,
+            hand_views,
             preview,
             preview_pipe,
             preview_target: None,
@@ -299,7 +304,7 @@ impl EntityRenderer {
             gpu.destroy_texture(d);
         }
         let preview: Vec<BufferId> = self.preview.drain(..).flat_map(|(a, b)| [a, b]).collect();
-        for b in self.views.drain(..).chain(self.overlay_views.drain(..)).chain(preview) {
+        for b in self.views.drain(..).chain(self.overlay_views.drain(..)).chain(self.hand_views.drain(..)).chain(preview) {
             gpu.destroy_buffer(b);
         }
         for t in self.skins.drain().filter_map(|(_, v)| v) {
@@ -686,9 +691,13 @@ impl EntityRenderer {
             list.push(Cmd::Draw { vertices: (hand_start - overlay_start) as u32 * 36, instances: 1, first_vertex: overlay_start as u32 * 36, first_instance: 0 });
         }
         if boxes.len() > hand_start {
+            let hand_cam = Camera { fov: 70.0, ..*cam };
+            let hv = View { view_proj: (hand_cam.proj(aspect) * cam.view()).to_cols_array_2d(), ..v };
+            let hb = self.hand_views[frame.slot];
+            gpu.mapped(hb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&hv));
             list.pipeline(self.hand_pipe);
             list.bind(0, buf);
-            list.bind(1, vb);
+            list.bind(1, hb);
             list.push(Cmd::Draw { vertices: (boxes.len() - hand_start) as u32 * 36, instances: 1, first_vertex: hand_start as u32 * 36, first_instance: 0 });
         }
     }
@@ -718,7 +727,7 @@ fn sprite_name(item: u32) -> Option<String> {
         return c.item_textures.get(def.icon as usize).cloned();
     }
     let st = &c.states[def.block? as usize];
-    (st.model == Model::Cross).then(|| c.block_textures.get(st.textures[0] as usize).cloned()).flatten()
+    st.item_sprite().and_then(|t| c.block_textures.get(t as usize).cloned())
 }
 
 /// The held item or the bare right arm in front of the camera, posed like vanilla's
@@ -761,13 +770,10 @@ fn hand_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, cam: &Camera, h: &
         * Mat4::from_rotation_y(deg(-45.0));
     let layer = |name: u32| textures.block_layers.get(name as usize).map_or(0, |l| l.0);
     match (def.block.map(|st| &c.states[st as usize]), sprite) {
-        (Some(st), _) if def.icon == u32::MAX && st.model != Model::Cross => {
+        (Some(st), _) if def.icon == u32::MAX && st.item_sprite().is_none() => {
             // block.json: rotated 45 degrees, scale 0.4.
-            let faces = if st.model == Model::Boxes { st.boxes.first().map_or([0; 6], |b| b.textures) } else { st.textures };
-            let l: Vec<u32> = faces.iter().map(|&f| layer(f)).collect();
             let m = arm * Mat4::from_rotation_y(deg(45.0)) * Mat4::from_scale(Vec3::splat(0.4)) * Mat4::from_translation(Vec3::splat(-0.5));
-            out.push(GpuBox { rows: rows(m), color, ids: [textures.block_index, 1, l[0] | l[1] << 16, l[2] | l[3] << 16], ids2: [l[4] | l[5] << 16, 0, 0, 0], ..Default::default() });
-            tinted_faces(out, textures, m, st, &faces, Vec4::from_array(color));
+            block_shape(out, textures, m, st, Vec4::from_array(color));
         }
         (_, Some(sp)) => {
             // generated.json / handheld.json first person: rotation 0 -90 25, translation
@@ -797,6 +803,25 @@ fn hand_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, cam: &Camera, h: &
             }
         }
         _ => {}
+    }
+}
+
+/// A block item drawn as its model's boxes; `m` maps the block's unit cube.
+fn block_shape(out: &mut Vec<GpuBox>, textures: &GameTextures, m: Mat4, s: &crate::content::StateInfo, color: Vec4) {
+    let layer = |name: u32| textures.block_layers.get(name as usize).map_or(0, |l| l.0);
+    for b in s.item_shape() {
+        let (mn, mx) = (Vec3::from_array(b.min), Vec3::from_array(b.max));
+        let mb = m * Mat4::from_translation(mn) * Mat4::from_scale(mx - mn);
+        let l = b.textures.map(layer);
+        out.push(GpuBox {
+            rows: rows(mb),
+            dims: mn.extend(1.0).to_array(),
+            uvo: mx.extend(0.0).to_array(),
+            color: color.to_array(),
+            ids: [textures.block_index, 1, l[0] | l[1] << 16, l[2] | l[3] << 16],
+            ids2: [l[4] | l[5] << 16, 0, 0, 0],
+        });
+        tinted_faces(out, textures, mb, s, &b.textures, color);
     }
 }
 
@@ -853,23 +878,14 @@ fn item_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, age: f
     if def.icon == u32::MAX {
         let Some(state) = def.block else { return };
         let s = &c.states[state as usize];
-        let faces = if s.model == Model::Boxes { s.boxes.first().map_or([0; 6], |b| b.textures) } else { s.textures };
-        if s.model == Model::Cross {
-            let l = layer(faces[0]);
+        if let Some(t) = s.item_sprite() {
+            let l = layer(t);
             let m = spin * Mat4::from_translation(Vec3::new(-0.2, 0.0, 0.0)) * Mat4::from_scale(Vec3::new(0.4, 0.4, 0.0));
             out.push(GpuBox { rows: rows(m), color: color.to_array(), ids: [textures.block_index, 1, l | l << 16, l | l << 16], ids2: [l | l << 16, 0, 0, 0], ..Default::default() });
             return;
         }
-        let l: Vec<u32> = faces.iter().map(|&f| layer(f)).collect();
         let m = spin * Mat4::from_translation(Vec3::splat(-0.125)) * Mat4::from_scale(Vec3::splat(0.25));
-        out.push(GpuBox {
-            rows: rows(m),
-            color: color.to_array(),
-            ids: [textures.block_index, 1, l[0] | l[1] << 16, l[2] | l[3] << 16],
-            ids2: [l[4] | l[5] << 16, 0, 0, 0],
-            ..Default::default()
-        });
-        tinted_faces(out, textures, m, s, &faces, color);
+        block_shape(out, textures, m, s, color);
     } else {
         // A flat sprite: zero thickness, so the side faces (which would smear the edge texels
         // into lines) have no area.

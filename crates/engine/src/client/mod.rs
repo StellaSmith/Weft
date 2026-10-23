@@ -533,10 +533,7 @@ impl Client {
         }
 
         let world = &self.world;
-        let block = |p: IVec3| {
-            let s = world.block(p);
-            (s != u32::MAX).then_some(s)
-        };
+        let block = |p: IVec3| world.block_or_air(p);
         // Do not simulate until the ground under the player arrived.
         let ready = self.joined && !self.dead && block(self.player.pos.floor().as_ivec3()).is_some();
         if ready {
@@ -734,10 +731,7 @@ impl Client {
         let back = -cam.forward().as_dvec3();
         let c = content();
         let world = &self.world;
-        let block = |p: IVec3| {
-            let s = world.block(p);
-            (s != u32::MAX).then_some(s)
-        };
+        let block = |p: IVec3| world.block_or_air(p);
         let dist = physics::raycast(c, &block, eye.pos, back, 4.0).map_or(4.0, |h| ((h.block.as_dvec3() + DVec3::splat(0.5) - eye.pos).length() - 0.8).clamp(0.3, 4.0));
         cam.pos = eye.pos + back * dist;
         cam

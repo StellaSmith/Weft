@@ -74,22 +74,21 @@ impl B {
     }
 }
 
-/// The overworld shape. Noise salts match the earlier hand-written generator, so existing worlds
-/// continue without seams.
+/// The overworld shape.
 static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
     Terrain::new(&STONE, SEA as f64)
         .sea(SEA, &WATER)
-        .feature(preset::continents(14.0))
-        .feature(preset::hills(5.0, 60.0))
+        .feature(preset::continents(18.0))
+        .feature(preset::hills(16.0, 110.0))
         .feature(
-            preset::mountains(70.0, 160.0)
-                .mask(Mask::noise(500.0, 0.15, 0.15 + 1.0 / 3.0).salt(0x44).and(Mask::Continent(0.05, 0.30)))
+            preset::mountains(150.0, 260.0)
+                .mask(Mask::noise(700.0, -0.1, 0.3).salt(0x44).and(Mask::Continent(0.0, 0.2)))
                 .named("mountains"),
         )
         .biome(BiomeRule::new(&OCEAN).height(i32::MIN, SEA - 2).surface(&SAND, &SAND, 3).deep_top(&GRAVEL, SEA - 8))
         .biome(BiomeRule::new(&SNOWY).height(i32::MIN, SEA + 1).continent(f64::NEG_INFINITY, 0.1).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
         .biome(BiomeRule::new(&BEACH).height(i32::MIN, SEA + 1).continent(f64::NEG_INFINITY, 0.1).surface(&SAND, &SAND, 3))
-        .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.45, f64::INFINITY).surface(&GRASS, &DIRT, 3).bare_above(110))
+        .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.45, f64::INFINITY).surface(&GRASS, &DIRT, 3).bare_above(130))
         .biome(BiomeRule::new(&SNOWY).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
         .biome(BiomeRule::new(&TAIGA).temperature(f64::NEG_INFINITY, -0.15).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&DESERT).temperature(0.35, f64::INFINITY).humidity(f64::NEG_INFINITY, 0.0).surface(&SAND, &SAND, 3).under(&SANDSTONE, 1))

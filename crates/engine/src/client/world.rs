@@ -249,6 +249,18 @@ impl ClientWorld {
         self.cubes.get(&cube_of(p)).map_or(u32::MAX, |c| c.get(local_index(p)))
     }
 
+    /// The block, `None` while its cube has not arrived; outside the dimension's height there are
+    /// no cubes, only air.
+    pub fn block_or_air(&self, p: IVec3) -> Option<u32> {
+        let s = self.block(p);
+        if s != u32::MAX {
+            return Some(s);
+        }
+        let def = &crate::content::content().dims[self.dim as usize];
+        let y = p.y >> 4;
+        (y < def.min_cube_y || y > def.max_cube_y).then_some(crate::content::AIR)
+    }
+
     pub fn light(&self, p: IVec3) -> u32 {
         self.cubes.get(&cube_of(p)).map_or(15, |c| c.light(local_index(p)))
     }

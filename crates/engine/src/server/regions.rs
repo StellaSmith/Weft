@@ -130,6 +130,11 @@ impl DimSet {
         self.regions[r].snapshot(pos)
     }
 
+    /// Loaded cubes of nothing but air right under `pos`, at most `max`.
+    pub fn air_below(&self, pos: IVec3, max: i32) -> i32 {
+        (1..=max).take_while(|&d| self.snapshot(pos - IVec3::Y * d).is_some_and(|c| c.palette() == [crate::content::AIR])).count() as i32
+    }
+
     pub fn get(&self, p: IVec3) -> Option<u32> {
         let r = *self.owner.get(&section_of_cube(cube_of(p)))?;
         self.regions[r].get(p)

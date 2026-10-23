@@ -231,8 +231,8 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
 /// Cubes kept loaded around a view: the visible range plus, above it, the column up to where the
 /// generator guarantees open sky (capped), so sky light reaches the visible cubes without having
 /// to send or render those extra cubes.
-fn loaded_y_range(def: &DimensionDef, center_y: i32, h: i32) -> (i32, i32) {
-    let lo = (center_y - h).max(def.min_cube_y);
+fn loaded_y_range(def: &DimensionDef, center_y: i32, h: i32, down: i32) -> (i32, i32) {
+    let lo = (center_y - down).max(def.min_cube_y);
     let top = center_y + h;
     let hi = if def.sky_light && def.sky_cube_y != i32::MAX { top.max((def.sky_cube_y - 1).min(top + 12)) } else { top };
     (lo, hi.min(def.max_cube_y))
@@ -1215,10 +1215,15 @@ impl Server {
         }
     }
 
-    fn view(&self, p: &Player) -> (IVec3, i32, i32) {
-        let pos = self.dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
+    /// Centre cube, radius, cubes above and cubes below. Flying high, the view reaches down past
+    /// the air under the player so the ground shows; on the ground it stays shallow, since
+    /// reaching deeper only loads caves.
+    fn view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
+        let dim = &self.dims[p.dim as usize];
+        let pos = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
         let center = (pos.floor().as_ivec3()) >> 4;
-        (center, self.cfg.view_radius, self.cfg.view_height)
+        let (r, h) = (self.cfg.view_radius, self.cfg.view_height);
+        (center, r, h, h + dim.air_below(center, r))
     }
 
     /// Cubes players need, nearest columns first and each column top-down; loading and
@@ -1239,22 +1244,22 @@ impl Server {
             if !p.joined {
                 continue;
             }
-            let (center, r, h) = self.view(p);
+            let (center, r, h, down) = self.view(p);
             let pdim = p.dim;
-            let key = (pdim, center, r, h, self.dims[pdim as usize].settled_version());
+            let key = (pdim, center, r, h + down * 1000, self.dims[pdim as usize].settled_version());
             if p.gen_done == Some(key) {
                 continue;
             }
             let def = &c.dims[pdim as usize];
-            let (lo, hi) = loaded_y_range(def, center.y, h);
+            let (lo, hi) = loaded_y_range(def, center.y, h, down);
             let in_view = |pos: IVec3| {
                 let d = pos - center;
-                d.x * d.x + d.z * d.z <= r * r && d.y.abs() <= h && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
+                d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
             };
             let Server { players, dims, wanted: wanted_set, .. } = &mut *self;
             let dim = &mut dims[pdim as usize];
             let p = &mut players[pi];
-            let vkey = (pdim, center, r, h, dim.edit_version());
+            let vkey = (pdim, center, r, h + down * 1000, dim.edit_version());
             // The visibility fill goes on from cubes that arrived; it starts over only when the
             // player moved to another cube, the view changed or blocks were edited.
             let arrived = match &mut p.vis {
@@ -1377,7 +1382,7 @@ impl Server {
             if !self.players[pi].joined {
                 continue;
             }
-            let (center, r, h) = self.view(&self.players[pi]);
+            let (center, r, h, down) = self.view(&self.players[pi]);
             let Server { players, dims, tick, .. } = self;
             let p = &mut players[pi];
             let dim = &mut dims[p.dim as usize];
@@ -1493,17 +1498,17 @@ impl Server {
                 }
             }
 
-            let key = (p.dim, center, r, h, dim.settled_version());
+            let key = (p.dim, center, r, h + down * 1000, dim.settled_version());
             if p.sync_done == Some(key) {
                 continue;
             }
             let in_range = |pos: IVec3| {
                 let d = pos - center;
-                d.x * d.x + d.z * d.z <= r * r && d.y.abs() <= h && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
+                d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
             };
             // Send a cube once its neighbours exist and its sky light is final.
             let mut to_send: Vec<(i32, IVec3)> = Vec::new();
-            for dy in -h..=h {
+            for dy in -down..=h {
                 for dz in -r..=r {
                     for dx in -r..=r {
                         let pos = center + IVec3::new(dx, dy, dz);
@@ -1538,7 +1543,7 @@ impl Server {
                 .copied()
                 .filter(|&pos| {
                     let d = pos - center;
-                    d.x * d.x + d.z * d.z > (r + 2) * (r + 2) || d.y.abs() > h + 2
+                    d.x * d.x + d.z * d.z > (r + 2) * (r + 2) || d.y > h + 2 || d.y < -down - 2
                 })
                 .collect();
             p.sync_done = (to_send.is_empty() && far.is_empty()).then_some(key);
@@ -1585,8 +1590,8 @@ impl Server {
                 .iter()
                 .filter(|p| p.joined && p.dim as usize == di)
                 .map(|p| {
-                    let (center, _, _) = self.view(p);
-                    let (lo, hi) = loaded_y_range(def, center.y, self.cfg.view_height);
+                    let (center, _, h, down) = self.view(p);
+                    let (lo, hi) = loaded_y_range(def, center.y, h, down);
                     (center, self.cfg.view_radius + 3, lo - 3, hi + 3)
                 })
                 .collect();

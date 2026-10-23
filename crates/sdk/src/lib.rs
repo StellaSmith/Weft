@@ -3,6 +3,8 @@
 pub use voxide_abi as abi;
 
 mod cache;
+pub mod noise;
+pub mod terrain;
 mod command;
 mod content;
 mod game;

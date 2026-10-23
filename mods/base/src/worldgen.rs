@@ -5,7 +5,10 @@
 use voxide_sdk::*;
 
 use crate::blocks::*;
-use crate::noise::*;
+use std::sync::LazyLock;
+
+use voxide_sdk::noise::*;
+use voxide_sdk::terrain::*;
 
 pub const SEA: i32 = 63;
 
@@ -19,7 +22,7 @@ pub static MOUNTAINS: Biome = Biome::new();
 pub static OCEAN: Biome = Biome::new();
 pub static BEACH: Biome = Biome::new();
 
-pub fn register_biomes(r: &mut Registry) {
+pub fn register(r: &mut Registry) {
     r.biome("plains", &PLAINS, 0x8db360, 0x77ab2f, 0x3f76e4, 0.8, 0.4);
     r.biome("forest", &FOREST, 0x79c05a, 0x59ae30, 0x3f76e4, 0.7, 0.8);
     r.biome("birch_forest", &BIRCH_FOREST, 0x88bb67, 0x6ba941, 0x3f76e4, 0.6, 0.6);
@@ -29,6 +32,10 @@ pub fn register_biomes(r: &mut Registry) {
     r.biome("mountains", &MOUNTAINS, 0x8ab689, 0x6da36b, 0x3f76e4, 0.2, 0.3);
     r.biome("ocean", &OCEAN, 0x8db360, 0x77ab2f, 0x3f76e4, 0.5, 0.5);
     r.biome("beach", &BEACH, 0x8db360, 0x77ab2f, 0x3f76e4, 0.8, 0.4);
+
+    for (ore, max_y, veins, size) in [("coal_ore", 128, 8, 12), ("iron_ore", 64, 6, 8), ("gold_ore", 32, 2, 7), ("diamond_ore", 16, 1, 6)] {
+        r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("stone");
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,6 +52,13 @@ pub enum B {
 }
 
 impl B {
+    fn of(b: &'static Biome) -> B {
+        [B::Plains, B::Forest, B::Birch, B::Taiga, B::Snowy, B::Desert, B::Mountains, B::Ocean, B::Beach]
+            .into_iter()
+            .find(|k| std::ptr::eq(k.handle(), b))
+            .unwrap_or(B::Plains)
+    }
+
     fn handle(self) -> &'static Biome {
         match self {
             B::Plains => &PLAINS,
@@ -60,46 +74,39 @@ impl B {
     }
 }
 
+/// The overworld shape. Noise salts match the earlier hand-written generator, so existing worlds
+/// continue without seams.
+static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
+    Terrain::new(&STONE, SEA as f64)
+        .sea(SEA, &WATER)
+        .feature(preset::continents(14.0))
+        .feature(preset::hills(5.0, 60.0))
+        .feature(
+            preset::mountains(70.0, 160.0)
+                .mask(Mask::noise(500.0, 0.15, 0.15 + 1.0 / 3.0).salt(0x44).and(Mask::Continent(0.05, 0.30)))
+                .named("mountains"),
+        )
+        .biome(BiomeRule::new(&OCEAN).height(i32::MIN, SEA - 2).surface(&SAND, &SAND, 3).deep_top(&GRAVEL, SEA - 8))
+        .biome(BiomeRule::new(&SNOWY).height(i32::MIN, SEA + 1).continent(f64::NEG_INFINITY, 0.1).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
+        .biome(BiomeRule::new(&BEACH).height(i32::MIN, SEA + 1).continent(f64::NEG_INFINITY, 0.1).surface(&SAND, &SAND, 3))
+        .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.45, f64::INFINITY).surface(&GRASS, &DIRT, 3).bare_above(110))
+        .biome(BiomeRule::new(&SNOWY).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
+        .biome(BiomeRule::new(&TAIGA).temperature(f64::NEG_INFINITY, -0.15).surface(&GRASS, &DIRT, 3))
+        .biome(BiomeRule::new(&DESERT).temperature(0.35, f64::INFINITY).humidity(f64::NEG_INFINITY, 0.0).surface(&SAND, &SAND, 3).under(&SANDSTONE, 1))
+        .biome(BiomeRule::new(&FOREST).humidity(0.25, f64::INFINITY).surface(&GRASS, &DIRT, 3))
+        .biome(BiomeRule::new(&BIRCH_FOREST).humidity(0.05, f64::INFINITY).temperature(f64::NEG_INFINITY, 0.1).surface(&GRASS, &DIRT, 3))
+        .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
+        .caves(Caves::new(&LAVA, 1, 11))
+});
+
 pub struct Column {
     pub height: i32,
     pub biome: B,
 }
 
 pub fn column(seed: u64, x: i32, z: i32) -> Column {
-    let (fx, fz) = (x as f64, z as f64);
-    let cont = fbm2(seed ^ 0x11, fx / 900.0, fz / 900.0, 4) * 1.6 + 0.15;
-    let temp = fbm2(seed ^ 0x22, fx / 1100.0, fz / 1100.0, 3) * 1.4;
-    let humid = fbm2(seed ^ 0x33, fx / 800.0, fz / 800.0, 3) * 1.4;
-    let mount = fbm2(seed ^ 0x44, fx / 500.0, fz / 500.0, 3);
-    let detail = fbm2(seed ^ 0x55, fx / 60.0, fz / 60.0, 4);
-    let ridge = 1.0 - (fbm2(seed ^ 0x66, fx / 160.0, fz / 160.0, 4) * 2.0).abs().min(1.0);
-
-    let land = (cont * 2.5).clamp(-1.0, 1.0);
-    let mut h = SEA as f64 + land * 14.0 + detail * 5.0;
-    let mountain_w = ((mount - 0.15) * 3.0).clamp(0.0, 1.0) * ((cont - 0.05) * 4.0).clamp(0.0, 1.0);
-    h += mountain_w * (ridge * ridge * 70.0 + detail * 10.0);
-    let height = h.floor() as i32;
-
-    let biome = if height < SEA - 1 {
-        B::Ocean
-    } else if height <= SEA + 1 && land < 0.25 {
-        if temp < -0.45 { B::Snowy } else { B::Beach }
-    } else if mountain_w > 0.45 {
-        B::Mountains
-    } else if temp < -0.45 {
-        B::Snowy
-    } else if temp < -0.15 {
-        B::Taiga
-    } else if temp > 0.35 && humid < 0.0 {
-        B::Desert
-    } else if humid > 0.25 {
-        B::Forest
-    } else if humid > 0.05 && temp < 0.1 {
-        B::Birch
-    } else {
-        B::Plains
-    };
-    Column { height, biome }
+    let c = TERRAIN.column(seed, x, z);
+    Column { height: c.height, biome: B::of(c.biome) }
 }
 
 fn tree_density(b: B) -> f64 {
@@ -215,166 +222,13 @@ pub fn grow_tree(w: World, p: [i32; 3]) {
     });
 }
 
-struct Ore {
-    block: &'static Block,
-    max_y: i32,
-    veins: u32,
-    size: u32,
-}
-
-fn ores() -> [Ore; 4] {
-    [
-        Ore { block: &COAL_ORE, max_y: 128, veins: 8, size: 12 },
-        Ore { block: &IRON_ORE, max_y: 64, veins: 6, size: 8 },
-        Ore { block: &GOLD_ORE, max_y: 32, veins: 2, size: 7 },
-        Ore { block: &DIAMOND_ORE, max_y: 16, veins: 1, size: 6 },
-    ]
-}
-
-/// Cave density from noise sampled on a 4-block grid and trilinearly interpolated.
-fn caves(seed: u64, ox: i32, oy: i32, oz: i32) -> Vec<bool> {
-    const G: usize = 5;
-    let mut grid = [[[0f64; G]; G]; G];
-    for (gy, row) in grid.iter_mut().enumerate() {
-        for (gz, line) in row.iter_mut().enumerate() {
-            for (gx, v) in line.iter_mut().enumerate() {
-                let (x, y, z) = ((ox + gx as i32 * 4) as f64, (oy + gy as i32 * 4) as f64, (oz + gz as i32 * 4) as f64);
-                let a = perlin3(seed ^ 0xC1, x / 48.0, y / 32.0, z / 48.0);
-                let b = perlin3(seed ^ 0xC2, x / 48.0, y / 32.0, z / 48.0);
-                // Two thin noise zero-crossings intersect into winding tunnels.
-                let spaghetti = 0.08 - (a.abs() + b.abs());
-                let cheese = perlin3(seed ^ 0xC3, x / 90.0, y / 50.0, z / 90.0) - 0.42;
-                *v = spaghetti.max(cheese);
-            }
-        }
-    }
-    let mut out = vec![false; 4096];
-    for y in 0..16 {
-        for z in 0..16 {
-            for x in 0..16 {
-                let (gx, gy, gz) = (x / 4, y / 4, z / 4);
-                let (fx, fy, fz) = ((x % 4) as f64 / 4.0, (y % 4) as f64 / 4.0, (z % 4) as f64 / 4.0);
-                let l = |a: f64, b: f64, t: f64| a + (b - a) * t;
-                let c = |dy: usize, dz: usize, dx: usize| grid[gy + dy][gz + dz][gx + dx];
-                let v = l(
-                    l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz),
-                    l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz),
-                    fy,
-                );
-                out[(y * 16 + z) * 16 + x] = v > 0.0;
-            }
-        }
-    }
-    out
-}
-
-/// Heights and biomes of a 16x16 column, shared by all cubes stacked on it.
-static COLUMNS: std::sync::LazyLock<ColumnCache<Vec<Column>>> = std::sync::LazyLock::new(|| ColumnCache::new(16384));
-
 pub fn overworld(g: &mut Gen) {
+    let Some(cols) = TERRAIN.generate(g) else { return };
     let seed = g.seed();
     let [ox, oy, oz] = g.origin();
-    let [cx, _, cz] = g.cube();
-    let cols = COLUMNS.get(seed, cx, cz, || {
-        let mut cols = Vec::with_capacity(256);
-        for z in 0..16 {
-            for x in 0..16 {
-                cols.push(column(seed, ox + x, oz + z));
-            }
-        }
-        cols
-    });
-    let max_h = cols.iter().map(|c| c.height).max().unwrap();
-    let min_h = cols.iter().map(|c| c.height).min().unwrap();
-    for (i, c) in cols.iter().enumerate() {
-        g.biomes()[i] = c.biome.handle().id() as u8;
-    }
-
-    // Entirely above anything that can be placed: stays air.
-    if oy > max_h.max(SEA) + 16 {
-        return;
-    }
-
-    let cave = if oy + 15 < max_h - 1 { Some(caves(seed, ox, oy, oz)) } else { None };
-    let stone = STONE.id();
-    for z in 0..16usize {
-        for x in 0..16usize {
-            let col = &cols[z * 16 + x];
-            let h = col.height;
-            let (top, filler) = match col.biome {
-                B::Desert | B::Beach => (SAND.id(), SAND.id()),
-                B::Ocean => (if h < SEA - 8 { GRAVEL.id() } else { SAND.id() }, SAND.id()),
-                B::Snowy => (SNOWY_GRASS.id(), DIRT.id()),
-                B::Mountains if h > 110 => (STONE.id(), STONE.id()),
-                _ => (GRASS.id(), DIRT.id()),
-            };
-            for y in 0..16usize {
-                let wy = oy + y as i32;
-                let i = (y * 16 + z) * 16 + x;
-                let mut s = if wy > h {
-                    if wy <= SEA {
-                        if wy == SEA && col.biome == B::Snowy { ICE.id() } else { WATER.id() }
-                    } else {
-                        0
-                    }
-                } else if wy == h {
-                    top
-                } else if wy > h - 4 {
-                    if matches!(col.biome, B::Desert) && wy <= h - 3 { SANDSTONE.id() } else { filler }
-                } else {
-                    stone
-                };
-                // Keep a seal under water so oceans and rivers do not drain into caves.
-                let sealed = h <= SEA && wy > h - 4;
-                if let Some(cave) = &cave {
-                    if cave[i] && wy <= h && !sealed {
-                        s = if (1..11).contains(&wy) { LAVA.id() } else { 0 };
-                    }
-                }
-                g.set(x, y, z, s);
-            }
-        }
-    }
-
-    // Ores: veins anchored in this and neighbouring cubes.
-    let [cx, cy, cz] = g.cube();
-    if oy < 128 {
-        for (oi, ore) in ores().iter().enumerate() {
-            if oy > ore.max_y {
-                continue;
-            }
-            for nz in cz - 1..=cz + 1 {
-                for ny in cy - 1..=cy + 1 {
-                    for nx in cx - 1..=cx + 1 {
-                        for v in 0..ore.veins {
-                            let h = hash(seed ^ 0x0E0 ^ oi as u64, nx as i64, ny as i64 * 31 + v as i64, nz as i64);
-                            let (mut px, mut py, mut pz) = (
-                                nx * 16 + (h % 16) as i32,
-                                ny * 16 + ((h >> 4) % 16) as i32,
-                                nz * 16 + ((h >> 8) % 16) as i32,
-                            );
-                            if py > ore.max_y {
-                                continue;
-                            }
-                            for k in 0..ore.size {
-                                let hk = hash(h, k as i64, 0, 0);
-                                px += (hk % 3) as i32 - 1;
-                                py += ((hk >> 2) % 3) as i32 - 1;
-                                pz += ((hk >> 4) % 3) as i32 - 1;
-                                let (lx, ly, lz) = (px - ox, py - oy, pz - oz);
-                                if (0..16).contains(&lx) && (0..16).contains(&ly) && (0..16).contains(&lz) {
-                                    let (lx, ly, lz) = (lx as usize, ly as usize, lz as usize);
-                                    if g.get(lx, ly, lz) == stone {
-                                        g.set(lx, ly, lz, ore.block.id());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
+    let min_h = cols.iter().map(|c| c.height).min().unwrap_or(0);
+    let cols: Vec<Column> = cols.iter().map(|c| Column { height: c.height, biome: B::of(c.biome) }).collect();
 
     // Surface decoration only near the surface.
     if oy > max_h + 16 || oy + 15 < min_h - 1 {

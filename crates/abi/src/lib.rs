@@ -816,6 +816,24 @@ pub struct Host {
     pub is_creative: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64) -> u32,
     /// Non-zero when the local player is in creative mode (client side, for HUDs and screens).
     pub client_creative: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
+    pub reg_ore: unsafe extern "C" fn(reg: *mut Registrar, desc: *const OreDesc),
+}
+
+/// Ore veins a mod adds to any dimension, its own or another mod's. The engine scatters them after
+/// the dimension's generator, so generators never need to know about each other's ores.
+#[repr(C)]
+pub struct OreDesc {
+    /// Full dimension name.
+    pub dimension: Str,
+    pub block: Str,
+    /// Space separated block names or `#tags` the ore may replace.
+    pub replace: Str,
+    pub min_y: i32,
+    pub max_y: i32,
+    /// Veins started per cube.
+    pub veins: u32,
+    /// Blocks per vein.
+    pub size: u32,
 }
 
 /// One command argument; kinds in `command_value`.

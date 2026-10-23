@@ -115,6 +115,20 @@ pub struct DimensionDef {
     pub sky_color: u32,
     pub fog_color: u32,
     pub ambient: u8,
+    /// Placed by the engine after `generator`, in name order.
+    pub ores: Vec<OreDef>,
+}
+
+pub struct OreDef {
+    pub state: u32,
+    /// Block ids it may replace, sorted.
+    pub replace: Vec<u32>,
+    pub min_y: i32,
+    pub max_y: i32,
+    pub veins: u32,
+    pub size: u32,
+    /// Derived from the block name, so adding an ore does not move the others.
+    pub salt: u64,
 }
 
 pub struct ModMeta {
@@ -405,6 +419,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 sky_color: d.sky_color,
                 fog_color: d.fog_color,
                 ambient: d.ambient.min(15) as u8,
+                ores: Vec::new(),
             },
             d.cell as usize,
         )
@@ -680,7 +695,35 @@ pub fn freeze(mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content, Ve
             d
         })
         .collect();
-    let dim_names = dim_defs.iter().enumerate().map(|(i, d)| (d.name.clone(), i as u32)).collect();
+    let dim_names: FxHashMap<String, u32> = dim_defs.iter().enumerate().map(|(i, d)| (d.name.clone(), i as u32)).collect();
+    let mut dim_defs = dim_defs;
+    let mut raw_ores: Vec<crate::registry::RawOre> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.ores)).collect();
+    raw_ores.sort_by(|a, b| (&a.dimension, &a.block).cmp(&(&b.dimension, &b.block)));
+    for o in raw_ores {
+        let (Some(&d), Some(&b)) = (dim_names.get(&o.dimension), block_names.get(&o.block)) else {
+            errors.push(format!("ore {} in {}: unknown block or dimension", o.block, o.dimension));
+            continue;
+        };
+        let mut replace: Vec<u32> = Vec::new();
+        for r in &o.replace {
+            match r.strip_prefix('#') {
+                Some(tag) => replace.extend(block_defs.iter().enumerate().filter(|(_, b)| b.tags.iter().any(|t| t == tag)).map(|(i, _)| i as u32)),
+                None => replace.extend(block_names.get(r).copied()),
+            }
+        }
+        replace.sort_unstable();
+        replace.dedup();
+        let salt = o.block.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+        dim_defs[d as usize].ores.push(OreDef {
+            state: block_defs[b as usize].first_state,
+            replace,
+            min_y: o.min_y,
+            max_y: o.max_y,
+            veins: o.veins,
+            size: o.size,
+            salt,
+        });
+    }
     let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
     for (name, usage) in crate::commands::BUILTIN {
         let alts = crate::commands::parse_usage(usage).expect("engine command usage");

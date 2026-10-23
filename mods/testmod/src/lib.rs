@@ -4,9 +4,13 @@
 //! - a block with its own screen (energy bar bound to synced menu data),
 //! - reads the base game's data (fuel values, smelting recipes) by name, no code dependency,
 //! - replaces a base game block (torches burn blue),
-//! - adds its own dimension.
+//! - adds its own dimensions, one of them a planet built only from terrain presets,
+//! - adds an ore to the base game's overworld.
+
+use std::sync::LazyLock;
 
 use voxide_sdk::abi::slot_flags as sf;
+use voxide_sdk::terrain::*;
 use voxide_sdk::*;
 
 declare_mod!(id: "testmod", name: "Test Mod", version: "0.1.0", deps: ["base"], init: init);
@@ -20,6 +24,21 @@ static FURNACE_ENTITY: Entity = Entity::new();
 static GENERATOR_MENU: Menu = Menu::new();
 static FURNACE_MENU: Menu = Menu::new();
 static VOID: Dimension = Dimension::new();
+static MARS: Dimension = Dimension::new();
+static DUST: Biome = Biome::new();
+static REGOLITH: Block = Block::new();
+static BASALT: Block = Block::new();
+static TIN_ORE: Block = Block::new();
+
+static MARS_TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
+    Terrain::new(&BASALT, 60.0)
+        .feature(preset::hills(8.0, 220.0))
+        .feature(preset::plateaus(24.0, 320.0, 6.0).mask(Mask::noise(900.0, 0.1, 0.4)))
+        .feature(preset::canyons(26.0, 9.0).mask(Mask::noise(1200.0, -0.2, 0.1)))
+        .feature(preset::craters(32.0, 16.0, 150.0))
+        .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
+        .biome(BiomeRule::new(&DUST).surface(&REGOLITH, &REGOLITH, 3))
+});
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -96,6 +115,23 @@ fn init(r: &mut Registry) {
     r.shaped("base:crafting", "generator", 1, &["iii", "ifi", "iii"], &[('i', "#ingots/iron"), ('f', "base:furnace")]);
     r.shaped("base:crafting", "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "base:furnace"), ('c', "cable")]);
     r.shaped("base:crafting", "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
+
+    r.block("regolith", &REGOLITH).hardness(0.5).tool("shovel", 0);
+    r.block("basalt", &BASALT).hardness(1.5).tool("pickaxe", 0);
+    r.block("tin_ore", &TIN_ORE).hardness(3.0).tool("pickaxe", 1);
+    r.biome("dust", &DUST, 0xb5764a, 0x9a6040, 0x8a5a40, 1.5, 0.0);
+    r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("base:stone");
+    r.ore("mars", "tin_ore").y(-64, 90).veins(6).size(8).replace("basalt");
+    r.dimension("mars", &MARS)
+        .generator(|g| {
+            MARS_TERRAIN.generate(g);
+        })
+        .spawn(|seed| [8, MARS_TERRAIN.column(seed, 8, 8).height + 1, 8])
+        .height(-4, 12)
+        .sky_above(11)
+        .gravity(12.0)
+        .fixed_time(5000)
+        .sky(0xd8a080, 0xe0b090);
 
     r.dimension("void", &VOID)
         .generator(island)

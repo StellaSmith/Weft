@@ -5,7 +5,6 @@ mod blocks;
 mod items;
 mod machines;
 mod mobs;
-mod noise;
 mod player;
 mod recipes;
 mod worldgen;
@@ -24,7 +23,7 @@ fn init(r: &mut Registry) {
     machines::register(r);
     recipes::register(r);
     mobs::register(r);
-    worldgen::register_biomes(r);
+    worldgen::register(r);
     r.dimension("overworld", &OVERWORLD)
         .generator(worldgen::overworld)
         .spawn(worldgen::spawn)

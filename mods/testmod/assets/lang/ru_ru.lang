@@ -5,3 +5,6 @@ block.testmod.cable = Кабель
 testmod.generator = Генератор
 testmod.electric_furnace = Электропечь
 testmod.energy = {#ffe070}{0}{/} / {1} ЭЕ
+block.testmod.regolith = Реголит
+block.testmod.basalt = Красный базальт
+block.testmod.tin_ore = Оловянная руда

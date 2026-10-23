@@ -165,6 +165,17 @@ pub struct RawGame {
     pub player_menu: Option<String>,
     pub block_entities: Vec<(String, String, u32)>,
     pub attach: Vec<(String, String)>,
+    pub ores: Vec<RawOre>,
+}
+
+pub struct RawOre {
+    pub dimension: String,
+    pub block: String,
+    pub replace: Vec<String>,
+    pub min_y: i32,
+    pub max_y: i32,
+    pub veins: u32,
+    pub size: u32,
 }
 
 fn opt(c: Callback) -> Option<Callback> {

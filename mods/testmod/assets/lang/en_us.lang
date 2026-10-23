@@ -5,3 +5,6 @@ block.testmod.cable = Cable
 testmod.generator = Generator
 testmod.electric_furnace = Electric Furnace
 testmod.energy = {#ffe070}{0}{/} / {1} FE
+block.testmod.regolith = Regolith
+block.testmod.basalt = Red Basalt
+block.testmod.tin_ore = Tin Ore

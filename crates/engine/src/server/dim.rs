@@ -83,11 +83,57 @@ pub fn generate(c: &Content, dim: u32, seed: u64, pos: IVec3) -> Cube {
             *b = AIR;
         }
     }
+    place_ores(c, def, seed, pos, &mut blocks);
     let mut cube = Cube::from_states(blocks.as_slice().try_into().unwrap());
     if biomes.iter().any(|&b| b != 0) {
         cube.biomes = Some(Box::new(biomes));
     }
     cube
+}
+
+fn hash(seed: u64, x: i64, y: i64, z: i64) -> u64 {
+    let mut h = seed ^ (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= (z as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
+    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^ (h >> 31)
+}
+
+/// Veins start in this and the 26 neighbouring cubes and wander a block per step, so the result
+/// does not depend on which cube is generated first.
+fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) {
+    let o = pos * 16;
+    for ore in &def.ores {
+        let reach = ore.size as i32;
+        if o.y > ore.max_y.saturating_add(reach) || o.y + 15 < ore.min_y.saturating_sub(reach) {
+            continue;
+        }
+        for nz in pos.z - 1..=pos.z + 1 {
+            for ny in pos.y - 1..=pos.y + 1 {
+                for nx in pos.x - 1..=pos.x + 1 {
+                    for v in 0..ore.veins {
+                        let h = hash(seed ^ ore.salt, nx as i64, ny as i64 * 31 + v as i64, nz as i64);
+                        let mut p = IVec3::new(nx * 16 + (h % 16) as i32, ny * 16 + ((h >> 4) % 16) as i32, nz * 16 + ((h >> 8) % 16) as i32);
+                        if p.y > ore.max_y || p.y < ore.min_y {
+                            continue;
+                        }
+                        for k in 0..ore.size {
+                            let hk = hash(h, k as i64, 0, 0);
+                            p += IVec3::new((hk % 3) as i32 - 1, ((hk >> 2) % 3) as i32 - 1, ((hk >> 4) % 3) as i32 - 1);
+                            let l = p - o;
+                            if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
+                                let i = (l.y * 256 + l.z * 16 + l.x) as usize;
+                                if ore.replace.binary_search(&c.states[blocks[i] as usize].block).is_ok() {
+                                    blocks[i] = ore.state;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Face connectivity through blocks that do not hide what is behind them.

@@ -124,6 +124,19 @@ impl Registry {
         unsafe { (host().reg_biome)(self.raw, &desc) }
     }
 
+    /// Ore veins of `block` in any mod's dimension, e.g.
+    /// `r.ore("base:overworld", "tin_ore").y(0, 64).veins(6).size(8).replace("base:stone")`.
+    pub fn ore<'a>(&'a mut self, dimension: &str, block: &str) -> OreBuilder<'a> {
+        OreBuilder {
+            raw: self.raw,
+            dimension: qualify(self.ns, dimension),
+            block: qualify(self.ns, block),
+            replace: String::new(),
+            desc: (i32::MIN, i32::MAX, 4, 8),
+            _p: std::marker::PhantomData,
+        }
+    }
+
     pub fn dimension<'a>(&'a mut self, name: &str, handle: &'static Dimension) -> DimensionBuilder<'a> {
         DimensionBuilder {
             raw: self.raw,
@@ -781,6 +794,56 @@ impl DimensionBuilder<'_> {
     pub fn ambient(mut self, level: u32) -> Self {
         self.desc.ambient = level;
         self
+    }
+}
+
+pub struct OreBuilder<'a> {
+    raw: *mut abi::Registrar,
+    dimension: String,
+    block: String,
+    replace: String,
+    desc: (i32, i32, u32, u32),
+    _p: std::marker::PhantomData<&'a mut Registry>,
+}
+
+impl OreBuilder<'_> {
+    /// Heights the veins start at, inclusive.
+    pub fn y(mut self, min: i32, max: i32) -> Self {
+        (self.desc.0, self.desc.1) = (min, max);
+        self
+    }
+    /// Veins started per cube.
+    pub fn veins(mut self, n: u32) -> Self {
+        self.desc.2 = n;
+        self
+    }
+    /// Blocks per vein.
+    pub fn size(mut self, n: u32) -> Self {
+        self.desc.3 = n;
+        self
+    }
+    /// Blocks or `#tags` the ore may replace, space separated.
+    pub fn replace(mut self, blocks: &str) -> Self {
+        self.replace = blocks.to_string();
+        self
+    }
+}
+
+impl Drop for OreBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let desc = abi::OreDesc {
+            dimension: Str::new(&self.dimension),
+            block: Str::new(&self.block),
+            replace: Str::new(&self.replace),
+            min_y: self.desc.0,
+            max_y: self.desc.1,
+            veins: self.desc.2,
+            size: self.desc.3,
+        };
+        unsafe { (host().reg_ore)(self.raw, &desc) }
     }
 }
 

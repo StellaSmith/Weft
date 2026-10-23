@@ -82,6 +82,7 @@ pub static HOST: Host = Host {
     command_reply,
     is_creative,
     client_creative: crate::client::modui::client_creative,
+    reg_ore,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -513,6 +514,22 @@ unsafe extern "C" fn reg_hud(r: *mut abi::Registrar, cb: Callback) {
         let owner = r.owner;
         let name = format!("{}:hud{}", crate::modloader::mod_id_name(owner), r.game.huds.len());
         r.game.huds.push(registry::HudElement { name, anchor: abi::hud_anchor::HOTBAR_LEFT.into(), order: 0, owner, cb });
+    }
+}
+
+unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
+    unsafe {
+        let r = reg(r);
+        let d = &*d;
+        r.game.ores.push(registry::RawOre {
+            dimension: d.dimension.as_str().to_string(),
+            block: d.block.as_str().to_string(),
+            replace: d.replace.as_str().split_whitespace().map(str::to_string).collect(),
+            min_y: d.min_y,
+            max_y: d.max_y,
+            veins: d.veins,
+            size: d.size,
+        });
     }
 }
 

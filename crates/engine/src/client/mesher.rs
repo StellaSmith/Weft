@@ -107,7 +107,7 @@ pub fn build(c: &Content, n: &Neighborhood) -> Mesh {
                             ];
                             let back = [corners[1], corners[0], corners[3], corners[2]];
                             for q in [corners, back] {
-                                mesh.quads[Layer::Cutout as usize].push(quad(q, [0, 0, 16, 16], t, biome, info.tint, [l; 4]));
+                                mesh.quads[Layer::Cutout as usize].push(quad(q, [0, 0, 16, 16], t, biome, info.tint | FLAT, [l; 4]));
                             }
                         }
                     }
@@ -210,6 +210,9 @@ fn corner_data(n: &Neighborhood, opaque: &impl Fn(usize) -> bool, x: i32, y: i32
     }
     (ao_bits, lights)
 }
+
+/// Added to a quad's tint: no directional shading (plants).
+const FLAT: u8 = 4;
 
 fn quad(corners: [[f32; 3]; 4], uv: [u32; 4], texture: u32, biome: u32, tint: u8, light: [u32; 4]) -> [u32; 8] {
     let enc = |p: [f32; 3]| {

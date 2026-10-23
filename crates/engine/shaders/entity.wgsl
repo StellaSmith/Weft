@@ -90,7 +90,8 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
         out.layer = 0u;
     }
     let hurt = b.color.a;
-    out.color = vec4(b.color.rgb * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), hurt), 1.0);
+    // Gamma-space shading applied in linear space, as in the world shader.
+    out.color = vec4(pow(b.color.rgb * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), hurt), vec3(2.2)), 1.0);
     return out;
 }
 

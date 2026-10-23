@@ -8,6 +8,8 @@ struct Globals {
     params: vec4<f32>,
     // x block texture array, y ambient light 0..15
     ids: vec4<u32>,
+    // x brightness setting 0 (moody) .. 1 (bright)
+    look: vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> g: Globals;
@@ -46,8 +48,7 @@ struct VOut {
 }
 
 fn unpack_rgb(c: u32) -> vec3<f32> {
-    let v = vec3<f32>(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
-    return pow(v, vec3(2.2));
+    return vec3<f32>(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
 }
 
 fn tint_color(word: u32) -> vec3<f32> {
@@ -168,7 +169,11 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     }
     let l = (lw >> ((c & 1u) * 16u)) & 65535u;
     let n = normalize(cross(p1 - p0, p2 - p1));
-    let shade = 0.75 + 0.25 * n.y - 0.15 * abs(n.x);
+    // Face shading blended by normal; plants opt out like vanilla's crossed squares.
+    var shade = n.x * n.x * 0.6 + n.z * n.z * 0.8 + n.y * n.y * select(0.5, 1.0, n.y > 0.0);
+    if (w4 & (1u << 26u)) != 0u {
+        shade = 1.0;
+    }
     let pos = finish(local, origins[ii]);
     var out: VOut;
     out.clip = g.view_proj * pos;
@@ -184,10 +189,9 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 }
 
 fn lightmap(v: f32) -> f32 {
-    // Classic brightness table, halfway towards the "bright" gamma setting.
-    let b = v / (3.0 - 2.0 * v);
-    let bright = 1.0 - pow(1.0 - b, 4.0);
-    return mix(b, bright, 0.5) * 0.96 + 0.04;
+    // Vanilla's curve and floors, then lifted towards 1 - (1 - c)^4 by the brightness setting.
+    let c = (v / (4.0 - 3.0 * v) * 0.95 + 0.05) * 0.96 + 0.03;
+    return mix(c, 1.0 - pow(1.0 - c, 4.0), g.look.x);
 }
 
 fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
@@ -195,7 +199,9 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
     let sky = max(in.light.x * g.params.x, ambient);
     let block = in.light.yzw;
     let light = max(vec3(lightmap(sky)) * mix(vec3(0.55, 0.6, 0.85), vec3(1.0), g.params.x), vec3(lightmap(block.x), lightmap(block.y), lightmap(block.z)));
-    var rgb = albedo.rgb * in.color * light;
+    // Shading factors are meant for gamma space like vanilla's; the target is sRGB, so apply them
+    // as their linear equivalent or AO and shadows come out washed out.
+    var rgb = albedo.rgb * pow(in.color * light, vec3(2.2));
     let fog = clamp((in.dist - g.params.y) / max(g.params.z - g.params.y, 1.0), 0.0, 1.0);
     rgb = mix(rgb, g.fog_color.rgb, fog);
     return vec4(rgb, albedo.a);

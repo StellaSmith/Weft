@@ -81,6 +81,7 @@ pub struct EntityRenderer {
     /// Texture, bindless index and size, by name.
     skins: FxHashMap<String, Option<(TextureId, u32, [u32; 2])>>,
     pub fog: ([f32; 4], f32, f32),
+    pub brightness: f32,
 }
 
 fn shader() -> Result<Shader, ShaderError> {
@@ -89,10 +90,10 @@ fn shader() -> Result<Shader, ShaderError> {
     Shader::from_wgsl("entity.wgsl", &src)
 }
 
-fn lightmap(v: f32) -> f32 {
-    let b = v / (3.0 - 2.0 * v);
-    let bright = 1.0 - (1.0 - b).powi(4);
-    (b + (bright - b) * 0.5) * 0.96 + 0.04
+/// Same curve as the world shader's `lightmap`.
+fn lightmap(v: f32, brightness: f32) -> f32 {
+    let c = (v / (4.0 - 3.0 * v) * 0.95 + 0.05) * 0.96 + 0.03;
+    c + (1.0 - (1.0 - c).powi(4) - c) * brightness
 }
 
 impl EntityRenderer {
@@ -141,6 +142,7 @@ impl EntityRenderer {
             preview_target: None,
             skins: FxHashMap::default(),
             fog: ([0.0; 4], 0.0, 1.0),
+            brightness: 0.5,
         })
     }
 
@@ -419,8 +421,9 @@ impl EntityRenderer {
         let shade = |p: DVec3| -> Vec3 {
             let l = light(p.floor().as_ivec3());
             let ch = |s: u32| ((l >> s) & 255).min(15) as f32 / 15.0;
-            let sky = lightmap(ch(0) * day);
-            Vec3::new(sky.max(lightmap(ch(8))), sky.max(lightmap(ch(16))), sky.max(lightmap(ch(24))))
+            let lm = |v: f32| lightmap(v, self.brightness);
+            let sky = lm(ch(0) * day);
+            Vec3::new(sky.max(lm(ch(8))), sky.max(lm(ch(16))), sky.max(lm(ch(24))))
         };
 
         // Models are posed by the vertex shader: one small record per entity and layer, grouped by

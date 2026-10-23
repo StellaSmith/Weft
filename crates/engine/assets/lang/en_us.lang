@@ -143,3 +143,4 @@ keyname.Quote = '
 keyname.Comma = ,
 keyname.Period = .
 keyname.CapsLock = Caps Lock
+settings.brightness = Brightness: {0}%

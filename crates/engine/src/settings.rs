@@ -13,6 +13,8 @@ pub struct Settings {
     pub vsync: bool,
     pub fov: f32,
     pub sensitivity: f32,
+    /// 0 moody .. 1 bright.
+    pub brightness: f32,
     /// Bit per debug overlay group shown (F3 + number).
     pub debug_groups: u32,
     pub name: String,
@@ -34,6 +36,7 @@ impl Settings {
             vsync: true,
             fov: 70.0,
             sensitivity: 1.0,
+            brightness: 0.5,
             debug_groups: 0b11111,
             name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "Player".into()),
             binds: Vec::new(),
@@ -50,6 +53,7 @@ impl Settings {
                 "vsync" => s.vsync = v == "true",
                 "fov" => s.fov = v.parse().unwrap_or(70.0),
                 "sensitivity" => s.sensitivity = v.parse().unwrap_or(1.0),
+                "brightness" => s.brightness = v.parse().unwrap_or(0.5),
                 "debug_groups" => s.debug_groups = v.parse().unwrap_or(0b11111),
                 "name" => s.name = v.to_string(),
                 "relay" => s.relays.push(v.to_string()),
@@ -69,8 +73,8 @@ impl Settings {
 
     pub fn save(&self) {
         let mut out = format!(
-            "language = {}\ngui_scale = {}\nview_distance = {}\nvsync = {}\nfov = {}\nsensitivity = {}\nname = {}\n",
-            self.language, self.gui_scale, self.view_distance, self.vsync, self.fov, self.sensitivity, self.name
+            "language = {}\ngui_scale = {}\nview_distance = {}\nvsync = {}\nfov = {}\nsensitivity = {}\nbrightness = {}\nname = {}\ndebug_groups = {}\n",
+            self.language, self.gui_scale, self.view_distance, self.vsync, self.fov, self.sensitivity, self.brightness, self.name, self.debug_groups
         );
         for r in &self.relays {
             out.push_str(&format!("relay = {r}\n"));

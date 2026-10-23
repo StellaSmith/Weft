@@ -1093,6 +1093,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             s.set_paused(paused && !s.is_hosting());
         }
         g.client.fov = r.settings.fov;
+        g.client.brightness = r.settings.brightness;
         let t = Instant::now();
         if world_input {
             g.client.update(&mut *r.gpu, &r.input, dt);

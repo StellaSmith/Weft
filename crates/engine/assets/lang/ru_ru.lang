@@ -129,3 +129,4 @@ keyname.ArrowUp = Вверх
 keyname.ArrowDown = Вниз
 keyname.ArrowLeft = Влево
 keyname.ArrowRight = Вправо
+settings.brightness = Яркость: {0}%

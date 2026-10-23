@@ -114,7 +114,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let r = face_rect(face, cub.size, cub.uv);
     out.uv = (r.xy + UVS[c] * r.zw) / inst.tex_size;
     out.tex = inst.tex;
-    out.color = inst.color * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), inst.hurt);
+    out.color = pow(inst.color * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), inst.hurt), vec3(2.2));
     return out;
 }
 

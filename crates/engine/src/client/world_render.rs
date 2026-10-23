@@ -84,6 +84,7 @@ pub struct Globals {
     pub fog_color: [f32; 4],
     pub params: [f32; 4],
     pub ids: [u32; 4],
+    pub look: [f32; 4],
 }
 
 pub struct Camera {
@@ -118,6 +119,7 @@ pub struct FrameParams {
     pub fog_end: f32,
     pub time: f32,
     pub ambient: u32,
+    pub brightness: f32,
 }
 
 pub struct WorldRenderer {
@@ -345,6 +347,7 @@ impl WorldRenderer {
             fog_color: p.fog_color.extend(1.0).to_array(),
             params: [p.daylight, p.fog_start, p.fog_end, p.time],
             ids: [self.block_index, p.ambient, 0, 0],
+            look: [p.brightness, 0.0, 0.0, 0.0],
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));

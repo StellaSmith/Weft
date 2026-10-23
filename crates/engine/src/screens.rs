@@ -155,6 +155,7 @@ impl Screen for SettingsScreen {
                 });
                 slider(ui, "settings.fov", 50.0, 110.0, 1.0, |s| s.fov, |c, v| c.settings.fov = v);
                 slider(ui, "settings.sensitivity", 20.0, 300.0, 5.0, |s| s.sensitivity * 100.0, |c, v| c.settings.sensitivity = v / 100.0);
+                slider(ui, "settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness * 100.0, |c, v| c.settings.brightness = v / 100.0);
                 let scale = if s.gui_scale == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale as i64) };
                 button(ui, cx, "settings.gui_scale", &[scale], 300.0, |c| {
                     c.settings.gui_scale = (c.settings.gui_scale + 1) % 7;

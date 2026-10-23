@@ -95,6 +95,8 @@ pub struct Client {
     cooldown: f32,
     pub view_radius: i32,
     pub fov: f32,
+    /// Brightness setting, 0 moody .. 1 bright.
+    pub brightness: f32,
     pub entities: FxHashMap<u64, ClientEntity>,
     pub inventory: Vec<ItemStack>,
     pub health: f32,
@@ -157,6 +159,7 @@ impl Client {
             cooldown: 0.0,
             view_radius,
             fov: 70.0,
+            brightness: 0.5,
             entities: FxHashMap::default(),
             inventory: vec![ItemStack::EMPTY; 40],
             health: 20.0,
@@ -584,7 +587,9 @@ impl Client {
             fog_end: view_distance,
             time: self.start.elapsed().as_secs_f32(),
             ambient: def.ambient as u32,
+            brightness: self.brightness,
         };
+        self.entity_render.brightness = self.brightness;
         let cam = self.camera();
         self.render.draw(gpu, list, frame, &cam, &params);
         list.push(voxide_render::Cmd::Mark);

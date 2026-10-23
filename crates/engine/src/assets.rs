@@ -216,38 +216,35 @@ pub fn build_array(assets: &Assets, names: &[String]) -> TextureArray {
         })
         .collect();
     let size = images.iter().flatten().map(|i| i.width).max().unwrap_or(16).max(1).next_power_of_two();
+    // Frames cut and scaled per texture in parallel, then laid out in name order.
+    let per_texture: Vec<(Vec<Vec<u8>>, u32, Option<String>)> = images
+        .par_iter()
+        .zip(names)
+        .map(|(img, name)| {
+            let meta = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
+            match img {
+                Some(img) if img.height >= img.width && img.height % img.width == 0 => {
+                    let frames = img.height / img.width;
+                    let frame_bytes = (img.width * img.width * 4) as usize;
+                    let layers = (0..frames as usize).map(|f| scale_nearest(&img.rgba[f * frame_bytes..(f + 1) * frame_bytes], img.width, size)).collect();
+                    (layers, frames, meta)
+                }
+                Some(img) => {
+                    log::warn!("texture {name} is {}x{}, not square or a vertical strip", img.width, img.height);
+                    (vec![missing(size)], 1, meta)
+                }
+                None => (vec![missing(size)], 1, meta),
+            }
+        })
+        .collect();
     let mut layers: Vec<Vec<u8>> = Vec::new();
     let mut entries = Vec::new();
     let mut anims = Vec::new();
-    for (img, name) in images.iter().zip(names) {
-        let first_layer = layers.len() as u32;
-        let frame_count = img.as_ref().map_or(1, |i| if i.height >= i.width && i.height % i.width == 0 { i.height / i.width } else { 1 });
-        let meta = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
-        anims.push(if frame_count > 1 || meta.is_some() {
-            Some(parse_anim(meta.as_deref().unwrap_or(""), frame_count, first_layer))
-        } else {
-            None
-        });
+    for (frames, count, meta) in per_texture {
         let first = layers.len() as u32;
-        match img {
-            Some(img) if img.height >= img.width && img.height % img.width == 0 => {
-                let frames = img.height / img.width;
-                for f in 0..frames {
-                    let frame = &img.rgba[(f * img.width * img.width * 4) as usize..((f + 1) * img.width * img.width * 4) as usize];
-                    layers.push(scale_nearest(frame, img.width, size));
-                }
-                entries.push((first, frames));
-            }
-            Some(img) => {
-                log::warn!("texture {}x{} is not square or a vertical strip", img.width, img.height);
-                layers.push(missing(size));
-                entries.push((first, 1));
-            }
-            None => {
-                layers.push(missing(size));
-                entries.push((first, 1));
-            }
-        }
+        anims.push(if count > 1 || meta.is_some() { Some(parse_anim(meta.as_deref().unwrap_or(""), count, first)) } else { None });
+        entries.push((first, count));
+        layers.extend(frames);
     }
     let mip_count = size.trailing_zeros() + 1;
     let mut mips = Vec::with_capacity(mip_count as usize);

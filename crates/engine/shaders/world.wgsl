@@ -6,16 +6,19 @@ struct Globals {
     fog_color: vec4<f32>,
     // x daylight 0..1, y fog start, z fog end, w time in seconds
     params: vec4<f32>,
-    // x block texture array, y ambient light 0..15
+    // x block texture array, y ambient light 0..15, z biome count, w blended colour tiles
     ids: vec4<u32>,
     // x brightness setting 0 (moody) .. 1 (bright)
     look: vec4<f32>,
+    // Origins are relative to this cube.
+    cam_cube: vec4<i32>,
 }
 
 @group(1) @binding(0) var<storage, read> g: Globals;
 @group(1) @binding(1) var<storage, read> origins: array<vec4<i32>>;
 @group(1) @binding(2) var<storage, read> records: array<u32>;
-// Per biome: grass, foliage, water as 0xRRGGBB.
+// Per biome: grass, foliage, water as 0xRRGGBB. Then the blended colours of loaded block
+// columns, 0xFFRRGGBB, in 16x16 tiles addressed by column position modulo g.ids.w.
 @group(1) @binding(3) var<storage, read> biomes: array<vec4<u32>>;
 // Two words per texture name, see world_render.rs.
 @group(1) @binding(4) var<storage, read> tex_info: array<u32>;
@@ -51,18 +54,34 @@ fn unpack_rgb(c: u32) -> vec3<f32> {
     return vec3<f32>(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0;
 }
 
-fn tint_color(word: u32) -> vec3<f32> {
+fn column_tint(x: i32, z: i32, tint: u32) -> u32 {
+    let t = i32(g.ids.w);
+    let tx = ((x >> 4u) % t + t) % t;
+    let tz = ((z >> 4u) % t + t) % t;
+    let i = g.ids.z + u32(tz * t + tx) * 256u + u32((z & 15) * 16 + (x & 15));
+    return biomes[i][tint - 1u];
+}
+
+// Tint at a block corner: average of the four columns touching it, falling back to the face's
+// own biome where colours are not uploaded yet.
+fn tint_color(word: u32, x: i32, z: i32) -> vec3<f32> {
     let tint = (word >> 24u) & 3u;
     if tint == 0u {
         return vec3(1.0);
     }
-    let b = biomes[(word >> 16u) & 255u];
-    if tint == 1u {
-        return unpack_rgb(b.x);
-    } else if tint == 2u {
-        return unpack_rgb(b.y);
+    var sum = vec3(0.0);
+    var n = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let c = column_tint(x - 1 + (k & 1), z - 1 + (k >> 1u), tint);
+        if c != 0u {
+            sum += unpack_rgb(c);
+            n += 1.0;
+        }
     }
-    return unpack_rgb(b.z);
+    if n > 0.0 {
+        return sum / n;
+    }
+    return unpack_rgb(biomes[(word >> 16u) & 255u][tint - 1u]);
 }
 
 struct Frame {
@@ -139,7 +158,8 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     }
     let l = (lw >> ((c & 1u) * 16u)) & 65535u;
     out.light = unpack_light(l);
-    out.color = tint_color(w1) * SHADE[dir] * AO[a[c]];
+    let o = origins[ii] + g.cam_cube;
+    out.color = tint_color(w1, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z)) * SHADE[dir] * AO[a[c]];
     return out;
 }
 
@@ -184,7 +204,8 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.layer2 = fr.b;
     out.blend = fr.blend;
     out.light = unpack_light(l);
-    out.color = tint_color(w4) * shade;
+    let o = origins[ii] + g.cam_cube;
+    out.color = tint_color(w4, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z))) * shade;
     return out;
 }
 

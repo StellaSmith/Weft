@@ -512,7 +512,15 @@ impl Client {
         self.hurt_flash = (self.hurt_flash - dt as f32).max(0.0);
         self.hotbar = self.inventory[..9].iter().map(|s| if s.is_empty() { 0 } else { s.item | (s.count.min(255) << 24) }).collect();
 
-        let center = (self.player.pos.floor().as_ivec3()) >> 4;
+        let center: IVec3 = (self.player.pos.floor().as_ivec3()) >> 4;
+        // Wide enough for every column the server keeps sent (view radius + 2).
+        let reach = self.view_radius + 3;
+        if self.render.set_tint_tiles(gpu, (reach * 2 + 1) as u32) {
+            self.world.retint_all();
+        }
+        for (col, tints) in self.world.take_tints(glam::IVec2::new(center.x, center.z), reach) {
+            self.render.upload_tints(gpu, col, &tints);
+        }
         self.world.schedule_meshing(center, rayon::current_num_threads() * 2);
         for r in self.world.take_meshes() {
             self.render.upload(gpu, r.pos, &r.mesh);

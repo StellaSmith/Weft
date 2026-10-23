@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use glam::IVec3;
+use glam::{IVec2, IVec3};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::mesher::{self, Mesh, Neighborhood, PAD_VOLUME, pidx};
@@ -29,7 +29,25 @@ pub struct ClientWorld {
     hidden: FxHashMap<IVec3, u8>,
     /// An opaque state standing in for hidden neighbours.
     filler: u32,
+    columns: FxHashMap<IVec2, Column>,
+    /// Columns whose blended biome colours are out of date.
+    tints_dirty: FxHashSet<IVec2>,
 }
+
+/// Biomes of a block column, taken from the first of its cubes that has them; cubes store none
+/// when every biome is 0.
+struct Column {
+    biomes: Option<Box<[u8; 256]>>,
+    cubes: u32,
+}
+
+/// Biome colours are averaged over (2 BLEND + 1)^2 blocks.
+const BLEND: i32 = 4;
+/// About 9 us each; while loading, columns get redone as neighbours arrive.
+const TINTS_PER_FRAME: usize = 64;
+
+/// Grass, foliage and water colours of one block column, 0xFFRRGGBB.
+pub type ColumnTints = [[u32; 4]; 256];
 
 impl ClientWorld {
     pub fn new(dim: u32) -> Self {
@@ -47,6 +65,8 @@ impl ClientWorld {
             next_version: 0,
             hidden: FxHashMap::default(),
             filler: content().states.iter().position(|s| s.flags & voxide_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
+            columns: FxHashMap::default(),
+            tints_dirty: FxHashSet::default(),
         }
     }
 
@@ -62,6 +82,8 @@ impl ClientWorld {
         self.dirty.clear();
         self.versions.clear();
         self.hidden.clear();
+        self.columns.clear();
+        self.tints_dirty.clear();
     }
 
     /// Versions come from one counter so a mesh job of a removed cube can never match a new cube
@@ -93,12 +115,35 @@ impl ClientWorld {
         if hidden != crate::net::KEEP_HIDDEN {
             self.hidden.insert(pos, hidden);
         }
-        self.cubes.insert(pos, cube);
+        let col = IVec2::new(pos.x, pos.z);
+        let mut fresh = false;
+        let column = self.columns.entry(col).or_insert_with(|| {
+            fresh = true;
+            Column { biomes: None, cubes: 0 }
+        });
+        if fresh || column.biomes.is_none() && cube.biomes.is_some() {
+            column.biomes = column.biomes.take().or_else(|| cube.biomes.clone());
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    self.tints_dirty.insert(col + IVec2::new(dx, dz));
+                }
+            }
+        }
+        if self.cubes.insert(pos, cube).is_none() {
+            self.columns.get_mut(&col).unwrap().cubes += 1;
+        }
         self.touch(pos, true);
     }
 
     pub fn remove(&mut self, pos: IVec3) {
         if self.cubes.remove(&pos).is_some() {
+            let col = IVec2::new(pos.x, pos.z);
+            if let Some(c) = self.columns.get_mut(&col) {
+                c.cubes -= 1;
+                if c.cubes == 0 {
+                    self.columns.remove(&col);
+                }
+            }
             self.hidden.remove(&pos);
             self.dirty.remove(&pos);
             self.versions.remove(&pos);
@@ -113,6 +158,82 @@ impl ClientWorld {
         let l = p & 15;
         let border = l.x == 0 || l.x == 15 || l.y == 0 || l.y == 15 || l.z == 0 || l.z == 15;
         self.touch(cp, border);
+    }
+
+    pub fn retint_all(&mut self) {
+        self.tints_dirty.extend(self.columns.keys().copied());
+    }
+
+    /// Recomputes the blended colours of columns whose biomes or neighbours changed. Only columns
+    /// at most `reach` from `center` are done: the GPU keeps a window of 2 reach + 1 columns, and
+    /// cubes of an area the player just left would overwrite the ones around them.
+    pub fn take_tints(&mut self, center: IVec2, reach: i32) -> Vec<(IVec2, Box<ColumnTints>)> {
+        let mut out = Vec::new();
+        let dirty: Vec<IVec2> = self.tints_dirty.iter().copied().collect();
+        for c in dirty {
+            if !self.columns.contains_key(&c) {
+                self.tints_dirty.remove(&c);
+            } else if (c - center).abs().max_element() <= reach && out.len() < TINTS_PER_FRAME {
+                self.tints_dirty.remove(&c);
+                out.push((c, self.blend_column(c)));
+            }
+        }
+        out
+    }
+
+    fn blend_column(&self, col: IVec2) -> Box<ColumnTints> {
+        const W: usize = 16 + 2 * BLEND as usize;
+        let c = content();
+        let fallback = crate::content::BiomeDef { name: String::new(), grass: 0x7fb238, foliage: 0x48b518, water: 0x3f76e4, temperature: 0.5, rainfall: 0.5 };
+        let get = |c: &Column, x: i32, z: i32| c.biomes.as_ref().map_or(0, |b| b[(z * 16 + x) as usize]);
+        let own = &self.columns[&col];
+        // Blocks of missing neighbour columns repeat this column's edge.
+        let biome_at = |x: i32, z: i32| -> u8 {
+            match self.columns.get(&(col + IVec2::new(x.div_euclid(16), z.div_euclid(16)))) {
+                Some(other) => get(other, x.rem_euclid(16), z.rem_euclid(16)),
+                None => get(own, x.clamp(0, 15), z.clamp(0, 15)),
+            }
+        };
+        // Per tint and channel, summed along x then along z.
+        let mut rows = vec![[[0u32; 3]; 3]; W * 16];
+        for gz in 0..W {
+            let mut line = [[[0u32; 3]; 3]; W];
+            for (gx, v) in line.iter_mut().enumerate() {
+                let b = c.biomes.get(biome_at(gx as i32 - BLEND, gz as i32 - BLEND) as usize).unwrap_or(c.biomes.first().unwrap_or(&fallback));
+                for (t, rgb) in [b.grass, b.foliage, b.water].into_iter().enumerate() {
+                    v[t] = [rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255];
+                }
+            }
+            for x in 0..16 {
+                let out = &mut rows[gz * 16 + x];
+                for v in &line[x..x + 2 * BLEND as usize + 1] {
+                    for t in 0..3 {
+                        for ch in 0..3 {
+                            out[t][ch] += v[t][ch];
+                        }
+                    }
+                }
+            }
+        }
+        let n = ((2 * BLEND + 1) * (2 * BLEND + 1)) as u32;
+        let mut out = Box::new([[0u32; 4]; 256]);
+        for z in 0..16 {
+            for x in 0..16 {
+                let mut sum = [[0u32; 3]; 3];
+                for gz in z..z + 2 * BLEND as usize + 1 {
+                    for t in 0..3 {
+                        for ch in 0..3 {
+                            sum[t][ch] += rows[gz * 16 + x][t][ch];
+                        }
+                    }
+                }
+                for t in 0..3 {
+                    let [r, g, b] = sum[t].map(|s| (s + n / 2) / n);
+                    out[z * 16 + x][t] = 0xFF00_0000 | r << 16 | g << 8 | b;
+                }
+            }
+        }
+        out
     }
 
     /// `u32::MAX` when not loaded.

@@ -85,6 +85,7 @@ pub struct Globals {
     pub params: [f32; 4],
     pub ids: [u32; 4],
     pub look: [f32; 4],
+    pub cam_cube: [i32; 4],
 }
 
 pub struct Camera {
@@ -131,7 +132,11 @@ pub struct WorldRenderer {
     globals: Vec<BufferId>,
     origins: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
+    /// Biome table, then per block column of the loaded area its blended colours: tiles of
+    /// 16x16 blocks addressed by column position modulo `tint_tiles`.
     biomes: BufferId,
+    biome_table: Vec<[u32; 4]>,
+    tint_tiles: u32,
     tex_info: BufferId,
     anim: BufferId,
     /// (0 1 2)(0 2 3) for as many quads as one draw can hold; every face and quad draw shares it
@@ -204,6 +209,8 @@ impl WorldRenderer {
             origins: Vec::new(),
             indirect: Vec::new(),
             biomes,
+            biome_table: biome_data,
+            tint_tiles: 0,
             tex_info,
             anim,
             quad_index,
@@ -256,6 +263,28 @@ impl WorldRenderer {
             }
             Err(e) => log::error!("world shader: {e}"),
         }
+    }
+
+    /// Sizes the blended colour area to `tiles` x `tiles` columns; true when it was reallocated
+    /// and every column has to be uploaded again.
+    pub fn set_tint_tiles(&mut self, gpu: &mut dyn Backend, tiles: u32) -> bool {
+        if tiles == self.tint_tiles {
+            return false;
+        }
+        gpu.destroy_buffer(self.biomes);
+        let size = (self.biome_table.len() + (tiles * tiles) as usize * 256) * 16;
+        self.biomes = gpu.create_buffer(size as u64, usage::STORAGE, "biomes");
+        gpu.write_buffer(self.biomes, 0, bytemuck::cast_slice(&self.biome_table));
+        // Zero marks a block without blended colours yet.
+        gpu.write_buffer(self.biomes, self.biome_table.len() as u64 * 16, &vec![0u8; size - self.biome_table.len() * 16]);
+        self.tint_tiles = tiles;
+        true
+    }
+
+    pub fn upload_tints(&mut self, gpu: &mut dyn Backend, col: glam::IVec2, tints: &super::world::ColumnTints) {
+        let t = self.tint_tiles as i32;
+        let slot = (col.x.rem_euclid(t) + col.y.rem_euclid(t) * t) as usize;
+        gpu.write_buffer(self.biomes, ((self.biome_table.len() + slot * 256) * 16) as u64, bytemuck::cast_slice(tints));
     }
 
     pub fn remove(&mut self, pos: IVec3) {
@@ -346,8 +375,9 @@ impl WorldRenderer {
             sky_color: p.sky_color.extend(1.0).to_array(),
             fog_color: p.fog_color.extend(1.0).to_array(),
             params: [p.daylight, p.fog_start, p.fog_end, p.time],
-            ids: [self.block_index, p.ambient, 0, 0],
+            ids: [self.block_index, p.ambient, self.biome_table.len() as u32, self.tint_tiles],
             look: [p.brightness, 0.0, 0.0, 0.0],
+            cam_cube: cam_cube.extend(0).to_array(),
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));

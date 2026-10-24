@@ -12,6 +12,9 @@ pub struct ClientView {
 }
 
 impl ClientView {
+    pub(crate) fn from_raw(raw: *mut abi::ClientCtx) -> ClientView {
+        ClientView { raw }
+    }
     pub fn player(&self) -> u64 {
         unsafe { (host().client_player)(self.raw) }
     }

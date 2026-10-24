@@ -35,17 +35,20 @@ struct TextSink {
     out: Option<(String, Vec<Arg>)>,
 }
 
-/// What `ClientCtx` points at.
+/// What `ClientCtx` points at. `run` is set only for callbacks that may drive the client (frame
+/// hooks, packets), see `app::api`.
+#[repr(C)]
 pub struct ClientView {
-    client: *const Client,
+    pub client: *const Client,
+    pub run: *mut std::ffi::c_void,
 }
 
 impl ClientView {
     pub fn new(client: Option<&Client>) -> ClientView {
-        ClientView { client: client.map_or(std::ptr::null(), |c| c as *const Client) }
+        ClientView { client: client.map_or(std::ptr::null(), |c| c as *const Client), run: std::ptr::null_mut() }
     }
 
-    fn raw(&mut self) -> *mut abi::ClientCtx {
+    pub fn raw(&mut self) -> *mut abi::ClientCtx {
         self as *mut ClientView as *mut abi::ClientCtx
     }
 }

@@ -29,6 +29,7 @@ pub struct Settings {
     /// file's value unless the player changed the setting since.
     pub cli_vsync: Option<(bool, bool)>,
     pub cli_view: Option<(i32, i32)>,
+    pub read_only: bool,
 }
 
 impl Settings {
@@ -52,32 +53,39 @@ impl Settings {
             shader_pack: None,
             cli_vsync: None,
             cli_view: None,
+            read_only: false,
         };
         let Ok(src) = std::fs::read_to_string(&path) else { return s };
         for line in src.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let (k, v) = (k.trim(), v.trim());
-            match k {
-                "language" => s.language = v.to_string(),
-                "gui_scale" => s.gui_scale = v.parse().unwrap_or(0),
-                "view_distance" => s.view_distance = v.parse().unwrap_or(12),
-                "vsync" => s.vsync = v == "true",
-                "fov" => s.fov = v.parse().unwrap_or(70.0),
-                "sensitivity" => s.sensitivity = v.parse().unwrap_or(1.0),
-                "brightness" => s.brightness = v.parse().unwrap_or(0.5),
-                "debug_groups" => s.debug_groups = v.parse().unwrap_or(0b11111),
-                "name" => s.name = v.to_string(),
-                "relay" => s.relays.push(v.to_string()),
-                "resource_pack" => s.resource_packs.push(v.to_string()),
-                "shader_pack" => s.shader_pack = Some(v.to_string()).filter(|v| !v.is_empty()),
-                _ => {
-                    if let Some(action) = k.strip_prefix("key.") {
-                        s.binds.push((action.to_string(), v.to_string()));
-                    }
+            if !s.set(k, v) {
+                if let Some(action) = k.strip_prefix("key.") {
+                    s.binds.push((action.to_string(), v.to_string()));
                 }
             }
         }
         s
+    }
+
+    /// One `key = value` line of settings.txt; false for keys it does not know.
+    pub fn set(&mut self, k: &str, v: &str) -> bool {
+        match k {
+            "language" => self.language = v.to_string(),
+            "gui_scale" => self.gui_scale = v.parse().unwrap_or(0),
+            "view_distance" => self.view_distance = v.parse().unwrap_or(12),
+            "vsync" => self.vsync = v == "true",
+            "fov" => self.fov = v.parse().unwrap_or(70.0),
+            "sensitivity" => self.sensitivity = v.parse().unwrap_or(1.0),
+            "brightness" => self.brightness = v.parse().unwrap_or(0.5),
+            "debug_groups" => self.debug_groups = v.parse().unwrap_or(0b11111),
+            "name" => self.name = v.to_string(),
+            "relay" => self.relays.push(v.to_string()),
+            "resource_pack" => self.resource_packs.push(v.to_string()),
+            "shader_pack" => self.shader_pack = Some(v.to_string()).filter(|v| !v.is_empty()),
+            _ => return false,
+        }
+        true
     }
 
     pub fn saves_dir(&self) -> PathBuf {
@@ -85,6 +93,10 @@ impl Settings {
     }
 
     pub fn save(&self) {
+        // Automated runs change settings for themselves only.
+        if self.read_only {
+            return;
+        }
         let vsync = match self.cli_vsync {
             Some((given, saved)) if self.vsync == given => saved,
             _ => self.vsync,

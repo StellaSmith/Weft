@@ -1,0 +1,15 @@
+[package]
+name = "testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+voxide_sdk.workspace = true
+
+# Development tool: left out of `voxide --dist`.
+[package.metadata.voxide]
+dist = false

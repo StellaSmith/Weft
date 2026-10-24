@@ -10,10 +10,10 @@ pub fn register(r: &mut Registry) {
     for wood in ["oak", "birch", "spruce"] {
         r.shapeless(C, &format!("{wood}_planks"), 4, &[&format!("{wood}_log")], 0);
     }
-    r.shaped(C, "stick", 4, &["#", "#"], &[('#', "#base:planks")]);
-    r.shaped(C, "crafting_table", 1, &["##", "##"], &[('#', "#base:planks")]);
+    r.shaped(C, "stick", 4, &["#", "#"], &[('#', "#planks")]);
+    r.shaped(C, "crafting_table", 1, &["##", "##"], &[('#', "#planks")]);
     r.shaped(C, "furnace", 1, &["###", "# #", "###"], &[('#', "cobblestone")]);
-    r.shaped(C, "chest", 1, &["###", "# #", "###"], &[('#', "#base:planks")]);
+    r.shaped(C, "chest", 1, &["###", "# #", "###"], &[('#', "#planks")]);
     r.shaped(C, "torch", 4, &["c", "s"], &[('c', "coal"), ('s', "stick")]);
     r.shaped(C, "ladder", 3, &["s s", "sss", "s s"], &[('s', "stick")]);
     r.shaped(C, "bread", 1, &["www"], &[('w', "wheat")]);
@@ -54,7 +54,7 @@ pub fn register(r: &mut Registry) {
     for (input, output, ticks) in [
         ("sand", "glass", 200),
         ("cobblestone", "stone", 200),
-        ("#base:logs", "coal", 200),
+        ("#logs", "coal", 200),
         ("clay", "bricks", 200),
     ] {
         r.shapeless(S, output, 1, &[input], ticks);

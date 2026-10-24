@@ -64,3 +64,32 @@ pub fn find_item(name: &str) -> Option<u32> {
 pub fn block_of(state: u32) -> u32 {
     unsafe { (host().block_of)(state) }
 }
+
+/// Full name of a block state (`base:furnace#4` for a state past the first), item, entity kind ...
+/// by its id; `kind` is `abi::entry_kind`. Empty if unknown.
+pub fn name_of(kind: u32, id: u32) -> &'static str {
+    unsafe { (host().name_of)(kind, id).as_str() }
+}
+
+pub fn block_name(state: u32) -> &'static str {
+    name_of(abi::entry_kind::BLOCK, state)
+}
+
+pub fn item_name(item: u32) -> &'static str {
+    name_of(abi::entry_kind::ITEM, item)
+}
+
+pub fn find_entity(name: &str) -> Option<u32> {
+    let id = unsafe { (host().find)(abi::entry_kind::ENTITY, Str::new(name), std::ptr::null_mut()) };
+    (id != u32::MAX).then_some(id)
+}
+
+pub fn find_menu(name: &str) -> Option<u32> {
+    let id = unsafe { (host().find)(abi::entry_kind::MENU, Str::new(name), std::ptr::null_mut()) };
+    (id != u32::MAX).then_some(id)
+}
+
+pub fn find_dimension(name: &str) -> Option<u32> {
+    let id = unsafe { (host().find)(abi::entry_kind::DIMENSION, Str::new(name), std::ptr::null_mut()) };
+    (id != u32::MAX).then_some(id)
+}

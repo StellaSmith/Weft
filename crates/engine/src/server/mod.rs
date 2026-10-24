@@ -502,6 +502,23 @@ impl Server {
                         log::info!("{} died", p.name);
                     }
                 }
+                DimEvent::Packet { player, channel, data } => {
+                    if let Some(p) = self.players.iter_mut().find(|p| p.joined && p.entity == player) {
+                        p.conn.send(ToClient::Packet { channel, data });
+                    }
+                }
+                DimEvent::Teleport { from, id, dim, pos } => {
+                    let to = if dim == u32::MAX { from } else { dim };
+                    if (to as usize) < self.dims.len() && pos.is_finite() {
+                        self.teleport(c, from, id, to, pos);
+                    }
+                }
+                DimEvent::SetTime { dim, time } => self.dims[dim as usize].set_time(time),
+                DimEvent::SetMode { player, mode } => {
+                    if let Some(pi) = self.player_index(player) {
+                        self.set_mode(pi, mode);
+                    }
+                }
             }
         }
     }
@@ -853,6 +870,15 @@ impl Server {
                         p.conn.send(ToClient::Chat(format!("<{name}> {text}")));
                     }
                 }
+            }
+            ToServer::Packet { channel, data } => {
+                let Some((owner, cb)) = c.game.packets.get(channel as usize).and_then(|d| d.server) else { return };
+                let Some((r, player)) = self.region(pi) else { return };
+                let slice = abi::Slice::new(&data);
+                r.call(owner, cb, |w| abi::PacketArgs { world: w, player, data: slice });
+                r.flush_neighbors(c);
+                r.finish_tick();
+                self.dim_events(c);
             }
             ToServer::Gizmos(mut names) => {
                 names.retain(|n| n.len() <= 64);
@@ -1520,7 +1546,7 @@ impl Server {
             for reg in &dim.regions {
                 // Spectators are seen only by other spectators.
                 let shown = |e: &&Entity| e.mode != GameMode::Spectator || me_mode == GameMode::Spectator;
-                for e in reg.entities.list.iter().filter(|e| !e.removed && e.id != p.entity && e.anchor.is_none()).filter(shown) {
+                for e in reg.entities.list.iter().filter(|e| !e.removed && e.id != p.entity && e.anchor.is_none() && e.kind != c.game.virtual_kind).filter(shown) {
                     if (e.pos - me).length_squared() > range2 {
                         continue;
                     }
@@ -1799,7 +1825,8 @@ fn serialize(c: &Content, d: &Dim, ids: &[u64]) -> Vec<u8> {
     let list: Vec<(&Entity, Option<&Vec<ItemStack>>, Vec<(u32, &[u8])>)> = ids
         .iter()
         .filter_map(|&id| {
-            let e = d.entities.get(id)?;
+            // Virtual inventories are never saved.
+            let e = d.entities.get(id).filter(|e| e.kind != c.game.virtual_kind)?;
             let comps = d.entities.comps.iter().filter(|((eid, _), _)| *eid == id).map(|((_, k), v)| (*k, &v[..])).collect();
             Some((e, d.entities.inventories.get(&id), comps))
         })
@@ -1810,7 +1837,7 @@ fn serialize(c: &Content, d: &Dim, ids: &[u64]) -> Vec<u8> {
 }
 
 fn entities_in(c: &Content, d: &Dim, cube: IVec3) -> Vec<u8> {
-    let ids: Vec<u64> = d.entities.list.iter().filter(|e| !e.removed && !e.player && cube_of(e.pos.floor().as_ivec3()) == cube).map(|e| e.id).collect();
+    let ids: Vec<u64> = d.entities.list.iter().filter(|e| !e.removed && !e.player && e.kind != c.game.virtual_kind && cube_of(e.pos.floor().as_ivec3()) == cube).map(|e| e.id).collect();
     serialize(c, d, &ids)
 }
 

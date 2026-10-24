@@ -1,4 +1,4 @@
-//! `bench` autopilot step: frame, GPU and server statistics over a time window, logged as one line.
+//! Frame, GPU and server statistics over a time window (`client_op::BENCH`), logged as one line.
 
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,18 @@ impl Bench {
 
     pub fn done(&self) -> bool {
         Instant::now() >= self.until
+    }
+
+    /// fps, average and p99 frame ms, average GPU and server ms.
+    pub fn summary(&self) -> [f32; 5] {
+        let n = self.frames.len().max(1) as f64;
+        let mut sorted = self.frames.clone();
+        sorted.sort_by(f32::total_cmp);
+        let p99 = sorted.get(((sorted.len() as f64 - 1.0) * 0.99).round() as usize).copied().unwrap_or(0.0);
+        let avg = self.frames.iter().map(|&f| f as f64).sum::<f64>() / n;
+        let gpu = self.gpu.iter().sum::<f64>() / self.gpu_frames.max(1) as f64;
+        let srv = self.server.iter().map(|&s| s as f64).sum::<f64>() / self.server.len().max(1) as f64;
+        [(1000.0 / avg.max(1e-3)) as f32, avg as f32, p99, gpu as f32, srv as f32]
     }
 
     pub fn report(&mut self, extra: &str) -> String {

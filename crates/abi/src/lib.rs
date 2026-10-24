@@ -1187,6 +1187,306 @@ pub struct Host {
     /// Debug shape for players showing `group`: `kind` 0 line from `a` to `b`, 1 box between
     /// corners `a` and `b`, 2 `text` at `a`; `color` is 0xRRGGBBAA, kept for `ticks`.
     pub gizmo: unsafe extern "C" fn(world: *mut WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, text: Str),
+
+    // ------------------------------------------------ client side and mod channels (ABI 2.1)
+    /// Client callback, see `client_hook`.
+    pub reg_client_hook: unsafe extern "C" fn(reg: *mut Registrar, hook: u32, cb: Callback),
+    /// Message channel `name` between a mod's client and server parts. `side` 0: `cb` runs on the
+    /// server with `PacketArgs` when a client sends; 1: on the client with `ClientPacketArgs`.
+    pub reg_packet: unsafe extern "C" fn(reg: *mut Registrar, name: Str, side: u32, cb: Callback),
+    /// Key binding `name` (shown in Controls as `key.<ns>.<name>`), default key by its settings
+    /// name (`KeyJ`, `mouse3`, ...). Read with `client_pressed`.
+    pub reg_key: unsafe extern "C" fn(reg: *mut Registrar, name: Str, key: Str),
+    /// Value of `--name value` on the command line, empty if not given.
+    pub launch_option: unsafe extern "C" fn(name: Str) -> Str,
+
+    /// Server: sends `data` on channel `name` to `player`'s client (after this tick's changes).
+    pub send_packet: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, name: Str, data: Slice<u8>),
+    /// Opens `menu` on the block entity at `pos`. 0 when there is none: the reason is logged and
+    /// nothing opens.
+    pub open_menu_at: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, menu: u32, pos: *const [i32; 3]) -> u32,
+    /// A virtual inventory of `slots` (an invisible entity at `pos`, never saved) that menus can be
+    /// opened on like on a chest. Remove it with `entity_remove`.
+    pub inventory_create: unsafe extern "C" fn(world: *mut WorldCtx, slots: u32, pos: *const [f64; 3]) -> u64,
+    /// Moves an entity (players too, their client follows) at the end of the tick; `dim` is a
+    /// dimension id, `u32::MAX` = the same one.
+    pub entity_teleport: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dim: u32, pos: *const [f64; 3]),
+    /// Sets this dimension's time of day counter at the end of the tick.
+    pub set_time: unsafe extern "C" fn(world: *mut WorldCtx, time: u64),
+    /// 0 survival, 1 creative, 2 spectator.
+    pub set_game_mode: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, mode: u32),
+
+    /// Client, during any client callback: the local view, see `ClientState`.
+    pub client_state: unsafe extern "C" fn(client: *mut ClientCtx, out: *mut ClientState),
+    /// Client frame hooks only: simulated input, see `client_input`. Returns 0 for an unknown
+    /// action or key.
+    pub client_input: unsafe extern "C" fn(client: *mut ClientCtx, op: u32, text: Str, x: f32, y: f32) -> u32,
+    /// Bit 1: action pressed this frame, bit 2: held.
+    pub client_pressed: unsafe extern "C" fn(client: *mut ClientCtx, action: Str) -> u32,
+    /// Client frame hooks only: moves/turns the local player directly.
+    pub client_set_player: unsafe extern "C" fn(client: *mut ClientCtx, control: *const PlayerControl),
+    /// Client frame hooks only: see `client_op`.
+    pub client_command: unsafe extern "C" fn(client: *mut ClientCtx, op: u32, text: Str, num: f64) -> u64,
+    /// Texts the client knows, see `client_text`. Valid until the next call.
+    pub client_text: unsafe extern "C" fn(client: *mut ClientCtx, which: u32, index: u32) -> Str,
+    /// Block the client has at `pos`, `u32::MAX` if that cube is not loaded there.
+    pub client_block: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
+    /// `container` 0 own inventory, 1 the open menu's slots, 2 the menu cursor.
+    pub client_slot: unsafe extern "C" fn(client: *mut ClientCtx, container: u32, slot: u32) -> ItemStack,
+    /// Open menu as (kind, window, slot count); 0 if none.
+    pub client_menu: unsafe extern "C" fn(client: *mut ClientCtx, out: *mut [u32; 3]) -> u32,
+    /// Ids of entities the client knows (the local player not included), returns how many.
+    pub client_entities: unsafe extern "C" fn(client: *mut ClientCtx, out: *mut u64, max: usize) -> usize,
+    /// Where a UI element of the top screen is, as fractions of the window (x, y, w, h):
+    /// `slot:N` a menu slot, `item:N` a creative inventory entry of item id N, `id:name` a node
+    /// id, `text:words` the first text containing them (case-insensitive).
+    pub client_ui_rect: unsafe extern "C" fn(client: *mut ClientCtx, query: Str, out: *mut [f32; 4]) -> u32,
+    /// Client: draws for this frame only. `kind` 0 line, 1 box, 2 text at a world position, 3
+    /// text on screen at `a[0], a[1]` (fractions of the window); colour 0xRRGGBBAA.
+    pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, text: Str),
+    /// Client: sends `data` on channel `name` to the server.
+    pub client_send_packet: unsafe extern "C" fn(client: *mut ClientCtx, name: Str, data: Slice<u8>),
+
+    /// RGBA pixels of an image (a screenshot id from `client_op::SCREENSHOT` once taken, or one
+    /// from `image_load`), null while not available.
+    pub image_get: unsafe extern "C" fn(id: u64, w: *mut u32, h: *mut u32) -> *const u8,
+    /// Reads a PNG file, 0 if it cannot.
+    pub image_load: unsafe extern "C" fn(path: Str) -> u64,
+    pub image_save: unsafe extern "C" fn(path: Str, rgba: Slice<u8>, w: u32, h: u32) -> u32,
+    pub image_free: unsafe extern "C" fn(id: u64),
+    /// Full name of a frozen id (`find` backwards); a block state gives `ns:block` or
+    /// `ns:block#i` for its `i`-th state. Empty if unknown. Valid for the whole session.
+    pub name_of: unsafe extern "C" fn(kind: u32, id: u32) -> Str,
+}
+
+// ---------------------------------------------------------------- client side
+
+/// Hooks registered with `Host::reg_client_hook`. All run on the main thread.
+pub mod client_hook {
+    /// `ClientFrameArgs`, every frame before input is handled; may drive the client.
+    pub const FRAME: u32 = 0;
+    /// `ClientScreenArgs`: the top screen changed (empty name = no screen, back in the world).
+    pub const SCREEN: u32 = 1;
+}
+
+#[repr(C)]
+pub struct ClientFrameArgs {
+    pub client: *mut ClientCtx,
+}
+
+#[repr(C)]
+pub struct ClientScreenArgs {
+    pub client: *mut ClientCtx,
+    pub screen: Str,
+}
+
+#[repr(C)]
+pub struct PacketArgs {
+    pub world: *mut WorldCtx,
+    pub player: u64,
+    pub data: Slice<u8>,
+}
+
+#[repr(C)]
+pub struct ClientPacketArgs {
+    pub client: *mut ClientCtx,
+    pub data: Slice<u8>,
+}
+
+pub mod client_flags {
+    /// A world is open (local or joined).
+    pub const IN_WORLD: u32 = 1;
+    /// The server accepted the player.
+    pub const JOINED: u32 = 2;
+    /// The world around the player is loaded and meshed.
+    pub const LOADED: u32 = 4;
+    /// Nothing left to generate, light, send or mesh (local server only).
+    pub const IDLE: u32 = 8;
+    /// The top screen is laid out and was drawn with its textures.
+    pub const SCREEN_READY: u32 = 16;
+    pub const DEAD: u32 = 32;
+    pub const FLYING: u32 = 64;
+    pub const ON_GROUND: u32 = 128;
+    pub const MENU_OPEN: u32 = 256;
+    /// Hosting and the join ticket is known.
+    pub const HOSTING: u32 = 512;
+    /// The F3 debug overlay is shown.
+    pub const DEBUG: u32 = 1024;
+}
+
+/// What a client callback can see of the local client, filled by `Host::client_state`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ClientState {
+    pub size: u32,
+    pub flags: u32,
+    pub frame: u64,
+    /// Seconds since the previous frame.
+    pub dt: f32,
+    /// Averages over the last half second.
+    pub fps: f32,
+    pub frame_ms: f32,
+    /// GPU time of the last measured frame and the server's last tick, milliseconds.
+    pub gpu_ms: f32,
+    pub server_ms: f32,
+    pub window: [u32; 2],
+    pub gui_scale: f32,
+    pub dim: u32,
+    pub player: u64,
+    pub pos: [f64; 3],
+    pub vel: [f64; 3],
+    /// Radians, like `EntityState`.
+    pub yaw: f32,
+    pub pitch: f32,
+    pub selected: u32,
+    /// 0 survival, 1 creative, 2 spectator.
+    pub mode: u32,
+    pub health: f32,
+    /// Loaded cubes, cubes waiting for a mesh, known entities.
+    pub cubes: u32,
+    pub pending_meshes: u32,
+    pub entities: u32,
+    /// Top screen (`core:menu`, `core:pause`, ...), empty in the world; valid during the call.
+    pub screen: Str,
+    /// Frames since the top screen changed.
+    pub screen_frames: u32,
+    /// Local server load totals: cubes generated and their average microseconds on a worker,
+    /// cubes inserted and their average on the server thread.
+    pub generated: u64,
+    pub gen_us: f32,
+    pub inserted: u64,
+    pub insert_us: f32,
+    /// Finished `client_op::BENCH` runs, and the numbers of the last one.
+    pub benches: u32,
+    pub bench_fps: f32,
+    pub bench_avg_ms: f32,
+    pub bench_p99_ms: f32,
+    pub bench_gpu_ms: f32,
+    pub bench_server_ms: f32,
+}
+versioned!(ClientState {
+    flags: 0,
+    frame: 0,
+    dt: 0.0,
+    fps: 0.0,
+    frame_ms: 0.0,
+    gpu_ms: 0.0,
+    server_ms: 0.0,
+    window: [0; 2],
+    gui_scale: 1.0,
+    dim: 0,
+    player: 0,
+    pos: [0.0; 3],
+    vel: [0.0; 3],
+    yaw: 0.0,
+    pitch: 0.0,
+    selected: 0,
+    mode: 0,
+    health: 0.0,
+    cubes: 0,
+    pending_meshes: 0,
+    entities: 0,
+    screen: Str::EMPTY,
+    screen_frames: 0,
+    generated: 0,
+    gen_us: 0.0,
+    inserted: 0,
+    insert_us: 0.0,
+    benches: 0,
+    bench_fps: 0.0,
+    bench_avg_ms: 0.0,
+    bench_p99_ms: 0.0,
+    bench_gpu_ms: 0.0,
+    bench_server_ms: 0.0,
+});
+
+/// `Host::client_input` operations. Keys and buttons are held for `x` seconds (0 = one tap).
+pub mod client_input {
+    /// `text`: an action (`core:jump`, `mymod:jetpack`), pressed with its bound key.
+    pub const ACTION: u32 = 0;
+    /// `text`: a key by its settings name (`Tab`, `Enter`, `KeyE`, `F3`).
+    pub const KEY: u32 = 1;
+    /// Mouse button `y` (0 left, 1 right, 2 middle).
+    pub const CLICK: u32 = 2;
+    /// Moves the mouse to (`x`, `y`) as fractions of the window.
+    pub const CURSOR: u32 = 3;
+    /// Mouse wheel by `x` steps (negative = down).
+    pub const SCROLL: u32 = 4;
+    /// `text` typed into the focused field.
+    pub const TYPE: u32 = 5;
+    pub const RELEASE_ALL: u32 = 6;
+}
+
+/// Fields of `PlayerControl` to apply.
+pub mod control_mask {
+    pub const POS: u32 = 1;
+    pub const VEL: u32 = 2;
+    pub const LOOK: u32 = 4;
+    pub const FLYING: u32 = 8;
+    pub const FLY_SPEED: u32 = 16;
+    pub const SELECTED: u32 = 32;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PlayerControl {
+    pub size: u32,
+    pub mask: u32,
+    pub pos: [f64; 3],
+    pub vel: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub flying: u32,
+    /// Spectator/creative flight speed multiplier.
+    pub fly_speed: f32,
+    pub selected: u32,
+}
+versioned!(PlayerControl { mask: 0, pos: [0.0; 3], vel: [0.0; 3], yaw: 0.0, pitch: 0.0, flying: 0, fly_speed: 1.0, selected: 0 });
+
+/// `Host::client_command` operations.
+pub mod client_op {
+    /// A chat line or `/command` as if typed.
+    pub const CHAT: u32 = 0;
+    /// Captures the next frame into `text` (a path; empty = `screenshots/<time>.png`, a bare
+    /// name goes into `screenshots/`). Returns the image id for `image_get`.
+    pub const SCREENSHOT: u32 = 1;
+    /// Leaves the game with exit code `num`.
+    pub const QUIT: u32 = 2;
+    /// Opens world `text` (created with seed `num` if missing).
+    pub const OPEN_WORLD: u32 = 3;
+    /// Like `OPEN_WORLD`, deleting a save of that name first.
+    pub const NEW_WORLD: u32 = 4;
+    pub const LEAVE_WORLD: u32 = 5;
+    /// Starts hosting the open world; the ticket appears in `client_text::TICKET`.
+    pub const HOST: u32 = 6;
+    /// Joins the host with ticket `text`.
+    pub const JOIN: u32 = 7;
+    /// `core:pause`, `core:settings`, `core:language`, `core:controls`, `core:worlds`,
+    /// `core:create_world`, `core:title`, `core:chat`, `core:inventory`.
+    pub const OPEN_SCREEN: u32 = 8;
+    /// Closes the top screen (and its menu).
+    pub const CLOSE_SCREEN: u32 = 9;
+    pub const RELOAD_ASSETS: u32 = 10;
+    /// Frame, GPU and server statistics over `num` seconds, logged as a `BENCH` line labelled
+    /// `text`; the numbers land in `ClientState::bench_*`.
+    pub const BENCH: u32 = 11;
+    pub const RESPAWN: u32 = 12;
+    /// `text` = `key = value` as in settings.txt, applied for this session only.
+    pub const SETTING: u32 = 13;
+}
+
+/// `Host::client_text` sources.
+pub mod client_text {
+    /// Join ticket while hosting.
+    pub const TICKET: u32 = 0;
+    /// The game's `run` directory.
+    pub const RUN_DIR: u32 = 1;
+    /// Chat line `index` counted from the newest (0).
+    pub const CHAT: u32 = 2;
+    /// The last `BENCH` line.
+    pub const BENCH: u32 = 3;
+    /// Text of the top screen's focused input field (chat, search).
+    pub const INPUT: u32 = 4;
 }
 
 /// Ore veins a mod adds to any dimension, its own or another mod's. The engine scatters them after

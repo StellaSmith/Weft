@@ -20,6 +20,8 @@ pub struct HudElement {
     pub cb: Callback,
 }
 pub const ITEM: &str = "core:item";
+/// Holder of virtual inventories (`Host::inventory_create`).
+pub const VIRTUAL: &str = "core:virtual";
 
 #[derive(Clone)]
 pub struct Cuboid {
@@ -133,7 +135,22 @@ pub struct Game {
     pub block_entities: FxHashMap<u32, u32>,
     pub player_kind: u32,
     pub item_kind: u32,
+    pub virtual_kind: u32,
     pub energy: u32,
+    /// (owner, hook, callback) in mod order, see `abi::client_hook`.
+    pub client_hooks: Vec<(ModId, u32, Callback)>,
+    /// Mod message channels by id (sorted by name, so both sides agree).
+    pub packets: Vec<PacketDef>,
+    pub packet_names: FxHashMap<String, u32>,
+    /// Mod key bindings: (action, default key).
+    pub keys: Vec<(String, String)>,
+}
+
+#[derive(Default)]
+pub struct PacketDef {
+    pub name: String,
+    pub server: Option<(ModId, Callback)>,
+    pub client: Option<(ModId, Callback)>,
 }
 
 // ---------------------------------------------------------------- raw registration
@@ -182,6 +199,10 @@ pub struct RawGame {
     pub creative_tabs: Vec<(String, String)>,
     /// Components and tags set on other mods' entries.
     pub sets: Vec<RawSet>,
+    pub client_hooks: Vec<(ModId, u32, Callback)>,
+    /// (owner, name, side, callback).
+    pub packets: Vec<(ModId, String, u32, Callback)>,
+    pub keys: Vec<(String, String)>,
 }
 
 pub struct RawOre {
@@ -335,6 +356,7 @@ pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entiti
     player.parts = player_parts();
     entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false, components: Vec::new() });
     entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE), replace: false, components: Vec::new() });
+    entities.push(RawEntity { name: VIRTUAL.into(), cell: 0, desc: builtin(VIRTUAL, 0.0, 0.0, ef::INVULNERABLE | ef::NO_GRAVITY), replace: false, components: Vec::new() });
     entities.sort_by(|a, b| a.name.cmp(&b.name).then(a.replace.cmp(&b.replace)));
     let mut kept: Vec<RawEntity> = Vec::with_capacity(entities.len());
     let mut replaced_cells: Vec<(usize, String)> = Vec::new();
@@ -384,7 +406,11 @@ pub fn freeze(
     let mut player_menu = None;
     let mut block_entities = Vec::new();
     let mut attach: Vec<(String, String)> = Vec::new();
+    let mut packets: Vec<(ModId, String, u32, Callback)> = Vec::new();
     for r in raws {
+        g.client_hooks.extend(r.client_hooks);
+        packets.extend(r.packets);
+        g.keys.extend(r.keys);
         components.extend(r.components);
         hooks.extend(r.hooks);
         recipes.extend(r.recipes);
@@ -400,6 +426,21 @@ pub fn freeze(
     g.entity_names = entities.names;
     g.player_kind = g.entity_names[PLAYER];
     g.item_kind = g.entity_names[ITEM];
+    g.virtual_kind = g.entity_names[VIRTUAL];
+    g.client_hooks.sort_by_key(|h| h.0.0);
+    packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
+    for (owner, name, side, cb) in packets {
+        let id = *g.packet_names.entry(name.clone()).or_insert_with(|| {
+            g.packets.push(PacketDef { name: name.clone(), ..Default::default() });
+            g.packets.len() as u32 - 1
+        });
+        let def = &mut g.packets[id as usize];
+        let slot = if side == 0 { &mut def.server } else { &mut def.client };
+        if slot.is_some() {
+            errors.push(format!("packet channel {name} has two {} handlers", if side == 0 { "server" } else { "client" }));
+        }
+        *slot = Some((owner, cb));
+    }
 
     // Entity storage, indexed by component id like everything else.
     g.components = c.names.iter().map(|n| ComponentDef { name: n.clone(), ..Default::default() }).collect();
@@ -482,6 +523,10 @@ pub fn freeze(
     let recipes: Vec<RawRecipe> = recipes.into_iter().flat_map(|r| expand_wildcards(r, &by_tag)).collect();
     let ing = |s: &str, errors: &mut Vec<String>| -> Ingredient {
         if let Some(t) = s.strip_prefix('#') {
+            if !by_tag.contains_key(t) {
+                // Not an error: the items may come from a mod that is not installed.
+                log::warn!("a recipe uses #{t}, but no item has that tag");
+            }
             Ingredient::Tag(c.id(t).unwrap_or(u32::MAX))
         } else if s.is_empty() {
             Ingredient::Empty

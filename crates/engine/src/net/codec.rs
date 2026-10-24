@@ -303,6 +303,11 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.str(&g.text);
             }
         }
+        ToClient::Packet { channel, data } => {
+            w.u8(27);
+            w.u32(*channel);
+            w.bytes(data);
+        }
         ToClient::Worn(list) => {
             w.u8(21);
             w.len(list.len());
@@ -457,6 +462,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             }
             ToClient::Gizmos(list)
         }
+        27 => ToClient::Packet { channel: r.u32()?, data: r.bytes()? },
         _ => return None,
     })
 }
@@ -546,6 +552,11 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
                 w.str(n);
             }
         }
+        ToServer::Packet { channel, data } => {
+            w.u8(19);
+            w.u32(*channel);
+            w.bytes(data);
+        }
         ToServer::Drag { slots, button } => {
             w.u8(15);
             w.u8(*button);
@@ -600,6 +611,7 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
             }
             ToServer::Gizmos(names)
         }
+        19 => ToServer::Packet { channel: r.u32()?, data: r.bytes()? },
         _ => return None,
     })
 }
@@ -617,6 +629,7 @@ mod tests {
             ToServer::Drag { slots: vec![3, 4, 9], button: 0 },
             ToServer::Chat("/give stone 5".into()),
             ToServer::Gizmos(vec!["regions".into(), "mymod:pipes".into()]),
+            ToServer::Packet { channel: 3, data: vec![1, 2, 255] },
         ];
         for m in msgs {
             let back = decode_server(&encode_server(&m)).unwrap();

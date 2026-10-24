@@ -90,6 +90,34 @@ pub static HOST: Host = Host {
     command_reply,
     gizmo_on,
     gizmo,
+    reg_client_hook,
+    reg_packet,
+    reg_key,
+    launch_option: crate::app::api::launch_option,
+    send_packet,
+    open_menu_at,
+    inventory_create,
+    entity_teleport,
+    set_time,
+    set_game_mode,
+    client_state: crate::app::api::client_state,
+    client_input: crate::app::api::client_input,
+    client_pressed: crate::app::api::client_pressed,
+    client_set_player: crate::app::api::client_set_player,
+    client_command: crate::app::api::client_command,
+    client_text: crate::app::api::client_text,
+    client_block: crate::app::api::client_block,
+    client_slot: crate::app::api::client_slot,
+    client_menu: crate::app::api::client_menu,
+    client_entities: crate::app::api::client_entities,
+    client_ui_rect: crate::app::api::client_ui_rect,
+    client_draw: crate::app::api::client_draw,
+    client_send_packet: crate::app::api::client_send_packet,
+    image_get: crate::app::api::image_get,
+    image_load: crate::app::api::image_load,
+    image_save: crate::app::api::image_save,
+    image_free: crate::app::api::image_free,
+    name_of,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -331,7 +359,81 @@ unsafe extern "C" fn block_entity(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -
 }
 
 unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, owner: u64) {
-    unsafe { dim(w).events.push(crate::server::DimEvent::OpenMenu { player, menu, owner }) }
+    unsafe {
+        let d = dim(w);
+        let c = content();
+        let Some(def) = c.game.menus.get(menu as usize) else {
+            log::error!("open_menu: there is no menu {menu}");
+            return;
+        };
+        if owner != 0 && !d.entities.inventories.contains_key(&owner) {
+            log::error!("open_menu {}: entity {owner} has no inventory here (removed, or not a block entity)", def.name);
+            return;
+        }
+        d.events.push(crate::server::DimEvent::OpenMenu { player, menu, owner })
+    }
+}
+
+unsafe extern "C" fn open_menu_at(w: *mut abi::WorldCtx, player: u64, menu: u32, pos: *const [i32; 3]) -> u32 {
+    unsafe {
+        let d = dim(w);
+        let p = ip(pos);
+        let c = content();
+        let name = c.game.menus.get(menu as usize).map_or("?", |m| m.name.as_str());
+        match d.entities.anchors.get(&p).copied() {
+            Some(owner) => {
+                open_menu(w, player, menu, owner);
+                1
+            }
+            None => {
+                let what = d.get(p).map_or("an unloaded block".to_string(), |s| c.state_name(s));
+                log::error!("cannot open menu {name} at {p}: {what} has no block entity");
+                0
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn inventory_create(w: *mut abi::WorldCtx, slots: u32, pos: *const [f64; 3]) -> u64 {
+    unsafe {
+        let d = dim(w);
+        let c = content();
+        let id = d.new_id();
+        let p = DVec3::from_array(*pos);
+        let e = crate::server::entity::Entity::new(id, c.game.virtual_kind, if p.is_finite() { p } else { DVec3::ZERO }, 1.0);
+        d.entities.insert(c, e);
+        d.entities.inventories.insert(id, vec![ItemStack::EMPTY; slots.min(1 << 16) as usize]);
+        id
+    }
+}
+
+unsafe extern "C" fn entity_teleport(w: *mut abi::WorldCtx, id: u64, to: u32, pos: *const [f64; 3]) {
+    unsafe {
+        let d = dim(w);
+        d.events.push(crate::server::DimEvent::Teleport { from: d.id, id, dim: to, pos: DVec3::from_array(*pos) })
+    }
+}
+
+unsafe extern "C" fn set_time(w: *mut abi::WorldCtx, time: u64) {
+    unsafe {
+        let d = dim(w);
+        d.events.push(crate::server::DimEvent::SetTime { dim: d.id, time })
+    }
+}
+
+unsafe extern "C" fn set_game_mode(w: *mut abi::WorldCtx, player: u64, mode: u32) {
+    let mode = crate::world::GameMode::from_u8(mode.min(255) as u8);
+    unsafe { dim(w).events.push(crate::server::DimEvent::SetMode { player, mode }) }
+}
+
+unsafe extern "C" fn send_packet(w: *mut abi::WorldCtx, player: u64, name: Str, data: abi::Slice<u8>) {
+    unsafe {
+        let name = name.as_str();
+        match content().game.packet_names.get(name) {
+            Some(&channel) => dim(w).events.push(crate::server::DimEvent::Packet { player, channel, data: data.as_slice().to_vec() }),
+            None => log::error!("send_packet: no channel {name} is registered"),
+        }
+    }
 }
 
 unsafe extern "C" fn find_component(name: Str, schema: Str) -> u32 {
@@ -471,6 +573,24 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
         unsafe { *count = if id.is_some() { n } else { 0 } }
     }
     id.unwrap_or(u32::MAX)
+}
+
+unsafe extern "C" fn name_of(kind: u32, id: u32) -> Str {
+    static STATE_NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let Some(c) = try_content() else { return Str::EMPTY };
+    let name: Option<&str> = match kind {
+        abi::entry_kind::BLOCK => {
+            let names = STATE_NAMES.get_or_init(|| (0..c.states.len() as u32).map(|s| c.state_name(s)).collect());
+            names.get(id as usize).map(|s| s.as_str())
+        }
+        abi::entry_kind::ITEM => c.items.get(id as usize).map(|i| i.name.as_str()),
+        abi::entry_kind::ENTITY => c.game.entities.get(id as usize).map(|e| e.name.as_str()),
+        abi::entry_kind::BIOME => c.biomes.get(id as usize).map(|b| b.name.as_str()),
+        abi::entry_kind::DIMENSION => c.dims.get(id as usize).map(|d| d.name.as_str()),
+        abi::entry_kind::MENU => c.game.menus.get(id as usize).map(|m| m.name.as_str()),
+        _ => None,
+    };
+    name.map_or(Str::EMPTY, Str::new)
 }
 
 unsafe extern "C" fn block_of(state: u32) -> u32 {
@@ -703,6 +823,30 @@ unsafe extern "C" fn set_player_menu(r: *mut abi::Registrar, menu: Str) {
 
 unsafe extern "C" fn reg_attach(r: *mut abi::Registrar, kind: Str, component: Str) {
     unsafe { reg(r).game.attach.push((kind.as_str().to_string(), component.as_str().to_string())) }
+}
+
+unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        if hook > abi::client_hook::SCREEN {
+            r.errors.push(format!("client hook {hook} does not exist"));
+            return;
+        }
+        let owner = r.owner;
+        r.game.client_hooks.push((owner, hook, cb));
+    }
+}
+
+unsafe extern "C" fn reg_packet(r: *mut abi::Registrar, name: Str, side: u32, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.packets.push((owner, name.as_str().to_string(), side.min(1), cb));
+    }
+}
+
+unsafe extern "C" fn reg_key(r: *mut abi::Registrar, name: Str, key: Str) {
+    unsafe { reg(r).game.keys.push((name.as_str().to_string(), key.as_str().to_string())) }
 }
 
 unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str, slots: u32) {

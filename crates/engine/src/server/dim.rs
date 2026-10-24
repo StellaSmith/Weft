@@ -27,6 +27,11 @@ const ITEM_LIFETIME: u64 = 20 * 60 * 5;
 pub enum DimEvent {
     OpenMenu { player: u64, menu: u32, owner: u64 },
     Died { player: u64 },
+    Packet { player: u64, channel: u32, data: Vec<u8> },
+    /// `dim` u32::MAX = the region's own dimension.
+    Teleport { from: u32, id: u64, dim: u32, pos: DVec3 },
+    SetTime { dim: u32, time: u64 },
+    SetMode { player: u64, mode: crate::world::GameMode },
 }
 
 pub struct Dim {

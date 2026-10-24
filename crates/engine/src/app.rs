@@ -1,8 +1,11 @@
+pub mod api;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use glam::{DVec3, Vec2};
+use voxide_abi as abi;
 use voxide_render::{Backend, BackendDesc, Cmd, CommandList, Format, Target, TextureDesc, TextureId};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -47,8 +50,8 @@ pub struct Options {
     pub screen: Option<String>,
     pub size: (u32, u32),
     pub dev: bool,
-    /// Automation: scripted input, see `autopilot.rs`.
-    pub script: Option<PathBuf>,
+    /// A mod drives the game (tests, scripts): no pause on focus loss, settings not saved.
+    pub automated: bool,
     /// Benchmarks: force vsync off / a view distance without touching saved settings.
     pub no_vsync: bool,
     pub view: Option<i32>,
@@ -156,9 +159,24 @@ struct Running {
     previews: Vec<[f32; 4]>,
     /// Texture holding the rendered inventory figure, drawn by the UI.
     preview_tex: Option<u32>,
-    autopilot: Option<crate::autopilot::Autopilot>,
     shot_path: Option<PathBuf>,
-    ticket_file: Option<PathBuf>,
+    /// Image id the pending screenshot is stored under for mods.
+    shot_image: Option<u64>,
+    /// Keys mods hold down, released at the given time.
+    mod_held: Vec<(Key, Instant)>,
+    /// What mods draw this frame (`Host::client_draw`).
+    mod_lines: Vec<crate::client::gizmo::Line>,
+    mod_labels: Vec<crate::client::gizmo::Label>,
+    mod_screen_text: Vec<(f32, f32, String, u32)>,
+    frame_no: u64,
+    frame_dt: f32,
+    /// The top screen as of the last frame (stack depth, name) and frames since it changed.
+    screen_seen: (usize, String),
+    screen_frames: u32,
+    /// Finished benches, the last one's fps, avg, p99, gpu and server ms, and its report line.
+    benches: u32,
+    bench_last: [f32; 5],
+    bench_line: String,
 }
 
 struct App {
@@ -224,7 +242,14 @@ impl App {
         let textures = GameTextures::new(&mut *gpu, content(), &assets);
         let ui = UiRenderer::new(&mut *gpu, &assets)?;
         let mut input = Input::default();
+        for (action, key) in &content().game.keys {
+            match crate::settings::parse_key(key) {
+                Some(k) => input.register(action, k),
+                None => log::warn!("key binding {action}: unknown key {key}"),
+            }
+        }
         settings.apply_binds(&mut input);
+        settings.read_only = self.opts.automated;
         let depth = make_depth(&mut *gpu, size.width, size.height);
         let gpu_name = gpu.device_name().to_string();
         let mut r = Running {
@@ -274,9 +299,19 @@ impl App {
             ui_cached: Vec::new(),
             previews: Vec::new(),
             preview_tex: None,
-            autopilot: self.opts.script.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| crate::autopilot::Autopilot::load(&s)),
             shot_path: None,
-            ticket_file: None,
+            shot_image: None,
+            mod_held: Vec::new(),
+            mod_lines: Vec::new(),
+            mod_labels: Vec::new(),
+            mod_screen_text: Vec::new(),
+            frame_no: 0,
+            frame_dt: 0.0,
+            screen_seen: (0, String::new()),
+            screen_frames: 0,
+            benches: 0,
+            bench_last: [0.0; 5],
+            bench_line: String::new(),
         };
         if let Some(world) = &self.opts.world {
             let saves_dir = r.settings.saves_dir();
@@ -740,6 +775,39 @@ impl Running {
         }
     }
 
+    /// Runs the mods' client hooks of one kind with a view that may drive the client.
+    fn client_hooks(&mut self, hook: u32, screen: &str) {
+        let hooks: Vec<(abi::ModId, abi::Callback)> = content().game.client_hooks.iter().filter(|h| h.1 == hook).map(|h| (h.0, h.2)).collect();
+        for (owner, cb) in hooks {
+            let mut v = self.frame_view();
+            if hook == abi::client_hook::FRAME {
+                let mut a = abi::ClientFrameArgs { client: v.raw() };
+                crate::host::invoke(owner, cb, &mut a);
+            } else {
+                let mut a = abi::ClientScreenArgs { client: v.raw(), screen: abi::Str::new(screen) };
+                crate::host::invoke(owner, cb, &mut a);
+            }
+        }
+    }
+
+    fn frame_view(&mut self) -> crate::client::modui::ClientView {
+        let mut v = crate::client::modui::ClientView::new(self.game.as_ref().map(|g| &g.client));
+        v.run = self as *mut Running as *mut std::ffi::c_void;
+        v
+    }
+
+    /// Mod channel messages that arrived for the client, each to its handler.
+    fn client_packets(&mut self) {
+        let Some(g) = self.game.as_mut() else { return };
+        let packets = std::mem::take(&mut g.client.packets);
+        for (channel, data) in packets {
+            let Some((owner, cb)) = content().game.packets.get(channel as usize).and_then(|p| p.client) else { continue };
+            let mut v = self.frame_view();
+            let mut a = abi::ClientPacketArgs { client: v.raw(), data: abi::Slice::new(&data) };
+            crate::host::invoke(owner, cb, &mut a);
+        }
+    }
+
     /// Re-evaluates bound values; layout and geometry only change when a value did.
     fn poll_bindings(&mut self) {
         let mut reqs = Vec::new();
@@ -845,7 +913,7 @@ impl ApplicationHandler for App {
                 r.gpu.resize(size.width, size.height);
                 r.rebuild_all();
             }
-            WindowEvent::Focused(false) if self.opts.script.is_none() => {
+            WindowEvent::Focused(false) if !self.opts.automated => {
                 r.input.release_all();
                 if r.game.is_some() && r.screens.is_empty() && self.opts.shot.is_none() {
                     r.open(Box::new(screens::Pause));
@@ -927,56 +995,16 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.last = now;
     let scale = r.gui_scale();
 
-    if let Some(ap) = r.autopilot.as_mut().filter(|_| r.bench.is_none()) {
-        let loaded = r.game.as_ref().is_some_and(|g| g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0);
-        let idle = loaded && r.game.as_ref().is_some_and(|g| g.server.as_ref().is_none_or(|s| s.idle()) && g.client.world.pending_meshes() == 0);
-        match ap.frame(&mut r.input, r.gpu.surface_size(), loaded, idle) {
-            crate::autopilot::Action::Look(yaw, pitch) => {
-                if let Some(g) = &mut r.game {
-                    g.client.player.yaw = yaw.to_radians();
-                    g.client.player.pitch = pitch.to_radians();
-                }
-            }
-            crate::autopilot::Action::Chat(t) => r.handle(vec![Request::SendChat(t)]),
-            crate::autopilot::Action::Shot(name) => {
-                let dir = opts.shot.clone().unwrap_or_else(|| r.settings.run_dir.join("screenshots"));
-                r.shot_path = Some(if dir.extension().is_some() { dir.with_file_name(name) } else { dir.join(name) });
-                r.gpu.request_capture();
-                r.shot_pending = true;
-            }
-            crate::autopilot::Action::Host(file) => {
-                r.handle(vec![Request::Host]);
-                r.ticket_file = Some(PathBuf::from(file));
-            }
-            crate::autopilot::Action::Join(ticket) => r.handle(vec![Request::Join(ticket)]),
-            crate::autopilot::Action::Bench(secs, label) => r.bench = Some(crate::bench::Bench::new(&label, secs)),
-            crate::autopilot::Action::Idle => {
-                if let Some(g) = r.game.as_ref().filter(|_| idle) {
-                    if let Some((made, gen_us, ins, ins_us)) = g.server.as_ref().map(|s| s.load_stats()) {
-                        log::info!(
-                            "load: {} cubes on client, generated {made} ({gen_us:.0} us each on a worker), inserted {ins} ({ins_us:.0} us each on the server thread)",
-                            g.client.world.cubes.len()
-                        );
-                    }
-                }
-            }
-            crate::autopilot::Action::Quit => {
-                if let Some(mut b) = r.bench.take() {
-                    log::info!("{}", b.report(""));
-                }
-                return true;
-            }
-            crate::autopilot::Action::None => {}
-        }
-        if r.screens.is_empty() && r.game.is_some() {
-            r.input.captured = true;
-        }
-    }
-    if let Some(f) = &r.ticket_file {
-        if let Some(t) = net::current_ticket() {
-            let _ = std::fs::write(f, t);
-            r.ticket_file = None;
-        }
+    r.frame_no += 1;
+    r.frame_dt = dt as f32;
+    r.release_mod_keys();
+    r.mod_lines.clear();
+    r.mod_labels.clear();
+    r.mod_screen_text.clear();
+    r.client_hooks(abi::client_hook::FRAME, "");
+    if opts.automated && r.screens.is_empty() && r.game.is_some() {
+        // The window may not have focus while a mod drives it.
+        r.input.captured = true;
     }
     let mut requests = Vec::new();
     if r.waiting_key.is_some() {
@@ -1118,6 +1146,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             g.client.player.vel = DVec3::ZERO;
         }
     }
+    r.client_packets();
     let events = r.game.as_mut().map(|g| std::mem::take(&mut g.client.events)).unwrap_or_default();
     for ev in events {
         match ev {
@@ -1187,6 +1216,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
     r.input.sensitivity = r.settings.sensitivity;
     r.input.end_frame();
+    let top = (r.screens.len(), r.screens.last().map(|(s, _)| s.name().to_string()).unwrap_or_default());
+    if top != r.screen_seen {
+        let name = top.1.clone();
+        r.screen_seen = top;
+        r.screen_frames = 0;
+        r.client_hooks(abi::client_hook::SCREEN, &name);
+    } else {
+        r.screen_frames = r.screen_frames.saturating_add(1);
+    }
 
     if let Some(g) = &r.game {
         let chat_open = r.screens.last().is_some_and(|(s, _)| s.name() == "core:chat");
@@ -1279,6 +1317,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.ui.quads.extend_from_slice(&r.ui_cached);
     if let Some(g) = &mut r.game {
         g.client.collect_gizmos();
+        g.client.gizmo_lines.extend_from_slice(&r.mod_lines);
+        g.client.gizmo_labels.extend(r.mod_labels.iter().cloned());
         let cam = g.client.render_camera();
         let view_proj = cam.proj(info.width as f32 / info.height.max(1) as f32) * cam.view();
         for (pos, text, color) in &g.client.gizmo_labels {
@@ -1288,6 +1328,12 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
             let (x, y) = ((clip.x / clip.w * 0.5 + 0.5) * info.width as f32, (0.5 - clip.y / clip.w * 0.5) * info.height as f32);
             r.ui.label_colored(text, x, y - 4.0 * scale, scale, *color);
+        }
+    }
+    {
+        let (w, h) = r.gpu.surface_size();
+        for (x, y, text, color) in &r.mod_screen_text {
+            r.ui.label_colored(text, x * w as f32, y * h as f32, scale, *color);
         }
     }
     if let Some((_, ui)) = r.screens.last() {
@@ -1336,7 +1382,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.list.push(Cmd::EndPass);
 
     let capture_now = r.shot_pending;
-    if opts.shot.is_some() && opts.script.is_none() && !r.shot_pending {
+    if opts.shot.is_some() && !opts.automated && !r.shot_pending {
         let ready = match &r.game {
             Some(g) => g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0,
             None => true,
@@ -1380,22 +1426,32 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 ),
                 None => String::new(),
             };
-            log::info!("{}", b.report(&extra));
+            let line = b.report(&extra);
+            log::info!("{line}");
+            r.bench_last = b.summary();
+            r.bench_line = line;
+            r.benches += 1;
             r.bench = None;
         }
     }
     if capture_now {
         r.shot_pending = false;
         if let Some(cap) = r.gpu.take_capture() {
-            let path = r.shot_path.take().or_else(|| opts.shot.clone().filter(|_| opts.script.is_none())).unwrap_or_else(|| {
+            let path = r.shot_path.take().or_else(|| opts.shot.clone().filter(|_| !opts.automated)).unwrap_or_else(|| {
                 r.settings.run_dir.join("screenshots").join(format!("{}.png", saves::now_secs()))
             });
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
             match crate::assets::encode_png(&path, cap.width, cap.height, &cap.rgba) {
                 Ok(()) => log::info!("screenshot saved to {}", path.display()),
                 Err(e) => log::error!("screenshot: {e}"),
             }
+            if let Some(id) = r.shot_image.take() {
+                api::store_image(id, cap.width, cap.height, cap.rgba);
+            }
         }
-        if opts.shot.is_some() && opts.script.is_none() {
+        if opts.shot.is_some() && !opts.automated {
             return true;
         }
     }

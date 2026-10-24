@@ -127,6 +127,11 @@ pub fn decode_png(bytes: &[u8]) -> Option<Image> {
     Some(Image { width: w, height: h, rgba })
 }
 
+pub fn decode_png_file(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    let img = decode_png(&std::fs::read(path).ok()?)?;
+    Some((img.width, img.height, img.rgba))
+}
+
 pub fn encode_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

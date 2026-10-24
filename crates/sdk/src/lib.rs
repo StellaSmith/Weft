@@ -3,6 +3,7 @@
 pub use voxide_abi as abi;
 
 mod cache;
+pub mod client;
 mod component;
 pub mod noise;
 pub mod terrain;
@@ -14,6 +15,7 @@ mod world;
 
 pub use abi::{ItemStack, hud_anchor, worn_parts};
 pub use cache::ColumnCache;
+pub use client::{Client, Packet, launch_option};
 pub use command::Command;
 pub use component::*;
 pub use content::*;

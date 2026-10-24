@@ -38,7 +38,7 @@ fn main() {
         screen: None,
         size: (1600, 900),
         dev: cfg!(debug_assertions),
-        script: None,
+        automated: false,
         no_vsync: false,
         view: None,
     };
@@ -46,7 +46,9 @@ fn main() {
     let mut log_spec = String::new();
     let mut pack: Option<PathBuf> = None;
     let mut dist: Option<PathBuf> = None;
-    let mut args = std::env::args().skip(1);
+    // Options the engine does not know go to mods (`--test furnace`, `--script x.txt`).
+    let mut extra: Vec<(String, String)> = Vec::new();
+    let mut args = std::env::args().skip(1).peekable();
     while let Some(a) = args.next() {
         let mut value = || args.next().unwrap_or_default();
         match a.as_str() {
@@ -66,7 +68,6 @@ fn main() {
             "--world" => opts.world = Some(value()),
             "--seed" => opts.seed = value().parse().ok(),
             "--screen" => opts.screen = Some(value()),
-            "--script" => opts.script = Some(PathBuf::from(value())),
             "--no-vsync" => opts.no_vsync = true,
             "--view" => opts.view = value().parse().ok(),
             "--pack-mod" => pack = Some(PathBuf::from(value())),
@@ -77,9 +78,17 @@ fn main() {
                     opts.size = (v[0], v[1]);
                 }
             }
-            other => eprintln!("unknown argument {other}"),
+            other => match other.strip_prefix("--") {
+                Some(name) => {
+                    let v = if args.peek().is_some_and(|n| !n.starts_with("--")) { args.next().unwrap_or_default() } else { "1".into() };
+                    extra.push((name.to_string(), v));
+                }
+                None => eprintln!("unknown argument {other}"),
+            },
         }
     }
+    opts.automated = extra.iter().any(|(k, _)| k == "script" || k == "test");
+    voxide_engine::set_launch_options(extra);
     let player_mods = opts.run_dir.join("mods");
     if let Some(dir) = pack {
         match voxide_engine::modloader::pack(&dir, &player_mods) {
@@ -116,6 +125,7 @@ fn main() {
         log::error!("{e}");
         std::process::exit(1);
     }
+    std::process::exit(voxide_engine::exit_code());
 }
 
 fn subdirs(dir: &std::path::Path) -> Vec<PathBuf> {
@@ -131,6 +141,11 @@ fn make_dist(root: &std::path::Path, out: &std::path::Path) -> Result<(), String
     std::fs::copy(&exe, out.join(exe.file_name().unwrap())).map_err(|e| e.to_string())?;
     copy_dir(&root.join("crates").join("engine").join("assets"), &out.join("assets").join("core"))?;
     for dir in subdirs(&root.join("mods")) {
+        // Development tools (the test kit) mark themselves `dist = false` in Cargo.toml.
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+        if manifest.lines().any(|l| l.replace(' ', "") == "dist=false") {
+            continue;
+        }
         voxide_engine::modloader::pack(&dir, &out.join("run").join("mods"))?;
     }
     Ok(())

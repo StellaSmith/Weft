@@ -157,6 +157,8 @@ pub struct Client {
     pub components: FxHashMap<u32, Vec<u8>>,
     pub menu: Option<ClientMenu>,
     pub events: Vec<ClientEvent>,
+    /// Mod channel messages waiting for their client handler.
+    pub packets: Vec<(u32, Vec<u8>)>,
     pub chat: Vec<(String, Instant)>,
     pub gizmos: gizmo::Gizmos,
     /// This frame's gizmo shapes, from `collect_gizmos`.
@@ -277,6 +279,7 @@ on: {on}", list.join("
             components: FxHashMap::default(),
             menu: None,
             events: Vec::new(),
+            packets: Vec::new(),
             chat: Vec::new(),
             gizmos: Default::default(),
             gizmo_lines: Vec::new(),
@@ -486,6 +489,7 @@ on: {on}", list.join("
                 }
                 ToClient::Disconnect(reason) => self.disconnected = Some(reason),
                 ToClient::Gizmos(shapes) => self.gizmos.receive(shapes),
+                ToClient::Packet { channel, data } => self.packets.push((channel, data)),
                 _ => {}
             }
         }
@@ -642,10 +646,25 @@ on: {on}", list.join("
         self.target_entity = if spectator { None } else { self.pick_entity(eye, look, block_dist.min(4.5)) };
 
         self.cooldown -= dt as f32;
+        // The server judges actions by where the player looks, which it only hears 20 times a
+        // second: a turn made just before a click must arrive first.
+        let look_now = ToServer::Move {
+            pos: self.player.pos,
+            yaw: self.player.yaw,
+            pitch: self.player.pitch,
+            on_ground: self.player.landed || self.player.on_ground || self.player.flying,
+        };
+        let mut look_sent = !self.joined;
+        let mut send_look = |conn: &mut ClientConn| {
+            if !std::mem::replace(&mut look_sent, true) {
+                conn.send(look_now.clone());
+            }
+        };
         if input.captured && !self.dead {
             if input.held_button(0) {
                 if let Some(id) = self.target_entity {
                     if input.pressed_button(0) || self.cooldown <= 0.0 {
+                        send_look(&mut self.conn);
                         self.conn.send(ToServer::Attack(id));
                         self.cooldown = 0.4;
                     }
@@ -659,6 +678,7 @@ on: {on}", list.join("
                         _ => 0.0,
                     } + dt as f32 / time.max(0.001);
                     if progress >= 1.0 && self.cooldown <= 0.0 {
+                        send_look(&mut self.conn);
                         self.conn.send(ToServer::Break { pos: hit.block });
                         self.world.set_block(hit.block, crate::content::AIR);
                         self.breaking = None;
@@ -673,6 +693,7 @@ on: {on}", list.join("
                 self.breaking = None;
             }
             if input.held_button(1) && self.cooldown <= 0.0 {
+                send_look(&mut self.conn);
                 if let Some(id) = self.target_entity {
                     self.conn.send(ToServer::Interact(id));
                 } else if let Some(hit) = self.target {

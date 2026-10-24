@@ -1,6 +1,6 @@
 pub mod app;
 pub mod assets;
-pub mod autopilot;
+
 pub mod bench;
 pub mod client;
 pub mod commands;
@@ -26,6 +26,7 @@ pub mod stack;
 pub mod ui;
 pub mod world;
 
+pub use app::api::{exit_code, set_launch_options};
 pub use app::{BackendFactory, Options, run};
 
 /// Background workers (generation, meshing, region ticks) leave two cores to the render and

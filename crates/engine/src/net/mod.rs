@@ -93,6 +93,8 @@ pub enum ToClient {
     Chat(String),
     Disconnect(String),
     Gizmos(Vec<GizmoShape>),
+    /// Mod channel message (`Host::reg_packet`).
+    Packet { channel: u32, data: Vec<u8> },
 }
 
 #[derive(Clone)]
@@ -125,6 +127,7 @@ pub enum ToServer {
     Leave,
     /// Gizmo groups this player shows; the server only sends shapes of these.
     Gizmos(Vec<String>),
+    Packet { channel: u32, data: Vec<u8> },
 }
 
 /// Message kinds by name, for traffic counters (`net` log channel).
@@ -138,7 +141,7 @@ impl Message for ToClient {
     const TO_SERVER: bool = false;
     const KINDS: &'static [&'static str] = &[
         "Welcome", "Cube", "Unload", "Blocks", "Time", "Teleport", "Spawn", "Moves", "Despawn", "Hurt", "Burning", "Worn", "GameMode", "Players", "Inventory",
-        "Components", "Health", "Knockback", "OpenMenu", "MenuSlots", "MenuData", "Cursor", "CloseMenu", "Died", "Chat", "Disconnect", "Gizmos",
+        "Components", "Health", "Knockback", "OpenMenu", "MenuSlots", "MenuData", "Cursor", "CloseMenu", "Died", "Chat", "Disconnect", "Gizmos", "Packet",
     ];
     fn kind(&self) -> usize {
         use ToClient::*;
@@ -170,6 +173,7 @@ impl Message for ToClient {
             Chat(_) => 24,
             Disconnect(_) => 25,
             Gizmos(_) => 26,
+            Packet { .. } => 27,
         }
     }
 }
@@ -178,7 +182,7 @@ impl Message for ToServer {
     const TO_SERVER: bool = true;
     const KINDS: &'static [&'static str] = &[
         "Join", "Move", "Break", "Use", "UseItem", "Select", "Attack", "Interact", "OpenInventory", "Click", "CreativeTake", "Pick", "Drag", "CloseMenu", "Drop",
-        "Respawn", "Chat", "Leave", "Gizmos",
+        "Respawn", "Chat", "Leave", "Gizmos", "Packet",
     ];
     fn kind(&self) -> usize {
         use ToServer::*;
@@ -202,6 +206,7 @@ impl Message for ToServer {
             Chat(_) => 16,
             Leave => 17,
             Gizmos(_) => 18,
+            Packet { .. } => 19,
         }
     }
 }

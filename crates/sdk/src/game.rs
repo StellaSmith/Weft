@@ -28,7 +28,11 @@ impl World {
         unsafe { (host().daylight)(self.raw()) }
     }
     pub fn spawn(&self, kind: &Entity, pos: [f64; 3]) -> u64 {
-        unsafe { (host().entity_spawn)(self.raw(), kind.id(), &pos) }
+        self.spawn_kind(kind.id(), pos)
+    }
+    /// By entity kind id (`find_entity`), 0 if there is no such kind.
+    pub fn spawn_kind(&self, kind: u32, pos: [f64; 3]) -> u64 {
+        unsafe { (host().entity_spawn)(self.raw(), kind, &pos) }
     }
     pub fn remove(&self, id: u64) {
         unsafe { (host().entity_remove)(self.raw(), id) }
@@ -115,7 +119,11 @@ impl World {
         unsafe { (host().block_entity)(self.raw(), &pos) }
     }
     pub fn open_menu(&self, player: u64, menu: &Menu, owner: u64) {
-        unsafe { (host().open_menu)(self.raw(), player, menu.id(), owner) }
+        self.open_menu_kind(player, menu.id(), owner)
+    }
+    /// By menu id (`find_menu`); `owner` 0 for menus without one.
+    pub fn open_menu_kind(&self, player: u64, menu: u32, owner: u64) {
+        unsafe { (host().open_menu)(self.raw(), player, menu, owner) }
     }
 
     /// Whether a player here shows the gizmo group `group` (`/gizmo mymod:pipes`; the mod's

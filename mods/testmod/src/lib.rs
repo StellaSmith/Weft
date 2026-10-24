@@ -277,10 +277,15 @@ fn tick_furnaces(t: &EntityTick) {
     }
 }
 
+/// Another mod's blocks, found by name the first time they are used.
+static STONE: Block = Block::named("base:stone");
+static GRASS: Block = Block::named("base:grass");
+static DIRT: Block = Block::named("base:dirt");
+
 /// A floating island of stone and grass in an empty void.
 fn island(g: &mut Gen) {
     let [ox, oy, oz] = g.origin();
-    let (Some(stone), Some(grass), Some(dirt)) = (find_block("base:stone"), find_block("base:grass"), find_block("base:dirt")) else { return };
+    let (stone, grass, dirt) = (STONE.id(), GRASS.id(), DIRT.id());
     for y in 0..16usize {
         for z in 0..16usize {
             for x in 0..16usize {

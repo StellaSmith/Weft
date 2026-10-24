@@ -618,10 +618,16 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Drops nothing unless mined with a fitting tool of at least this level (wood 0, stone 1,
-    /// iron 2, diamond 3), like vanilla's "requires correct tool".
+    /// iron 2, diamond 3), like vanilla's "requires correct tool". Levels above 0 are modern
+    /// vanilla's tags (`needs_stone_tool`, `needs_iron_tool`, `needs_diamond_tool`), so other mods
+    /// can add them with `r.tag` too; higher tiers use `harvest_level`.
     pub fn needs_tool(mut self, level: u32) -> Self {
         self.components.push(Pending::tag(abi::comp::NEEDS_TOOL));
-        self.components.push(c::HARVEST_LEVEL.raw_value(&level));
+        match level {
+            0 => {}
+            1..=3 => self.components.push(Pending::tag(["needs_stone_tool", "needs_iron_tool", "needs_diamond_tool"][level as usize - 1])),
+            _ => self.components.push(c::HARVEST_LEVEL.raw_value(&level)),
+        }
         self
     }
 

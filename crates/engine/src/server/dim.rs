@@ -167,8 +167,8 @@ pub fn break_time(c: &Content, state: u32, tool: u32) -> (f32, bool) {
     // block, `tools/pickaxe` on the item).
     let fits = tool != 0 && c.tool_classes.iter().any(|&(mineable, tools)| c.components.has(comps::BLOCK, state, mineable) && c.item_has(tool, tools));
     let level = c.item_value::<u32>(tool, c.ids.tool_level).unwrap_or(0);
-    let needed = c.block_value::<u32>(state, c.ids.harvest_level).unwrap_or(0);
-    let harvest = !c.block_has(state, c.ids.needs_tool) || (fits && level >= needed);
+    let needed = c.harvest_level(state);
+    let harvest = !c.needs_tool(state) || (fits && level >= needed);
     let speed = if fits { c.item_value::<f32>(tool, c.ids.mining_speed).unwrap_or(1.0) } else { 1.0 };
     let base = s.hardness * if harvest { 1.5 } else { 5.0 };
     (base / speed, harvest)

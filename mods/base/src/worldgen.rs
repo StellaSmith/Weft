@@ -12,6 +12,12 @@ use voxide_sdk::terrain::*;
 
 pub const SEA: i32 = 63;
 
+static PLANT_SOIL: Tag = Tag::new("plant_soil");
+static CACTUS_SOIL: Tag = Tag::new("cactus_soil");
+static SUGAR_CANE_SOIL: Tag = Tag::new("sugar_cane_soil");
+/// Desert and beach surfaces: the first block tagged `sand` (the base game's own, as it loads first).
+static SAND_SURFACE: Block = Block::named("#sand");
+
 pub static PLAINS: Biome = Biome::new();
 pub static FOREST: Biome = Biome::new();
 pub static BIRCH_FOREST: Biome = Biome::new();
@@ -34,7 +40,7 @@ pub fn register(r: &mut Registry) {
     r.biome("beach").handle(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4);
 
     for (ore, max_y, veins, size) in [("coal_ore", 128, 8, 12), ("iron_ore", 64, 6, 8), ("gold_ore", 32, 2, 7), ("diamond_ore", 16, 1, 6)] {
-        r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("stone");
+        r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
     }
 }
 
@@ -91,7 +97,7 @@ static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
         .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.45, f64::INFINITY).surface(&GRASS, &DIRT, 3).bare_above(130))
         .biome(BiomeRule::new(&SNOWY).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
         .biome(BiomeRule::new(&TAIGA).temperature(f64::NEG_INFINITY, -0.15).surface(&GRASS, &DIRT, 3))
-        .biome(BiomeRule::new(&DESERT).temperature(0.35, f64::INFINITY).humidity(f64::NEG_INFINITY, 0.0).surface(&SAND, &SAND, 3).under(&SANDSTONE, 1))
+        .biome(BiomeRule::new(&DESERT).temperature(0.35, f64::INFINITY).humidity(f64::NEG_INFINITY, 0.0).surface(&SAND_SURFACE, &SAND_SURFACE, 3).under(&SANDSTONE, 1))
         .biome(BiomeRule::new(&FOREST).humidity(0.25, f64::INFINITY).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&BIRCH_FOREST).humidity(0.05, f64::INFINITY).temperature(f64::NEG_INFINITY, 0.1).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
@@ -266,7 +272,11 @@ pub fn overworld(g: &mut Gen) {
             let below = g.get(x, y - 1, z);
             let h = hash(seed ^ 0xF10, (ox + x as i32) as i64, 0, (oz + z as i32) as i64);
             let roll = unit(h);
-            if GRASS.is(below) {
+            // Plants go where they could be planted (soil tags); the biome decides how many.
+            if col.biome == B::Snowy {
+                continue;
+            }
+            if PLANT_SOIL.on_block(below) {
                 let grass_chance = match col.biome {
                     B::Plains => 0.25,
                     B::Forest | B::Birch => 0.12,
@@ -278,12 +288,12 @@ pub fn overworld(g: &mut Gen) {
                 } else if roll < grass_chance {
                     g.set(x, y, z, TALL_GRASS.id());
                 }
-            } else if SAND.is(below) && col.biome == B::Desert && roll < 0.006 && y + 2 < 16 {
+            } else if CACTUS_SOIL.on_block(below) && col.biome == B::Desert && roll < 0.006 && y + 2 < 16 {
                 let n = 1 + (h >> 40) % 3;
                 for k in 0..n as usize {
                     g.set(x, y + k, z, CACTUS.id());
                 }
-            } else if (SAND.is(below) || GRASS.is(below)) && col.height == SEA && roll < 0.08 && y + 2 < 16 {
+            } else if SUGAR_CANE_SOIL.on_block(below) && col.height == SEA && roll < 0.08 && y + 2 < 16 {
                 let n = 1 + (h >> 40) % 3;
                 for k in 0..n as usize {
                     g.set(x, y + k, z, SUGAR_CANE.id());

@@ -11,3 +11,4 @@ block.testmod.tin_ore = Оловянная руда
 item.testmod.tin_ingot = Оловянный слиток
 block.testmod.oil = Нефть
 item.testmod.oil_bucket = Ведро нефти
+block.testmod.red_sand = Красный песок

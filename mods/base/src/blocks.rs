@@ -115,19 +115,20 @@ fn fall_tick(e: &mut BlockEvent) {
 
 pub fn register(r: &mut Registry) {
     // harvest level N > 0 needs a matching tool of tier N-1 (wood 0, stone 1, iron 2, diamond 3).
-    r.block("stone").handle(&STONE).hardness(1.5).mineable("pickaxe").needs_tool(0).drops("cobblestone", 1).tag("stone").tab("building");
+    r.block("stone").handle(&STONE).hardness(1.5).mineable("pickaxe").needs_tool(0).drops("cobblestone", 1).tag("stone").tag("stone_ore_replaceables").tab("building");
     r.block("cobblestone").handle(&COBBLESTONE).hardness(2.0).mineable("pickaxe").needs_tool(0).tag("stone").tag("materials/stone").tab("building");
     r.block("mossy_cobblestone").handle(&MOSSY_COBBLESTONE).hardness(2.0).mineable("pickaxe").needs_tool(0).tab("building");
-    r.block("dirt").handle(&DIRT).hardness(0.5).mineable("shovel").tab("natural");
+    r.block("dirt").handle(&DIRT).hardness(0.5).mineable("shovel").tag("dirt").tab("natural");
     r.block("grass").handle(&GRASS)
         .textures("grass_top", "grass_side", "dirt")
         .tint_grass_top()
         .hardness(0.6)
         .mineable("shovel")
         .drops("dirt", 1)
+        .tag("dirt")
         .random_ticks(grass_tick).tab("natural");
-    r.block("snowy_grass").handle(&SNOWY_GRASS).textures("snow", "grass_snow_side", "dirt").hardness(0.6).mineable("shovel").drops("dirt", 1).tab("natural");
-    r.block("sand").handle(&SAND).hardness(0.5).mineable("shovel").on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(fall_tick).tab("natural");
+    r.block("snowy_grass").handle(&SNOWY_GRASS).textures("snow", "grass_snow_side", "dirt").hardness(0.6).mineable("shovel").drops("dirt", 1).tag("dirt").tab("natural");
+    r.block("sand").handle(&SAND).hardness(0.5).mineable("shovel").tag("sand").on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(fall_tick).tab("natural");
     r.block("gravel").handle(&GRAVEL).hardness(0.6).mineable("shovel").on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(fall_tick).tab("natural");
     r.block("clay").handle(&CLAY).hardness(0.6).mineable("shovel").tab("natural");
     r.block("sandstone").handle(&SANDSTONE).textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).mineable("pickaxe").needs_tool(0).tab("building");
@@ -265,10 +266,15 @@ pub fn register(r: &mut Registry) {
     r.block("coal_block").handle(&COAL_BLOCK).hardness(5.0).mineable("pickaxe").needs_tool(0).tag("ore_blocks/coal").set(&FUEL, 16000).tab("building");
     r.block("wool").handle(&WOOL).texture("wool_white").hardness(0.8).set(&FLAMMABLE, 30).tab("colored");
 
-    // What may grow or stand where. Other mods add their blocks to these with `r.tag`.
-    r.tag("plant_soil", &["grass", "dirt", "snowy_grass", "farmland"]);
-    r.tag("sugar_cane_soil", &["grass", "dirt", "sand", "sugar_cane"]);
-    r.tag("cactus_soil", &["sand", "cactus"]);
+    // What may grow or stand where, from the common `dirt` and `sand` tags like modern vanilla:
+    // a mod's sand tagged `sand` gets cactus and sugar cane, in the world and from players.
+    r.tag_on(Target::Tagged("dirt"), "plant_soil");
+    r.tag("plant_soil", &["farmland"]);
+    r.tag_on(Target::Tagged("dirt"), "sugar_cane_soil");
+    r.tag_on(Target::Tagged("sand"), "sugar_cane_soil");
+    r.tag("sugar_cane_soil", &["sugar_cane"]);
+    r.tag_on(Target::Tagged("sand"), "cactus_soil");
+    r.tag("cactus_soil", &["cactus"]);
     r.tag("crop_soil", &["farmland"]);
     r.tag("grass_spreads_to", &["dirt"]);
     r.tag("animal_spawn", &["grass"]);

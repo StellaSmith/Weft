@@ -134,3 +134,28 @@ pub async fn mod_liquid_bucket(t: T) -> R {
     t.check_eq(t.block(pit).await?, "testmod:oil".into(), "oil back in the pit");
     Ok(())
 }
+
+/// A mod's block tagged `sand` holds cactus and sugar cane; dirt does not hold cactus.
+pub async fn mod_sand_soil(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let sand = add(f, [2, -1, 0]);
+    t.set(sand, "testmod:red_sand").await?;
+    t.op("put me 0 cactus 4").await?;
+    t.c().select(0);
+    t.look_at(sand);
+    t.frames(3).await?;
+    t.press("core:use");
+    t.until("cactus placed", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 3).await?;
+    t.check_eq(t.block(add(sand, [0, 1, 0])).await?, "base:cactus".into(), "cactus on red sand");
+    let dirt = add(f, [-2, -1, 0]);
+    t.set(dirt, "dirt").await?;
+    t.secs(0.3).await?;
+    t.look_at(dirt);
+    t.frames(3).await?;
+    t.press("core:use");
+    t.secs(0.5).await?;
+    t.check_eq(t.block(add(dirt, [0, 1, 0])).await?, "core:air".into(), "cactus refused on dirt");
+    t.check_eq(t.c().inventory_slot(0).count, 3, "cactus kept after a refused placement");
+    Ok(())
+}

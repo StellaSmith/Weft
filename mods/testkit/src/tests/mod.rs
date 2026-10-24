@@ -33,6 +33,7 @@ pub fn all() -> Vec<TestDef> {
         liquids::lava_and_water,
         liquids::lava_burns,
         liquids::mod_liquid_bucket,
+        liquids::mod_sand_soil,
         gameplay::fall_damage,
         gameplay::sneak_edge,
         gameplay::commands,

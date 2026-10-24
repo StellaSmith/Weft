@@ -119,13 +119,15 @@ fn init(r: &mut Registry) {
     r.shaped("base:crafting", "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
 
     r.block("regolith").handle(&REGOLITH).hardness(0.5).mineable("shovel");
-    r.block("basalt").handle(&BASALT).hardness(1.5).mineable("pickaxe");
+    // Only the common `sand` tag: cactus and sugar cane accept it without knowing it.
+    r.block("red_sand").hardness(0.5).mineable("shovel").tag("sand");
+    r.block("basalt").handle(&BASALT).hardness(1.5).mineable("pickaxe").tag("stone_ore_replaceables");
     // Only tags: the base game's `#ores/*` smelting recipe and tools pick these up.
     r.block("tin_ore").handle(&TIN_ORE).hardness(3.0).mineable("pickaxe").needs_tool(0).tag("ores/tin");
     r.item("tin_ingot").handle(&TIN_INGOT).tag("ingots/tin");
     r.biome("dust").handle(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
-    r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("#stone");
-    r.ore("mars", "tin_ore").y(-64, 90).veins(6).size(8).replace("basalt");
+    r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
+    r.ore("mars", "tin_ore").y(-64, 90).veins(6).size(8).replace("#stone_ore_replaceables");
     r.dimension("mars").handle(&MARS)
         .generator(|g| {
             MARS_TERRAIN.generate(g);

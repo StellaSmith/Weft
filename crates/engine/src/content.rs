@@ -214,6 +214,8 @@ pub struct Ids {
     pub worn_texture: Option<u32>,
     /// Item tags armour slots accept: head, chest, legs, feet.
     pub armor: [Option<u32>; 4],
+    /// `needs_stone_tool`, `needs_iron_tool`, `needs_diamond_tool`.
+    pub needs_tier: [Option<u32>; 3],
 }
 
 pub struct Content {
@@ -334,6 +336,18 @@ impl Content {
             Match::Block(b) => self.states[state as usize].block == b,
             Match::Tag(t) => self.components.has(comps::BLOCK, state, t),
         }
+    }
+
+    /// Tool level a block needs: its `harvest_level`, or modern vanilla's `needs_stone_tool` (1),
+    /// `needs_iron_tool` (2), `needs_diamond_tool` (3) tags, whichever is higher.
+    pub fn harvest_level(&self, state: u32) -> u32 {
+        let by_tag = self.ids.needs_tier.iter().enumerate().filter(|(_, t)| self.block_has(state, **t)).map(|(i, _)| i as u32 + 1).max().unwrap_or(0);
+        self.block_value::<u32>(state, self.ids.harvest_level).unwrap_or(0).max(by_tag)
+    }
+
+    /// Drops nothing without a fitting tool: `needs_tool`, or any `needs_<tier>_tool` tag.
+    pub fn needs_tool(&self, state: u32) -> bool {
+        self.block_has(state, self.ids.needs_tool) || self.ids.needs_tier.iter().any(|t| self.block_has(state, *t))
     }
 
     pub fn max_stack(&self, item: u32) -> u32 {
@@ -1019,6 +1033,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         worn: id(abi::comp::WORN),
         worn_texture: id(abi::comp::WORN_TEXTURE),
         armor: ["armor_head", "armor_chest", "armor_legs", "armor_feet"].map(id),
+        needs_tier: ["needs_stone_tool", "needs_iron_tool", "needs_diamond_tool"].map(id),
     };
     for (i, s) in states.iter_mut().enumerate() {
         s.conductor = ids.conductor.is_some_and(|c| components.has(comps::BLOCK, i as u32, c));

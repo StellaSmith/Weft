@@ -11,3 +11,4 @@ block.testmod.tin_ore = Tin Ore
 item.testmod.tin_ingot = Tin Ingot
 block.testmod.oil = Oil
 item.testmod.oil_bucket = Oil Bucket
+block.testmod.red_sand = Red Sand

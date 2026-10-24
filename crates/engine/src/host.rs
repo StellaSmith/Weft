@@ -564,6 +564,12 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
     let Some(c) = try_content() else { return u32::MAX };
     let mut n = 1;
     let id = match kind {
+        // `#tag`: the first block carrying it, in mod load order (biome surfaces by tag).
+        abi::entry_kind::BLOCK if name.starts_with('#') => c.components.id(&name[1..]).and_then(|t| {
+            let b = c.blocks.iter().filter(|b| c.components.has(crate::components::BLOCK, b.first_state, t)).min_by_key(|b| (c.mods.get(b.owner.0 as usize).map_or(u32::MAX, |m| m.order), b.first_state))?;
+            n = b.states;
+            Some(b.first_state)
+        }),
         abi::entry_kind::BLOCK => c.block_names.get(name).map(|&b| {
             n = c.blocks[b as usize].states;
             c.blocks[b as usize].first_state

@@ -1363,6 +1363,8 @@ impl Server {
             }
             // Clients handle it themselves: logging is per process.
             "log" => crate::commands::log_command(a.text("filters").unwrap_or("")),
+            // Also handled by the client that types it (it owns the set of shown groups).
+            "gizmo" => "gizmos are switched on the client: type /gizmo there".into(),
             "rule" => {
                 let rules = &c.game.rules;
                 let Some(name) = a.text("name") else {

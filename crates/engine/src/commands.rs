@@ -374,6 +374,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("regions", ""),
     ("debugblocks", "[floor:block]"),
     ("log", "[filters:text]"),
+    ("gizmo", "[group:word]"),
     ("rule", "[name:word] [value:int]"),
 ];
 

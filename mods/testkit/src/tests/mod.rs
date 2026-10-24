@@ -19,6 +19,7 @@ pub fn all() -> Vec<TestDef> {
         ui::inventory_crafting,
         ui::creative_inventory,
         ui::chat_completion,
+        ui::client_command_completion,
         world::flatlands_sync,
         world::save_and_reload,
         world::dimensions,

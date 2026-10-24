@@ -94,3 +94,21 @@ pub async fn chat_completion(t: T) -> R {
     t.until("logs given", Duration::from_secs(5), |t| t.c().inventory_slot(0).item == id("base:birch_log")).await?;
     Ok(())
 }
+
+/// Commands the client handles itself (`/gizmo`, `/log`) complete like the others.
+pub async fn client_command_completion(t: T) -> R {
+    t.world(3).await?;
+    t.press("core:chat");
+    t.screen("core:chat").await?;
+    t.c().type_text("/giz");
+    t.frames(2).await?;
+    t.c().key("Tab", 0.0);
+    t.frames(3).await?;
+    let text = t.c().input_text();
+    t.check(text.starts_with("/gizmo"), format!("Tab completed /giz to '{text}'"));
+    t.c().key("Escape", 0.0);
+    t.no_screen().await?;
+    let reply = t.cmd("/gizmo cubes").await?;
+    t.check(reply.contains("cubes"), format!("/gizmo cubes said '{reply}'"));
+    Ok(())
+}

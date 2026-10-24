@@ -162,6 +162,8 @@ fn init(r: &mut Registry) {
     r.loot_modify("base:zombie").add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);
+    // The engine's /gizmo suggests this mod's group too.
+    r.command_words("gizmo", "group", &["testmod:energy"]);
 
     r.dimension("void").handle(&VOID)
         .generator(island)

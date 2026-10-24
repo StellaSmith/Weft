@@ -23,6 +23,11 @@ fn init(r: &mut Registry) {
     server::register(r);
     r.client_packet("reply", |_, data| runner::reply(data));
     r.key("probe", "F9");
+    // A branch of an engine command, handled by this mod (on the client, like /gizmo).
+    r.command_branch("gizmo", "probe <n:int>", |cmd| {
+        let n = cmd.int("n").unwrap_or(0);
+        cmd.reply(&format!("gizmo probe {n} from testkit"));
+    });
     // A command that never reaches the server: answers from the client it runs on.
     r.client_command("probe", "<what:word(alpha,beta)>", |cmd| {
         let side = if cmd.client().is_some() { "client" } else { "server" };

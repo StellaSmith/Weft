@@ -145,6 +145,8 @@ pub static HOST: Host = Host {
     client_menu_owner: crate::client::modui::client_menu_owner,
     reg_system,
     reg_client_command,
+    reg_command_words,
+    reg_command_branch,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -1024,6 +1026,25 @@ unsafe extern "C" fn roll_loot(w: *mut abi::WorldCtx, name: Str, ctx: *const abi
 
 unsafe extern "C" fn break_block(w: *mut abi::WorldCtx, pos: *const [i32; 3], tool: ItemStack, player: u64, drops: u32) -> u32 {
     unsafe { dim(w).break_block(content(), ip(pos), tool, player, drops != 0) as u32 }
+}
+
+unsafe extern "C" fn reg_command_words(r: *mut abi::Registrar, command: Str, param: Str, words: Str) {
+    unsafe {
+        let r = reg(r);
+        let words = words.as_str().split(',').map(str::trim).filter(|w| !w.is_empty()).map(String::from).collect();
+        let ext = registry::CommandExtension::Words { command: command.as_str().to_string(), param: param.as_str().to_string(), words };
+        let owner = r.owner;
+        r.game.command_extensions.push((owner, ext));
+    }
+}
+
+unsafe extern "C" fn reg_command_branch(r: *mut abi::Registrar, command: Str, usage: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let ext = registry::CommandExtension::Branch { command: command.as_str().to_string(), usage: usage.as_str().to_string(), cb };
+        let owner = r.owner;
+        r.game.command_extensions.push((owner, ext));
+    }
 }
 
 unsafe extern "C" fn reg_client_command(r: *mut abi::Registrar, name: Str, usage: Str, cb: Callback) {

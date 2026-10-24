@@ -1336,6 +1336,12 @@ pub struct Host {
     /// A command that runs on the client that types it (never sent to the server), same usage
     /// syntax as `reg_command`; `cb` gets `CommandArgs` with `client` set.
     pub reg_client_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
+    /// Adds completion words (comma separated) to the `word` parameter `param` of any mod's or
+    /// the engine's command, like Brigadier merging nodes registered from several places.
+    pub reg_command_words: unsafe extern "C" fn(reg: *mut Registrar, command: Str, param: Str, words: Str),
+    /// Adds alternatives (`usage` syntax) to an existing command, handled by `cb` with
+    /// `CommandArgs` laid out by this usage; runs where the command runs.
+    pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, cb: Callback),
 }
 
 /// Values are copied out before the call and written back after it (changes of synced

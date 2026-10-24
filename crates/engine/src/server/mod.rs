@@ -1051,7 +1051,7 @@ impl Server {
             .and_then(|r| r.entities.get(entity))
             .map_or_else(Origin::default, |e| Origin { pos: e.pos, yaw: e.yaw, pitch: e.pitch });
         let players: Vec<String> = self.players.iter().filter(|p| p.joined).map(|p| p.name.clone()).collect();
-        let args = match crate::commands::parse_args(c, &def.alts, &tokens[1..], here, &players) {
+        let (args, handler) = match def.parse(c, &tokens[1..], here, &players) {
             Ok(a) => a,
             Err(e) => return format!("{e}. usage: /{} {}", def.name, def.usage),
         };
@@ -1064,7 +1064,7 @@ impl Server {
                 _ => None,
             })
             .collect();
-        match def.handler {
+        match handler {
             None => self.builtin(c, pi, name, &args, here.pos),
             Some((owner, cb)) => {
                 let Some((r, player)) = self.region(pi) else { return String::new() };

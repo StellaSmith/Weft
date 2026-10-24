@@ -359,6 +359,98 @@ pub struct CommandDef {
     pub handler: Option<(ModId, Callback)>,
     /// Runs on the client that typed it (logging, gizmos, mods' client commands), never sent.
     pub client: bool,
+    /// Per alternative: 0 = the command's own, i = `branches[i - 1]` (added by another mod).
+    pub owners: Vec<usize>,
+    pub branches: Vec<(ModId, Callback)>,
+}
+
+impl CommandDef {
+    pub fn new(name: &str, usage: &str, alts: Vec<Alt>, handler: Option<(ModId, Callback)>, client: bool) -> CommandDef {
+        let owners = vec![0; alts.len()];
+        CommandDef { name: name.to_string(), usage: usage.to_string(), alts, handler, client, owners, branches: Vec::new() }
+    }
+
+    /// Parses `tokens` and says who handles them: the command's own handler (`None` for the
+    /// engine's) or the mod whose branch matched. Values are laid out by that owner's own
+    /// alternatives, as its usage string declares them.
+    pub fn parse(&self, c: &Content, tokens: &[&str], here: Origin, players: &[String]) -> Result<(Args, Option<(ModId, Callback)>), String> {
+        let mut first_err = None;
+        for (i, alt) in self.alts.iter().enumerate() {
+            let owner = self.owners[i];
+            let own: Vec<Alt> = self.alts.iter().zip(&self.owners).filter(|(_, o)| **o == owner).map(|(a, _)| a.clone()).collect();
+            match parse_alt(c, alt, tokens, here, players, &slots(&own)) {
+                Ok(a) => return Ok((a, if owner == 0 { self.handler } else { Some(self.branches[owner - 1]) })),
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+        Err(first_err.unwrap_or_else(|| "bad arguments".into()))
+    }
+
+    /// Adds completion words to every `word` parameter called `param`; false if there is none.
+    pub fn add_words(&mut self, param: &str, words: &[String]) -> bool {
+        let mut found = false;
+        for p in self.alts.iter_mut().flatten().filter(|p| p.name == param) {
+            if let Kind::Word(list) = &mut p.kind {
+                for w in words {
+                    if !list.contains(w) {
+                        list.push(w.clone());
+                    }
+                }
+                found = true;
+            }
+        }
+        if found {
+            self.usage = usage_text(&self.alts);
+        }
+        found
+    }
+
+    /// Another mod's alternatives with its own handler.
+    pub fn add_branch(&mut self, alts: Vec<Alt>, handler: (ModId, Callback)) {
+        self.branches.push(handler);
+        let owner = self.branches.len();
+        self.owners.extend(std::iter::repeat_n(owner, alts.len()));
+        self.alts.extend(alts);
+        self.usage = usage_text(&self.alts);
+    }
+}
+
+fn type_name(k: &Kind) -> String {
+    match k {
+        Kind::Literal(l) => l.clone(),
+        Kind::Int => "int".into(),
+        Kind::Float => "float".into(),
+        Kind::Word(list) if list.is_empty() => "word".into(),
+        Kind::Word(list) => format!("word({})", list.join(",")),
+        Kind::Text => "text".into(),
+        Kind::Item => "item".into(),
+        Kind::Block => "block".into(),
+        Kind::Entity => "entity".into(),
+        Kind::Dim => "dim".into(),
+        Kind::Player => "player".into(),
+        Kind::Pos => "pos".into(),
+        Kind::Targets => "targets".into(),
+        Kind::Time => "time".into(),
+    }
+}
+
+/// Usage string of alternatives, the inverse of `parse_usage`.
+pub fn usage_text(alts: &[Alt]) -> String {
+    alts.iter()
+        .map(|alt| {
+            alt.iter()
+                .map(|p| match &p.kind {
+                    Kind::Literal(l) => l.clone(),
+                    k if p.optional => format!("[{}:{}]", p.name, type_name(k)),
+                    k => format!("<{}:{}>", p.name, type_name(k)),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// Engine commands that run on the client: (name, usage). `{gizmos}` becomes the gizmo groups

@@ -802,9 +802,9 @@ impl Running {
         let p = &g.client.player;
         let here = crate::commands::Origin { pos: p.pos, yaw: p.yaw, pitch: p.pitch };
         let players = g.client.players.clone();
-        let reply = match crate::commands::parse_args(content(), &def.alts, &tokens[1..], here, &players) {
+        let reply = match def.parse(content(), &tokens[1..], here, &players) {
             Err(e) => format!("{e}. usage: /{} {}", def.name, def.usage),
-            Ok(args) => match def.handler {
+            Ok((args, handler)) => match handler {
                 // Logging is per process; the shown gizmo groups belong to this client.
                 None if def.name == "log" => crate::commands::log_command(args.text("filters").unwrap_or("")),
                 None => self.game.as_mut().map_or(String::new(), |g| g.client.gizmo_command(args.text("group").unwrap_or(""))),

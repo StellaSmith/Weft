@@ -209,6 +209,7 @@ pub struct RawGame {
     pub commands: Vec<(ModId, String, String, Callback)>,
     /// Commands that run on the client: (owner, name, usage, callback).
     pub client_commands: Vec<(ModId, String, String, Callback)>,
+    pub command_extensions: Vec<(ModId, CommandExtension)>,
     pub player_menu: Option<String>,
     pub block_entities: Vec<(String, String, u32)>,
     pub attach: Vec<(String, String)>,
@@ -240,6 +241,12 @@ pub struct RawGame {
     pub stack_components: Vec<(String, String, u32)>,
     /// (owner, component, schema, system).
     pub systems: Vec<(ModId, String, String, Callback)>,
+}
+
+/// A mod's addition to a command registered elsewhere.
+pub enum CommandExtension {
+    Words { command: String, param: String, words: Vec<String> },
+    Branch { command: String, usage: String, cb: Callback },
 }
 
 /// An event mods can subscribe to; `size` is learned from the first value emitted when the

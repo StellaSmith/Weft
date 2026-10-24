@@ -1103,13 +1103,13 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
     for (name, usage) in crate::commands::BUILTIN {
         let alts = crate::commands::parse_usage(usage).expect("engine command usage");
-        commands.push(crate::commands::CommandDef { name: name.to_string(), usage: usage.to_string(), alts, handler: None, client: false });
+        commands.push(crate::commands::CommandDef::new(name, usage, alts, None, false));
     }
     let gizmos: Vec<&str> = crate::client::gizmo::BUILTIN.iter().map(|g| g.0).collect();
     for (name, usage) in crate::commands::CLIENT {
         let usage = usage.replace("{gizmos}", &gizmos.join(","));
         let alts = crate::commands::parse_usage(&usage).expect("engine command usage");
-        commands.push(crate::commands::CommandDef { name: name.to_string(), usage, alts, handler: None, client: true });
+        commands.push(crate::commands::CommandDef::new(name, &usage, alts, None, true));
     }
     let mut mod_commands: Vec<(ModId, String, String, Callback, bool)> = games
         .iter()
@@ -1122,8 +1122,29 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             continue;
         }
         match crate::commands::parse_usage(&usage) {
-            Ok(alts) => commands.push(crate::commands::CommandDef { name, usage, alts, handler: Some((owner, cb)), client }),
+            Ok(alts) => commands.push(crate::commands::CommandDef::new(&name, &usage, alts, Some((owner, cb)), client)),
             Err(e) => errors.push(format!("{}: command /{name}: {e}", mod_name(owner))),
+        }
+    }
+    // Other mods extend existing commands, in load order: more completion words, more branches.
+    let mut extensions: Vec<(ModId, crate::registry::CommandExtension)> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.command_extensions)).collect();
+    extensions.sort_by_key(|e| mods.get(e.0.0 as usize).map_or(u32::MAX, |m| m.order));
+    for (owner, ext) in extensions {
+        let who = mod_name(owner);
+        match ext {
+            crate::registry::CommandExtension::Words { command, param, words } => match commands.iter_mut().find(|d| d.name == command) {
+                Some(d) => {
+                    if !d.add_words(&param, &words) {
+                        errors.push(format!("{who}: /{command} has no word parameter {param}"));
+                    }
+                }
+                None => errors.push(format!("{who}: extends unknown command /{command}")),
+            },
+            crate::registry::CommandExtension::Branch { command, usage, cb } => match (commands.iter_mut().find(|d| d.name == command), crate::commands::parse_usage(&usage)) {
+                (Some(d), Ok(alts)) => d.add_branch(alts, (owner, cb)),
+                (None, _) => errors.push(format!("{who}: extends unknown command /{command}")),
+                (_, Err(e)) => errors.push(format!("{who}: branch of /{command}: {e}")),
+            },
         }
     }
     let (liquids, reactions) = freeze_liquids(&mut games, &mut states, &block_defs, &block_names, &components, &mut errors);

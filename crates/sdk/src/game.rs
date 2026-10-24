@@ -631,6 +631,20 @@ impl Registry {
         unsafe { (host().reg_client_command)(self.raw, Str::new(name), Str::new(usage), cb) }
     }
 
+    /// Adds completion words to the `word` parameter `param` of a command any mod (or the
+    /// engine) registered: `r.command_words("gizmo", "group", &["mymod:pipes"])`.
+    pub fn command_words(&mut self, command: &str, param: &str, words: &[&str]) {
+        let words = words.join(",");
+        unsafe { (host().reg_command_words)(self.raw, Str::new(command), Str::new(param), Str::new(&words)) }
+    }
+
+    /// A new branch of an existing command, handled here: `r.command_branch("gizmo", "clear",
+    /// |cmd| ..)` makes `/gizmo clear` this mod's. Earlier alternatives win when both fit.
+    pub fn command_branch(&mut self, command: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
+        let cb = crate::command::command_cb(usage, f);
+        unsafe { (host().reg_command_branch)(self.raw, Str::new(command), Str::new(usage), cb) }
+    }
+
     /// HUD element at `anchor` (`hud_anchor::*`); `order` 0 sits nearest the anchor's edge.
     pub fn hud_element(&mut self, name: &str, anchor: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
         let name = qualify(self.ns, name);

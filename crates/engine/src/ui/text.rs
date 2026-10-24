@@ -6,9 +6,17 @@
 //! - `{item:base:diamond}` draws an item icon inline
 //! - `{link:target}text{/link}` makes a clickable link to another element or screen
 //! - `{lang:some.key}` inserts another translation, so shared phrases are written once
+//! - `{on_key:core:sneak}text{/on_key}` shows text only while every listed key is held: actions
+//!   (respecting rebinding) or raw keys by their settings name, joined with `+`
+//!   (`{on_key:ControlLeft+KeyC}`); `!` in front inverts it
+//! - `{if:creative}text{/if}` shows text while a condition holds: the engine's (`creative`,
+//!   `survival`, `spectator`, `debug`, `dev`) or a mod's (`mymod:charged`); `!` inverts it
+//! - `{fx:core:rainbow}text{/fx}` animates the text with an effect shader
+//!   (`shaders/fx/<name>.wgsl` in any mod or resource pack)
 //! - `{{` is a literal brace
 //!
-//! Item tooltips also understand `{shift}`: what follows shows only while sneak is held.
+//! Conditional parts stay in the spans and are hidden at layout time, so a text lays out again
+//! when a condition changes without being formatted again.
 
 use super::font::Font;
 use super::lang::Lang;
@@ -32,11 +40,68 @@ pub enum Piece {
     LinkEnd,
 }
 
+impl Default for Piece {
+    fn default() -> Self {
+        Piece::Text(String::new())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
+pub enum Test {
+    /// Actions (names with a namespace) or raw keys, all held.
+    Keys(Vec<String>),
+    If(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cond {
+    pub not: bool,
+    pub test: Test,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Span {
     pub piece: Piece,
     /// `None` = element default colour.
     pub color: Option<u32>,
+    /// Text effect (`fx_id`), 0 for none.
+    pub fx: u16,
+    /// Shown only while all of these hold.
+    pub when: Vec<Cond>,
+    /// Set by `refresh` from `when`.
+    pub hidden: bool,
+}
+
+/// `hidden` is derived state: spans with the same content are equal whatever it says.
+impl PartialEq for Span {
+    fn eq(&self, o: &Span) -> bool {
+        self.piece == o.piece && self.color == o.color && self.fx == o.fx && self.when == o.when
+    }
+}
+
+impl Span {
+    pub fn text(s: impl Into<String>, color: Option<u32>) -> Span {
+        Span { piece: Piece::Text(s.into()), color, ..Default::default() }
+    }
+}
+
+static FX: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Session-wide number of an effect name (from 1), so spans stay small and the renderer maps it
+/// to whatever its shader has.
+pub fn fx_id(name: &str) -> u16 {
+    let mut v = FX.lock().unwrap();
+    match v.iter().position(|n| n == name) {
+        Some(i) => i as u16 + 1,
+        None => {
+            v.push(name.to_string());
+            v.len() as u16
+        }
+    }
+}
+
+pub fn fx_name(id: u16) -> Option<String> {
+    FX.lock().unwrap().get((id as usize).checked_sub(1)?).cloned()
 }
 
 pub struct Ctx<'a> {
@@ -46,85 +111,138 @@ pub struct Ctx<'a> {
 }
 
 pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
-    format_depth(template, args, cx, out, None, 0)
+    let mut st = State { color: None, fx: 0, when: Vec::new() };
+    format_depth(template, args, cx, out, &mut st, None, 0)
 }
 
-fn push_text(out: &mut Vec<Span>, s: &str, color: Option<u32>) {
+struct State {
+    color: Option<u32>,
+    fx: u16,
+    when: Vec<Cond>,
+}
+
+impl State {
+    fn span(&self, piece: Piece, color: Option<u32>) -> Span {
+        Span { piece, color, fx: self.fx, when: self.when.clone(), hidden: false }
+    }
+}
+
+fn push_text(out: &mut Vec<Span>, s: &str, st: &State) {
     if s.is_empty() {
         return;
     }
-    if let Some(Span { piece: Piece::Text(t), color: c }) = out.last_mut() {
-        if *c == color {
-            t.push_str(s);
-            return;
+    if let Some(last) = out.last_mut() {
+        if last.color == st.color && last.fx == st.fx && last.when == st.when {
+            if let Piece::Text(t) = &mut last.piece {
+                t.push_str(s);
+                return;
+            }
         }
     }
-    out.push(Span { piece: Piece::Text(s.to_string()), color });
+    out.push(st.span(Piece::Text(s.to_string()), st.color));
 }
 
-fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, base: Option<u32>, depth: u32) {
-    let mut color = base;
+fn cond(spec: &str, keys: bool) -> Cond {
+    let (not, rest) = match spec.strip_prefix('!') {
+        Some(r) => (true, r),
+        None => (false, spec),
+    };
+    let test = if keys { Test::Keys(rest.split('+').map(|k| k.trim().to_string()).collect()) } else { Test::If(rest.trim().to_string()) };
+    Cond { not, test }
+}
+
+fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st: &mut State, base: Option<u32>, depth: u32) {
+    st.color = base;
     let mut rest = template;
     while let Some(i) = rest.find(['{', '}']) {
-        push_text(out, &rest[..i], color);
+        push_text(out, &rest[..i], st);
         let tail = &rest[i..];
         if tail.starts_with("{{") || tail.starts_with("}}") {
-            push_text(out, &tail[..1], color);
+            push_text(out, &tail[..1], st);
             rest = &tail[2..];
             continue;
         }
         if tail.starts_with('}') {
-            push_text(out, "}", color);
+            push_text(out, "}", st);
             rest = &tail[1..];
             continue;
         }
         let Some(end) = tail.find('}') else {
-            push_text(out, tail, color);
+            push_text(out, tail, st);
             return;
         };
         let tag = &tail[1..end];
         rest = &tail[end + 1..];
         if let Some(hex) = tag.strip_prefix('#') {
-            color = u32::from_str_radix(hex, 16).ok().or(color);
+            st.color = u32::from_str_radix(hex, 16).ok().or(st.color);
         } else if tag == "/" {
-            color = base;
+            st.color = base;
         } else if let Some(action) = tag.strip_prefix("key:") {
             let name = cx.input.and_then(|i| i.key_of(action)).map(|k| display_key(cx.lang, k)).unwrap_or_else(|| "?".into());
-            push_text(out, &format!("[{name}]"), Some(color.unwrap_or(0xFFE070)));
+            let color = Some(st.color.unwrap_or(0xFFE070));
+            out.push(st.span(Piece::Text(format!("[{name}]")), color));
         } else if let Some(item) = tag.strip_prefix("item:") {
             if let Some(id) = (cx.item_name)(item) {
-                out.push(Span { piece: Piece::Icon(id), color: None });
+                out.push(st.span(Piece::Icon(id), None));
             }
         } else if let Some(target) = tag.strip_prefix("link:") {
-            out.push(Span { piece: Piece::LinkStart(target.to_string()), color: None });
-            color = Some(color.unwrap_or(0x80B0FF));
+            out.push(st.span(Piece::LinkStart(target.to_string()), None));
+            st.color = Some(st.color.unwrap_or(0x80B0FF));
         } else if let Some(key) = tag.strip_prefix("lang:") {
             if depth < 4 {
-                format_depth(cx.lang.get(key), args, cx, out, color, depth + 1);
+                let color = st.color;
+                format_depth(cx.lang.get(key), args, cx, out, st, color, depth + 1);
+                st.color = color;
             }
         } else if tag == "/link" {
-            out.push(Span { piece: Piece::LinkEnd, color: None });
-            color = base;
+            out.push(st.span(Piece::LinkEnd, None));
+            st.color = base;
+        } else if let Some(spec) = tag.strip_prefix("on_key:") {
+            st.when.push(cond(spec, true));
+        } else if let Some(spec) = tag.strip_prefix("if:") {
+            st.when.push(cond(spec, false));
+        } else if tag == "/on_key" || tag == "/if" {
+            st.when.pop();
+        } else if let Some(name) = tag.strip_prefix("fx:") {
+            st.fx = fx_id(name);
+        } else if tag == "/fx" {
+            st.fx = 0;
         } else if let Ok(n) = tag.parse::<usize>() {
             match args.get(n) {
-                Some(Arg::Text(s)) => push_text(out, s, color),
-                Some(Arg::Int(v)) => push_text(out, &v.to_string(), color),
-                Some(Arg::Float(v, p)) => push_text(out, &format!("{v:.*}", *p as usize), color),
-                Some(Arg::Item(id)) => out.push(Span { piece: Piece::Icon(*id), color: None }),
-                Some(Arg::Key(k)) if depth < 4 => format_depth(cx.lang.get(k), &[], cx, out, color, depth + 1),
-                _ => push_text(out, &format!("{{{tag}}}"), color),
+                Some(Arg::Text(s)) => push_text(out, s, st),
+                Some(Arg::Int(v)) => push_text(out, &v.to_string(), st),
+                Some(Arg::Float(v, p)) => push_text(out, &format!("{v:.*}", *p as usize), st),
+                Some(Arg::Item(id)) => out.push(st.span(Piece::Icon(*id), None)),
+                Some(Arg::Key(k)) if depth < 4 => {
+                    let color = st.color;
+                    format_depth(cx.lang.get(k), &[], cx, out, st, color, depth + 1);
+                    st.color = color;
+                }
+                _ => push_text(out, &format!("{{{tag}}}"), st),
             }
         } else {
-            push_text(out, &format!("{{{tag}}}"), color);
+            push_text(out, &format!("{{{tag}}}"), st);
         }
     }
-    push_text(out, rest, color);
+    push_text(out, rest, st);
 }
 
-/// Positioned output in unscaled font pixels relative to the text box origin.
+/// Re-evaluates conditional spans; `test` answers a condition without its `!`. True if anything
+/// was shown or hidden.
+pub fn refresh(spans: &mut [Span], test: &dyn Fn(&Test) -> bool) -> bool {
+    let mut changed = false;
+    for s in spans.iter_mut().filter(|s| !s.when.is_empty()) {
+        let hidden = !s.when.iter().all(|c| test(&c.test) != c.not);
+        changed |= hidden != s.hidden;
+        s.hidden = hidden;
+    }
+    changed
+}
+
+// Positioned output in unscaled font pixels relative to the text box origin.
 #[derive(Clone, Copy, Debug)]
 pub enum Placed {
-    Glyph { x: f32, y: f32, ch: char, color: Option<u32> },
+    Glyph { x: f32, y: f32, ch: char, color: Option<u32>, fx: u16 },
     Icon { x: f32, y: f32, item: u32 },
 }
 
@@ -169,7 +287,7 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
         *line_start = out.items.len();
     };
 
-    for span in spans {
+    for span in spans.iter().filter(|s| !s.hidden) {
         match &span.piece {
             Piece::Text(t) => {
                 for ch in t.chars() {
@@ -218,10 +336,10 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
                     }
                     if mono {
                         let cell = if adv > font.mono + 1.0 { font.mono * 2.0 } else { font.mono };
-                        out.items.push(Placed::Glyph { x: x + ((cell - adv) / (2.0 * font.pixel)).floor() * font.pixel, y, ch, color: span.color });
+                        out.items.push(Placed::Glyph { x: x + ((cell - adv) / (2.0 * font.pixel)).floor() * font.pixel, y, ch, color: span.color, fx: span.fx });
                         x += cell;
                     } else {
-                        out.items.push(Placed::Glyph { x, y, ch, color: span.color });
+                        out.items.push(Placed::Glyph { x, y, ch, color: span.color, fx: span.fx });
                         x += adv;
                     }
                 }
@@ -256,12 +374,34 @@ pub fn display_key(lang: &Lang, k: crate::input::Key) -> String {
 }
 
 pub fn plain(s: &str) -> Vec<Span> {
-    vec![Span { piece: Piece::Text(s.to_string()), color: None }]
+    vec![Span::text(s, None)]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conditions_and_effects() {
+        let lang = Lang::load(&crate::assets::Assets::new([], Vec::new()), "en_us", false);
+        let cx = Ctx { lang: &lang, input: None, item_name: &|_| None };
+        let mut spans = Vec::new();
+        format("a{on_key:!core:sneak}b{if:creative}c{/if}{/on_key}{fx:core:wave}d{/fx}e", &[], &cx, &mut spans);
+        let text = |s: &Span| match &s.piece {
+            Piece::Text(t) => t.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(spans.iter().map(text).collect::<Vec<_>>(), ["a", "b", "c", "d", "e"]);
+        assert_eq!((spans[2].when.len(), spans[3].fx, spans[4].fx), (2, fx_id("core:wave"), 0));
+        // Sneak held, not creative: only the unconditional parts and the effect remain.
+        let font = Font::parse_hex(include_str!("../../assets/fonts/unifont.hex"));
+        assert!(refresh(&mut spans, &|t| matches!(t, Test::Keys(_))));
+        let shown: String = layout(&spans, &font, None).items.iter().filter_map(|i| if let Placed::Glyph { ch, .. } = i { Some(*ch) } else { None }).collect();
+        assert_eq!(shown, "ade");
+        assert!(refresh(&mut spans, &|t| matches!(t, Test::If(_))));
+        assert!(!refresh(&mut spans, &|t| matches!(t, Test::If(_))));
+        assert_eq!(spans.iter().filter(|s| !s.hidden).count(), 5);
+    }
 
     #[test]
     fn wrapping_never_loses_or_panics() {

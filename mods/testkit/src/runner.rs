@@ -168,7 +168,7 @@ impl T {
         self.c().new_world(&name, seed);
         self.until("joined", Duration::from_secs(60), |t| t.flag(cf::JOINED)).await?;
         // Mobs only where a test puts them, so pictures repeat.
-        self.cmd("/rule base:mob_spawning 0").await?;
+        self.cmd("/rule core:mob_spawning 0").await?;
         self.loaded().await
     }
 
@@ -323,6 +323,25 @@ impl T {
         }
         client::image_free(id);
         Ok(())
+    }
+
+    /// This frame's pixels (RGBA), for comparing frames within a test.
+    pub async fn grab(&self) -> Result<Vec<u8>, String> {
+        let path = format!("{}/test-shots/{}/grab.png", self.c().run_dir(), self.name());
+        let id = self.c().screenshot(&path);
+        let mut px = None;
+        self.until("grab", Duration::from_secs(10), |_| {
+            px = client::image(id).map(|p| p.2.to_vec());
+            px.is_some()
+        })
+        .await?;
+        client::image_free(id);
+        Ok(px.unwrap())
+    }
+
+    /// Share of pixels that differ between two grabs.
+    pub fn differ(a: &[u8], b: &[u8]) -> f64 {
+        compare(a, b).0 as f64 / (a.len() / 4).max(1) as f64
     }
 
     /// Frame/GPU/server numbers over `secs`: [fps, avg ms, p99 ms, gpu ms, server ms].

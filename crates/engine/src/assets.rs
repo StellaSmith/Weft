@@ -166,6 +166,38 @@ pub struct TextureArray {
     pub entries: Vec<(u32, u32)>,
     /// Per input texture: animation, if it has more than one frame.
     pub anims: Vec<Option<Anim>>,
+    /// Glow per texel (one byte, every layer, full size only) when any texture has a mask, see
+    /// `emission_mask`; and per input texture whether it has one.
+    pub emission: Option<Vec<u8>>,
+    pub emissive: Vec<bool>,
+}
+
+/// Emission like LabPBR, only that part of it: `<name>_s.png` (a LabPBR specular map) glows by
+/// its alpha, 0..254 from none to full and 255 for none; or our own `<name>_e.png`, glowing by
+/// its red channel times alpha. Same size and frames as the texture. One byte per texel.
+pub fn emission_mask(assets: &Assets, name: &str) -> Option<Image> {
+    let read = |suffix: &str| assets.read(&format!("{name}_{suffix}"), "textures", "png").and_then(|b| decode_png(&b));
+    if let Some(mut img) = read("e") {
+        img.rgba = img.rgba.chunks_exact(4).map(|p| (p[0] as u32 * p[3] as u32 / 255) as u8).collect();
+        return Some(img);
+    }
+    let mut img = read("s")?;
+    img.rgba = img.rgba.chunks_exact(4).map(|p| if p[3] == 255 { 0 } else { (p[3] as u32 * 255 / 254) as u8 }).collect();
+    Some(img)
+}
+
+/// One frame of a mask (one byte per texel) scaled to `to` like the texture's frames.
+fn mask_frame(mask: &Image, frame: u32, to: u32) -> Vec<u8> {
+    let from = mask.width;
+    let frames = (mask.height / from.max(1)).max(1);
+    let f = (frame % frames) as usize * (from * from) as usize;
+    let mut out = vec![0u8; (to * to) as usize];
+    for y in 0..to {
+        for x in 0..to {
+            out[(y * to + x) as usize] = mask.rgba[f + ((y * from / to) * from + x * from / to) as usize];
+        }
+    }
+    out
 }
 
 /// Frame sequence of an animated texture: (absolute layer, ticks shown).
@@ -249,15 +281,31 @@ pub fn build_array(assets: &Assets, names: &[String], composites: &[[u32; 4]]) -
             }
         })
         .collect();
+    let masks: Vec<Option<Image>> = names.par_iter().map(|n| emission_mask(assets, n)).collect();
     let mut layers: Vec<Vec<u8>> = Vec::new();
     let mut entries = Vec::new();
     let mut anims = Vec::new();
-    for (frames, count, meta) in per_texture {
+    let mut glow: Vec<Option<Vec<u8>>> = Vec::new();
+    for ((frames, count, meta), mask) in per_texture.into_iter().zip(&masks) {
         let first = layers.len() as u32;
         anims.push(if count > 1 || meta.is_some() { Some(parse_anim(meta.as_deref().unwrap_or(""), count, first)) } else { None });
         entries.push((first, count));
         layers.extend(frames);
+        glow.extend((0..count).map(|f| mask.as_ref().filter(|m| m.width > 0).map(|m| mask_frame(m, f, size))));
     }
+    let mut emissive: Vec<bool> = masks.iter().map(Option::is_some).collect();
+    emissive.resize(entries.len() + composites.len(), false);
+    let emission = masks.iter().any(Option::is_some).then(|| {
+        let mut all = Vec::with_capacity(((layers.len() + composites.len()) * (size * size) as usize).max(1));
+        for g in &glow {
+            match g {
+                Some(m) => all.extend_from_slice(m),
+                None => all.resize(all.len() + (size * size) as usize, 0),
+            }
+        }
+        all.resize(all.len() + composites.len() * (size * size) as usize, 0);
+        all
+    });
     let half = (size / 2) as usize;
     for parts in composites {
         let mut out = vec![0u8; (size * size * 4) as usize];
@@ -286,7 +334,7 @@ pub fn build_array(assets: &Assets, names: &[String], composites: &[[u32; 4]]) -
         current = current.par_iter().map(|l| downsample(l, s)).collect();
         s /= 2;
     }
-    TextureArray { size, layers: entries.last().map_or(0, |e| e.0 + e.1), mips, entries, anims }
+    TextureArray { size, layers: entries.last().map_or(0, |e| e.0 + e.1), mips, entries, anims, emission, emissive }
 }
 
 fn scale_nearest(src: &[u8], from: u32, to: u32) -> Vec<u8> {
@@ -314,7 +362,6 @@ fn downsample(src: &[u8], size: u32) -> Vec<u8> {
         for x in 0..half {
             let mut rgb = [0u32; 3];
             let mut a_sum = 0u32;
-            let mut max_a = 0u32;
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                 let i = (((y * 2 + dy) * size + x * 2 + dx) * 4) as usize;
                 let a = src[i + 3] as u32;
@@ -322,14 +369,14 @@ fn downsample(src: &[u8], size: u32) -> Vec<u8> {
                     rgb[c] += src[i + c] as u32 * a;
                 }
                 a_sum += a;
-                max_a = max_a.max(a);
             }
             let d = ((y * half + x) * 4) as usize;
             for c in 0..3 {
                 out[d + c] = if a_sum > 0 { (rgb[c] / a_sum) as u8 } else { 0 };
             }
-            // Keep cutout textures (leaves) from fading out at distance.
-            out[d + 3] = if max_a == 255 && a_sum >= 255 * 2 { 255 } else { (a_sum / 4) as u8 };
+            // Plain average: with vanilla's alpha test of 0.1 a cutout texel stays while a tenth of
+            // what it covers is opaque, so leaves get denser with distance like vanilla's.
+            out[d + 3] = (a_sum / 4) as u8;
         }
     }
     out

@@ -28,6 +28,10 @@ impl Client {
         Client { raw }
     }
 
+    pub(crate) fn raw(&self) -> *mut abi::ClientCtx {
+        self.raw
+    }
+
     /// The read-only view UI bindings get (own player, components, menu data).
     pub fn view(&self) -> ClientView {
         ClientView::from_raw(self.raw)

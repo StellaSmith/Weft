@@ -118,7 +118,23 @@ pub struct Game {
     pub server: Option<ServerHandle>,
 }
 
-struct Running {
+/// Commands the engine runs on the client that types them: name, usage (`{gizmos}` becomes the
+/// engine's gizmo groups), handler. One table for completion, `/help` and running them.
+pub(crate) const CLIENT_COMMANDS: &[(&str, &str, fn(&mut Running, &crate::commands::Args) -> String)] = &[
+    // Logging is per process.
+    ("log", "[filters:text]", |_, a| crate::commands::log_command(a.text("filters").unwrap_or(""))),
+    // The shown gizmo groups belong to this client.
+    ("gizmo", "[group:word({gizmos})]", |r, a| r.game.as_mut().map_or(String::new(), |g| g.client.gizmo_command(a.text("group").unwrap_or("")))),
+    ("music", "", |r, _| match &mut r.audio {
+        Some(a) => {
+            a.skip_music();
+            "next track".into()
+        }
+        None => "no sound device".into(),
+    }),
+];
+
+pub(crate) struct Running {
     gpu: Box<dyn Backend>,
     window: Arc<Window>,
     depth: (TextureId, u32, u32),
@@ -131,6 +147,8 @@ struct Running {
     assets: Assets,
     textures: GameTextures,
     ui: UiRenderer,
+    post: crate::post::Post,
+    audio: Option<crate::audio::Audio>,
     screens: Vec<(Box<dyn Screen>, Ui)>,
     hud: Hud,
     game: Option<Game>,
@@ -157,6 +175,7 @@ struct Running {
     diag: crate::diag::Reporter,
     /// UI quads as of the last rebuild; per-frame parts are added on top.
     ui_cached: Vec<crate::ui::render::Quad>,
+    ui_animated: Vec<crate::ui::render::Animated>,
     /// Where UI asked for the player model, physical pixels.
     previews: Vec<[f32; 4]>,
     /// Texture holding the rendered inventory figure, drawn by the UI.
@@ -168,6 +187,9 @@ struct Running {
     mod_held: Vec<(Key, Instant)>,
     /// What mods draw this frame (`Host::client_draw`).
     mod_lines: Vec<crate::client::gizmo::Line>,
+    mod_fills: Vec<crate::client::gizmo::Fill>,
+    /// Sounds of the UI and of mods' client code, played after this frame's world sounds.
+    ui_sounds: Vec<crate::audio::Play>,
     mod_labels: Vec<crate::client::gizmo::Label>,
     mod_screen_text: Vec<(f32, f32, String, u32)>,
     frame_no: u64,
@@ -218,9 +240,14 @@ impl App {
             settings.cli_view = Some((v, settings.view_distance));
             settings.view_distance = v;
         }
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title("Voxide")
             .with_inner_size(winit::dpi::PhysicalSize::new(self.opts.size.0, self.opts.size.1));
+        // Automated runs work in the background: no focus taken, under other windows, off the
+        // desktop (still rendered at full size, so screenshots are the same).
+        if self.opts.automated {
+            attrs = attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom).with_position(winit::dpi::PhysicalPosition::new(-32000, -32000));
+        }
         let window = Arc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
         let size = window.inner_size();
         let mut gpu = (self.factory)(&BackendDesc {
@@ -234,6 +261,7 @@ impl App {
 
         let cache = self.opts.run_dir.join("cache");
         let mods = modloader::load(&self.opts.mod_dirs, &cache)?;
+        crate::config::load(&self.opts.run_dir);
         let mut roots: Vec<(String, PathBuf)> = vec![("core".into(), engine_assets())];
         roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
         let packs = crate::packs::enabled(&self.opts.run_dir, &settings.resource_packs);
@@ -243,6 +271,7 @@ impl App {
         let theme = Theme::load(&assets);
         let textures = GameTextures::new(&mut *gpu, content(), &assets);
         let ui = UiRenderer::new(&mut *gpu, &assets)?;
+        let post = crate::post::Post::new(&mut *gpu, &assets);
         let mut input = Input::default();
         for (action, key) in &content().game.keys {
             match crate::settings::parse_key(key) {
@@ -252,6 +281,7 @@ impl App {
         }
         settings.apply_binds(&mut input);
         settings.read_only = self.opts.automated;
+        crate::shaders::pin_time(self.opts.automated);
         let depth = make_depth(&mut *gpu, size.width, size.height);
         let gpu_name = gpu.device_name().to_string();
         let mut r = Running {
@@ -267,6 +297,8 @@ impl App {
             assets,
             textures,
             ui,
+            post,
+            audio: crate::audio::Audio::new(),
             screens: Vec::new(),
             hud: {
                 let mut h = Hud::default();
@@ -300,12 +332,15 @@ impl App {
             bench: None,
             diag: Default::default(),
             ui_cached: Vec::new(),
+            ui_animated: Vec::new(),
             previews: Vec::new(),
             preview_tex: None,
             shot_path: None,
             shot_image: None,
             mod_held: Vec::new(),
             mod_lines: Vec::new(),
+            mod_fills: Vec::new(),
+            ui_sounds: Vec::new(),
             mod_labels: Vec::new(),
             mod_screen_text: Vec::new(),
             frame_no: 0,
@@ -361,6 +396,7 @@ impl Running {
             settings: &self.settings,
             languages: &self.languages,
             in_game: self.game.is_some(),
+            remote: self.game.as_ref().is_some_and(|g| g.server.is_none()),
             mods: self.mods.len(),
             client: self.game.as_ref().map(|g| &g.client),
         }
@@ -416,7 +452,9 @@ impl Running {
 
     fn set_capture(&mut self, on: bool) {
         let on = on && self.screens.is_empty() && self.game.is_some();
-        if on {
+        // Automated runs (read-only settings) never take the real mouse: they run in the background.
+        if self.settings.read_only {
+        } else if on {
             let _ = self.window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
             self.window.set_cursor_visible(false);
         } else {
@@ -442,7 +480,7 @@ impl Running {
         let (client_conn, server_conn) = net::local_pair();
         let _ = server.connect.send(server_conn);
         let key = net::p2p::player_key(&self.settings.run_dir);
-        match Client::new(&mut *self.gpu, &self.textures, client_conn, &self.settings.name, &key, self.settings.view_distance) {
+        match Client::new(&mut *self.gpu, &self.assets, &self.textures, client_conn, &self.settings.name, &key, self.settings.view_distance) {
             Ok(mut client) => {
                 client.sent = load_chat_history(&self.settings.run_dir);
                 self.game = Some(Game { client, server: Some(server) });
@@ -468,6 +506,10 @@ impl Running {
 
     fn leave_world_silent(&mut self) {
         if let Some(mut g) = self.game.take() {
+            if g.server.is_none() {
+                // A remote server's synced settings were in force; back to our own.
+                crate::config::load(&self.settings.run_dir);
+            }
             g.client.leave();
             self.gpu.wait_idle();
             g.client.destroy(&mut *self.gpu);
@@ -599,7 +641,7 @@ impl Running {
                     Ok(conn) => {
                         self.leave_world_silent();
                         let key = net::p2p::player_key(&self.settings.run_dir);
-                        match Client::new(&mut *self.gpu, &self.textures, conn, &self.settings.name, &key, self.settings.view_distance) {
+                        match Client::new(&mut *self.gpu, &self.assets, &self.textures, conn, &self.settings.name, &key, self.settings.view_distance) {
                             Ok(mut client) => {
                                 client.sent = load_chat_history(&self.settings.run_dir);
                                 self.game = Some(Game { client, server: None });
@@ -643,14 +685,45 @@ impl Running {
                 // Pressing with a stack on the cursor starts a drag; releasing over one slot is
                 // a plain click, over several it spreads the stack.
                 let holding = g.client.menu.as_ref().is_some_and(|m| !m.cursor.is_empty());
+                use crate::server::menu::{GATHER, HOTBAR_SWAP};
                 for button in [0u8, 1] {
                     if self.input.pressed_button(button) {
                         let inside = ui.nodes.iter().any(|n| matches!(n.kind, Kind::Container { class: Some(_) }) && n.rect.contains(cursor) && n.rect.w < ui.size.x);
+                        // Vanilla: the same slot and button again within a quarter second, any other
+                        // click in between breaks it.
+                        let double = button == 0 && g.client.last_click.is_some_and(|(l, b, t)| Some(l) == slot && b == button && t.elapsed().as_secs_f32() < 0.25);
+                        g.client.last_click = slot.map(|s| (s, button, Instant::now()));
+                        if shift && button == 0 {
+                            g.client.sweep.extend(slot);
+                        }
                         match slot {
+                            // Double click: the rest of the stack just picked up joins it (the
+                            // server knows what is on the cursor even before we do).
+                            Some(s) if double && !shift => {
+                                g.client.send(net::ToServer::Click { slot: s, button: GATHER, shift: false });
+                                g.client.last_click = None;
+                            }
                             Some(s) if holding && !shift && g.client.drag.is_none() => g.client.drag = Some((button, vec![s])),
                             Some(s) => g.client.send(net::ToServer::Click { slot: s, button, shift }),
                             None if !inside => g.client.send(net::ToServer::Click { slot: u32::MAX, button, shift: false }),
                             None => {}
+                        }
+                    }
+                }
+                // Shift with the left button held: every slot swept over is shift-clicked.
+                if shift && self.input.held_button(0) && !holding {
+                    if let Some(s) = slot.filter(|s| !g.client.sweep.contains(s)) {
+                        g.client.sweep.push(s);
+                        g.client.send(net::ToServer::Click { slot: s, button: 0, shift: true });
+                    }
+                } else if !self.input.held_button(0) {
+                    g.client.sweep.clear();
+                }
+                // Number keys over a slot swap it with that hotbar slot.
+                if let Some(s) = slot {
+                    for n in 0..9u8 {
+                        if self.input.pressed(&format!("core:hotbar{}", n + 1)) {
+                            g.client.send(net::ToServer::Click { slot: s, button: HOTBAR_SWAP + n, shift: false });
                         }
                     }
                 }
@@ -753,6 +826,15 @@ impl Running {
                 }
             }
         }
+        // Recipes of (or uses for) the item under the cursor, in any screen.
+        let typing = ui.focused.is_some_and(|f| matches!(ui.nodes[f].kind, Kind::Input { .. }));
+        for (action, uses) in [("core:recipes", false), ("core:uses", true)] {
+            if !typing && self.input.pressed(action) {
+                if let Some(item) = crate::game_screens::hovered_item(ui, self.game.as_ref().map(|g| &g.client)) {
+                    requests.push(Request::Open(Box::new(crate::game_screens::RecipeView { item, uses })));
+                }
+            }
+        }
         let mut ctx = Ctx {
             settings: &mut self.settings,
             client: self.game.as_mut().map(|g| &mut g.client),
@@ -761,6 +843,11 @@ impl Running {
             stats: &self.stats,
             debug: self.debug,
         };
+        if !actions.is_empty() {
+            if let Some(&click) = content().game.sound_names.get("core:ui.click") {
+                self.ui_sounds.push(crate::audio::Play { sound: click, pos: None, volume: 1.0, pitch: 0.0 });
+            }
+        }
         for a in actions {
             a(&mut ctx);
         }
@@ -805,9 +892,10 @@ impl Running {
         let reply = match def.parse(content(), &tokens[1..], here, &players) {
             Err(e) => format!("{e}. usage: /{} {}", def.name, def.usage),
             Ok((args, handler)) => match handler {
-                // Logging is per process; the shown gizmo groups belong to this client.
-                None if def.name == "log" => crate::commands::log_command(args.text("filters").unwrap_or("")),
-                None => self.game.as_mut().map_or(String::new(), |g| g.client.gizmo_command(args.text("group").unwrap_or(""))),
+                None => match CLIENT_COMMANDS.iter().find(|c| c.0 == def.name) {
+                    Some(c) => (c.2)(self, &args),
+                    None => String::new(),
+                },
                 Some((owner, cb)) => {
                     let values = crate::commands::abi_values(&args, &[]);
                     let mut reply = String::new();
@@ -861,12 +949,29 @@ impl Running {
         };
         let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
         let tcx = text::Ctx { lang: &self.lang, input: Some(ctx.input), item_name: &items };
+        // Each condition is asked once per frame however many texts use it.
+        let asked: std::cell::RefCell<Vec<(String, bool)>> = Default::default();
+        let dev = self.lang.dev;
+        let test = |t: &text::Test| match t {
+            text::Test::Keys(keys) => keys.iter().all(|k| if k.contains(':') { ctx.input.held(k) } else { crate::settings::parse_key(k).is_some_and(|key| ctx.input.held_key(key)) }),
+            text::Test::If(name) => {
+                if let Some(&(_, v)) = asked.borrow().iter().find(|(n, _)| n == name) {
+                    return v;
+                }
+                let v = text_condition(name, ctx.client.as_deref(), ctx.debug, dev);
+                asked.borrow_mut().push((name.clone(), v));
+                v
+            }
+        };
         let mut uis: Vec<&mut Ui> = self.screens.iter_mut().map(|(_, u)| u).collect();
         uis.push(&mut self.hud.ui);
         for ui in uis {
             let mut relayout = false;
             let mut redraw = false;
             for n in &mut ui.nodes {
+                if let Some(tip) = &mut n.tooltip {
+                    redraw |= text::refresh(tip, &test);
+                }
                 match &mut n.kind {
                     Kind::Text(t) => {
                         if let Some(b) = &t.bind {
@@ -878,6 +983,7 @@ impl Running {
                                 relayout = true;
                             }
                         }
+                        relayout |= text::refresh(&mut t.spans, &test);
                     }
                     Kind::Progress { bind, value, .. } | Kind::Icons { bind, value, .. } => {
                         let v = bind(&ctx);
@@ -909,6 +1015,27 @@ impl Running {
             if relayout || redraw {
                 self.quads_dirty = true;
             }
+        }
+    }
+}
+
+/// `{if:name}`: the engine's conditions, then mods' (`Host::reg_text_condition`); unknown ones
+/// are false.
+fn text_condition(name: &str, client: Option<&Client>, debug: bool, dev: bool) -> bool {
+    use crate::world::GameMode;
+    let mode = client.map(|c| c.mode);
+    match name {
+        "creative" => mode == Some(GameMode::Creative),
+        "survival" => mode == Some(GameMode::Survival),
+        "spectator" => mode == Some(GameMode::Spectator),
+        "debug" => debug,
+        "dev" => dev,
+        _ => {
+            let Some(&(owner, cb)) = content().game.text_conditions.get(name) else { return false };
+            let mut v = crate::client::modui::ClientView::new(client);
+            let mut a = abi::TextConditionArgs { client: v.raw(), result: 0 };
+            crate::host::invoke(owner, cb, &mut a);
+            a.result != 0
         }
     }
 }
@@ -1029,6 +1156,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.frame_dt = dt as f32;
     r.release_mod_keys();
     r.mod_lines.clear();
+    r.mod_fills.clear();
     r.mod_labels.clear();
     r.mod_screen_text.clear();
     r.client_hooks(abi::client_hook::FRAME, "");
@@ -1132,6 +1260,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.assets.rescan();
         r.hud.load_layout(&opts.run_dir);
         r.ui.reload(&mut *r.gpu, &r.assets);
+        r.post.reload(&mut *r.gpu, &r.assets);
         r.theme = Theme::load(&r.assets);
         r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);
         r.textures.destroy(&mut *r.gpu);
@@ -1139,7 +1268,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         if let Some(g) = &mut r.game {
             g.client.render.reload_shaders(&mut *r.gpu);
             g.client.render.set_textures(&mut *r.gpu, &r.textures);
-            g.client.entity_render.reload(&mut *r.gpu);
+            g.client.entity_render.reload(&mut *r.gpu, &r.assets);
+            g.client.particles.reload(&mut *r.gpu, &r.assets);
             g.client.world.remesh_all();
         }
         r.rebuild_all();
@@ -1177,6 +1307,18 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         }
     }
     r.client_packets();
+    if let Some(a) = &mut r.audio {
+        let listener = r.game.as_ref().map(|g| g.client.listener());
+        a.update(&r.assets, listener.as_ref());
+        if let Some(g) = &mut r.game {
+            for p in g.client.sounds.drain(..) {
+                a.play(&r.assets, p);
+            }
+        }
+        for p in r.ui_sounds.drain(..) {
+            a.play(&r.assets, p);
+        }
+    }
     let events = r.game.as_mut().map(|g| std::mem::take(&mut g.client.events)).unwrap_or_default();
     for ev in events {
         match ev {
@@ -1310,10 +1452,13 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let mut previews = Vec::new();
         let preview_tex = r.preview_tex;
         let mut layers: Vec<&Ui> = Vec::new();
+        let mut animated = Vec::new();
         if r.game.is_some() {
             layers.push(&r.hud.ui);
         }
-        layers.extend(r.screens.iter().map(|(_, u)| u));
+        // Only the top screen shows, like vanilla: the ones under it are not drawn through its
+        // see-through overlay.
+        layers.extend(r.screens.last().map(|(_, u)| u));
         if let Some(flash) = client.map(|c| c.hurt_flash).filter(|&f| f > 0.0) {
             r.ui.quads.clear();
             if let Some((tex, _, _)) = r.ui.texture(&mut *r.gpu, &r.assets, "core:gui/vignette") {
@@ -1336,18 +1481,26 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                     }
                 }
             };
+            let base = all.len();
             r.ui.build(&mut *r.gpu, &r.assets, ui, &r.theme, scale, game, &mut custom);
             all.append(&mut r.ui.quads);
+            animated.extend(r.ui.animated.drain(..).map(|mut a| {
+                a.quads = a.quads.start + base..a.quads.end + base;
+                a
+            }));
         }
         r.ui_cached = all;
+        r.ui_animated = animated;
         r.previews = previews;
     }
     // The stack held by the mouse follows it every frame, outside the cached quads.
     r.ui.quads.clear();
     r.ui.quads.extend_from_slice(&r.ui_cached);
+    crate::ui::render::animate(&mut r.ui.quads, &r.ui_animated);
     if let Some(g) = &mut r.game {
         g.client.collect_gizmos();
         g.client.gizmo_lines.extend_from_slice(&r.mod_lines);
+        g.client.gizmo_fills.extend_from_slice(&r.mod_fills);
         g.client.gizmo_labels.extend(r.mod_labels.iter().cloned());
         let cam = g.client.render_camera();
         let view_proj = cam.proj(info.width as f32 / info.height.max(1) as f32) * cam.view();
@@ -1400,14 +1553,21 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         }
     }
     let clear = r.game.as_ref().map_or([0.02, 0.02, 0.03, 1.0], |g| g.client.fog_color());
-    r.list.push(Cmd::BeginPass { color: Some((Target::Surface, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
+    // Screen effects need the world in an image they can read.
+    let post = r.post.on() && r.game.is_some();
+    let world_target = if post { Target::Texture(r.post.scene_target(&mut *r.gpu, info.width, info.height)) } else { Target::Surface };
+    r.list.push(Cmd::BeginPass { color: Some((world_target, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
     if let Some(g) = &mut r.game {
         let worn = g.client.worn();
         let held = g.client.held().item;
         g.client.entity_render.preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, held);
         g.client.render(&mut *r.gpu, &mut r.list, &info, &r.textures);
     }
-    r.ui.draw(&mut *r.gpu, &mut r.list, &info);
+    if post {
+        r.list.push(Cmd::EndPass);
+        r.post.apply(&mut *r.gpu, &mut r.list, &info);
+    }
+    r.ui.draw(&mut *r.gpu, &mut r.list, &info, scale);
     r.list.push(Cmd::Mark);
     r.list.push(Cmd::EndPass);
 
@@ -1440,7 +1600,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     if let Some(b) = &mut r.bench {
         let server = r.game.as_ref().and_then(|g| g.server.as_ref());
         let (server_ms, phases) = server.map_or((0.0, [0.0; 6]), |s| (s.tick_ms(), s.phases()));
-        b.sample(dt as f32 * 1000.0, &r.prof, r.gpu.gpu_times(), server_ms, phases);
+        b.sample(dt as f32 * 1000.0, &r.prof, r.gpu.gpu_times(), server_ms, phases, &r.list);
         if b.done() {
             let extra = match &r.game {
                 Some(g) => format!(

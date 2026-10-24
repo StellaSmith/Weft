@@ -245,6 +245,8 @@ pub struct Ui {
     pub size: Vec2,
     /// GUI pixels per font pixel, chosen by the caller so glyphs land on whole physical pixels.
     pub text_unit: f32,
+    /// When it opened (`shaders::clock`), for `open` animations.
+    pub shown: f32,
 }
 
 impl Default for Ui {
@@ -283,13 +285,14 @@ impl Ui {
             scroll: Default::default(),
             size: Vec2::ZERO,
             text_unit: 0.5,
+            shown: crate::shaders::clock(),
         }
     }
 
     pub fn clear(&mut self) {
-        let scroll = std::mem::take(&mut self.scroll);
+        let (scroll, shown, size) = (std::mem::take(&mut self.scroll), self.shown, self.size);
         *self = Ui::new();
-        self.scroll = scroll;
+        (self.scroll, self.shown, self.size) = (scroll, shown, size);
     }
 
     fn scroll_key(&self, id: NodeId) -> String {

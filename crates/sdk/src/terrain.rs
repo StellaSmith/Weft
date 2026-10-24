@@ -71,6 +71,8 @@ pub enum Mask {
     Temperature(f64, f64),
     Humidity(f64, f64),
     All(Vec<Mask>),
+    /// 1 minus the mask: a biome's climate taking a feature away (flat tundra).
+    Not(Box<Mask>),
 }
 
 impl Mask {
@@ -84,6 +86,10 @@ impl Mask {
             Mask::Noise { scale, octaves, from, to, .. } => Mask::Noise { salt, scale, octaves, from, to },
             m => m,
         }
+    }
+
+    pub fn not(self) -> Mask {
+        Mask::Not(Box::new(self))
     }
 
     pub fn and(self, other: Mask) -> Mask {
@@ -103,6 +109,7 @@ impl Mask {
             Mask::Temperature(a, b) => ramp(f.temperature(x, z), *a, *b),
             Mask::Humidity(a, b) => ramp(f.humidity(x, z), *a, *b),
             Mask::All(v) => v.iter().fold(1.0, |acc, m| acc * m.value(f, x, z)),
+            Mask::Not(m) => 1.0 - m.value(f, x, z),
         }
     }
 }
@@ -389,6 +396,8 @@ pub struct Terrain {
     features: Vec<Feature>,
     biomes: Vec<BiomeRule>,
     caves: Option<Caves>,
+    /// Biomes of cubes deep underground: (biome, depth under the surface, patch size, threshold).
+    cave_biomes: Vec<(&'static Biome, i32, f64, f64)>,
     cache: ColumnCache<Vec<Column>>,
     /// Column heights every 4 blocks over a cube's columns and its +X/+Z edge (5 x 5): caves
     /// measure depth from this smoothed surface, so steep slopes do not leave single-column
@@ -398,7 +407,17 @@ pub struct Terrain {
 
 impl Terrain {
     pub fn new(stone: &'static Block, base_height: f64) -> Terrain {
-        Terrain { stone, base: base_height, sea: None, features: Vec::new(), biomes: Vec::new(), caves: None, cache: ColumnCache::new(16384), corners: ColumnCache::new(16384) }
+        Terrain {
+            stone,
+            base: base_height,
+            sea: None,
+            features: Vec::new(),
+            biomes: Vec::new(),
+            caves: None,
+            cave_biomes: Vec::new(),
+            cache: ColumnCache::new(16384),
+            corners: ColumnCache::new(16384),
+        }
     }
 
     pub fn sea(mut self, level: i32, water: &'static Block) -> Self {
@@ -413,6 +432,14 @@ impl Terrain {
 
     pub fn biome(mut self, rule: BiomeRule) -> Self {
         self.biomes.push(rule);
+        self
+    }
+
+    /// A biome in 3D: whole cubes at least `depth` blocks under the surface where a 3D noise of
+    /// patches about `size` blocks across is above `threshold` (-1..1). Biomes are kept per
+    /// column of each cube, so underground ones change every 16 blocks of height at most.
+    pub fn cave_biome(mut self, biome: &'static Biome, depth: i32, size: f64, threshold: f64) -> Self {
+        self.cave_biomes.push((biome, depth, size, threshold));
         self
     }
 
@@ -499,7 +526,12 @@ impl Terrain {
             cols
         });
         for (i, c) in cols.iter().enumerate() {
-            g.biomes()[i] = c.biome.id() as u8;
+            let (x, z) = ((ox + (i % 16) as i32) as f64, (oz + (i / 16) as i32) as f64);
+            let mid = (oy + 8) as f64;
+            let deep = self.cave_biomes.iter().enumerate().find(|&(k, &(_, depth, size, threshold))| {
+                oy + 15 < c.height - depth && perlin3(seed ^ 0xCB10 ^ k as u64, x / size, mid / size, z / size) > threshold
+            });
+            g.biomes()[i] = deep.map_or(c.biome, |(_, b)| b.0).id() as u8;
         }
         let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
         let sea = self.sea.map_or(i32::MIN, |s| s.0);

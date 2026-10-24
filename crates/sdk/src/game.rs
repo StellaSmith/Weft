@@ -12,8 +12,19 @@ pub type Menu = Handle<kind::Menu>;
 // ---------------------------------------------------------------- world helpers
 
 impl World {
+    /// Entity `id` plays keyframe animation `name` for everyone who sees it (looping until
+    /// another starts); an empty name goes back to idle and walk.
+    pub fn play_animation(&self, id: u64, name: &str, looping: bool) {
+        unsafe { (host().play_animation)(self.raw(), id, Str::new(name), looping as u32) }
+    }
+
     pub fn light(&self, pos: [i32; 3]) -> u32 {
         unsafe { (host().light)(self.raw(), &pos) }
+    }
+    /// Biome id at `pos` (`Biome::id`, `Tag::on_biome`); underground biomes differ from the
+    /// surface's.
+    pub fn biome(&self, pos: [i32; 3]) -> u32 {
+        unsafe { (host().biome_at)(self.raw(), &pos) }
     }
     /// Sky light level at `pos` (0..15).
     pub fn sky_light(&self, pos: [i32; 3]) -> u32 {
@@ -45,6 +56,25 @@ impl World {
         unsafe { (host().entity_set)(self.raw(), id, s) }
     }
     /// Steer an AI entity this tick: direction on the ground plane, speed factor, jump.
+    /// `id` walks to `target` by itself, around obstacles, at `speed` times its walking speed
+    /// (0 stops it). Call it again as the target moves; true if the path reaches it.
+    pub fn navigate(&self, id: u64, target: [f64; 3], speed: f32) -> bool {
+        unsafe { (host().navigate)(self.raw(), id, &target, speed) != 0 }
+    }
+    /// Lowest corner of the nearest structure `name` (full name) within `radius` blocks of
+    /// `pos`, generated yet or not.
+    pub fn structure_near(&self, name: &str, pos: [i32; 3], radius: i32) -> Option<[i32; 3]> {
+        let mut out = [0; 3];
+        (unsafe { (host().structure_near)(self.raw(), Str::new(name), &pos, radius, &mut out) } != 0).then_some(out)
+    }
+    /// The block at `pos` falls as an entity (sand, gravel) and is placed again where it lands.
+    pub fn fall(&self, pos: [i32; 3]) -> u64 {
+        unsafe { (host().fall_block)(self.raw(), &pos) }
+    }
+    /// Whether `id` is still walking where `navigate` sent it.
+    pub fn navigating(&self, id: u64) -> bool {
+        unsafe { (host().navigating)(self.raw(), id) != 0 }
+    }
     pub fn walk(&self, id: u64, dir: [f32; 2], speed: f32, jump: bool) {
         unsafe { (host().entity_walk)(self.raw(), id, &dir, speed, jump as u32) }
     }
@@ -238,17 +268,21 @@ pub enum Hook {
     Interact,
 }
 
-/// A model part: pivot, animation role, boxes.
+/// A model part (a bone): pivot, animation role, boxes, free-form triangles, and the part it
+/// hangs from.
 pub struct Part {
     pub pivot: [f32; 3],
     pub role: u32,
     pub boxes: Vec<abi::ModelCuboid>,
     pub rest: [f32; 3],
+    pub name: String,
+    pub parent: i32,
+    pub mesh: Vec<abi::MeshVertex>,
 }
 
 impl Part {
     pub fn new(pivot: [f32; 3], role: u32) -> Part {
-        Part { pivot, role, boxes: Vec::new(), rest: [0.0; 3] }
+        Part { pivot, role, boxes: Vec::new(), rest: [0.0; 3], name: String::new(), parent: -1, mesh: Vec::new() }
     }
     /// Resting rotation in radians about x, y, z (applied in that order).
     pub fn rotate(mut self, x: f32, y: f32, z: f32) -> Part {
@@ -260,6 +294,49 @@ impl Part {
         self.boxes.push(abi::ModelCuboid { origin, extent: size, uv, ..abi::ModelCuboid::DEFAULT });
         self
     }
+    /// The last box's unwrap mirrored left to right.
+    pub fn mirror(mut self) -> Part {
+        if let Some(b) = self.boxes.last_mut() {
+            b.mirror = 1;
+        }
+        self
+    }
+    /// Bone name keyframe animations address.
+    pub fn named(mut self, name: &str) -> Part {
+        self.name = name.to_string();
+        self
+    }
+    /// Hangs from the part at `index` in the same model: moves and turns with it.
+    pub fn child_of(mut self, index: usize) -> Part {
+        self.parent = index as i32;
+        self
+    }
+    /// Free-form triangles (three corners each), in model pixels like the pivot.
+    pub fn mesh(mut self, triangles: Vec<abi::MeshVertex>) -> Part {
+        self.mesh.extend(triangles);
+        self
+    }
+}
+
+/// A sphere of triangles around `center` (model pixels), its texture stretched over the texel
+/// rectangle `uv` (x, y, width, height) like a globe's map.
+pub fn sphere(center: [f32; 3], radius: f32, rings: u32, segments: u32, uv: [f32; 4]) -> Vec<abi::MeshVertex> {
+    use std::f32::consts::{PI, TAU};
+    let (rings, segments) = (rings.max(2), segments.max(3));
+    let at = |i: u32, j: u32| {
+        let (theta, phi) = (PI * i as f32 / rings as f32, TAU * j as f32 / segments as f32);
+        let pos = [center[0] + radius * theta.sin() * phi.cos(), center[1] + radius * theta.cos(), center[2] + radius * theta.sin() * phi.sin()];
+        abi::MeshVertex { pos, uv: [uv[0] + uv[2] * j as f32 / segments as f32, uv[1] + uv[3] * i as f32 / rings as f32] }
+    };
+    let mut out = Vec::new();
+    for i in 0..rings {
+        for j in 0..segments {
+            let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            // Wound so the outside faces the camera (back faces are culled).
+            out.extend([a, d, c, a, c, b]);
+        }
+    }
+    out
 }
 
 /// Classic humanoid on a 64x32 skin; `arms_forward` for zombies.
@@ -333,9 +410,38 @@ pub struct EntityBuilder<'a> {
     on_death: abi::Callback,
     on_interact: abi::Callback,
     replace: bool,
+    carry_height: f32,
 }
 
 impl EntityBuilder<'_> {
+    /// A solid body: others stand on it and ride along, bump into it and get pushed by it
+    /// (platforms, boats, lifts). Not pushed around itself.
+    pub fn solid(mut self) -> Self {
+        self.flags = (self.flags | entity_flags::SOLID) & !entity_flags::PUSHABLE;
+        self
+    }
+    /// Neither pushes nor is pushed by other entities (ghosts, projectiles).
+    pub fn no_push(mut self) -> Self {
+        self.flags &= !entity_flags::PUSHABLE;
+        self
+    }
+    /// Moved exactly by the velocity mod logic gives it (`set_entity`), through blocks, no
+    /// gravity: lifts, airships, contraptions.
+    pub fn kinematic(mut self) -> Self {
+        self.flags |= entity_flags::KINEMATIC | entity_flags::NO_GRAVITY;
+        self
+    }
+    /// A solid body that hurts what it squeezes into blocks instead of only pushing it.
+    pub fn crushes(mut self) -> Self {
+        self.flags |= entity_flags::CRUSHES;
+        self
+    }
+    /// Riders up to `blocks` above the body (jumping, flying around inside it) keep moving with
+    /// it and their own motion stays relative to it, so a jump on a fast ship lands on the ship.
+    pub fn carry_height(mut self, blocks: f32) -> Self {
+        self.carry_height = blocks;
+        self
+    }
     pub fn handle(mut self, h: &'static Entity) -> Self {
         self.handle = Some(h);
         self
@@ -390,10 +496,42 @@ impl EntityBuilder<'_> {
         self.parts = parts;
         self
     }
+    /// Sounds from `<ns>:entity.<group>` (`.hurt`, `.death`, `.ambient`, `.step` events); a name
+    /// with a namespace is used as it is.
+    pub fn sounds(mut self, group: &str) -> Self {
+        let prefix = if group.contains(':') { group.to_string() } else { format!("{}:entity.{group}", self.reg.ns) };
+        self.components.push(Pending::text(abi::comp::SOUND, &prefix));
+        self
+    }
+    /// Model from `models/<name>.geo.json` (Bedrock geometry, as Blockbench exports it) instead of
+    /// the parts in code. A file named like the kind is used even without this.
+    pub fn model_file(mut self, name: &str) -> Self {
+        let name = crate::qualify(self.reg.ns, name);
+        self.components.push(Pending::text(abi::comp::MODEL, &name));
+        self
+    }
+    /// Keyframe animations from `animations/<name>.animation.json`: `idle` and `walk` play by
+    /// themselves, others with `World::play_animation`. A file named like the kind is used even
+    /// without this.
+    pub fn animations(mut self, name: &str) -> Self {
+        let name = crate::qualify(self.reg.ns, name);
+        self.components.push(Pending::text(abi::comp::ANIMATIONS, &name));
+        self
+    }
+    /// Shades the model with `shaders/entity/<name>.wgsl` (namespace optional).
+    pub fn shader(mut self, name: &str) -> Self {
+        let name = crate::qualify(self.reg.ns, name);
+        self.components.push(Pending::text(abi::comp::SHADER, &name));
+        self
+    }
     /// Called once per tick with every entity of this kind.
     pub fn on_tick(mut self, f: impl Fn(&EntityTick) + Send + Sync + 'static) -> Self {
         self.on_tick = tick_cb(f);
         self
+    }
+    /// Behaviour from goals (`ai::Goals`), run every tick; replaces `on_tick`.
+    pub fn goals(self, goals: crate::ai::Goals) -> Self {
+        self.on_tick(move |t| goals.tick(t))
     }
     pub fn on_hurt(mut self, f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) -> Self {
         self.on_hurt = event_cb(f);
@@ -414,8 +552,11 @@ impl Drop for EntityBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let parts: Vec<abi::ModelPart> =
-            self.parts.iter().map(|p| abi::ModelPart { pivot: p.pivot, role: p.role, cuboids: Slice::new(&p.boxes), rest: p.rest, ..abi::ModelPart::DEFAULT }).collect();
+        let parts: Vec<abi::ModelPart> = self
+            .parts
+            .iter()
+            .map(|p| abi::ModelPart { pivot: p.pivot, role: p.role, cuboids: Slice::new(&p.boxes), rest: p.rest, name: Str::new(&p.name), parent: p.parent, mesh: Slice::new(&p.mesh), ..abi::ModelPart::DEFAULT })
+            .collect();
         let mut scratch = Vec::new();
         let values = crate::content::raw_values_pub(&self.components, &mut scratch);
         let desc = abi::EntityDesc {
@@ -437,6 +578,7 @@ impl Drop for EntityBuilder<'_> {
             on_interact: self.on_interact,
             replace: self.replace as u32,
             components: Slice::new(&values),
+            carry_height: self.carry_height,
             ..abi::EntityDesc::DEFAULT
         };
         unsafe { (host().reg_entity)(self.reg.raw, &desc) }
@@ -560,6 +702,7 @@ impl Registry {
             on_death: abi::Callback::NONE,
             on_interact: abi::Callback::NONE,
             replace: false,
+            carry_height: 0.0,
         }
     }
 
@@ -652,6 +795,12 @@ impl Registry {
     }
 
     /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or `#tag`.
+    /// The recipe viewer shows `item` (a machine or workstation) next to recipes of type `kind`.
+    pub fn recipe_station(&mut self, kind: &str, item: &str) {
+        let (kind, item) = (qualify(self.ns, kind), qualify(self.ns, item));
+        unsafe { (host().reg_recipe_station)(self.raw, Str::new(&kind), Str::new(&item)) }
+    }
+
     pub fn shaped(&mut self, kind: &str, output: &str, count: u32, pattern: &[&str], keys: &[(char, &str)]) {
         let pattern: Vec<Str> = pattern.iter().map(|p| Str::new(p)).collect();
         let key_names: Vec<String> = keys.iter().map(|(_, n)| self.ingredient(n)).collect();
@@ -674,5 +823,186 @@ impl Registry {
 
     fn ingredient(&self, n: &str) -> String {
         if n.starts_with('#') { n.to_string() } else { qualify(self.ns, n) }
+    }
+}
+
+/// A natural spawning rule (see `abi::SpawnDesc`):
+/// `r.spawn("pig").biome("animals").ground("animal_spawn").light(9, 15).group(2, 3).chance(0.05)`.
+pub struct SpawnBuilder<'a> {
+    raw: *mut abi::Registrar,
+    names: [String; 4],
+    desc: abi::SpawnDesc,
+    _p: std::marker::PhantomData<&'a mut Registry>,
+}
+
+impl Registry {
+    pub fn spawn<'a>(&'a mut self, entity: &str) -> SpawnBuilder<'a> {
+        let entity = qualify(self.ns, entity);
+        SpawnBuilder { raw: self.raw, names: [entity, String::new(), String::new(), String::new()], desc: abi::SpawnDesc::DEFAULT, _p: std::marker::PhantomData }
+    }
+}
+
+impl SpawnBuilder<'_> {
+    /// Only in biomes with this tag.
+    pub fn biome(mut self, tag: &str) -> Self {
+        self.names[1] = tag.to_string();
+        self
+    }
+    /// Only on blocks with this tag.
+    pub fn ground(mut self, tag: &str) -> Self {
+        self.names[2] = tag.to_string();
+        self
+    }
+    /// Full dimension name.
+    pub fn dimension(mut self, name: &str) -> Self {
+        self.names[3] = name.to_string();
+        self
+    }
+    /// Light at the spot, inclusive (0..15).
+    pub fn light(mut self, min: u32, max: u32) -> Self {
+        self.desc.light = [min, max];
+        self
+    }
+    pub fn y(mut self, min: i32, max: i32) -> Self {
+        self.desc.y = [min, max];
+        self
+    }
+    pub fn group(mut self, min: u32, max: u32) -> Self {
+        self.desc.group = [min, max];
+        self
+    }
+    pub fn weight(mut self, w: u32) -> Self {
+        self.desc.weight = w;
+        self
+    }
+    pub fn chance(mut self, c: f32) -> Self {
+        self.desc.chance = c;
+        self
+    }
+}
+
+impl Drop for SpawnBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let [entity, biome, ground, dimension] = &self.names;
+        let desc = abi::SpawnDesc { entity: Str::new(entity), biome: Str::new(biome), ground: Str::new(ground), dimension: Str::new(dimension), ..self.desc };
+        unsafe { (host().reg_spawn)(self.raw, &desc) }
+    }
+}
+
+/// Using a block opens `menu` on its block entity.
+pub fn open_menu_on_use(menu: &'static Menu) -> impl Fn(&mut crate::Use) -> bool + Send + Sync + 'static {
+    move |u| {
+        let w = u.world();
+        let owner = w.block_entity(u.pos());
+        if owner == 0 {
+            return false;
+        }
+        w.open_menu(u.player(), menu, owner);
+        true
+    }
+}
+
+type BlockLook = Box<dyn for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::BlockBuilder<'r>>;
+
+/// A machine in one go: the block (its look and mining from `block`), an entity of the same
+/// name holding its inventory and state (ticking with `on_tick`), components on that entity,
+/// and the menu showing its `slots` above the player's inventory, opened by using the block.
+///
+/// ```ignore
+/// r.machine("furnace", &FURNACE_MENU)
+///     .block(|b| b.handle(&FURNACE).textures(..).hardness(3.5))
+///     .slots(&[0, 0, slot_flags::OUTPUT])
+///     .component(&SMELTING, Smelting::default(), component_flags::SAVE | component_flags::SYNC_MENU)
+///     .on_tick(tick_furnaces)
+///     .screen(|ui| ..);
+/// ```
+pub struct MachineBuilder<'a> {
+    reg: &'a mut Registry,
+    name: String,
+    menu: &'static Menu,
+    block: Option<BlockLook>,
+    entity: Option<&'static Entity>,
+    tick: abi::Callback,
+    slots: Vec<u32>,
+    with: Vec<Box<dyn FnOnce(&mut Registry, &str)>>,
+    screen: Option<Box<dyn Fn(&mut Ui) + Send + Sync>>,
+}
+
+impl Registry {
+    pub fn machine<'a>(&'a mut self, name: &str, menu: &'static Menu) -> MachineBuilder<'a> {
+        MachineBuilder { name: name.to_string(), reg: self, menu, block: None, entity: None, tick: abi::Callback::NONE, slots: Vec::new(), with: Vec::new(), screen: None }
+    }
+}
+
+impl MachineBuilder<'_> {
+    pub fn block(mut self, f: impl for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::BlockBuilder<'r> + 'static) -> Self {
+        self.block = Some(Box::new(f));
+        self
+    }
+    pub fn entity_handle(mut self, h: &'static Entity) -> Self {
+        self.entity = Some(h);
+        self
+    }
+    /// Its inventory: one entry per slot, with `slot_flags` (`OUTPUT` takes nothing in).
+    pub fn slots(mut self, flags: &[u32]) -> Self {
+        self.slots = flags.to_vec();
+        self
+    }
+    /// A component every machine of this kind carries (`component_flags`).
+    pub fn component<T: Value>(mut self, comp: &'static Component<T>, default: T, flags: u32) -> Self {
+        self.with.push(Box::new(move |r, name| r.entity_component(comp, default, flags, &[name])));
+        self
+    }
+    /// A component declared elsewhere (by full name, like `core:energy`).
+    pub fn attach(mut self, component: &str) -> Self {
+        let component = component.to_string();
+        self.with.push(Box::new(move |r, name| r.attach(name, &component)));
+        self
+    }
+    pub fn on_tick(mut self, f: impl Fn(&EntityTick) + Send + Sync + 'static) -> Self {
+        self.tick = tick_cb(f);
+        self
+    }
+    /// The menu screen: slots 0.. are the machine's, then the player's inventory and hotbar.
+    pub fn screen(mut self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
+        self.screen = Some(Box::new(f));
+        self
+    }
+}
+
+impl Drop for MachineBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let (name, menu, reg) = (self.name.clone(), self.menu, &mut *self.reg);
+        let look = self.block.take().unwrap_or_else(|| Box::new(|b| b));
+        look(reg.block(&name)).on_use(open_menu_on_use(menu));
+        let mut e = reg.entity(&name).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE);
+        if let Some(h) = self.entity {
+            e = e.handle(h);
+        }
+        e.on_tick = self.tick;
+        drop(e);
+        let full = qualify(reg.ns, &name);
+        for f in self.with.drain(..) {
+            f(reg, &full);
+        }
+        reg.block_entity(&name, &name, self.slots.len() as u32);
+        let slots = std::mem::take(&mut self.slots);
+        let m = reg.menu(&name).handle(menu).setup(move |m| {
+            for (i, &f) in slots.iter().enumerate() {
+                m.slots(m.owner(), i as u32, 1, f);
+            }
+            m.slots(PLAYER, 9, 27, 0);
+            m.slots(PLAYER, 0, 9, 0);
+        });
+        match self.screen.take() {
+            Some(s) => drop(m.screen(move |ui| s(ui))),
+            None => drop(m),
+        }
     }
 }

@@ -9,7 +9,11 @@
 //! - adds an ore to the base game's overworld,
 //! - adds a liquid (oil) whose bucket is the base game's bucket filled, without bucket code,
 //! - makes cooked meat heal: its own component on the base game's items plus the base game's
-//!   `eaten` event, and lets zombies drop tin through a loot modifier.
+//!   `eaten` event, and lets zombies drop tin through a loot modifier,
+//! - shows off particles, shaders, text effects and glow masks (`looks`).
+
+mod bodies;
+mod looks;
 
 use std::sync::LazyLock;
 
@@ -23,8 +27,6 @@ static GENERATOR: Block = Block::new();
 static CABLE: Block = Block::new();
 static ELECTRIC_FURNACE: Block = Block::new();
 static SOUL_TORCH: Block = Block::new();
-static GENERATOR_ENTITY: Entity = Entity::new();
-static FURNACE_ENTITY: Entity = Entity::new();
 static GENERATOR_MENU: Menu = Menu::new();
 static FURNACE_MENU: Menu = Menu::new();
 static VOID: Dimension = Dimension::new();
@@ -65,38 +67,44 @@ const PER_TICK: i64 = 40;
 const FURNACE_USE: i64 = 20;
 
 fn init(r: &mut Registry) {
-    r.block("generator").handle(&GENERATOR).textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0).on_use(open(&GENERATOR_MENU));
-    r.block("electric_furnace").handle(&ELECTRIC_FURNACE)
-        .textures("machine_top", "electric_furnace", "machine_top")
-        .hardness(3.0)
-        .mineable("pickaxe").needs_tool(0)
-        .on_use(open(&FURNACE_MENU));
+    looks::register(r);
+    bodies::register(r);
     r.block("cable").handle(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor").hardness(0.5);
 
     // Same name as the base game's torch: the base game's handle, item and recipes now give this.
     r.block("base:torch").handle(&SOUL_TORCH)
         .replace()
-        .model_box([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], "soul_torch")
+        // The same five states as the base torch (floor, four walls), so its placement fits.
+        .states(5, |i, s| {
+            let (min, max) = [
+                ([7.0, 0.0, 7.0], [9.0, 10.0, 9.0]),
+                ([7.0, 3.0, 0.0], [9.0, 13.0, 2.0]),
+                ([14.0, 3.0, 7.0], [16.0, 13.0, 9.0]),
+                ([7.0, 3.0, 14.0], [9.0, 13.0, 16.0]),
+                ([0.0, 3.0, 7.0], [2.0, 13.0, 9.0]),
+            ][i as usize];
+            s.model_box(min, max, "soul_torch").needs([2, 4, 1, 5, 0][i as usize], "")
+        })
+        .placement(|p| match p.face() {
+            0 => 2,
+            1 => 4,
+            4 => 3,
+            5 => 1,
+            _ => 0,
+        })
         .not_solid()
         .light_rgb(3, 9, 15)
-        .hardness(0.0)
-        .needs(2, "");
+        .hardness(0.0);
 
-    r.entity_component(&MACHINE, Machine::default(), component_flags::SAVE | component_flags::SYNC_MENU, &["testmod:generator", "testmod:electric_furnace"]);
-    r.entity("generator").handle(&GENERATOR_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_generators);
-    r.entity("electric_furnace").handle(&FURNACE_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_furnaces);
-    r.attach("generator", "energy");
-    r.attach("electric_furnace", "energy");
-    r.block_entity("generator", "generator", 1);
-    r.block_entity("electric_furnace", "electric_furnace", 2);
-
-    // The machine and energy components sync to open menus; screens bind to them.
-    r.menu("generator").handle(&GENERATOR_MENU)
-        .setup(|m| {
-            m.slots(m.owner(), 0, 1, 0);
-            m.slots(PLAYER, 9, 27, 0);
-            m.slots(PLAYER, 0, 9, 0);
-        })
+    // Machines: block, entity with the machine and energy components, menu, all in one builder.
+    // The components sync to open menus; screens bind to them.
+    let flags = component_flags::SAVE | component_flags::SYNC_MENU;
+    r.machine("generator", &GENERATOR_MENU)
+        .block(|b| b.handle(&GENERATOR).textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
+        .slots(&[0])
+        .component(&MACHINE, Machine::default(), flags)
+        .attach("energy")
+        .on_tick(tick_generators)
         .screen(|ui| {
             machine_screen(ui, "testmod.generator", 1, |ui| {
                 ui.column(S::col().gap(2.0).center(), |ui| {
@@ -105,13 +113,12 @@ fn init(r: &mut Registry) {
                 });
             })
         });
-    r.menu("electric_furnace").handle(&FURNACE_MENU)
-        .setup(|m| {
-            m.slots(m.owner(), 0, 1, 0);
-            m.slots(m.owner(), 1, 1, sf::OUTPUT);
-            m.slots(PLAYER, 9, 27, 0);
-            m.slots(PLAYER, 0, 9, 0);
-        })
+    r.machine("electric_furnace", &FURNACE_MENU)
+        .block(|b| b.handle(&ELECTRIC_FURNACE).textures("machine_top", "electric_furnace", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
+        .slots(&[0, sf::OUTPUT])
+        .component(&MACHINE, Machine::default(), flags)
+        .attach("energy")
+        .on_tick(tick_furnaces)
         .screen(|ui| {
             machine_screen(ui, "testmod.electric_furnace", 2, |ui| {
                 ui.slot(0);
@@ -120,6 +127,7 @@ fn init(r: &mut Registry) {
             })
         });
 
+    r.recipe_station("base:smelting", "electric_furnace");
     r.shaped("base:crafting", "generator", 1, &["iii", "ifi", "iii"], &[('i', "#ingots/iron"), ('f', "base:furnace")]);
     r.shaped("base:crafting", "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "base:furnace"), ('c', "cable")]);
     r.shaped("base:crafting", "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
@@ -176,21 +184,10 @@ fn init(r: &mut Registry) {
         .sky(0x2a1040, 0x40206a);
 }
 
-fn open(menu: &'static Menu) -> impl Fn(&mut Use) -> bool + Send + Sync + 'static {
-    move |u| {
-        let w = u.world();
-        let owner = w.block_entity(u.pos());
-        if owner == 0 {
-            return false;
-        }
-        w.open_menu(u.player(), menu, owner);
-        true
-    }
-}
-
 /// `first`: menu index of the first player slot (after the machine's own slots).
 fn machine_screen(ui: &mut Ui, title: &'static str, first: u32, slots: impl FnOnce(&mut Ui)) {
-    ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+    // Drawn by the mod's GUI shader (`testmod_panel.shader` in its theme).
+    ui.panel("testmod_panel", S::col().pad(7.0).gap(4.0), |ui| {
         ui.text(title);
         ui.row(S::row().gap(8.0), |ui| {
             ui.column(S::col().gap(2.0), |ui| {
@@ -246,7 +243,12 @@ fn tick_generators(t: &EntityTick) {
             if let Some(ticks) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) {
                 m.burn = ticks;
                 m.burn_max = ticks;
-                inv.set(0, fuel.shrink(1));
+                // A lava bucket leaves its bucket, like in the furnace.
+                let rest = match REMAINDER.on_item(fuel.item).and_then(|r| find_item(r.as_str())) {
+                    Some(left) if fuel.count == 1 => ItemStack::new(left, 1),
+                    _ => fuel.shrink(1),
+                };
+                inv.set(0, rest);
             }
         }
         let Some(m) = w.component_mut(id, &MACHINE) else { continue };

@@ -455,7 +455,6 @@ pub fn usage_text(alts: &[Alt]) -> String {
 
 /// Engine commands that run on the client: (name, usage). `{gizmos}` becomes the gizmo groups
 /// the engine knows, so they complete while a mod's group is still accepted.
-pub const CLIENT: &[(&str, &str)] = &[("log", "[filters:text]"), ("gizmo", "[group:word({gizmos})]")];
 
 /// Command values as mods receive them; `selected` holds resolved targets per slot. The values
 /// point into `args` and `selected`.

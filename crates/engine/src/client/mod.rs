@@ -2,7 +2,9 @@ pub mod ctm;
 pub mod entity_render;
 pub mod gizmo;
 pub mod mesher;
+pub mod models;
 pub mod modui;
+pub mod particles;
 pub mod textures;
 pub mod world;
 pub mod world_render;
@@ -50,6 +52,8 @@ pub struct LocalPlayer {
     pub fov_mul: f32,
     /// Crouching: lower box and eyes. Stays on under a low ceiling until there is room to stand.
     pub crouched: bool,
+    /// The solid body it rides.
+    pub support: Option<u64>,
 }
 
 pub struct ClientEntity {
@@ -70,16 +74,27 @@ pub struct ClientEntity {
     pub burning: bool,
     /// Seconds since it died: it falls over and turns red, then disappears in a puff.
     pub dying: Option<f32>,
+    /// Walk distance at which its next step sounds.
+    pub next_step: f32,
+    /// Keyframe animation the server started: name, age it started at, looping.
+    pub anim: Option<(String, f32, bool)>,
+    /// Crouching (players): lower box, crouched pose.
+    pub crouched: bool,
+    /// Falling blocks: the state drawn.
+    pub block: u32,
+    /// Velocity the server last sent (blocks/s) and when (`Client::body_clock`): solid bodies
+    /// are predicted from them, so riding one does not lag behind it.
+    pub vel: DVec3,
+    pub received: f64,
 }
 
-/// A smoke puff piece: drifts up and shrinks away.
-pub struct Puff {
-    pub pos: DVec3,
-    pub vel: DVec3,
-    pub age: f32,
-    pub life: f32,
-    pub size: f32,
+impl ClientEntity {
+    /// Where a solid body is at `clock`, extrapolated from the last update (at most 0.25 s).
+    pub fn predicted(&self, clock: f64) -> DVec3 {
+        self.target + self.vel * (clock - self.received).clamp(0.0, 0.25)
+    }
 }
+
 
 pub struct ClientMenu {
     pub kind: u32,
@@ -101,8 +116,7 @@ const HALF_WIDTH: f64 = 0.3;
 const HEIGHT: f64 = 1.8;
 const EYE: f64 = 1.62;
 /// Crouching, like modern versions: fits under 1.5 block gaps.
-const CROUCH_HEIGHT: f64 = 1.5;
-const CROUCH_EYE: f64 = 1.27;
+use physics::{CROUCH_EYE, CROUCH_HEIGHT};
 /// Player physics runs at vanilla's tick rate; the camera is interpolated between ticks.
 const STEP: f64 = 1.0 / 20.0;
 
@@ -114,8 +128,14 @@ pub struct Client {
     pub player: LocalPlayer,
     pub joined: bool,
     pub player_id: u64,
+    /// Keyframe animation the server started on us: (name, start, looping).
+    self_anim: Option<(String, f32, bool)>,
     accum: f64,
     tick_accum: f64,
+    /// Seconds of physics steps taken, the clock solid bodies are predicted by.
+    body_clock: f64,
+    /// Where each solid body was at the last step.
+    body_pos: FxHashMap<u64, DVec3>,
     start: Instant,
     pub target: Option<Hit>,
     pub target_entity: Option<u64>,
@@ -152,9 +172,21 @@ pub struct Client {
     pub sent: Vec<String>,
     /// Mouse button and slots of a drag in progress in a menu.
     pub drag: Option<(u8, Vec<u32>)>,
+    /// Slots shift-clicked by sweeping over them with shift and the left button held.
+    pub sweep: Vec<u32>,
+    /// The last slot pressed and when, for double clicks.
+    pub last_click: Option<(u32, u8, Instant)>,
     /// Seconds left of the red screen flash after taking damage.
     pub hurt_flash: f32,
-    pub puffs: Vec<Puff>,
+    pub particles: particles::Particles,
+    /// Seconds until the next dust piece from the block being hit, and until its next knock.
+    hit_dust: f32,
+    hit_sound: f32,
+    /// Sounds to play this frame (from the server and from here).
+    pub sounds: Vec<crate::audio::Play>,
+    /// Own walk distance at which the next step sounds.
+    next_step: f32,
+    rng: u64,
     pub dead: bool,
     pub components: FxHashMap<u32, Vec<u8>>,
     pub menu: Option<ClientMenu>,
@@ -167,6 +199,7 @@ pub struct Client {
     pub gizmos: gizmo::Gizmos,
     /// This frame's gizmo shapes, from `collect_gizmos`.
     pub gizmo_lines: Vec<gizmo::Line>,
+    pub gizmo_fills: Vec<gizmo::Fill>,
     pub gizmo_labels: Vec<gizmo::Label>,
     /// Block being broken and progress 0..1.
     pub breaking: Option<(IVec3, f32)>,
@@ -198,7 +231,7 @@ on: {on}", list.join("
     /// Builds the gizmo lines and labels for this frame; labels behind opaque blocks are left out.
     pub fn collect_gizmos(&mut self) {
         let mut g = std::mem::take(&mut self.gizmos);
-        let (lines, mut labels) = g.collect(self);
+        let (lines, fills, mut labels) = g.collect(self);
         self.gizmos = g;
         let c = content();
         let eye = self.render_camera().pos;
@@ -208,7 +241,7 @@ on: {on}", list.join("
             let len = d.length();
             len < 24.0 && (len < 0.2 || physics::raycast(c, &opaque, eye, d / len, len - 0.1, false).is_none())
         });
-        (self.gizmo_lines, self.gizmo_labels) = (lines, labels);
+        (self.gizmo_lines, self.gizmo_fills, self.gizmo_labels) = (lines, fills, labels);
     }
 
     /// Shows text in the chat as if the server had sent it.
@@ -220,10 +253,11 @@ on: {on}", list.join("
         self.chat.drain(..extra);
     }
 
-    pub fn new(gpu: &mut dyn Backend, textures: &GameTextures, mut conn: ClientConn, name: &str, key: &str, view_radius: i32) -> Result<Client, String> {
+    pub fn new(gpu: &mut dyn Backend, assets: &crate::assets::Assets, textures: &GameTextures, mut conn: ClientConn, name: &str, key: &str, view_radius: i32) -> Result<Client, String> {
         let c = content();
         let render = WorldRenderer::new(gpu, c, textures)?;
-        let entity_render = EntityRenderer::new(gpu)?;
+        let entity_render = EntityRenderer::new(gpu, assets)?;
+        let particles = particles::Particles::new(gpu, assets);
         conn.send(ToServer::Join { name: name.to_string(), key: key.to_string() });
         Ok(Client {
             conn,
@@ -242,6 +276,7 @@ on: {on}", list.join("
                 eye: EYE,
                 fov_mul: 1.0,
                 crouched: false,
+                support: None,
                 flying: false,
                 noclip: false,
                 fly_speed: 1.0,
@@ -249,8 +284,11 @@ on: {on}", list.join("
             },
             joined: false,
             player_id: 0,
+            self_anim: None,
             accum: 0.0,
             tick_accum: 0.0,
+            body_clock: 0.0,
+            body_pos: FxHashMap::default(),
             start: Instant::now(),
             target: None,
             target_entity: None,
@@ -265,8 +303,15 @@ on: {on}", list.join("
             health: 20.0,
             max_health: 20.0,
             hurt_flash: 0.0,
-            puffs: Vec::new(),
+            particles,
+            hit_dust: 0.0,
+            hit_sound: 0.0,
+            sounds: Vec::new(),
+            next_step: 0.0,
+            rng: 0x9E37_79B9_7F4A_7C15,
             drag: None,
+            sweep: Vec::new(),
+            last_click: None,
             players: Vec::new(),
             sent: Vec::new(),
             held_name: (0, Instant::now()),
@@ -288,6 +333,7 @@ on: {on}", list.join("
             chat: Vec::new(),
             gizmos: Default::default(),
             gizmo_lines: Vec::new(),
+            gizmo_fills: Vec::new(),
             gizmo_labels: Vec::new(),
             breaking: None,
             hotbar: vec![0; 9],
@@ -358,16 +404,24 @@ on: {on}", list.join("
                                 age: 0.0,
                                 burning: false,
                                 dying: None,
+                                next_step: 0.0,
+                                anim: None,
+                                crouched: false,
+                                block: e.block,
+                                vel: DVec3::ZERO,
+                                received: self.body_clock,
                             },
                         );
                     }
                 }
                 ToClient::Moves(list) => {
-                    for (id, pos, yaw, pitch) in list {
+                    for (id, pos, yaw, pitch, vel, crouched) in list {
                         if let Some(e) = self.entities.get_mut(&id) {
+                            e.crouched = crouched;
                             e.target = pos;
                             e.target_yaw = yaw;
                             e.pitch = pitch;
+                            (e.vel, e.received) = (glam::Vec3::from_array(vel).as_dvec3(), self.body_clock);
                         }
                     }
                 }
@@ -502,6 +556,29 @@ on: {on}", list.join("
                         self.entity_components.insert((id, comp), bytes);
                     }
                 }
+                // The same values in one process; a remote server's win while joined.
+                ToClient::Configs(list) => {
+                    for (id, v) in list {
+                        crate::config::put(id, v);
+                    }
+                }
+                ToClient::Animate(list) => {
+                    for (id, name, looping) in list {
+                        if id == self.player_id {
+                            self.self_anim = (!name.is_empty()).then(|| (name, self.start.elapsed().as_secs_f32(), looping));
+                        } else if let Some(e) = self.entities.get_mut(&id) {
+                            e.anim = (!name.is_empty()).then(|| (name, e.age, looping));
+                        }
+                    }
+                }
+                ToClient::Sounds(list) => {
+                    self.sounds.extend(list.into_iter().map(|(sound, pos, volume, pitch)| crate::audio::Play { sound, pos: Some(pos), volume, pitch }));
+                }
+                ToClient::Particles(list) => {
+                    for b in &list {
+                        self.particles.spawn(b);
+                    }
+                }
                 _ => {}
             }
         }
@@ -542,7 +619,8 @@ on: {on}", list.join("
         }
         let old = self.selected;
         let spectator = self.mode == GameMode::Spectator;
-        if !spectator {
+        // In a screen the number keys belong to it (swapping slots with the hotbar).
+        if !spectator && input.captured {
             for i in 0..9 {
                 if input.pressed(&format!("core:hotbar{}", i + 1)) {
                     self.selected = i;
@@ -617,10 +695,36 @@ on: {on}", list.join("
                 self.player.prev = self.player.pos;
                 let flying = self.player.flying || self.player.noclip;
                 let gravity = c.dims[world.dim as usize].gravity as f64;
+                // Solid bodies at this step (predicted like the server moves them) and soft
+                // ones nudging the player aside.
+                self.body_clock += STEP;
+                let mut bodies = Vec::new();
+                let mut push = DVec3::ZERO;
+                for (&id, e) in &self.entities {
+                    let k = &c.game.entities[e.kind as usize];
+                    if k.is(voxide_abi::entity_flags::SOLID) {
+                        let now = e.predicted(self.body_clock);
+                        let delta = self.body_pos.insert(id, now).map_or(DVec3::ZERO, |b| now - b);
+                        let aabb = physics::Aabb::around(now, k.width as f64 / 2.0, k.height as f64);
+                        bodies.push(physics::Body { id, aabb, delta, carry: k.carry_height as f64, crushes: false });
+                    } else if k.is(voxide_abi::entity_flags::PUSHABLE) && e.item.is_empty() && e.dying.is_none() {
+                        let d = self.player.pos - e.pos;
+                        let reach = (k.width as f64 + HALF_WIDTH * 2.0) / 2.0;
+                        if d.x.abs() < reach && d.z.abs() < reach && d.y < k.height as f64 && -d.y < HEIGHT {
+                            let dist = d.x.abs().max(d.z.abs()).max(0.01).sqrt();
+                            push += DVec3::new(d.x, 0.0, d.z) * ((1.0 / dist).min(1.0) / dist * 0.05);
+                        }
+                    }
+                }
+                let entities = &self.entities;
+                self.body_pos.retain(|id, _| entities.contains_key(id));
+                if !flying {
+                    self.player.vel += push;
+                }
                 if flying {
-                    step_player(&mut self.player, input, &air_if_missing, gravity);
+                    step_player(&mut self.player, input, &air_if_missing, gravity, &bodies);
                 } else {
-                    step_player(&mut self.player, input, &block, gravity);
+                    step_player(&mut self.player, input, &block, gravity, &bodies);
                 }
                 if crate::log::on(crate::log::Channel::Physics, log::Level::Trace) {
                     let p = &self.player;
@@ -665,6 +769,7 @@ on: {on}", list.join("
             yaw: self.player.yaw,
             pitch: self.player.pitch,
             on_ground: self.player.landed || self.player.on_ground || self.player.flying,
+            crouched: self.player.crouched,
         };
         let mut look_sent = !self.joined;
         let mut send_look = |conn: &mut ClientConn| {
@@ -730,14 +835,17 @@ on: {on}", list.join("
                     yaw: self.player.yaw,
                     pitch: self.player.pitch,
                     on_ground: landed || self.player.on_ground || self.player.flying,
+                    crouched: self.player.crouched,
                 });
             }
         }
 
         let k = (dt * 15.0).min(1.0);
+        // Solid bodies show where the physics has them, one step behind like the player.
+        let shown = self.body_clock - STEP + self.accum;
         for e in self.entities.values_mut() {
             let before = e.pos;
-            e.pos = e.pos.lerp(e.target, k);
+            e.pos = if c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID) { e.predicted(shown) } else { e.pos.lerp(e.target, k) };
             let mut dyaw = e.target_yaw - e.yaw;
             dyaw = (dyaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
             e.yaw += dyaw * k as f32;
@@ -752,25 +860,33 @@ on: {on}", list.join("
                 e.burning = false;
             }
         }
-        // Finished death animations turn into a puff of smoke.
+        // Finished death animations turn into a puff of smoke (vanilla's 20 poof particles).
         let c = content();
         let done: Vec<u64> = self.entities.iter().filter(|(_, e)| e.dying.is_some_and(|d| d >= 1.0)).map(|(&id, _)| id).collect();
         for id in done {
             let Some(e) = self.entities.remove(&id) else { continue };
+            let Some(&kind) = c.game.particle_names.get(voxide_abi::particle::POOF) else { continue };
             let k = &c.game.entities[e.kind as usize];
-            let n = 6 + (k.width * k.height * 6.0) as u32;
-            for i in 0..n {
-                let h = (id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (i as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)).rotate_left(i);
-                let r = |s: u32| ((h >> s) & 255) as f64 / 255.0 - 0.5;
-                let pos = e.pos + DVec3::new(r(0) * k.width as f64, (r(8) + 0.5) * k.height as f64, r(16) * k.width as f64);
-                self.puffs.push(Puff { pos, vel: DVec3::new(r(24) * 0.6, 0.5 + r(32) * 0.4, r(40) * 0.6), age: 0.0, life: 0.7 + r(48) as f32 * 0.4, size: 0.3 + r(56) as f32 * 0.15 });
+            let (w, h) = (k.width * 0.5, k.height * 0.5);
+            let pos = (e.pos + DVec3::Y * h as f64).to_array();
+            self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..voxide_abi::Versioned::DEFAULT });
+        }
+        // Hitting a block chips pieces off the face being hit, one per tick like vanilla.
+        self.hit_dust -= dt as f32;
+        if let (Some((pos, _)), Some(hit)) = (self.breaking, self.target) {
+            if self.hit_dust <= 0.0 && hit.block == pos {
+                self.hit_dust = 0.05;
+                if let Some(&kind) = c.game.particle_names.get(voxide_abi::particle::BLOCK) {
+                    let normal = crate::world::DIRS[hit.face as usize].as_vec3();
+                    let at = pos.as_dvec3() + DVec3::splat(0.5) + (normal * 0.55).as_dvec3();
+                    let spread = (glam::Vec3::splat(0.45) * (glam::Vec3::ONE - normal.abs())).to_array();
+                    let velocity = (normal * 0.6).to_array();
+                    self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..voxide_abi::Versioned::DEFAULT });
+                }
             }
         }
-        for p in &mut self.puffs {
-            p.age += dt as f32;
-            p.pos += p.vel * dt;
-        }
-        self.puffs.retain(|p| p.age < p.life);
+        self.particles.update(dt as f32, &self.world);
+        self.creature_sounds(dt as f32, moved);
         self.hurt_flash = (self.hurt_flash - dt as f32).max(0.0);
         self.hotbar = self.inventory[..9].iter().map(|s| if s.is_empty() { 0 } else { s.item | (s.count.min(255) << 24) }).collect();
 
@@ -790,6 +906,83 @@ on: {on}", list.join("
         }
     }
 
+    fn chance(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        (self.rng >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    /// Steps (own and others', by distance walked on the ground), mobs' idle noises and the knock
+    /// of the block being mined; all decided here, nothing travels for them.
+    fn creature_sounds(&mut self, dt: f32, moved: f32) {
+        use crate::audio::Play;
+        let c = content();
+        let below = |w: &world::ClientWorld, p: DVec3| w.block_or_air((p - DVec3::Y * 0.2).floor().as_ivec3()).map_or(u32::MAX, |s| c.states[s as usize].sounds[2]);
+        if self.player.on_ground && !self.player.flying && self.mode != GameMode::Spectator {
+            self.next_step -= moved;
+            if self.next_step <= 0.0 {
+                // Vanilla: a step every 1/0.6 blocks walked.
+                self.next_step = 1.6;
+                let sound = below(&self.world, self.player.pos);
+                self.sounds.push(Play { sound, pos: Some(self.player.pos), volume: 0.25, pitch: 0.0 });
+            }
+        }
+        let mut plays = Vec::new();
+        for e in self.entities.values_mut() {
+            if !e.item.is_empty() || e.dying.is_some() {
+                continue;
+            }
+            let k = &c.game.entities[e.kind as usize];
+            if e.walk >= e.next_step {
+                e.next_step = e.walk + 1.6;
+                let sound = if k.sounds[3] != u32::MAX { k.sounds[3] } else { below(&self.world, e.pos) };
+                plays.push(Play { sound, pos: Some(e.pos), volume: 0.2, pitch: 0.0 });
+            }
+            if k.sounds[2] != u32::MAX {
+                plays.push(Play { sound: k.sounds[2], pos: Some(e.pos + DVec3::Y * k.eye as f64), volume: 1.0, pitch: -dt });
+            }
+        }
+        // Idle noises about every twelve seconds per mob, like vanilla's ambient timer.
+        for p in plays {
+            if p.pitch < 0.0 {
+                if self.chance() < -p.pitch / 12.0 {
+                    self.sounds.push(Play { pitch: 0.0, ..p });
+                }
+            } else if p.sound != u32::MAX {
+                self.sounds.push(p);
+            }
+        }
+        self.hit_sound -= dt;
+        if let Some(hit) = self.target.filter(|h| self.breaking.is_some_and(|(p, _)| p == h.block)) {
+            if self.hit_sound <= 0.0 {
+                // Vanilla knocks every four ticks while mining.
+                self.hit_sound = 0.2;
+                let sound = c.states[hit.state as usize].sounds[3];
+                self.sounds.push(Play { sound, pos: Some(hit.block.as_dvec3() + DVec3::splat(0.5)), volume: 0.4, pitch: 0.0 });
+            }
+        }
+        self.sounds.retain(|p| p.sound != u32::MAX);
+    }
+
+    /// What the ears need from the camera this frame.
+    pub fn listener(&self) -> crate::audio::Listener {
+        let c = content();
+        let cam = self.camera();
+        let eye = cam.pos.floor().as_ivec3();
+        let liquid = self.world.block_or_air(eye).and_then(|s| c.states[s as usize].liquid).map(|l| c.liquids[l as usize].temperature);
+        crate::audio::Listener {
+            pos: cam.pos,
+            yaw: cam.yaw,
+            pitch: cam.pitch,
+            underwater: liquid.is_some_and(|t| t < 1000),
+            enclosed: self.world.light(eye) & 255 < 6 && c.dims[self.world.dim as usize].sky_light,
+            dim: self.world.dim,
+            day: self.daylight() > 0.5,
+            creative: self.mode == GameMode::Creative,
+        }
+    }
+
     fn pick_entity(&self, eye: DVec3, dir: DVec3, max: f64) -> Option<u64> {
         let c = content();
         let mut best: Option<(f64, u64)> = None;
@@ -799,7 +992,7 @@ on: {on}", list.join("
                 continue;
             }
             let hw = k.width as f64 / 2.0;
-            let b = physics::Aabb::around(e.pos, hw, k.height as f64);
+            let b = physics::Aabb::around(e.pos, hw, if e.crouched { CROUCH_HEIGHT } else { k.height as f64 });
             if let Some(t) = ray_aabb(eye, dir, &b) {
                 if t <= max && best.is_none_or(|(bt, _)| t < bt) {
                     best = Some((t, id));
@@ -876,9 +1069,15 @@ on: {on}", list.join("
             worn,
             walk: self.self_walk,
             swing: self.self_swing,
-            age: 0.0,
+            age: self.start.elapsed().as_secs_f32(),
             burning: false,
             dying: None,
+            next_step: 0.0,
+            anim: self.self_anim.clone(),
+            crouched: self.player.crouched,
+            block: 0,
+            vel: self.player.vel * 20.0,
+            received: self.body_clock,
         }
     }
 
@@ -889,6 +1088,7 @@ on: {on}", list.join("
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         self.render.destroy(gpu);
         self.entity_render.destroy(gpu);
+        self.particles.destroy(gpu);
     }
 
     /// Fraction of full daylight for the current dimension and time.
@@ -931,10 +1131,14 @@ on: {on}", list.join("
         let hand = (self.view == 0 && !self.dead && self.mode != GameMode::Spectator).then(|| entity_render::Hand {
             stack: self.held(),
             swing: self.hand_swing,
+            anim: self.self_anim.clone(),
+            age: self.start.elapsed().as_secs_f32(),
         });
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
-        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, &self.puffs, textures, &light, day, self.target, self.breaking, &self.gizmo_lines);
+        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, day, self.target, self.breaking, &self.gizmo_lines, &self.gizmo_fills);
+        let look = particles::Look { fog_color: params.fog_color.extend(1.0).to_array(), fog: (params.fog_start, params.fog_end), daylight: day, ambient: def.ambient as f32 / 15.0, brightness: self.brightness };
+        self.particles.draw(gpu, list, frame, &cam, textures, &look);
         list.push(voxide_render::Cmd::Mark);
     }
 
@@ -968,8 +1172,28 @@ fn ray_aabb(o: DVec3, d: DVec3, b: &physics::Aabb) -> Option<f64> {
 /// One 20 Hz tick of player movement with vanilla's numbers (blocks per tick): acceleration
 /// scaled by ground slipperiness, 0.91 air drag, 0.98 vertical drag, 0.08 gravity, 0.42 jump,
 /// so jumps, sprint-jumps and parkur distances match.
-fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Option<u32>, gravity: f64) {
+fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Option<u32>, gravity: f64, bodies: &[physics::Body]) {
     let c = content();
+    // The body the player rides moves it first, like on the server.
+    if !p.noclip {
+        let h = if p.crouched { CROUCH_HEIGHT } else { HEIGHT };
+        let ride = physics::ride(p.pos, HALF_WIDTH, &mut p.support, bodies);
+        if ride.carry != DVec3::ZERO {
+            let moved = physics::move_box(c, block, p.pos, HALF_WIDTH, h, ride.carry, 0.0).pos;
+            // Interpolation follows the body: the step starts where the ride put the player.
+            p.prev += moved - p.pos;
+            p.pos = moved;
+        }
+        if let Some(d) = ride.released {
+            p.vel += d;
+        }
+        let (shift, _) = physics::push(p.pos, HALF_WIDTH, h, bodies, 0, p.support);
+        if shift != DVec3::ZERO {
+            p.pos = physics::move_box(c, block, p.pos, HALF_WIDTH, h, shift, 0.0).pos;
+        }
+    } else {
+        p.support = None;
+    }
     let mut fwd_in = 0.0f64;
     let mut side_in = 0.0f64;
     if input.held("core:forward") {
@@ -1072,7 +1296,10 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         // while the moved box would have nothing under it, so the player slides along the edge
         // and never falls off it.
         if sneak && p.on_ground && !p.flying {
-            let ground = |dx: f64, dz: f64| physics::collides(c, block, physics::Aabb::around(p.pos + DVec3::new(dx, -0.6, dz), HALF_WIDTH, height));
+            let ground = |dx: f64, dz: f64| {
+                let area = physics::Aabb::around(p.pos + DVec3::new(dx, -0.6, dz), HALF_WIDTH, height);
+                physics::collides(c, block, area) || bodies.iter().any(|b| b.aabb.intersects(&area))
+            };
             let shrink = |v: f64| if v.abs() < 0.05 { 0.0 } else { v - 0.05 * v.signum() };
             while p.vel.x != 0.0 && !ground(p.vel.x, 0.0) {
                 p.vel.x = shrink(p.vel.x);
@@ -1086,8 +1313,13 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
             }
         }
         let step_h = if p.on_ground && !p.flying { 0.6 } else { 0.0 };
-        let r = physics::move_box(c, block, p.pos, HALF_WIDTH, height, p.vel, step_h);
+        let r = physics::move_box_with(c, block, bodies, 0, p.pos, HALF_WIDTH, height, p.vel, step_h);
         p.pos = r.pos;
+        if r.on_ground {
+            if let Some(b) = physics::standing_on(p.pos, HALF_WIDTH, bodies, 0) {
+                p.support = Some(b);
+            }
+        }
         for i in 0..3 {
             if r.hit[i] {
                 p.vel[i] = 0.0;

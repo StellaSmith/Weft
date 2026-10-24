@@ -21,6 +21,8 @@ pub const BUILTIN: &[(&str, &str)] = &[
 
 /// A line between two points, in the colour `0xRRGGBBAA`.
 pub type Line = (DVec3, DVec3, u32);
+/// A filled box between two corners; its alpha makes it see-through.
+pub type Fill = (DVec3, DVec3, u32);
 pub type Label = (DVec3, String, u32);
 
 #[derive(Default)]
@@ -67,12 +69,13 @@ impl Gizmos {
         self.enabled.is_empty()
     }
 
-    /// Lines and labels to draw this frame.
-    pub fn collect(&mut self, client: &Client) -> (Vec<Line>, Vec<Label>) {
+    /// Lines, filled boxes and labels to draw this frame.
+    pub fn collect(&mut self, client: &Client) -> (Vec<Line>, Vec<Fill>, Vec<Label>) {
         let mut lines = Vec::new();
+        let mut fills = Vec::new();
         let mut labels = Vec::new();
         if self.enabled.is_empty() {
-            return (lines, labels);
+            return (lines, fills, labels);
         }
         let now = Instant::now();
         self.shapes.retain(|s| s.1 > now);
@@ -80,6 +83,7 @@ impl Gizmos {
             match s.kind {
                 0 => lines.push((s.a, s.b, s.color)),
                 1 => cuboid(&mut lines, s.a, s.b, s.color),
+                3 => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
                 _ => labels.push((s.a, s.text.clone(), s.color)),
             }
         }
@@ -101,7 +105,8 @@ impl Gizmos {
         if self.on("hitboxes") {
             for e in client.entities.values().filter(|e| (e.pos - me).length_squared() < 64.0 * 64.0) {
                 let k = &c.game.entities[e.kind as usize];
-                let (hw, h) = if e.item.is_empty() { (k.width as f64 / 2.0, k.height as f64) } else { (0.125, 0.25) };
+                let h = if e.crouched { crate::physics::CROUCH_HEIGHT } else { k.height as f64 };
+                let (hw, h) = if e.item.is_empty() { (k.width as f64 / 2.0, h) } else { (0.125, 0.25) };
                 cuboid(&mut lines, e.pos - DVec3::new(hw, 0.0, hw), e.pos + DVec3::new(hw, h, hw), 0xFFFFFFFF);
                 let eye = e.pos + DVec3::Y * k.eye as f64;
                 let (sy, cy) = (e.yaw as f64).sin_cos();
@@ -149,7 +154,7 @@ impl Gizmos {
                 }
             }
         }
-        (lines, labels)
+        (lines, fills, labels)
     }
 }
 

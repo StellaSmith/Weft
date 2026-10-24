@@ -3,7 +3,7 @@
 use voxide_sdk::abi::slot_flags as sf;
 use voxide_sdk::*;
 
-use crate::blocks::FURNACE;
+use crate::blocks::{CHEST, FURNACE};
 use crate::items::{FUEL, REMAINDER};
 use crate::player::{CRAFTING, player_slots};
 
@@ -22,8 +22,6 @@ pub static SMELTED: Event<Smelted> = Event::new("smelted");
 /// Value chain for a furnace's cooking time: base is the recipe's time, `entity` the furnace,
 /// `item` the input.
 pub const SMELT_TIME: &str = "base:smelt_time";
-pub static FURNACE_ENTITY: Entity = Entity::new();
-pub static CHEST_ENTITY: Entity = Entity::new();
 pub static FURNACE_MENU: Menu = Menu::new();
 pub static CHEST_MENU: Menu = Menu::new();
 
@@ -32,21 +30,29 @@ const FUEL_SLOT: u32 = 1;
 const OUTPUT: u32 = 2;
 
 pub fn register(r: &mut Registry) {
-    // Synced to whoever has the furnace open: the screen binds to it directly.
-    r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU, &["base:furnace"]);
-    r.entity("furnace").handle(&FURNACE_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_furnaces);
-    r.entity("chest").handle(&CHEST_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE);
-    r.block_entity("furnace", "furnace", 3);
-    r.block_entity("chest", "chest", 27);
-
-    r.menu("furnace").handle(&FURNACE_MENU)
-        .setup(|m| {
-            m.slots(m.owner(), INPUT, 1, 0);
-            m.slots(m.owner(), FUEL_SLOT, 1, 0);
-            m.slots(m.owner(), OUTPUT, 1, sf::OUTPUT);
-            m.slots(PLAYER, 9, 27, 0);
-            m.slots(PLAYER, 0, 9, 0);
+    // The furnace's state syncs to whoever has it open: the screen binds to it directly.
+    r.machine("furnace", &FURNACE_MENU)
+        .block(|b| {
+            b.handle(&FURNACE).sounds("stone")
+                .states(8, |i, s| {
+                    let facing = i % 4;
+                    let lit = i >= 4;
+                    let front = if lit { "furnace_front_lit" } else { "furnace_front" };
+                    let mut f = ["furnace_side"; 6];
+                    f[2] = "furnace_top";
+                    f[3] = "furnace_top";
+                    f[[4, 1, 5, 0][facing as usize]] = front;
+                    let s = s.faces(f);
+                    if lit { s.light_rgb(13, 11, 8) } else { s }
+                })
+                .hardness(3.5)
+                .mineable("pickaxe").needs_tool(0)
+                .placement(|p| (p.horizontal() + 2) % 4)
+                .tab("functional")
         })
+        .slots(&[0, 0, sf::OUTPUT])
+        .component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU)
+        .on_tick(tick_furnaces)
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
                 ui.text("container.furnace");
@@ -65,12 +71,22 @@ pub fn register(r: &mut Registry) {
             });
         });
 
-    r.menu("chest").handle(&CHEST_MENU)
-        .setup(|m| {
-            m.slots(m.owner(), 0, 27, 0);
-            m.slots(PLAYER, 9, 27, 0);
-            m.slots(PLAYER, 0, 9, 0);
+    r.machine("chest", &CHEST_MENU)
+        .block(|b| {
+            b.handle(&CHEST).sounds("wood")
+                .states(4, |i, s| {
+                    let mut f = ["chest_side"; 6];
+                    f[2] = "chest_top";
+                    f[3] = "chest_top";
+                    f[[4, 1, 5, 0][i as usize]] = "chest_front";
+                    s.model_box_faces([1.0, 0.0, 1.0], [15.0, 14.0, 15.0], f)
+                })
+                .hardness(2.5)
+                .mineable("axe")
+                .placement(|p| (p.horizontal() + 2) % 4)
+                .tab("functional")
         })
+        .slots(&[0; 27])
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
                 ui.text("container.chest");
@@ -82,19 +98,6 @@ pub fn register(r: &mut Registry) {
 
 fn ratio(a: u32, b: u32) -> f32 {
     if b == 0 { 0.0 } else { a as f32 / b as f32 }
-}
-
-/// Called from the block registrations: right click opens the menu of the block's entity.
-pub fn open_on_use(menu: &'static Menu) -> impl Fn(&mut Use) -> bool + Send + Sync + 'static {
-    move |u| {
-        let w = u.world();
-        let owner = w.block_entity(u.pos());
-        if owner == 0 {
-            return false;
-        }
-        w.open_menu(u.player(), menu, owner);
-        true
-    }
 }
 
 pub fn open_crafting(u: &mut Use) -> bool {

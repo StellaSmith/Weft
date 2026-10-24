@@ -45,6 +45,10 @@ pub struct StateInfo {
     pub liquid: Option<u16>,
     /// Face whose neighbour must hold it up, and the tag that neighbour needs (`None`: solid).
     pub support: Option<(u8, Option<u32>)>,
+    /// Tag a horizontal neighbour of the support needs (unless the support is the same block).
+    pub support_near: Option<u32>,
+    /// Sound events break, place, step, hit (`u32::MAX` none), from its `sound` component.
+    pub sounds: [u32; 4],
 }
 
 impl StateInfo {
@@ -82,6 +86,9 @@ pub struct BlockCallbacks {
     pub on_neighbor: Option<Callback>,
     pub on_scheduled: Option<Callback>,
     pub placement: Option<Callback>,
+    pub on_grow: Option<Callback>,
+    /// Growth over time: (mean ticks per step, light needed).
+    pub grow: Option<(f64, u32)>,
 }
 
 pub struct BlockDef {
@@ -161,6 +168,7 @@ pub struct DimensionDef {
     pub owner: ModId,
     pub generator: Option<Callback>,
     pub spawn: Option<Callback>,
+    pub column: Option<Callback>,
     pub min_cube_y: i32,
     pub max_cube_y: i32,
     pub sky_cube_y: i32,
@@ -173,6 +181,7 @@ pub struct DimensionDef {
     pub ambient: u8,
     /// Placed by the engine after `generator`, in name order.
     pub ores: Vec<OreDef>,
+    pub structures: Vec<StructureDef>,
 }
 
 pub struct OreDef {
@@ -184,6 +193,20 @@ pub struct OreDef {
     pub veins: u32,
     pub size: u32,
     /// Derived from the block name, so adding an ore does not move the others.
+    pub salt: u64,
+    /// Biome tag the block's column must carry.
+    pub biome: Option<u32>,
+}
+
+pub struct StructureDef {
+    pub name: String,
+    /// (offset from the lowest corner, state).
+    pub blocks: Vec<(glam::IVec3, u32)>,
+    pub extent: glam::IVec3,
+    pub spacing: i32,
+    pub chance: f32,
+    pub biome: Option<u32>,
+    pub sink: i32,
     pub salt: u64,
 }
 
@@ -280,6 +303,13 @@ impl Content {
 
     pub fn block_of(&self, state: u32) -> &BlockDef {
         &self.blocks[self.states[state as usize].block as usize]
+    }
+
+    /// Whether a block in `state` has growth steps ahead of it: (mean ticks, light needed).
+    pub fn grows(&self, state: u32) -> Option<(f64, u32)> {
+        let b = self.block_of(state);
+        let last = state + 1 == b.first_state + b.states;
+        b.cb.grow.filter(|_| b.cb.on_grow.is_some() || !last)
     }
 
     pub fn find_state(&self, name: &str) -> Option<u32> {
@@ -409,6 +439,7 @@ pub struct RawState {
     pub drag: f32,
     pub support_side: u8,
     pub support: String,
+    pub support_near: String,
     pub components: Vec<RawValue>,
 }
 
@@ -477,6 +508,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 drag: s.drag,
                 support_side: s.support_side,
                 support: s.support.as_str().to_string(),
+                support_near: s.support_near.as_str().trim_start_matches('#').to_string(),
                 components: RawValue::list(s.components),
             })
         });
@@ -495,6 +527,8 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 on_neighbor: cb(d.on_neighbor),
                 on_scheduled: cb(d.on_scheduled),
                 placement: cb(d.placement),
+                on_grow: cb(d.on_grow),
+                grow: (d.grow_seconds > 0.0).then_some((d.grow_seconds as f64 * 20.0, d.grow_light)),
             },
             replace: d.replace != 0,
             extra_cells: Vec::new(),
@@ -524,6 +558,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 owner,
                 generator: cb(d.generator),
                 spawn: cb(d.spawn),
+                column: cb(d.column),
                 min_cube_y: d.min_cube_y,
                 max_cube_y: d.max_cube_y,
                 sky_cube_y: d.sky_cube_y,
@@ -535,6 +570,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 fog_color: d.fog_color,
                 ambient: d.ambient.min(15) as u8,
                 ores: Vec::new(),
+                structures: Vec::new(),
             },
             d.cell as usize,
             RawValue::list(d.components),
@@ -702,6 +738,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         conductor: false,
         liquid: None,
         support: None,
+        support_near: None,
+        sounds: [u32::MAX; 4],
     }];
     let mut block_defs = vec![BlockDef {
         name: "core:air".into(),
@@ -714,7 +752,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }];
     let mut block_drops = vec![String::new()];
     // Per block: (block components, per-state components, support tags) for the component pass.
-    let mut block_values: Vec<(ModId, Vec<RawValue>, Vec<Vec<RawValue>>, Vec<String>)> = vec![(ModId(u32::MAX), Vec::new(), vec![Vec::new()], vec![String::new()])];
+    let mut block_values: Vec<(ModId, Vec<RawValue>, Vec<Vec<RawValue>>, Vec<(String, String)>)> = vec![(ModId(u32::MAX), Vec::new(), vec![Vec::new()], vec![(String::new(), String::new())])];
     for (owner, b) in blocks {
         let index = block_defs.len() as u32;
         let first = states.len() as u32;
@@ -772,8 +810,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 liquid: None,
                 // The tag id is filled in once components are frozen.
                 support: (s.support_side < 6).then_some((s.support_side, None)),
+                support_near: None,
+                sounds: [u32::MAX; 4],
             });
-            supports.push(s.support);
+            supports.push((s.support, s.support_near));
             state_values.push(s.components);
         }
         let drop = if b.drop.is_empty() { b.name.clone() } else { b.drop.clone() };
@@ -888,7 +928,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| who(*owner, name), &mut errors);
         }
         // A support tag nobody else uses still needs an id (nothing will carry it).
-        for t in supports.iter().filter(|t| !t.is_empty()) {
+        for t in supports.iter().flat_map(|(a, b)| [a, b]).filter(|t| !t.is_empty()) {
             cb.declare(t, "", None, &|| who(*owner, name), &mut errors);
         }
     }
@@ -1048,8 +1088,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         s.conductor = ids.conductor.is_some_and(|c| components.has(comps::BLOCK, i as u32, c));
         if let Some((face, _)) = s.support {
             let b = s.block as usize;
-            let tag = &block_values[b].3[i - block_defs[b].first_state as usize];
+            let (tag, near) = &block_values[b].3[i - block_defs[b].first_state as usize];
             s.support = Some((face, (!tag.is_empty()).then(|| components.id(tag).unwrap_or(u32::MAX))));
+            s.support_near = (!near.is_empty()).then(|| components.id(near).unwrap_or(u32::MAX));
         }
     }
     for (i, d) in item_defs.iter_mut().enumerate() {
@@ -1090,6 +1131,16 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         replace.sort_unstable();
         replace.dedup();
         let salt = o.block.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+        let biome = match o.biome.as_str() {
+            "" => None,
+            t => match components.id(t) {
+                Some(t) => Some(t),
+                None => {
+                    errors.push(format!("ore {} in {}: no biome tag {t}", o.block, o.dimension));
+                    continue;
+                }
+            },
+        };
         dim_defs[d as usize].ores.push(OreDef {
             state: block_defs[b as usize].first_state,
             replace,
@@ -1098,7 +1149,38 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             veins: o.veins,
             size: o.size,
             salt,
+            biome,
         });
+    }
+    let mut raw_structures: Vec<crate::registry::RawStructure> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.structures)).collect();
+    raw_structures.sort_by(|a, b| a.name.cmp(&b.name));
+    for s in raw_structures {
+        let Some(&d) = dim_names.get(&s.dimension) else {
+            errors.push(format!("structure {}: unknown dimension {}", s.name, s.dimension));
+            continue;
+        };
+        let mut blocks = Vec::with_capacity(s.blocks.len());
+        for (p, name) in &s.blocks {
+            // `base:furnace#2`: the block's third state.
+            let (block, index) = name.split_once('#').map_or((name.as_str(), 0), |(b, i)| (b, i.parse().unwrap_or(0)));
+            match block_names.get(block).map(|&b| &block_defs[b as usize]).filter(|b| index < b.states) {
+                Some(b) => blocks.push((glam::IVec3::from_array(*p), b.first_state + index)),
+                None => errors.push(format!("structure {}: unknown block {name}", s.name)),
+            }
+        }
+        let biome = match s.biome.as_str() {
+            "" => None,
+            t => match components.id(t) {
+                Some(t) => Some(t),
+                None => {
+                    errors.push(format!("structure {}: no biome tag {t}", s.name));
+                    continue;
+                }
+            },
+        };
+        let extent = blocks.iter().fold(glam::IVec3::ZERO, |m, (p, _)| m.max(*p + glam::IVec3::ONE));
+        let salt = s.name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+        dim_defs[d as usize].structures.push(StructureDef { name: s.name, blocks, extent, spacing: s.spacing.max(1) as i32, chance: s.chance, biome, sink: s.sink, salt });
     }
     let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
     for (name, usage) in crate::commands::BUILTIN {
@@ -1106,7 +1188,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         commands.push(crate::commands::CommandDef::new(name, usage, alts, None, false));
     }
     let gizmos: Vec<&str> = crate::client::gizmo::BUILTIN.iter().map(|g| g.0).collect();
-    for (name, usage) in crate::commands::CLIENT {
+    for (name, usage, _) in crate::app::CLIENT_COMMANDS {
         let usage = usage.replace("{gizmos}", &gizmos.join(","));
         let alts = crate::commands::parse_usage(&usage).expect("engine command usage");
         commands.push(crate::commands::CommandDef::new(name, &usage, alts, None, true));
@@ -1186,7 +1268,20 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             }
         }
     }
-    let game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &components, &order_of, &mut errors);
+    let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &order_of, &mut errors);
+    // Sound events named by `sound` prefixes, resolved once.
+    if let Some(sc) = components.id(abi::comp::SOUND) {
+        let resolve = |prefix: Option<&str>, parts: [&str; 4]| -> [u32; 4] {
+            parts.map(|p| prefix.and_then(|pre| game.sound_names.get(&format!("{pre}.{p}")).copied()).unwrap_or(u32::MAX))
+        };
+        for (i, s) in states.iter_mut().enumerate() {
+            s.sounds = resolve(components.text(comps::BLOCK, i as u32, sc), ["break", "place", "step", "hit"]);
+        }
+        let kinds: Vec<[u32; 4]> = (0..game.entities.len() as u32).map(|k| resolve(components.text(comps::ENTITY, k, sc), ["hurt", "death", "ambient", "step"])).collect();
+        for (k, s) in game.entities.iter_mut().zip(kinds) {
+            k.sounds = s;
+        }
+    }
     if !errors.is_empty() {
         return Err(errors);
     }

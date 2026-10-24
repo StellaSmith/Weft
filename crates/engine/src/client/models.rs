@@ -1,0 +1,264 @@
+//! Entity models on the GPU: every kind's boxes and triangles in two static tables; per frame
+//! the bones of every visible entity are posed on the CPU (parents, keyframes, vanilla's limb
+//! swing) and each layer (skin or something worn) is one instance, drawn instanced per kind.
+//! Models and animations come from code or from files (`model.rs`); files win, so resource packs
+//! can change any entity's model.
+
+use glam::Mat4;
+use rayon::prelude::*;
+use voxide_abi::comp;
+use voxide_render::*;
+
+use crate::assets::Assets;
+use crate::components::ENTITY;
+use crate::content::content;
+use crate::model::{self, Bound, Motion};
+use crate::registry::Part;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Instance {
+    /// Filled in when queued.
+    pub bones: u32,
+    pub cuboids: u32,
+    pub cuboid_count: u32,
+    pub vertices: u32,
+    pub color: [f32; 3],
+    pub hurt: f32,
+    pub tex: u32,
+    pub inflate: f32,
+    pub tex_size: [f32; 2],
+    pub roles: u32,
+    pub shader: u32,
+    pub glow: u32,
+    pub _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuCuboid {
+    origin: [f32; 3],
+    bone: u32,
+    size: [f32; 3],
+    inflate: f32,
+    faces: [[f32; 4]; 6],
+    role: u32,
+    _pad: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuCorner {
+    pos: [f32; 3],
+    bone: u32,
+    uv: [f32; 2],
+    role: u32,
+    _pad: u32,
+}
+
+/// A kind's model and animations.
+pub struct KindModel {
+    pub parts: Vec<Part>,
+    cuboids: (u32, u32),
+    corners: (u32, u32),
+    pub anims: Vec<Bound>,
+    pub idle: Option<usize>,
+    pub walk: Option<usize>,
+    /// Texture size the model file was made for (it overrides the kind's).
+    pub texture: Option<[u32; 2]>,
+}
+
+impl KindModel {
+    pub fn anim(&self, name: &str) -> Option<usize> {
+        self.anims.iter().position(|a| a.anim.name == name)
+    }
+
+    /// The animation started by the server (name, start age, looping) if it still runs at `age`,
+    /// with its time.
+    pub fn playing(&self, anim: Option<&(String, f32, bool)>, age: f32) -> Option<(usize, f32)> {
+        let (name, start, looping) = anim?;
+        let i = self.anim(name)?;
+        let b = &self.anims[i];
+        (!b.finished(age - start, *looping)).then(|| (i, b.at(age - start, *looping)))
+    }
+}
+
+pub struct Models {
+    pub kinds: Vec<KindModel>,
+    cuboids: BufferId,
+    corners: BufferId,
+    instances: Vec<(BufferId, u32)>,
+    bones: Vec<(BufferId, u32)>,
+    /// This frame: (kind, instance) and bone rows.
+    queued: Vec<(u32, Instance)>,
+    rows: Vec<[[f32; 4]; 3]>,
+    scratch: Vec<Mat4>,
+}
+
+/// The kind's model: the file named by its `model` component, else `<ns>:<name>` if a model
+/// file of that name exists, else its parts from code.
+fn load_kind(assets: &Assets, k: u32) -> (Vec<Part>, Option<[u32; 2]>, Vec<model::Animation>) {
+    let c = content();
+    let kind = &c.game.entities[k as usize];
+    let named = |key: &str| c.components.id(key).and_then(|id| c.components.text(ENTITY, k, id)).map(str::to_string);
+    let file = |name: &str, kind: &str, ext: &str| assets.read(name, kind, ext).map(|b| String::from_utf8_lossy(&b).into_owned());
+    let (mut parts, mut texture) = (kind.parts.clone(), None);
+    let model_name = named(comp::MODEL).unwrap_or_else(|| kind.name.clone());
+    if let Some(src) = file(&model_name, "models", "geo.json") {
+        match model::load_geo(&src) {
+            Ok(g) => (parts, texture) = (g.parts, g.texture),
+            Err(e) => log::error!("model {model_name}: {e}"),
+        }
+    }
+    let anim_name = named(comp::ANIMATIONS).unwrap_or_else(|| kind.name.clone());
+    let anims = match file(&anim_name, "animations", "animation.json") {
+        Some(src) => model::load_animations(&src).unwrap_or_else(|e| {
+            log::error!("animations {anim_name}: {e}");
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
+    (parts, texture, anims)
+}
+
+impl Models {
+    pub fn new(gpu: &mut dyn Backend, assets: &Assets) -> Models {
+        let mut m = Models {
+            kinds: Vec::new(),
+            cuboids: gpu.create_buffer(16, usage::STORAGE, "model cuboids"),
+            corners: gpu.create_buffer(16, usage::STORAGE, "model corners"),
+            instances: Vec::new(),
+            bones: Vec::new(),
+            queued: Vec::new(),
+            rows: Vec::new(),
+            scratch: Vec::new(),
+        };
+        m.reload(gpu, assets);
+        m
+    }
+
+    /// Reads every kind's model and animations again (files may have changed).
+    pub fn reload(&mut self, gpu: &mut dyn Backend, assets: &Assets) {
+        let mut cuboids: Vec<GpuCuboid> = Vec::new();
+        let mut corners: Vec<GpuCorner> = Vec::new();
+        self.kinds.clear();
+        for k in 0..content().game.entities.len() as u32 {
+            let (parts, texture, anims) = load_kind(assets, k);
+            let c0 = cuboids.len() as u32;
+            let v0 = corners.len() as u32;
+            for (b, p) in parts.iter().enumerate() {
+                for cu in &p.cuboids {
+                    let origin = [p.pivot[0] + cu.origin[0], p.pivot[1] + cu.origin[1], p.pivot[2] + cu.origin[2]];
+                    cuboids.push(GpuCuboid { origin, bone: b as u32, size: cu.size, inflate: cu.inflate, faces: cu.face_rects(), role: p.role, _pad: [0; 3] });
+                }
+                corners.extend(p.mesh.iter().map(|v| GpuCorner { pos: v.pos, bone: b as u32, uv: v.uv, role: p.role, _pad: 0 }));
+            }
+            let anims: Vec<Bound> = anims.into_iter().map(|a| Bound::new(a, &parts)).collect();
+            let find = |n: &str| anims.iter().position(|a| a.anim.name == n);
+            let (idle, walk) = (find("idle"), find("walk"));
+            self.kinds.push(KindModel { cuboids: (c0, cuboids.len() as u32 - c0), corners: (v0, corners.len() as u32 - v0), parts, anims, idle, walk, texture });
+        }
+        // Buffers may not be empty.
+        cuboids.push(GpuCuboid::default());
+        corners.push(GpuCorner::default());
+        gpu.destroy_buffer(self.cuboids);
+        gpu.destroy_buffer(self.corners);
+        self.cuboids = gpu.create_buffer((cuboids.len() * size_of::<GpuCuboid>()) as u64, usage::STORAGE, "model cuboids");
+        gpu.write_buffer(self.cuboids, 0, bytemuck::cast_slice(&cuboids));
+        self.corners = gpu.create_buffer((corners.len() * size_of::<GpuCorner>()) as u64, usage::STORAGE, "model corners");
+        gpu.write_buffer(self.corners, 0, bytemuck::cast_slice(&corners));
+    }
+
+    pub fn destroy(&mut self, gpu: &mut dyn Backend) {
+        for b in [self.cuboids, self.corners].into_iter().chain(self.instances.drain(..).map(|b| b.0)).chain(self.bones.drain(..).map(|b| b.0)) {
+            gpu.destroy_buffer(b);
+        }
+    }
+
+    pub fn begin(&mut self) {
+        self.queued.clear();
+        self.rows.clear();
+    }
+
+    /// Poses a model of `kind` (model pixels to `root`) and queues its layers.
+    pub fn add(&mut self, kind: u32, root: Mat4, motion: &Motion, layers: impl IntoIterator<Item = Instance>) {
+        let Some(m) = self.kinds.get(kind as usize) else { return };
+        model::pose(&m.parts, root, motion, &mut self.scratch);
+        let first = self.rows.len() as u32;
+        self.rows.extend(self.scratch.iter().map(|b| [b.row(0).to_array(), b.row(1).to_array(), b.row(2).to_array()]));
+        for mut inst in layers {
+            (inst.bones, inst.cuboids, inst.cuboid_count, inst.vertices) = (first, m.cuboids.0, m.cuboids.1, m.corners.0);
+            self.queued.push((kind, inst));
+        }
+    }
+
+    /// Poses many models at once, in parallel: (kind, root, pitch, swing, keyframes) per entity,
+    /// with the layers of each.
+    pub fn add_many(&mut self, entities: Vec<(u32, Mat4, f32, f32, bool, Vec<(usize, f32, f32)>, Vec<Instance>)>) {
+        let kinds = &self.kinds;
+        let posed: Vec<(u32, Vec<[[f32; 4]; 3]>, Vec<Instance>)> = entities
+            .into_par_iter()
+            .with_min_len(64)
+            .map_init(Vec::new, |scratch, (kind, root, pitch, swing, crouch, anims, layers)| {
+                let Some(m) = kinds.get(kind as usize) else { return (kind, Vec::new(), Vec::new()) };
+                let anims: Vec<(&Bound, f32, f32)> = anims.iter().filter_map(|&(a, t, w)| m.anims.get(a).map(|b| (b, t, w))).collect();
+                model::pose(&m.parts, root, &Motion { pitch, swing, anims: &anims, crouch }, scratch);
+                (kind, scratch.iter().map(|b| [b.row(0).to_array(), b.row(1).to_array(), b.row(2).to_array()]).collect(), layers)
+            })
+            .collect();
+        for (kind, rows, layers) in posed {
+            let Some(m) = self.kinds.get(kind as usize) else { continue };
+            let first = self.rows.len() as u32;
+            self.rows.extend(rows);
+            for mut inst in layers {
+                (inst.bones, inst.cuboids, inst.cuboid_count, inst.vertices) = (first, m.cuboids.0, m.cuboids.1, m.corners.0);
+                self.queued.push((kind, inst));
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queued.is_empty()
+    }
+
+    /// Draws what was queued since `begin`, one instanced draw per kind, with `pipe` and the
+    /// view in `view`.
+    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, pipe: PipelineId, view: BufferId) {
+        if self.queued.is_empty() {
+            return;
+        }
+        self.queued.sort_by_key(|q| q.0);
+        let frames = gpu.frames_in_flight();
+        let grow = |slots: &mut Vec<(BufferId, u32)>, gpu: &mut dyn Backend, n: u32, stride: u64, label: &str| -> BufferId {
+            while slots.len() < frames {
+                slots.push((gpu.create_buffer(stride * 1024, usage::STORAGE | usage::HOST, label), 1024));
+            }
+            if slots[frame.slot].1 < n {
+                gpu.destroy_buffer(slots[frame.slot].0);
+                let cap = n.next_power_of_two();
+                slots[frame.slot] = (gpu.create_buffer(stride * cap as u64, usage::STORAGE | usage::HOST, label), cap);
+            }
+            slots[frame.slot].0
+        };
+        let ib = grow(&mut self.instances, gpu, self.queued.len() as u32, size_of::<Instance>() as u64, "model instances");
+        let bb = grow(&mut self.bones, gpu, self.rows.len().max(1) as u32, 48, "model bones");
+        let insts: Vec<Instance> = self.queued.iter().map(|q| q.1).collect();
+        gpu.mapped(ib)[..insts.len() * size_of::<Instance>()].copy_from_slice(bytemuck::cast_slice(&insts));
+        gpu.mapped(bb)[..self.rows.len() * 48].copy_from_slice(bytemuck::cast_slice(&self.rows));
+        list.pipeline(pipe);
+        list.bind(0, ib);
+        list.bind(1, view);
+        list.bind(2, self.cuboids);
+        list.bind(3, self.corners);
+        list.bind(4, bb);
+        let mut i = 0;
+        while i < self.queued.len() {
+            let kind = self.queued[i].0;
+            let end = i + self.queued[i..].iter().take_while(|q| q.0 == kind).count();
+            let m = &self.kinds[kind as usize];
+            let vertices = m.cuboids.1 * 36 + m.corners.1;
+            list.push(Cmd::Draw { vertices, instances: (end - i) as u32, first_vertex: 0, first_instance: i as u32 });
+            i = end;
+        }
+    }
+}

@@ -147,7 +147,140 @@ pub static HOST: Host = Host {
     reg_client_command,
     reg_command_words,
     reg_command_branch,
+    reg_text_condition,
+    reg_particle,
+    particles,
+    client_particles: crate::app::api::client_particles,
+    reg_config,
+    config_value,
+    config_set,
+    reg_recipe_station,
+    reg_sound,
+    reg_music,
+    play_animation,
+    play_sound,
+    client_play_sound: crate::app::api::client_play_sound,
+    reg_spawn,
+    biome_at,
+    navigate,
+    navigating,
+    reg_structure,
+    structure_near,
+    fall_block,
 };
+
+unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u64 {
+    unsafe { dim(w).fall_block(content(), ip(pos)) }
+}
+
+unsafe extern "C" fn reg_structure(r: *mut abi::Registrar, d: *const abi::StructureDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        reg(r).game.structures.push(registry::RawStructure {
+            name: d.name.as_str().to_string(),
+            dimension: d.dimension.as_str().to_string(),
+            blocks: d.blocks.as_slice().iter().map(|b| (b.pos, b.block.as_str().to_string())).collect(),
+            spacing: d.spacing,
+            chance: d.chance,
+            biome: d.biome.as_str().trim_start_matches('#').to_string(),
+            sink: d.sink,
+        });
+    }
+}
+
+unsafe extern "C" fn structure_near(w: *mut abi::WorldCtx, name: Str, pos: *const [i32; 3], radius: i32, out: *mut [i32; 3]) -> u32 {
+    unsafe {
+        let d = dim(w);
+        match crate::server::structure_near(content(), d.id, d.seed, name.as_str(), ip(pos), radius) {
+            Some(p) => {
+                *out = p.to_array();
+                1
+            }
+            None => 0,
+        }
+    }
+}
+
+unsafe extern "C" fn navigate(w: *mut abi::WorldCtx, id: u64, target: *const [f64; 3], speed: f32) -> u32 {
+    unsafe {
+        let c = content();
+        let d = dim(w);
+        let target = DVec3::from_array(*target);
+        let mul = d.attribute_named(c, id, abi::attribute::MOVEMENT_SPEED, false) as f32;
+        d.navigate(c, id, target, speed * mul) as u32
+    }
+}
+
+unsafe extern "C" fn navigating(w: *mut abi::WorldCtx, id: u64) -> u32 {
+    unsafe { dim(w).entities.get(id).is_some_and(|e| e.nav.is_some()) as u32 }
+}
+
+unsafe extern "C" fn biome_at(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u32 {
+    unsafe {
+        let p = ip(pos);
+        dim(w).cubes.get(&crate::world::cube_of(p)).map_or(0, |c| c.biome((p.x & 15) as usize, (p.z & 15) as usize) as u32)
+    }
+}
+
+unsafe extern "C" fn reg_spawn(r: *mut abi::Registrar, d: *const abi::SpawnDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        let tag = |s: Str| s.as_str().trim_start_matches('#').to_string();
+        reg(r).game.spawns.push(registry::RawSpawn {
+            entity: d.entity.as_str().to_string(),
+            biome: tag(d.biome),
+            ground: tag(d.ground),
+            dimension: d.dimension.as_str().to_string(),
+            light: d.light,
+            y: d.y,
+            group: [d.group[0].max(1), d.group[1].max(d.group[0]).max(1)],
+            weight: d.weight,
+            chance: d.chance,
+        });
+    }
+}
+
+unsafe extern "C" fn reg_sound(r: *mut abi::Registrar, d: *const abi::SoundDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        let def = registry::SoundDef {
+            name: d.name.as_str().to_string(),
+            files: d.files.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
+            category: d.category.min(abi::sound_category::UI),
+            volume: d.volume,
+            pitch: [d.pitch[0].min(d.pitch[1]).max(0.01), d.pitch[0].max(d.pitch[1]).max(0.01)],
+            range: d.range.max(1.0),
+        };
+        reg(r).game.sounds.push((d.cell as usize, def));
+    }
+}
+
+unsafe extern "C" fn reg_music(r: *mut abi::Registrar, d: *const abi::MusicDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        let m = registry::MusicDef { name: d.name.as_str().to_string(), tracks: d.tracks.as_slice().iter().map(|s| s.as_str().to_string()).collect(), dimension: None, when: d.when };
+        reg(r).game.music.push((d.dimension.as_str().to_string(), m));
+    }
+}
+
+unsafe extern "C" fn play_animation(w: *mut abi::WorldCtx, id: u64, name: Str, looping: u32) {
+    unsafe {
+        let d = dim(w);
+        d.events.push(crate::server::DimEvent::Animation { id, name: name.as_str().to_string(), looping: looping != 0 });
+    }
+}
+
+unsafe extern "C" fn play_sound(w: *mut abi::WorldCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32) {
+    unsafe {
+        if (sound as usize) < content().game.sounds.len() {
+            dim(w).sound(sound, DVec3::from_array(*pos), volume, pitch);
+        }
+    }
+}
+
+unsafe extern "C" fn reg_recipe_station(r: *mut abi::Registrar, kind: Str, item: Str) {
+    unsafe { reg(r).game.recipe_stations.push((kind.as_str().to_string(), item.as_str().to_string())) }
+}
 
 // ---------------------------------------------------------------- profiling per mod
 
@@ -308,8 +441,7 @@ unsafe extern "C" fn entity_look_at(w: *mut abi::WorldCtx, id: u64, max: f64, li
         let c = content();
         let d = dim(w);
         let Some(e) = d.entities.get(id) else { return 0 };
-        // Eyes at nine tenths of the height: 1.62 for players.
-        let eye = e.pos + DVec3::Y * (c.game.entities[e.kind as usize].height as f64 * 0.9);
+        let eye = e.pos + DVec3::Y * e.eye(c);
         let (sy, cy) = (e.yaw as f64).sin_cos();
         let (sp, cp) = (e.pitch as f64).sin_cos();
         let dir = DVec3::new(-sy * cp, sp, -cy * cp);
@@ -529,7 +661,7 @@ unsafe extern "C" fn gizmo(w: *mut abi::WorldCtx, group: Str, kind: u32, a: *con
         }
         d.gizmos.push(crate::net::GizmoShape {
             group: group.to_string(),
-            kind: kind.min(2) as u8,
+            kind: kind.min(3) as u8,
             a: DVec3::from_array(*a),
             b: DVec3::from_array(*b),
             color,
@@ -609,6 +741,9 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
         abi::entry_kind::BIOME => c.biome_names.get(name).copied(),
         abi::entry_kind::DIMENSION => c.dim_names.get(name).copied(),
         abi::entry_kind::MENU => c.game.menu_names.get(name).copied(),
+        abi::entry_kind::PARTICLE => c.game.particle_names.get(name).copied(),
+        abi::entry_kind::CONFIG => c.game.config_names.get(name).copied(),
+        abi::entry_kind::SOUND => c.game.sound_names.get(name).copied(),
         _ => None,
     };
     if !count.is_null() {
@@ -630,6 +765,9 @@ unsafe extern "C" fn name_of(kind: u32, id: u32) -> Str {
         abi::entry_kind::BIOME => c.biomes.get(id as usize).map(|b| b.name.as_str()),
         abi::entry_kind::DIMENSION => c.dims.get(id as usize).map(|d| d.name.as_str()),
         abi::entry_kind::MENU => c.game.menus.get(id as usize).map(|m| m.name.as_str()),
+        abi::entry_kind::PARTICLE => c.game.particles.get(id as usize).map(|p| p.name.as_str()),
+        abi::entry_kind::CONFIG => c.game.configs.get(id as usize).map(|d| d.name.as_str()),
+        abi::entry_kind::SOUND => c.game.sounds.get(id as usize).map(|d| d.name.as_str()),
         _ => None,
     };
     name.map_or(Str::EMPTY, Str::new)
@@ -825,6 +963,7 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
             max_y: d.max_y,
             veins: d.veins,
             size: d.blocks,
+            biome: d.biome.as_str().trim_start_matches('#').to_string(),
         });
     }
 }
@@ -1108,4 +1247,63 @@ unsafe extern "C" fn reg_key(r: *mut abi::Registrar, name: Str, key: Str) {
 
 unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str, slots: u32) {
     unsafe { reg(r).game.block_entities.push((block.as_str().to_string(), entity.as_str().to_string(), slots)) }
+}
+
+unsafe extern "C" fn reg_text_condition(r: *mut abi::Registrar, name: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.text_conditions.push((owner, name.as_str().to_string(), cb));
+    }
+}
+
+unsafe extern "C" fn reg_particle(r: *mut abi::Registrar, d: *const abi::ParticleDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        let textures = d.textures.as_slice().iter().map(|t| t.as_str().to_string()).collect();
+        let p = registry::RawParticle {
+            name: d.name.as_str().to_string(),
+            cell: d.cell as usize,
+            textures,
+            shader: d.shader.as_str().to_string(),
+            desc: abi::ParticleDesc { name: Str::EMPTY, cell: std::ptr::null(), textures: abi::Slice::EMPTY, shader: Str::EMPTY, ..d },
+        };
+        reg(r).game.particles.push(p);
+    }
+}
+
+unsafe extern "C" fn particles(w: *mut abi::WorldCtx, b: *const abi::ParticleBurst) {
+    unsafe {
+        let b = abi::read_sized(b);
+        if (b.kind as usize) < content().game.particles.len() {
+            let d = dim(w);
+            d.events.push(crate::server::DimEvent::Particles { dim: d.id, burst: b });
+        }
+    }
+}
+
+unsafe extern "C" fn reg_config(r: *mut abi::Registrar, d: *const abi::ConfigDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        let def = crate::config::ConfigDef {
+            name: d.name.as_str().to_string(),
+            kind: d.kind,
+            default: d.default,
+            min: d.min,
+            max: d.max,
+            step: d.step,
+            choices: d.choices.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
+            flags: d.flags,
+        };
+        let def = crate::config::ConfigDef { default: def.fit(d.default), ..def };
+        reg(r).game.configs.push((d.cell as usize, def));
+    }
+}
+
+unsafe extern "C" fn config_value(id: u32) -> f64 {
+    crate::config::get(id)
+}
+
+unsafe extern "C" fn config_set(id: u32, value: f64) {
+    crate::config::set(id, value);
 }

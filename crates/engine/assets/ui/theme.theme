@@ -19,3 +19,4 @@ label.text = #e0e0e0
 debug_panel.fill = #00000090
 debug_title.text = #ffffff
 debug.text = #e0e0e0
+recipe_slot.fill = #8b8b8b

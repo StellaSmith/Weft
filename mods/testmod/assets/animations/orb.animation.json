@@ -1,0 +1,58 @@
+{
+ "format_version": "1.8.0",
+ "animations": {
+  "animation.orb.idle": {
+   "loop": true,
+   "animation_length": 4,
+   "bones": {
+    "ring": {
+     "rotation": {
+      "0": [
+       0,
+       0,
+       0
+      ],
+      "2": [
+       0,
+       180,
+       0
+      ],
+      "4": [
+       0,
+       360,
+       0
+      ]
+     }
+    },
+    "core": {
+     "position": {
+      "0": {
+       "post": [
+        0,
+        0,
+        0
+       ],
+       "lerp_mode": "catmullrom"
+      },
+      "2": {
+       "post": [
+        0,
+        1.5,
+        0
+       ],
+       "lerp_mode": "catmullrom"
+      },
+      "4": {
+       "post": [
+        0,
+        0,
+        0
+       ],
+       "lerp_mode": "catmullrom"
+      }
+     }
+    }
+   }
+  }
+ }
+}

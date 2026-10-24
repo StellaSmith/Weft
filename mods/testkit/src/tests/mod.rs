@@ -1,8 +1,10 @@
 //! The test list. Each test is an `async fn(T) -> R`; failed checks are collected, `?` stops it.
 
+mod bodies;
 mod extend;
 mod gameplay;
 mod liquids;
+mod looks;
 mod sync;
 mod ui;
 mod visual;
@@ -16,15 +18,22 @@ pub fn all() -> Vec<TestDef> {
     crate::tests![
         ui::title_screens,
         ui::f3_overlay,
+        ui::f3_russian_large,
         ui::inventory_crafting,
         ui::creative_inventory,
         ui::chat_completion,
         ui::client_command_completion,
+        ui::mod_settings,
+        ui::recipe_viewer,
+        ui::inventory_hotkeys,
         world::flatlands_sync,
         world::save_and_reload,
         world::dimensions,
         world::virtual_menus,
         world::sand_and_support,
+        world::deep_caves,
+        world::growth,
+        world::structures,
         gameplay::furnace,
         gameplay::crafting_table_tags,
         gameplay::mining_and_wear,
@@ -44,6 +53,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::energy,
         gameplay::eating,
         gameplay::drop_and_pickup,
+        gameplay::sounds,
         extend::events_batched,
         extend::interceptor_protects,
         extend::damage_chain,
@@ -59,10 +69,23 @@ pub fn all() -> Vec<TestDef> {
         visual::night_light,
         visual::third_person,
         visual::ladder_placement,
+        visual::wall_torch,
+        visual::crouch_pose,
         visual::pick_block,
         visual::gizmos,
         visual::multiplayer,
         visual::client_hooks,
+        looks::particles,
+        looks::shaders_and_glow,
+        looks::rich_text,
+        looks::gui_shader,
+        looks::models,
+        bodies::lift,
+        bodies::skiff,
+        bodies::crate_and_crowd,
+        bodies::natural_spawning,
+        bodies::pathfinding,
+        bodies::zombie_chases,
         world::load_benchmark,
     ]
 }

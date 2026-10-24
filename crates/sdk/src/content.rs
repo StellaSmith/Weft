@@ -18,7 +18,7 @@ pub mod kind {
             })*
         };
     }
-    kinds!(Block = crate::abi::entry_kind::BLOCK, Item = crate::abi::entry_kind::ITEM, Entity = crate::abi::entry_kind::ENTITY, Biome = crate::abi::entry_kind::BIOME, Dimension = crate::abi::entry_kind::DIMENSION, Menu = crate::abi::entry_kind::MENU);
+    kinds!(Block = crate::abi::entry_kind::BLOCK, Item = crate::abi::entry_kind::ITEM, Entity = crate::abi::entry_kind::ENTITY, Biome = crate::abi::entry_kind::BIOME, Dimension = crate::abi::entry_kind::DIMENSION, Menu = crate::abi::entry_kind::MENU, Particle = crate::abi::entry_kind::PARTICLE, Config = crate::abi::entry_kind::CONFIG, Sound = crate::abi::entry_kind::SOUND);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -59,7 +59,7 @@ impl<K: kind::Kind> Handle<K> {
             self.id.store(id, Ordering::Relaxed);
         } else if unsafe { !(host().components)().is_null() } {
             // Frozen and still unknown: a typo or a missing mod. Say so once.
-            crate::error!("no {} named {}", ["block", "item", "entity", "biome", "dimension", "menu"].get(K::KIND as usize).unwrap_or(&"entry"), self.name);
+            crate::error!("no {} named {}", ["block", "item", "entity", "biome", "dimension", "menu", "particle", "setting", "sound"].get(K::KIND as usize).unwrap_or(&"entry"), self.name);
             self.id.store(u32::MAX, Ordering::Relaxed);
         }
         id
@@ -106,6 +106,8 @@ pub type Block = Handle<kind::Block>;
 pub type Item = Handle<kind::Item>;
 pub type Biome = Handle<kind::Biome>;
 pub type Dimension = Handle<kind::Dimension>;
+pub type Particle = Handle<kind::Particle>;
+pub type Sound = Handle<kind::Sound>;
 
 /// A component value waiting to be sent with a descriptor. Text is kept as a `String` until then.
 #[derive(Clone)]
@@ -120,7 +122,7 @@ impl Pending {
     pub(crate) fn value(name: &str, schema: String, bytes: Vec<u8>) -> Pending {
         Pending { name: name.to_string(), schema, bytes, text: None }
     }
-    fn text(name: &str, text: &str) -> Pending {
+    pub(crate) fn text(name: &str, text: &str) -> Pending {
         Pending { name: name.to_string(), schema: "str".into(), bytes: Vec::new(), text: Some(text.to_string()) }
     }
     fn tag(name: &str) -> Pending {
@@ -222,7 +224,22 @@ impl Registry {
             dimension: qualify(self.ns, dimension),
             block: qualify(self.ns, block),
             replace: String::new(),
+            biome: String::new(),
             desc: abi::OreDesc::DEFAULT,
+            _p: PhantomData,
+        }
+    }
+
+    pub fn structure<'a>(&'a mut self, dimension: &str, name: &str) -> StructureBuilder<'a> {
+        StructureBuilder {
+            raw: self.raw,
+            ns: self.ns,
+            name: qualify(self.ns, name),
+            dimension: qualify(self.ns, dimension),
+            layers: Vec::new(),
+            keys: Vec::new(),
+            biome: String::new(),
+            desc: abi::StructureDesc::DEFAULT,
             _p: PhantomData,
         }
     }
@@ -258,6 +275,12 @@ impl Registry {
 
     pub fn tag_on(&mut self, target: Target, tag: &str) {
         self.send_set(target, &Pending::tag(tag), false);
+    }
+
+    /// A text component on entries of any mod, e.g. keyframes for the player:
+    /// `r.set_text_on(Target::Entity("core:player"), abi::comp::ANIMATIONS, "mymod:player")`.
+    pub fn set_text_on(&mut self, target: Target, comp: &str, text: &str) {
+        self.send_set(target, &Pending::text(comp, text), false);
     }
 
     /// Takes a component or tag away from entries of any mod.
@@ -300,6 +323,7 @@ struct StateDef {
     drag: f32,
     support_side: u8,
     support: String,
+    support_near: String,
     components: Vec<Pending>,
 }
 
@@ -324,6 +348,7 @@ impl StateDef {
             drag: d.drag,
             support_side: d.support_side,
             support: String::new(),
+            support_near: String::new(),
             components: Vec::new(),
         }
     }
@@ -338,6 +363,9 @@ struct BlockCallbacks {
     on_neighbor: Option<abi::Callback>,
     on_scheduled: Option<abi::Callback>,
     placement: Option<abi::Callback>,
+    on_grow: Option<abi::Callback>,
+    /// (mean seconds per step, light needed).
+    grow: (f32, u32),
 }
 
 /// Per-state settings, used directly and through `BlockBuilder::states`.
@@ -430,6 +458,13 @@ macro_rules! state_setters {
                 s.support_side = face as u8;
                 s.support = tag.clone();
             });
+            self
+        }
+        /// The supporting block must have a block tagged `tag` beside it (sugar cane: `water`),
+        /// unless it is this same block.
+        pub fn needs_near_support(mut self, tag: &str) -> Self {
+            let tag = tag.trim_start_matches('#').to_string();
+            self.each(|s, _| s.support_near = tag.clone());
             self
         }
         /// A plant: tagged `plantable`, cross model, no collision, replaced by placing a block.
@@ -654,6 +689,14 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Sounds from the group `<ns>:block.<group>` (`.break`, `.place`, `.step`, `.hit` events);
+    /// a name with a namespace is used as it is (`base:block.stone` from another mod).
+    pub fn sounds(mut self, group: &str) -> Self {
+        let prefix = if group.contains(':') { group.to_string() } else { format!("{}:block.{group}", self.reg.ns) };
+        self.components.push(Pending::text(abi::comp::SOUND, &prefix));
+        self
+    }
+
     pub fn drops(mut self, item: &str, count: u32) -> Self {
         self.drop = qualify(self.reg.ns, item);
         self.drop_count = count;
@@ -687,6 +730,21 @@ impl<'a> BlockBuilder<'a> {
     /// Registers the block item into this handle (otherwise it is only reachable by name).
     pub fn item_handle(mut self, h: &'static Item) -> Self {
         self.item_handle = Some(h);
+        self
+    }
+
+    /// Grows over time, a step every `mean_seconds` on average (spread like random ticks) while
+    /// the light is at least `min_light`: by default to the next state until the last. Timed by
+    /// world time, so unloaded plants catch up when their area loads again.
+    pub fn grows(mut self, mean_seconds: f32, min_light: u32) -> Self {
+        self.callbacks.grow = (mean_seconds, min_light);
+        self
+    }
+
+    /// What a growth step does instead of moving to the next state (growing a tree, a block on
+    /// top); it keeps growing as long as the block stays.
+    pub fn on_grow(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
+        self.callbacks.on_grow = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
         self
     }
 
@@ -771,6 +829,7 @@ impl Drop for BlockBuilder<'_> {
                 drag: s.drag,
                 support_side: s.support_side,
                 support: Str::new(&s.support),
+                support_near: Str::new(&s.support_near),
                 components: Slice::new(v),
                 ..abi::StateDesc::DEFAULT
             })
@@ -793,6 +852,9 @@ impl Drop for BlockBuilder<'_> {
             on_scheduled: cb.on_scheduled.unwrap_or(abi::Callback::NONE),
             placement: cb.placement.unwrap_or(abi::Callback::NONE),
             replace: self.replace as u32,
+            grow_seconds: cb.grow.0,
+            grow_light: cb.grow.1,
+            on_grow: cb.on_grow.unwrap_or(abi::Callback::NONE),
             ..abi::BlockDesc::DEFAULT
         };
         if let Some(h) = self.handle {
@@ -982,6 +1044,12 @@ impl DimensionBuilder<'_> {
         self.desc.spawn = callback(move |a: &mut abi::SpawnArgs| a.pos = f(a.seed));
         self
     }
+    /// Surface height and biome id of column (x, z) for (seed, x, z), without generating it:
+    /// structures stand on it. Must agree with the generator.
+    pub fn column(mut self, f: impl Fn(u64, i32, i32) -> (i32, u32) + Send + Sync + 'static) -> Self {
+        self.desc.column = callback(move |a: &mut abi::ColumnArgs| (a.height, a.biome) = f(a.seed, a.x, a.z));
+        self
+    }
     /// Inclusive limits in cubes (16 blocks).
     pub fn height(mut self, min_cube: i32, max_cube: i32) -> Self {
         self.desc.min_cube_y = min_cube;
@@ -1042,17 +1110,97 @@ impl Drop for DimensionBuilder<'_> {
     }
 }
 
+/// A structure placed while generating (see `abi::StructureDesc`), drawn in layers from the
+/// bottom up, rows along z, characters along x; `' '` leaves what is there, other characters
+/// are keys:
+///
+/// ```ignore
+/// r.structure("overworld", "well")
+///     .layer(&["ccc", "cwc", "ccc"]).layer(&["c c", "   ", "c c"])
+///     .key('c', "cobblestone").key('w', "water").spacing(64).chance(0.3).biome("animals").sink(1);
+/// ```
+pub struct StructureBuilder<'a> {
+    raw: *mut abi::Registrar,
+    ns: &'static str,
+    name: String,
+    dimension: String,
+    layers: Vec<Vec<String>>,
+    keys: Vec<(char, String)>,
+    biome: String,
+    desc: abi::StructureDesc,
+    _p: PhantomData<&'a mut Registry>,
+}
+
+impl StructureBuilder<'_> {
+    pub fn layer(mut self, rows: &[&str]) -> Self {
+        self.layers.push(rows.iter().map(|r| r.to_string()).collect());
+        self
+    }
+    /// `block` may name a state (`furnace#2`) or `air` to clear.
+    pub fn key(mut self, c: char, block: &str) -> Self {
+        let block = if block == "air" { "core:air".to_string() } else { qualify(self.ns, block) };
+        self.keys.push((c, block));
+        self
+    }
+    /// One chance per `blocks` x `blocks` cell.
+    pub fn spacing(mut self, blocks: u32) -> Self {
+        self.desc.spacing = blocks;
+        self
+    }
+    pub fn chance(mut self, c: f32) -> Self {
+        self.desc.chance = c;
+        self
+    }
+    /// Only where the biome has this tag.
+    pub fn biome(mut self, tag: &str) -> Self {
+        self.biome = tag.to_string();
+        self
+    }
+    /// How far into the ground its bottom layer goes.
+    pub fn sink(mut self, blocks: i32) -> Self {
+        self.desc.sink = blocks;
+        self
+    }
+}
+
+impl Drop for StructureBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let mut names: Vec<([i32; 3], &str)> = Vec::new();
+        for (y, layer) in self.layers.iter().enumerate() {
+            for (z, row) in layer.iter().enumerate() {
+                for (x, ch) in row.chars().enumerate() {
+                    if let Some((_, b)) = self.keys.iter().find(|k| k.0 == ch) {
+                        names.push(([x as i32, y as i32, z as i32], b));
+                    }
+                }
+            }
+        }
+        let blocks: Vec<abi::StructureBlock> = names.iter().map(|(p, b)| abi::StructureBlock { pos: *p, block: Str::new(b) }).collect();
+        let desc = abi::StructureDesc { name: Str::new(&self.name), dimension: Str::new(&self.dimension), blocks: Slice::new(&blocks), biome: Str::new(&self.biome), ..self.desc };
+        unsafe { (host().reg_structure)(self.raw, &desc) }
+    }
+}
+
 pub struct OreBuilder<'a> {
     raw: *mut abi::Registrar,
     ns: &'static str,
     dimension: String,
     block: String,
     replace: String,
+    biome: String,
     desc: abi::OreDesc,
     _p: PhantomData<&'a mut Registry>,
 }
 
 impl OreBuilder<'_> {
+    /// Only in biomes with this tag (underground ones too: `cave`).
+    pub fn biome(mut self, tag: &str) -> Self {
+        self.biome = tag.to_string();
+        self
+    }
     /// Heights the veins start at, inclusive.
     pub fn y(mut self, min: i32, max: i32) -> Self {
         (self.desc.min_y, self.desc.max_y) = (min, max);
@@ -1081,7 +1229,7 @@ impl Drop for OreBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let desc = abi::OreDesc { dimension: Str::new(&self.dimension), block: Str::new(&self.block), replace: Str::new(&self.replace), ..self.desc };
+        let desc = abi::OreDesc { dimension: Str::new(&self.dimension), block: Str::new(&self.block), replace: Str::new(&self.replace), biome: Str::new(&self.biome), ..self.desc };
         unsafe { (host().reg_ore)(self.raw, &desc) }
     }
 }

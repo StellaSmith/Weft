@@ -4,11 +4,15 @@
 use rustc_hash::FxHashMap;
 use voxide_render::*;
 
+use std::sync::Arc;
+
 use super::font::Font;
+use crate::model::{Animation, Prop};
 use super::text::Placed;
 use super::theme::Theme;
 use super::{Kind, Rect, Ui};
 use crate::assets::{Assets, decode_png};
+use crate::shaders::{Hook, Slots};
 use crate::client::textures::GameTextures;
 use crate::content::Content;
 
@@ -18,7 +22,10 @@ pub struct Quad {
     pub p0: [f32; 2],
     pub u: [f32; 2],
     pub v: [f32; 2],
-    pub pad: [f32; 2],
+    /// Text effect slot (top bit set on shadows) or GUI fill slot.
+    pub fx: u32,
+    /// Glyph number in its text.
+    pub index: f32,
     pub uv: [f32; 4],
     pub color: u32,
     pub tex: u32,
@@ -26,6 +33,45 @@ pub struct Quad {
     pub mode: u32,
     /// Visible rectangle in physical pixels; empty (all zero) means unclipped.
     pub clip: [f32; 4],
+}
+
+/// Quads of a node and its children moved by keyframes every frame: `<class>.animation =
+/// ns:name` in a theme names `animations/<name>.animation.json`, whose `open` animation plays
+/// once when the screen opens and `idle` loops after. Any bone: position in GUI pixels (y up),
+/// rotation z in degrees clockwise and scale, about the node's centre.
+#[derive(Clone)]
+pub struct Animated {
+    pub quads: std::ops::Range<usize>,
+    open: Option<Arc<Animation>>,
+    idle: Option<Arc<Animation>>,
+    since: f32,
+    center: [f32; 2],
+    scale: f32,
+}
+
+/// Moves the animated ranges of `quads` (all quads of the frame) to this moment.
+pub fn animate(quads: &mut [Quad], list: &[Animated]) {
+    let now = crate::shaders::clock();
+    for a in list {
+        // Automated runs skip opening so screenshots do not depend on timing.
+        let (anim, t) = match (&a.open, &a.idle) {
+            (Some(o), _) if !crate::shaders::pinned() && now - a.since < o.length => (o, now - a.since),
+            (_, Some(i)) => (i, crate::shaders::time().rem_euclid(i.length)),
+            _ => continue,
+        };
+        let get = |prop: Prop, default: [f32; 3]| anim.channels.iter().find(|c| c.prop == prop).map_or(default, |c| c.sample(t));
+        let (pos, rot, sc) = (get(Prop::Position, [0.0; 3]), get(Prop::Rotation, [0.0; 3]), get(Prop::Scale, [1.0; 3]));
+        let (s, c) = rot[2].to_radians().sin_cos();
+        let turn = |p: [f32; 2]| {
+            let (x, y) = (p[0] * sc[0], p[1] * sc[1]);
+            [x * c - y * s, x * s + y * c]
+        };
+        let to = [a.center[0] + pos[0] * a.scale, a.center[1] - pos[1] * a.scale];
+        for q in quads.get_mut(a.quads.clone()).into_iter().flatten() {
+            let r = turn([q.p0[0] - a.center[0], q.p0[1] - a.center[1]]);
+            (q.p0, q.u, q.v) = ([to[0] + r[0], to[1] + r[1]], turn(q.u), turn(q.v));
+        }
+    }
 }
 
 /// How a GUI texture fills a rectangle of another size. Set by the texture itself: a `.gui` file
@@ -105,17 +151,48 @@ pub struct UiRenderer {
     pub quads: Vec<Quad>,
     /// Clip of each deferred item icon, in the order they were queued.
     icon_clips: Vec<[f32; 4]>,
+    /// Text effects and GUI fills the shader has, and the effect slot by `text::fx_id`.
+    fx: Slots,
+    gui: Slots,
+    fx_slots: Vec<u32>,
+    /// Theme animation files by name, and the nodes the last `build` animated.
+    anims: FxHashMap<String, Vec<Arc<Animation>>>,
+    pub animated: Vec<Animated>,
 }
 
-fn load_shader() -> Result<Shader, ShaderError> {
+pub const FX: Hook = Hook {
+    kind: "fx",
+    entry: "effect",
+    dispatch: "apply_fx",
+    params: "g: Glyph",
+    args: "g",
+    ret: "Glyph",
+    fallback: "return g;",
+};
+
+pub const GUI: Hook = Hook {
+    kind: "gui",
+    entry: "fill",
+    dispatch: "gui_fill",
+    params: "p: GuiPixel",
+    args: "p",
+    ret: "vec4<f32>",
+    fallback: "return p.color;",
+};
+
+fn load_shader(assets: &Assets) -> Result<(Shader, Slots, Slots), ShaderError> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/ui.wgsl");
     let src = std::fs::read_to_string(path).unwrap_or_else(|_| include_str!("../../shaders/ui.wgsl").to_string());
-    Shader::from_wgsl("ui.wgsl", &src)
+    let (fx, gui) = (crate::shaders::snippets(assets, &FX), crate::shaders::snippets(assets, &GUI));
+    let (shader, mut slots) = crate::shaders::compose("ui.wgsl", &src, &[(&FX, &fx), (&GUI, &gui)])?;
+    let gui = slots.pop().unwrap_or_default();
+    let fx = slots.pop().unwrap_or_default();
+    Ok((shader, fx, gui))
 }
 
 impl UiRenderer {
     pub fn new(gpu: &mut dyn Backend, assets: &Assets) -> Result<UiRenderer, String> {
-        let pipeline = Self::pipeline(gpu)?;
+        let (pipeline, fx, gui) = Self::pipeline(gpu, assets)?;
         let (font, font_tex, font_idx) = Self::load_font(gpu, assets).ok_or("font missing")?;
         let frames = gpu.frames_in_flight();
         let screen = (0..frames).map(|_| gpu.create_buffer(16, usage::STORAGE | usage::HOST, "ui screen")).collect();
@@ -132,6 +209,11 @@ impl UiRenderer {
             screen,
             quads: Vec::new(),
             icon_clips: Vec::new(),
+            fx,
+            gui,
+            fx_slots: Vec::new(),
+            anims: FxHashMap::default(),
+            animated: Vec::new(),
         })
     }
 
@@ -152,9 +234,9 @@ impl UiRenderer {
         Some((font, tex, idx))
     }
 
-    fn pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
-        let shader = load_shader().map_err(|e| e.0)?;
-        gpu.create_pipeline(&PipelineDesc {
+    fn pipeline(gpu: &mut dyn Backend, assets: &Assets) -> Result<(PipelineId, Slots, Slots), String> {
+        let (shader, fx, gui) = load_shader(assets).map_err(|e| e.0)?;
+        let p = gpu.create_pipeline(&PipelineDesc {
             label: "ui",
             shader: &shader,
             vertex: "vs",
@@ -165,7 +247,34 @@ impl UiRenderer {
             cull_back: false,
             topology: Topology::Triangles,
         })
-        .map_err(|e| e.0)
+        .map_err(|e| e.0)?;
+        Ok((p, fx, gui))
+    }
+
+    /// Shader slot of a text effect (`text::fx_id`), 0 when no snippet of that name exists.
+    fn fx_slot(&mut self, id: u16) -> u32 {
+        if id == 0 {
+            return 0;
+        }
+        while self.fx_slots.len() < id as usize {
+            let name = super::text::fx_name(self.fx_slots.len() as u16 + 1).unwrap_or_default();
+            let slot = self.fx.slot(&name);
+            if slot == 0 {
+                log::warn!("text effect {name}: no shaders/fx/<name>.wgsl for it in any mod or pack");
+            }
+            self.fx_slots.push(slot);
+        }
+        self.fx_slots[id as usize - 1]
+    }
+
+    /// A rectangle filled by GUI shader `name` (`shaders/gui/<name>.wgsl`); false if there is none.
+    pub fn shader_fill(&mut self, r: Rect, name: &str, color: u32) -> bool {
+        let slot = self.gui.slot(name);
+        if slot == 0 {
+            return false;
+        }
+        self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv: [0.0, 0.0, 1.0, 1.0], color, mode: 4, fx: slot, ..Default::default() });
+        true
     }
 
     pub fn reload(&mut self, gpu: &mut dyn Backend, assets: &Assets) {
@@ -173,10 +282,11 @@ impl UiRenderer {
             gpu.destroy_texture(self.font_tex);
             (self.font, self.font_tex, self.font_idx) = (font, tex, idx);
         }
-        match Self::pipeline(gpu) {
-            Ok(p) => {
+        match Self::pipeline(gpu, assets) {
+            Ok((p, fx, gui)) => {
                 gpu.destroy_pipeline(self.pipeline);
-                self.pipeline = p;
+                (self.pipeline, self.fx, self.gui) = (p, fx, gui);
+                self.fx_slots.clear();
             }
             Err(e) => log::error!("ui shader: {e}"),
         }
@@ -187,6 +297,7 @@ impl UiRenderer {
         // How textures slice comes with them: a pack's `.mcmeta` must not outlive the pack.
         self.slicing.clear();
         self.outset.clear();
+        self.anims.clear();
     }
 
     /// Bindless index and size of a theme/GUI texture, loaded the first time it is used.
@@ -298,12 +409,13 @@ impl UiRenderer {
                 continue;
             }
             let off = if pass { px * self.font.pixel } else { 0.0 };
-            for it in items {
+            for (index, it) in items.iter().enumerate() {
                 match *it {
-                    Placed::Glyph { x: gx, y: gy, ch, color } => {
+                    Placed::Glyph { x: gx, y: gy, ch, color, fx } => {
                         if ch == ' ' {
                             continue;
                         }
+                        let fx = self.fx_slot(fx) | if pass && fx != 0 { 1 << 31 } else { 0 };
                         let g = self.font.glyph(ch);
                         let uv = self.font.uv(g);
                         let w = (g.advance as f32 - 1.0) * px;
@@ -322,6 +434,8 @@ impl UiRenderer {
                             color: c,
                             tex: self.font_idx,
                             mode: 3,
+                            fx,
+                            index: index as f32,
                             ..Default::default()
                         });
                     }
@@ -431,6 +545,7 @@ impl UiRenderer {
     ) {
         self.quads.clear();
         self.icon_clips.clear();
+        self.animated.clear();
         let mut icons = Vec::new();
         self.node(gpu, assets, ui, theme, 0, scale, &mut icons, custom, None);
         if let Some((c, t)) = game {
@@ -512,8 +627,13 @@ impl UiRenderer {
         let (quad_start, icon_start) = (self.quads.len(), icons.len());
         let hovered = ui.hovered == Some(id);
         let mut background = |me: &mut UiRenderer, class: &str, state: &str| {
-            let name = theme.get(class, state).or_else(|| theme.get(class, "texture")).map(str::to_string);
             let color = theme.color(class, "color", 0xFFFFFFFF);
+            if let Some(shader) = theme.get(class, "shader").map(str::to_string) {
+                if me.shader_fill(r, &shader, color) {
+                    return;
+                }
+            }
+            let name = theme.get(class, state).or_else(|| theme.get(class, "texture")).map(str::to_string);
             let drawn = name.is_some_and(|n| me.draw_gui(gpu, assets, &n, r, scale, color, theme_slicing(theme, class)));
             if !drawn && theme.get(class, "fill").is_some() {
                 me.rect(r, theme.color(class, "fill", 0));
@@ -667,9 +787,37 @@ impl UiRenderer {
         for &c in &n.children {
             self.node(gpu, assets, ui, theme, c, scale, icons, custom, inner_surface);
         }
+        let class = match &n.kind {
+            Kind::Container { class: Some(c) } | Kind::Button { class: c, .. } | Kind::Progress { class: c, .. } | Kind::Icons { class: c, .. } => Some(c.as_str()),
+            Kind::Text(t) => Some(t.class.as_str()),
+            _ => None,
+        };
+        // ponytail: item icons are queued apart and stay put; animate them when a theme needs it.
+        if let Some(file) = class.and_then(|c| theme.get(c, "animation")) {
+            let list = self.anims.entry(file.to_string()).or_insert_with(|| {
+                let src = assets.read(file, "animations", "animation.json").map(|b| String::from_utf8_lossy(&b).into_owned());
+                match src.map(|s| crate::model::load_animations(&s)) {
+                    Some(Ok(list)) => list.into_iter().map(Arc::new).collect(),
+                    Some(Err(e)) => {
+                        log::error!("ui animation {file}: {e}");
+                        Vec::new()
+                    }
+                    None => {
+                        log::error!("ui animation {file}: no such file");
+                        Vec::new()
+                    }
+                }
+            });
+            let pick = |name: &str| list.iter().find(|a| a.name == name).cloned();
+            let (open, idle) = (pick("open"), pick("idle"));
+            if open.is_some() || idle.is_some() {
+                let center = [r.x + r.w / 2.0, r.y + r.h / 2.0];
+                self.animated.push(Animated { quads: quad_start..self.quads.len(), open, idle, since: ui.shown, center, scale });
+            }
+        }
     }
 
-    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo) {
+    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, gui_scale: f32) {
         if self.quads.is_empty() {
             return;
         }
@@ -686,7 +834,8 @@ impl UiRenderer {
         let buf = self.buffers[frame.slot].0;
         gpu.mapped(buf)[..self.quads.len() * size_of::<Quad>()].copy_from_slice(bytemuck::cast_slice(&self.quads));
         let sb = self.screen[frame.slot];
-        gpu.mapped(sb)[..16].copy_from_slice(bytemuck::cast_slice(&[frame.width as f32, frame.height as f32, 0.0, 0.0]));
+        let time = crate::shaders::time();
+        gpu.mapped(sb)[..16].copy_from_slice(bytemuck::cast_slice(&[frame.width as f32, frame.height as f32, time, gui_scale]));
         list.pipeline(self.pipeline);
         list.bind(0, buf);
         list.bind(1, sb);
@@ -726,5 +875,24 @@ mod slicing_tests {
     fn gui_sidecar() {
         assert_eq!(parse_gui("border = 2 3 4 5\n", [16.0, 16.0]), Slicing::Nine { size: [16.0, 16.0], border: [2.0, 3.0, 4.0, 5.0] });
         assert_eq!(parse_gui("scaling = tile\nsize = 32 32", [64.0, 64.0]), Slicing::Tile { size: [32.0, 32.0] });
+    }
+}
+
+#[cfg(test)]
+mod animation_tests {
+    use super::*;
+
+    #[test]
+    fn keyframes_move_quads() {
+        let src = r#"{"animations":{"animation.ui.idle":{"loop":true,"animation_length":2,"bones":{"node":{
+            "position":{"0":[2,1,0]},"rotation":{"0":[0,0,90]}}}}}}"#;
+        let idle = crate::model::load_animations(src).unwrap().pop().map(Arc::new);
+        let a = Animated { quads: 0..1, open: None, idle, since: 0.0, center: [10.0, 10.0], scale: 2.0 };
+        let mut q = [Quad { p0: [12.0, 10.0], u: [4.0, 0.0], v: [0.0, 4.0], ..Default::default() }];
+        crate::shaders::pin_time(true);
+        animate(&mut q, &[a]);
+        // A quarter turn clockwise about the centre, then 2 and 1 GUI pixels right and up.
+        let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4;
+        assert!(near(q[0].p0, [14.0, 10.0]) && near(q[0].u, [0.0, 4.0]) && near(q[0].v, [-4.0, 0.0]), "{:?} {:?} {:?}", q[0].p0, q[0].u, q[0].v);
     }
 }

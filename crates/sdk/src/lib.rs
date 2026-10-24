@@ -2,13 +2,16 @@
 
 pub use voxide_abi as abi;
 
+pub mod ai;
 mod cache;
 pub mod client;
 mod component;
 pub mod noise;
 pub mod terrain;
 mod command;
+mod config;
 mod content;
+mod effects;
 mod extend;
 mod game;
 mod ui;
@@ -18,8 +21,10 @@ pub use abi::{ItemStack, hud_anchor, worn_parts};
 pub use cache::ColumnCache;
 pub use client::{Client, Packet, launch_option};
 pub use command::Command;
+pub use config::*;
 pub use component::*;
 pub use content::*;
+pub use effects::*;
 pub use extend::*;
 pub use game::*;
 pub use ui::*;

@@ -138,7 +138,8 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
         };
         let id = match n.kind {
             uk::TEXT => {
-                let node = b.ui.text(spans(n.text, n.args), if class.is_empty() { "label" } else { &class });
+                // Without a class the text takes the colours of the panel it sits on.
+                let node = b.ui.text(spans(n.text, n.args), if class.is_empty() { "default" } else { &class });
                 if n.bind.is_some() {
                     let cb = n.bind;
                     if let Kind::Text(t) = &mut b.ui.nodes[node].kind {

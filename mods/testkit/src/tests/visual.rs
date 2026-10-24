@@ -78,6 +78,22 @@ pub async fn third_person(t: T) -> R {
     Ok(())
 }
 
+/// Crouching shows in third person: body leaning, legs under it, lower (vanilla's pose).
+pub async fn crouch_pose(t: T) -> R {
+    t.flat().await?;
+    t.press("core:perspective");
+    t.c().look(30.0, -15.0);
+    t.secs(0.3).await?;
+    t.press("core:perspective");
+    t.secs(0.3).await?;
+    t.hold("core:sneak", 2.0);
+    t.secs(1.0).await?;
+    t.shot("crouching").await?;
+    t.secs(1.2).await?;
+    t.press("core:perspective");
+    Ok(())
+}
+
 /// A ladder takes the facing of the wall it was put on.
 pub async fn ladder_placement(t: T) -> R {
     t.flat().await?;
@@ -93,6 +109,28 @@ pub async fn ladder_placement(t: T) -> R {
     t.until("ladder placed", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 7).await?;
     // State order follows the wall: -Z, +X, +Z, -X; this one hangs on a wall to its north.
     t.check_eq(t.block(at).await?, "base:ladder".into(), "ladder on the north wall");
+    Ok(())
+}
+
+/// A torch put against a wall hangs on it, and drops when the wall goes.
+pub async fn wall_torch(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let wall = add(f, [0, 0, -2]);
+    t.fill(wall, add(wall, [0, 1, 0]), "cobblestone").await?;
+    t.op("put me 0 torch 8").await?;
+    t.c().select(0);
+    t.look_at(wall);
+    t.frames(3).await?;
+    t.press("core:use");
+    let at = add(wall, [0, 0, 1]);
+    t.until("torch placed", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 7).await?;
+    t.check_eq(t.block(at).await?, "base:torch#1".into(), "torch on the north wall");
+    t.frames(5).await?;
+    t.shot("wall_torch").await?;
+    t.set(wall, "air").await?;
+    t.secs(0.3).await?;
+    t.check_eq(t.block(at).await?, "core:air".into(), "the torch fell with its wall");
     Ok(())
 }
 

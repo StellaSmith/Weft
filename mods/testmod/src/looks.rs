@@ -1,0 +1,155 @@
+//! Things that only change how the game looks, all as plain mod code and assets:
+//! - a glow crystal whose veins glow by a `_e` mask (LabPBR-style emission, no light source),
+//! - sparks: a particle kind with its own shader, sent from the server for everyone nearby,
+//! - wisps: floating entities drawn by an entity shader, their core glowing by a mask,
+//! - a rune whose tooltip uses text effects (engine and own) and conditions (own and engine),
+//!   and which shows the area it would affect as a see-through box while held,
+//! - a screen effect toggled with a key, and machine screens drawn by a GUI shader (theme),
+//! - an idol from a Blockbench model file (bones, a mesh pair of wings) that idles by keyframes
+//!   and bows when used, and an orb whose model is built in code (a sphere mesh and a ring of
+//!   stones on a child bone) but animated from a file,
+//! - the player waves when using the rune: keyframes for the player's model in third person and
+//!   for the first person hand.
+
+use voxide_sdk::*;
+
+pub static SPARK: Particle = Particle::new();
+static WISP: Entity = Entity::new();
+static RUNE: Item = Item::new();
+/// Idols currently bowing.
+static BOWED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+/// Settings players change in Settings > Mod Settings.
+static CRYSTAL_SPARKS: Config<bool> = Config::new();
+static WISP_SPARKS: Config<i32> = Config::new();
+static DREAM_STRENGTH: Config<f32> = Config::new();
+static DREAM_STYLE: Config<u32> = Config::new();
+
+pub fn register(r: &mut Registry) {
+    r.config("crystal_sparks").bool(true).handle(&CRYSTAL_SPARKS);
+    // The server decides how much its wisps sparkle; joining players get its value.
+    r.config("wisp_sparks").int(2, 0, 10).synced().handle(&WISP_SPARKS);
+    r.config("dream_strength").float(1.0, 0.1, 1.0).step(0.05).handle(&DREAM_STRENGTH);
+    r.config("dream_style").choice(0, &["warm", "cold"]).handle(&DREAM_STYLE);
+    r.particle("spark")
+        .handle(&SPARK)
+        .textures(&["core:particle/glint_3", "core:particle/glint_2", "core:particle/glint_1", "core:particle/glint_0"])
+        .life(0.6, 1.2)
+        .size(0.12, 0.2)
+        .gravity(-0.6)
+        .drag(0.9)
+        .color(0xFFFFFFFF, 0xFFFFFF60)
+        .fullbright()
+        .translucent()
+        .shader("twinkle");
+
+    // A glowing obelisk here and there in the deserts of another mod's world.
+    let mut obelisk = r.structure("base:overworld", "obelisk").layer(&["sss", "sss", "sss"]);
+    for _ in 0..4 {
+        obelisk = obelisk.layer(&["   ", " g ", "   "]);
+    }
+    obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("dry").sink(1);
+    // Glow crystals grow only in the overworld's deep caves (an underground biome).
+    r.ore("base:overworld", "glow_crystal").veins(3).size(6).replace("#stone_ore_replaceables").biome("cave");
+    r.block("glow_crystal")
+        .hardness(1.5)
+        .mineable("pickaxe")
+        .random_ticks(|e| {
+            if !CRYSTAL_SPARKS.get() {
+                return;
+            }
+            let [x, y, z] = e.pos();
+            e.world().particles(&SPARK, [x as f64 + 0.5, y as f64 + 1.1, z as f64 + 0.5]).count(3).spread(0.4).speed(0.4);
+        });
+
+    r.entity("wisp")
+        .handle(&WISP)
+        .size(0.4, 0.4)
+        .health(4.0)
+        .speed(1.5)
+        .flags(entity_flags::NO_GRAVITY)
+        .no_push()
+        .texture("wisp", 32, 16)
+        .model(vec![Part::new([0.0, 3.0, 0.0], abi::part_role::STATIC).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])])
+        .shader("ghost")
+        .on_tick(wisps);
+
+    r.entity("idol").size(0.6, 1.1).health(20.0).texture("idol", 64, 32).model_file("idol").animations("idol").on_interact(|e| {
+        let mut bowed = BOWED.lock().unwrap();
+        let id = e.entity();
+        if let Some(i) = bowed.iter().position(|&b| b == id) {
+            bowed.swap_remove(i);
+            e.world().play_animation(id, "", false);
+        } else {
+            // Bows to whoever used it.
+            let w = e.world();
+            if let (Some(mut me), Some(them)) = (w.entity(id), w.entity(e.other())) {
+                me.yaw = (-(them.pos[0] - me.pos[0]) as f32).atan2(-(them.pos[2] - me.pos[2]) as f32);
+                w.set_entity(id, &me);
+            }
+            bowed.push(id);
+            w.play_animation(id, "bow", false);
+        }
+    });
+    let ring = Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("ring").child_of(0);
+    let ring = [[6.0, -1.0, -1.0], [-8.0, -1.0, -1.0], [-1.0, -1.0, 6.0], [-1.0, -1.0, -8.0]].into_iter().fold(ring, |p, at| p.cube(at, [2.0, 2.0, 2.0], [16.0, 0.0]));
+    r.entity("orb")
+        .size(0.6, 0.9)
+        .health(4.0)
+        .flags(entity_flags::NO_GRAVITY)
+        .texture("orb", 32, 16)
+        .model(vec![Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]);
+
+    r.set_text_on(Target::Entity("core:player"), abi::comp::ANIMATIONS, "testmod:player");
+    // Wisps drift through forests at night (a spawning rule on the biome tag).
+    r.spawn("wisp").biome("forest").light(0, 7).group(1, 2);
+    r.item("rune").handle(&RUNE).stack(1).on_use(|u| {
+        let w = u.world();
+        w.play_animation(u.player(), "wave", false);
+        if let Some(st) = w.entity(u.player()) {
+            w.particles(&SPARK, [st.pos[0], st.pos[1] + 1.2, st.pos[2]]).count(40).spread(0.2).speed(4.0);
+        }
+        true
+    });
+    r.text_condition("hurt", |v| v.me().is_some_and(|m| m.health < m.max_health));
+
+    r.key("dream", "KeyN");
+    r.client_frame(|c| {
+        if c.pressed("testmod:dream") {
+            let on = DREAM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            let effect = if DREAM_STYLE.get() == 1 { "dream_cold" } else { "dream" };
+            c.post_effect("dream", 0.0);
+            c.post_effect("dream_cold", 0.0);
+            if !on {
+                c.post_effect(effect, DREAM_STRENGTH.get());
+            }
+        }
+        // Holding the rune shows what it would reach: a see-through sheet over the ground around.
+        let st = c.state();
+        if c.inventory_slot(st.selected).item == RUNE.id() {
+            let p = st.pos.map(f64::floor);
+            c.draw_fill([p[0] - 2.0, p[1], p[2] - 2.0], [p[0] + 3.0, p[1] + 0.06, p[2] + 3.0], 0x60D0FF50);
+        }
+    });
+}
+
+static DREAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Wisps drift in a new direction every two seconds, bob up and down and shed sparks.
+fn wisps(t: &EntityTick) {
+    let w = t.world();
+    let time = w.time();
+    for &id in t.ids() {
+        let Some(mut st) = w.entity(id) else { continue };
+        let phase = (id % 40) as u64;
+        if (time + phase) % 40 == 0 {
+            let a = w.random_below(360) as f32 * std::f32::consts::PI / 180.0;
+            st.yaw = a;
+        }
+        st.vel[1] = ((time as f64 + phase as f64) * 0.1).sin() * 0.8;
+        w.set_entity(id, &st);
+        w.walk(id, [-st.yaw.sin(), -st.yaw.cos()], 1.0, false);
+        if (time + phase) % 20 == 0 {
+            w.particles(&SPARK, [st.pos[0], st.pos[1] + 0.2, st.pos[2]]).count(WISP_SPARKS.get().max(0) as u32).spread(0.15).speed(0.3);
+        }
+    }
+}

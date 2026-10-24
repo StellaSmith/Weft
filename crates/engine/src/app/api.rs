@@ -177,6 +177,10 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             if r.debug {
                 flags |= cf::DEBUG;
             }
+            if r.audio.as_ref().is_some_and(|a| a.music_playing()) {
+                flags |= cf::MUSIC;
+            }
+            s.sounds = r.audio.as_ref().map_or(0, |a| a.played);
             s.flags = flags;
             s.frame = r.frame_no;
             s.dt = r.frame_dt;
@@ -211,6 +215,7 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.cubes = cl.world.cubes.len() as u32;
             s.pending_meshes = cl.world.pending_meshes() as u32;
             s.entities = cl.entities.len() as u32;
+            s.particles = cl.particles.len() as u32;
         }
         abi::write_sized(out, &s);
     }
@@ -339,6 +344,7 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
                     "core:worlds" => Box::new(crate::saves::WorldSelect::default()),
                     "core:create_world" => Box::new(crate::saves::CreateWorld),
                     "core:title" => Box::new(screens::Title),
+                    "core:mod_settings" => Box::new(screens::ModSettings),
                     "core:chat" => Box::new(crate::game_screens::Chat::new("")),
                     "core:inventory" => {
                         if let Some(g) = r.game.as_mut() {
@@ -364,6 +370,7 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
                 }
             }
             op_::RELOAD_ASSETS => r.reload_requested = true,
+            op_::POST_EFFECT => return r.post.set(&text, num as f32) as u64,
             op_::BENCH => r.bench = Some(crate::bench::Bench::new(&text, num.max(0.1) as f32)),
             op_::RESPAWN => r.handle(vec![Request::Respawn]),
             op_::SETTING => {
@@ -507,6 +514,7 @@ pub unsafe extern "C" fn client_draw(c: *mut abi::ClientCtx, kind: u32, a: *cons
                 }
             }
             2 => r.mod_labels.push((a, text, color)),
+            4 => r.mod_fills.push((a.min(b), a.max(b), color)),
             _ => r.mod_screen_text.push((a.x as f32, a.y as f32, text, color)),
         }
     }
@@ -523,5 +531,22 @@ pub unsafe extern "C" fn client_send_packet(c: *mut abi::ClientCtx, name: Str, d
         if let Some(g) = r.game.as_mut() {
             g.client.send(crate::net::ToServer::Packet { channel, data: data.as_slice().to_vec() });
         }
+    }
+}
+
+pub unsafe extern "C" fn client_particles(c: *mut abi::ClientCtx, burst: *const abi::ParticleBurst) {
+    unsafe {
+        let Some(r) = run(c) else { return };
+        if let Some(g) = r.game.as_mut() {
+            g.client.particles.spawn(&abi::read_sized(burst));
+        }
+    }
+}
+
+pub unsafe extern "C" fn client_play_sound(c: *mut abi::ClientCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32) {
+    unsafe {
+        let Some(r) = run(c) else { return };
+        let pos = (!pos.is_null()).then(|| DVec3::from_array(*pos));
+        r.ui_sounds.push(crate::audio::Play { sound, pos, volume, pitch });
     }
 }

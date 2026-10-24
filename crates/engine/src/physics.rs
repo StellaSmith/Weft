@@ -1,10 +1,15 @@
-//! Axis-separated AABB movement against block collision boxes, plus voxel raycasts. Shared by the
-//! client (local player prediction) and the server (entities), so both agree.
+//! Axis-separated AABB movement against block collision boxes and solid bodies (entities others
+//! stand on and bump into), riding bodies, plus voxel raycasts. Shared by the client (local
+//! player prediction) and the server (entities), so both agree.
 
 use glam::{DVec3, IVec3};
 use voxide_abi::{Model, block_flags as bf};
 
 use crate::content::Content;
+
+/// A crouching player's box and eyes (modern vanilla), on client and server alike.
+pub const CROUCH_HEIGHT: f64 = 1.5;
+pub const CROUCH_EYE: f64 = 1.27;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Aabb {
@@ -36,6 +41,82 @@ pub fn boxes(c: &Content, state: u32, out: &mut Vec<[f64; 6]>) {
     } else if s.model != Model::Boxes {
         out.push([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
     }
+}
+
+/// A solid body this step: its box after its move, how far it moved, how high above it riders
+/// still move with it, and whether it crushes what it squeezes.
+#[derive(Clone, Copy, Debug)]
+pub struct Body {
+    pub id: u64,
+    pub aabb: Aabb,
+    pub delta: DVec3,
+    pub carry: f64,
+    pub crushes: bool,
+}
+
+/// What a rider's support does to it before its own move: carries it by `carry`, or lets go
+/// (`released`: the support's last move, for keeping its momentum).
+#[derive(Default)]
+pub struct Ride {
+    pub carry: DVec3,
+    pub released: Option<DVec3>,
+}
+
+/// A rider moves with the body it stands on, and keeps doing so while in the air above it up to
+/// the body's carry height (its own motion stays relative to the body, like inside a moving
+/// ship); further away it lets go.
+pub fn ride(pos: DVec3, half_width: f64, support: &mut Option<u64>, bodies: &[Body]) -> Ride {
+    let Some(id) = *support else { return Ride::default() };
+    let Some(b) = bodies.iter().find(|b| b.id == id) else {
+        *support = None;
+        return Ride::default();
+    };
+    // Where the body was before its move, which is where the rider stood on it.
+    let (lo, hi) = (b.aabb.min - b.delta, b.aabb.max - b.delta);
+    // A rider right at the edge stays on (exact edges come and go with rounding).
+    let e = half_width + 1e-6;
+    let over = pos.x + e > lo.x && pos.x - e < hi.x && pos.z + e > lo.z && pos.z - e < hi.z;
+    let above = pos.y - hi.y;
+    if over && above > -0.25 && above <= b.carry.max(0.01) {
+        Ride { carry: b.delta, released: None }
+    } else {
+        *support = None;
+        Ride { carry: DVec3::ZERO, released: Some(b.delta) }
+    }
+}
+
+/// The body whose top a box with feet at `pos` rests on.
+pub fn standing_on(pos: DVec3, half_width: f64, bodies: &[Body], skip: u64) -> Option<u64> {
+    bodies
+        .iter()
+        .find(|b| {
+            b.id != skip
+                && (pos.y - b.aabb.max.y).abs() < 1e-3
+                && pos.x + half_width > b.aabb.min.x
+                && pos.x - half_width < b.aabb.max.x
+                && pos.z + half_width > b.aabb.min.z
+                && pos.z - half_width < b.aabb.max.z
+        })
+        .map(|b| b.id)
+}
+
+/// How far bodies that ran into a box this step (they did not overlap it before their move)
+/// push it, along each body's main direction of travel, and whether a crushing one did. The
+/// body it rides and `skip` (itself) do not push.
+pub fn push(pos: DVec3, half_width: f64, height: f64, bodies: &[Body], skip: u64, support: Option<u64>) -> (DVec3, bool) {
+    let me = Aabb::around(pos, half_width, height);
+    let (mut shift, mut crushes) = (DVec3::ZERO, false);
+    for b in bodies.iter().filter(|b| b.id != skip && Some(b.id) != support && b.delta != DVec3::ZERO) {
+        let before = Aabb { min: b.aabb.min - b.delta, max: b.aabb.max - b.delta };
+        if !me.intersects(&b.aabb) || me.intersects(&before) {
+            continue;
+        }
+        let d = b.delta.abs();
+        let axis = if d.y >= d.x && d.y >= d.z { 1 } else if d.x >= d.z { 0 } else { 2 };
+        shift[axis] = if b.delta[axis] > 0.0 { b.aabb.max[axis] - me.min[axis] } else { b.aabb.min[axis] - me.max[axis] };
+        crushes |= b.crushes;
+    }
+    (shift, crushes)
 }
 
 /// Solid collision boxes of the blocks around `area`; unloaded positions count as full blocks.
@@ -87,6 +168,22 @@ pub fn move_box(
     delta: DVec3,
     step_height: f64,
 ) -> MoveResult {
+    move_box_with(c, block, &[], 0, pos, half_width, height, delta, step_height)
+}
+
+/// `move_box` that also bumps into solid bodies (all but `skip`).
+#[allow(clippy::too_many_arguments)]
+pub fn move_box_with(
+    c: &Content,
+    block: &impl Fn(IVec3) -> Option<u32>,
+    bodies: &[Body],
+    skip: u64,
+    pos: DVec3,
+    half_width: f64,
+    height: f64,
+    delta: DVec3,
+    step_height: f64,
+) -> MoveResult {
     let start = Aabb::around(pos, half_width, height);
     let mut sweep = start;
     for i in 0..3 {
@@ -97,7 +194,8 @@ pub fn move_box(
         }
     }
     sweep.max.y += step_height;
-    let solids = solid_boxes(c, block, sweep);
+    let mut solids = solid_boxes(c, block, sweep);
+    solids.extend(bodies.iter().filter(|b| b.id != skip && b.aabb.intersects(&sweep)).map(|b| b.aabb));
 
     let try_move = |from: Aabb, delta: DVec3| -> (Aabb, [bool; 3], DVec3) {
         let mut b = from;

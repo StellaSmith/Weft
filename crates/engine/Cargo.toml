@@ -22,3 +22,5 @@ arboard.workspace = true
 iroh.workspace = true
 tokio.workspace = true
 zip.workspace = true
+kira.workspace = true
+serde_json.workspace = true

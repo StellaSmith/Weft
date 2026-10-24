@@ -17,6 +17,16 @@ static CACTUS_SOIL: Tag = Tag::new("cactus_soil");
 static SUGAR_CANE_SOIL: Tag = Tag::new("sugar_cane_soil");
 /// Desert and beach surfaces: the first block tagged `sand` (the base game's own, as it loads first).
 static SAND_SURFACE: Block = Block::named("#sand");
+/// What a biome grows, as data any mod's biome can carry: trees per 5x5 cell (0..1), share of
+/// grass on plantable soil, and tags `conifer` (spruces), `birch` (birches), `mixed_birch`
+/// (some birches among oaks), `snowy` (nothing grows), `dry` (cacti).
+pub static TREES: Component<f32> = Component::new("trees");
+pub static GRASS_COVER: Component<f32> = Component::new("grass");
+static CONIFER: Tag = Tag::new("conifer");
+static BIRCH: Tag = Tag::new("birch");
+static MIXED_BIRCH: Tag = Tag::new("mixed_birch");
+static SNOWY_TAG: Tag = Tag::new("snowy");
+static DRY: Tag = Tag::new("dry");
 
 pub static PLAINS: Biome = Biome::new();
 pub static FOREST: Biome = Biome::new();
@@ -27,56 +37,38 @@ pub static DESERT: Biome = Biome::new();
 pub static MOUNTAINS: Biome = Biome::new();
 pub static OCEAN: Biome = Biome::new();
 pub static BEACH: Biome = Biome::new();
+pub static DEEP_CAVES: Biome = Biome::new();
 
 pub fn register(r: &mut Registry) {
-    r.biome("plains").handle(&PLAINS).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4);
-    r.biome("forest").handle(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8);
-    r.biome("birch_forest").handle(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6);
-    r.biome("taiga").handle(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8);
-    r.biome("snowy_plains").handle(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5);
-    r.biome("desert").handle(&DESERT).colors(0xbfb755, 0xaea42a, 0x3f76e4).climate(2.0, 0.0);
-    r.biome("mountains").handle(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3);
-    r.biome("ocean").handle(&OCEAN).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5);
-    r.biome("beach").handle(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4);
+    // Tags say what a biome is (spawning, decoration and mods ask these, not names).
+    r.biome("plains").handle(&PLAINS).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("animals").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
+    r.biome("forest").handle(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8).tag("forest").tag("animals").tag("mixed_birch").set(&TREES, 0.4).set(&GRASS_COVER, 0.12);
+    r.biome("birch_forest").handle(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6).tag("forest").tag("animals").tag("birch").set(&TREES, 0.45).set(&GRASS_COVER, 0.12);
+    r.biome("taiga").handle(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8).tag("forest").tag("cold").tag("animals").tag("conifer").set(&TREES, 0.45).set(&GRASS_COVER, 0.08);
+    r.biome("snowy_plains").handle(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5).tag("cold").tag("snowy").tag("animals").tag("conifer").set(&TREES, 0.03);
+    r.biome("desert").handle(&DESERT).colors(0xbfb755, 0xaea42a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
+    r.biome("mountains").handle(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3).tag("mountain").tag("animals").tag("conifer").set(&TREES, 0.06).set(&GRASS_COVER, 0.05);
+    r.biome("ocean").handle(&OCEAN).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("ocean");
+    r.biome("beach").handle(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("beach");
+    // Underground (3D): whole cubes deep under the surface; spiders like it there.
+    r.biome("deep_caves").handle(&DEEP_CAVES).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("cave").tag("dark");
+
+    // Wells now and then where animals live.
+    r.structure("overworld", "well")
+        .layer(&["ccc", "cwc", "ccc"])
+        .layer(&["c.c", "...", "c.c"])
+        .layer(&["c.c", "...", "c.c"])
+        .layer(&["ccc", "ccc", "ccc"])
+        .key('c', "cobblestone")
+        .key('.', "air")
+        .key('w', "water")
+        .spacing(96)
+        .chance(0.35)
+        .biome("animals")
+        .sink(1);
 
     for (ore, max_y, veins, size) in [("coal_ore", 128, 8, 12), ("iron_ore", 64, 6, 8), ("gold_ore", 32, 2, 7), ("diamond_ore", 16, 1, 6)] {
         r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum B {
-    Plains,
-    Forest,
-    Birch,
-    Taiga,
-    Snowy,
-    Desert,
-    Mountains,
-    Ocean,
-    Beach,
-}
-
-impl B {
-    fn of(b: &'static Biome) -> B {
-        [B::Plains, B::Forest, B::Birch, B::Taiga, B::Snowy, B::Desert, B::Mountains, B::Ocean, B::Beach]
-            .into_iter()
-            .find(|k| std::ptr::eq(k.handle(), b))
-            .unwrap_or(B::Plains)
-    }
-
-    fn handle(self) -> &'static Biome {
-        match self {
-            B::Plains => &PLAINS,
-            B::Forest => &FOREST,
-            B::Birch => &BIRCH_FOREST,
-            B::Taiga => &TAIGA,
-            B::Snowy => &SNOWY,
-            B::Desert => &DESERT,
-            B::Mountains => &MOUNTAINS,
-            B::Ocean => &OCEAN,
-            B::Beach => &BEACH,
-        }
     }
 }
 
@@ -85,7 +77,10 @@ static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
     Terrain::new(&STONE, SEA as f64)
         .sea(SEA, &WATER)
         .feature(preset::continents(18.0))
-        .feature(preset::hills(16.0, 110.0))
+        // Biomes shape the land through their climate, not their borders, so nothing seams:
+        // the cold flattens hills into tundra, deserts get dunes.
+        .feature(preset::hills(16.0, 110.0).mask(Mask::Temperature(-0.35, -0.6).not()))
+        .feature(preset::dunes(4.0, 26.0).mask(Mask::Temperature(0.25, 0.45).and(Mask::Humidity(0.1, -0.05))))
         .feature(
             preset::mountains(150.0, 260.0)
                 .mask(Mask::noise(700.0, -0.1, 0.3).salt(0x44).and(Mask::Continent(0.0, 0.2)))
@@ -101,29 +96,12 @@ static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
         .biome(BiomeRule::new(&FOREST).humidity(0.25, f64::INFINITY).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&BIRCH_FOREST).humidity(0.05, f64::INFINITY).temperature(f64::NEG_INFINITY, 0.1).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
+        .cave_biome(&DEEP_CAVES, 24, 96.0, 0.25)
         .caves(Caves::new(&LAVA, i32::MIN, 11))
 });
 
-pub struct Column {
-    pub height: i32,
-    pub biome: B,
-}
-
 pub fn column(seed: u64, x: i32, z: i32) -> Column {
-    let c = TERRAIN.column(seed, x, z);
-    Column { height: c.height, biome: B::of(c.biome) }
-}
-
-fn tree_density(b: B) -> f64 {
-    match b {
-        B::Forest => 0.4,
-        B::Birch => 0.45,
-        B::Taiga => 0.45,
-        B::Plains => 0.025,
-        B::Mountains => 0.06,
-        B::Snowy => 0.03,
-        _ => 0.0,
-    }
+    TERRAIN.column(seed, x, z)
 }
 
 const TREE_CELL: i32 = 5;
@@ -148,17 +126,16 @@ fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {
     let x = cx * TREE_CELL + (h % TREE_CELL as u64) as i32;
     let z = cz * TREE_CELL + ((h >> 8) % TREE_CELL as u64) as i32;
     let col = column(seed, x, z);
-    if col.height < SEA || unit(h.rotate_left(17)) >= tree_density(col.biome) {
+    let b = col.biome.id();
+    if col.height < SEA || unit(h.rotate_left(17)) >= TREES.on_biome(b).unwrap_or(0.0) as f64 || TERRAIN.surface_carved(seed, x, z) {
         return None;
     }
-    if matches!(col.biome, B::Desert | B::Beach | B::Ocean) || TERRAIN.surface_carved(seed, x, z) {
-        return None;
-    }
-    let kind = match col.biome {
-        B::Taiga | B::Snowy | B::Mountains => Tree::Spruce,
-        B::Birch => Tree::Birch,
-        B::Forest if (h >> 40) % 5 == 0 => Tree::Birch,
-        _ => Tree::Oak,
+    let kind = if CONIFER.on_biome(b) {
+        Tree::Spruce
+    } else if BIRCH.on_biome(b) || (MIXED_BIRCH.on_biome(b) && (h >> 40) % 5 == 0) {
+        Tree::Birch
+    } else {
+        Tree::Oak
     };
     let height = match kind {
         Tree::Spruce => 6 + ((h >> 32) % 4) as i32,
@@ -233,7 +210,6 @@ pub fn overworld(g: &mut Gen) {
     let [ox, oy, oz] = g.origin();
     let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
     let min_h = cols.iter().map(|c| c.height).min().unwrap_or(0);
-    let cols: Vec<Column> = cols.iter().map(|c| Column { height: c.height, biome: B::of(c.biome) }).collect();
 
     // Surface decoration only near the surface.
     if oy > max_h + 16 || oy + 15 < min_h - 1 {
@@ -273,22 +249,18 @@ pub fn overworld(g: &mut Gen) {
             let h = hash(seed ^ 0xF10, (ox + x as i32) as i64, 0, (oz + z as i32) as i64);
             let roll = unit(h);
             // Plants go where they could be planted (soil tags); the biome decides how many.
-            if col.biome == B::Snowy {
+            let b = col.biome.id();
+            if SNOWY_TAG.on_biome(b) {
                 continue;
             }
             if PLANT_SOIL.on_block(below) {
-                let grass_chance = match col.biome {
-                    B::Plains => 0.25,
-                    B::Forest | B::Birch => 0.12,
-                    B::Taiga => 0.08,
-                    _ => 0.05,
-                };
+                let grass_chance = GRASS_COVER.on_biome(b).unwrap_or(0.05) as f64;
                 if roll < 0.012 {
                     g.set(x, y, z, if (h >> 32) & 1 == 0 { DANDELION.id() } else { ROSE.id() });
                 } else if roll < grass_chance {
                     g.set(x, y, z, TALL_GRASS.id());
                 }
-            } else if CACTUS_SOIL.on_block(below) && col.biome == B::Desert && roll < 0.006 && y + 2 < 16 {
+            } else if CACTUS_SOIL.on_block(below) && DRY.on_biome(b) && roll < 0.006 && y + 2 < 16 {
                 let n = 1 + (h >> 40) % 3;
                 for k in 0..n as usize {
                     g.set(x, y + k, z, CACTUS.id());
@@ -310,7 +282,7 @@ pub fn spawn(seed: u64) -> [i32; 3] {
             let a = k as f64 / 8.0 * std::f64::consts::TAU;
             let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
             let c = column(seed, x, z);
-            if c.height > SEA + 1 && c.biome == B::Plains && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
+            if c.height > SEA + 1 && std::ptr::eq(c.biome, &PLAINS) && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
                 return [x, c.height, z];
             }
         }
@@ -320,7 +292,7 @@ pub fn spawn(seed: u64) -> [i32; 3] {
             let a = k as f64 / 8.0 * std::f64::consts::TAU;
             let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
             let c = column(seed, x, z);
-            if c.height > SEA + 1 && !matches!(c.biome, B::Ocean | B::Beach | B::Mountains) && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
+            if c.height > SEA + 1 && [&OCEAN, &BEACH, &MOUNTAINS].iter().all(|b| !std::ptr::eq(c.biome, *b)) && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
                 return [x, c.height, z];
             }
         }
@@ -370,18 +342,30 @@ pub fn flat(g: &mut Gen) {
 mod tests {
     use super::*;
 
+    fn name(b: &'static Biome) -> &'static str {
+        let all: [(&Biome, &str); 9] = [
+            (&PLAINS, "Plains"),
+            (&FOREST, "Forest"),
+            (&BIRCH_FOREST, "Birch"),
+            (&TAIGA, "Taiga"),
+            (&SNOWY, "Snowy"),
+            (&DESERT, "Desert"),
+            (&MOUNTAINS, "Mountains"),
+            (&OCEAN, "Ocean"),
+            (&BEACH, "Beach"),
+        ];
+        all.iter().find(|(h, _)| std::ptr::eq(*h, b)).map_or("?", |a| a.1)
+    }
+
     #[test]
     fn biome_mix() {
         let mut counts = std::collections::BTreeMap::new();
         for x in (-4000..4000).step_by(64) {
             for z in (-4000..4000).step_by(64) {
-                *counts.entry(format!("{:?}", column(7, x, z).biome)).or_insert(0) += 1;
+                *counts.entry(name(column(7, x, z).biome)).or_insert(0) += 1;
             }
         }
         println!("{counts:?}");
-        let sp = spawn(7);
-        let c = column(7, sp[0], sp[2]);
-        println!("spawn {sp:?} biome {:?} height {}", c.biome, c.height);
         assert!(counts.get("Plains").copied().unwrap_or(0) > 100);
     }
 }

@@ -6,6 +6,7 @@ pub mod energy;
 pub mod entity;
 mod extend;
 mod liquid;
+pub mod path;
 pub use extend::explanation;
 pub mod menu;
 pub mod persist;
@@ -37,6 +38,8 @@ use regions::DimSet;
 pub const TPS: u32 = 20;
 const AUTOSAVE_TICKS: u64 = 20 * 30;
 const REACH: f64 = 6.0;
+/// Players further away than vanilla's particle distance get no particles.
+const PARTICLE_RANGE: f64 = 32.0;
 
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -498,8 +501,34 @@ impl Server {
                 events.append(&mut r.events);
             }
         }
+        // Particles and sounds of the whole tick go out as one message of each per player.
+        let mut bursts: Vec<Vec<abi::ParticleBurst>> = vec![Vec::new(); self.players.len()];
+        let mut sounds: Vec<Vec<(u32, DVec3, f32, f32)>> = vec![Vec::new(); self.players.len()];
         for ev in events {
             match ev {
+                DimEvent::Animation { id, name, looping } => {
+                    for p in self.players.iter_mut().filter(|p| p.joined && (p.known.contains(&id) || p.entity == id)) {
+                        p.conn.send(ToClient::Animate(vec![(id, name.clone(), looping)]));
+                    }
+                }
+                DimEvent::Sound { dim, sound, pos: at, volume, pitch } => {
+                    let range = c.game.sounds.get(sound as usize).map_or(16.0, |d| d.range * volume.max(1.0)) as f64;
+                    for (pi, p) in self.players.iter().enumerate() {
+                        let pos = self.dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map(|e| e.pos);
+                        if p.joined && p.dim == dim && pos.is_some_and(|pos| (pos - at).length_squared() < range * range) {
+                            sounds[pi].push((sound, at, volume, pitch));
+                        }
+                    }
+                }
+                DimEvent::Particles { dim, burst } => {
+                    let at = DVec3::from_array(burst.pos);
+                    for (pi, p) in self.players.iter().enumerate() {
+                        let pos = self.dims[p.dim as usize].entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map(|e| e.pos);
+                        if p.joined && p.dim == dim && pos.is_some_and(|pos| (pos - at).length_squared() < PARTICLE_RANGE * PARTICLE_RANGE) {
+                            bursts[pi].push(burst);
+                        }
+                    }
+                }
                 DimEvent::OpenMenu { player, menu, owner } => {
                     if let Some(pi) = self.players.iter().position(|p| p.entity == player) {
                         self.open_menu(c, pi, menu, owner);
@@ -535,6 +564,14 @@ impl Server {
                         self.set_mode(pi, mode);
                     }
                 }
+            }
+        }
+        for ((p, list), sounds) in self.players.iter_mut().zip(bursts).zip(sounds) {
+            if !list.is_empty() {
+                p.conn.send(ToClient::Particles(list));
+            }
+            if !sounds.is_empty() {
+                p.conn.send(ToClient::Sounds(sounds));
             }
         }
     }
@@ -630,7 +667,7 @@ impl Server {
     fn handle(&mut self, c: &'static Content, pi: usize, msg: ToServer) {
         match msg {
             ToServer::Join { name, key } => self.join(c, pi, name, key),
-            ToServer::Move { pos, yaw, pitch, on_ground } => {
+            ToServer::Move { pos, yaw, pitch, on_ground, crouched } => {
                 if !pos.is_finite() || self.players[pi].dead {
                     return;
                 }
@@ -665,6 +702,7 @@ impl Server {
                     e.pitch = pitch;
                     e.on_ground = on_ground;
                     e.in_liquid = in_liquid;
+                    e.crouched = crouched;
                 }
                 if let Some(amount) = land {
                     r.damage(c, entity, amount, 0, damage::FALL);
@@ -978,6 +1016,7 @@ impl Server {
         p.first_sync = true;
         log::info!("{} joined", p.name);
         p.conn.send(ToClient::Welcome { player: id, dim, pos, seed: self.cfg.seed });
+        p.conn.send(ToClient::Configs(crate::config::synced()));
         p.conn.send(ToClient::Time { dim, time });
         p.conn.send(ToClient::Health { health, max: kind.max_health });
         p.conn.send(ToClient::GameMode(mode));
@@ -1513,7 +1552,7 @@ impl Server {
 
     fn sync_players(&mut self, c: &'static Content) {
         // Entities that moved since last tick and changed equipment, per dimension (all regions).
-        let mut moved: Vec<Vec<(u64, DVec3, f32, f32)>> = Vec::with_capacity(self.dims.len());
+        let mut moved: Vec<Vec<(u64, DVec3, f32, f32, [f32; 3], bool)>> = Vec::with_capacity(self.dims.len());
         let mut worn: Vec<Vec<(u64, Vec<u32>)>> = Vec::with_capacity(self.dims.len());
         for d in &mut self.dims {
             let mut m = Vec::new();
@@ -1528,10 +1567,12 @@ impl Server {
                     }
                 }
                 for e in r.entities.list.iter_mut().filter(|e| !e.removed && e.anchor.is_none()) {
-                    let now = (e.pos, e.yaw, e.pitch);
-                    if e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01) {
+                    // Clients predict solid bodies from their velocity: a body that stops must say so.
+                    let vel = if c.game.entities[e.kind as usize].is(abi::entity_flags::SOLID) { e.last_move * 20.0 } else { DVec3::ZERO };
+                    let now = (e.pos, e.yaw, e.pitch, vel, e.crouched);
+                    if e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01 || s.3 != now.3 || s.4 != now.4) {
                         if e.sent.is_some() {
-                            m.push((e.id, e.pos, e.yaw, e.pitch));
+                            m.push((e.id, e.pos, e.yaw, e.pitch, vel.as_vec3().to_array(), e.crouched));
                         }
                         e.sent = Some(now);
                     }
@@ -1584,7 +1625,7 @@ impl Server {
                     visible.insert(e.id);
                     if !p.known.contains(&e.id) {
                         let worn = e.worn.clone();
-                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: crate::stack::for_client(e.item), health: e.health, worn });
+                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: crate::stack::for_client(e.item), health: e.health, worn, block: e.block });
                     }
                 }
             }
@@ -1620,7 +1661,7 @@ impl Server {
             if !shared.is_empty() {
                 p.conn.send(ToClient::EntityComponents(shared));
             }
-            let moves: Vec<(u64, DVec3, f32, f32)> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
+            let moves: Vec<(u64, DVec3, f32, f32, [f32; 3], bool)> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
             if !moves.is_empty() {
                 p.conn.send(ToClient::Moves(moves));
             }
@@ -1802,7 +1843,7 @@ impl Server {
             let storage = self.storage.clone();
             let d = &mut self.dims[di];
             for r in &mut d.regions {
-                let removed = r.retain_cubes(|pos| {
+                let removed = r.retain_cubes(c, |pos| {
                     views.iter().any(|&(center, rad, lo, hi)| {
                         let d = pos - center;
                         d.x * d.x + d.z * d.z <= rad * rad && pos.y >= lo && pos.y <= hi
@@ -1822,6 +1863,25 @@ impl Server {
             d.dirty = true;
         }
     }
+}
+
+/// The nearest structure `name` of dimension `dim` within `radius` of `pos`: its lowest corner.
+pub fn structure_near(c: &Content, dim: u32, seed: u64, name: &str, pos: IVec3, radius: i32) -> Option<IVec3> {
+    let def = &c.dims[dim as usize];
+    let s = def.structures.iter().find(|s| s.name == name)?;
+    let cells = |v: i32| (v - radius).div_euclid(s.spacing)..=(v + radius).div_euclid(s.spacing);
+    let mut best: Option<IVec3> = None;
+    for cz in cells(pos.z) {
+        for cx in cells(pos.x) {
+            if let Some(a) = dim::structure_in(def, c, s, seed, (cx, cz)) {
+                let d = |p: IVec3| (p - pos).with_y(0).as_vec3().length();
+                if d(a) <= radius as f32 && best.is_none_or(|b| d(a) < d(b)) {
+                    best = Some(a);
+                }
+            }
+        }
+    }
+    best
 }
 
 /// Items in a player's equipment slots that show on the model.

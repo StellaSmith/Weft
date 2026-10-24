@@ -12,3 +12,23 @@ item.testmod.tin_ingot = Оловянный слиток
 block.testmod.oil = Нефть
 item.testmod.oil_bucket = Ведро нефти
 block.testmod.red_sand = Красный песок
+block.testmod.glow_crystal = Светящийся кристалл
+entity.testmod.wisp = Огонёк
+entity.testmod.idol = Идол
+entity.testmod.orb = Сфера
+entity.testmod.lift = Лифт
+entity.testmod.skiff = Летучий плот
+entity.testmod.crate = Ящик
+item.testmod.rune = Руна света
+item.testmod.rune.tooltip = {fx:core:rainbow}Сияет всеми цветами{/fx}, {fx:testmod:glitch}мерцает{/fx} и {fx:core:wave}гудит{/fx}.
+    {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Используйте, чтобы рассыпать {fx:core:pulse}искры{/fx}; в руке показывает радиус.{/on_key}{if:testmod:hurt}
+    {#ff8080}Она чувствует ваши раны.{/if}{if:creative}
+    {#80ff80}Творческий режим: не устаёт.{/if}
+key.testmod.dream = Грёзы
+config.testmod.crystal_sparks = Искры кристаллов
+config.testmod.crystal_sparks.tooltip = Светящиеся кристаллы иногда роняют искры.
+config.testmod.wisp_sparks = Искр на огонёк
+config.testmod.dream_strength = Сила грёз
+config.testmod.dream_style = Вид грёз
+config.testmod.dream_style.warm = Тёплые
+config.testmod.dream_style.cold = Холодные

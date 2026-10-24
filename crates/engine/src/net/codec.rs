@@ -183,16 +183,21 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 for i in &e.worn {
                     w.u32(*i);
                 }
+                w.u32(e.block);
             }
         }
         ToClient::Moves(list) => {
             w.u8(7);
             w.len(list.len());
-            for (id, p, y, pi) in list {
+            for (id, p, y, pi, v, crouched) in list {
                 w.u64(*id);
                 w.dvec(*p);
                 w.f32(*y);
                 w.f32(*pi);
+                for c in v {
+                    w.f32(*c);
+                }
+                w.u8(*crouched as u8);
             }
         }
         ToClient::Despawn(ids) => {
@@ -237,6 +242,46 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.u8(12);
             w.f32(*health);
             w.f32(*max);
+        }
+        ToClient::Animate(list) => {
+            w.u8(32);
+            w.len(list.len());
+            for (id, name, looping) in list {
+                w.u64(*id);
+                w.str(name);
+                w.u8(*looping as u8);
+            }
+        }
+        ToClient::Sounds(list) => {
+            w.u8(31);
+            w.len(list.len());
+            for (s, pos, volume, pitch) in list {
+                w.u32(*s);
+                w.dvec(*pos);
+                w.f32(*volume);
+                w.f32(*pitch);
+            }
+        }
+        ToClient::Configs(list) => {
+            w.u8(30);
+            w.len(list.len());
+            for (id, v) in list {
+                w.u32(*id);
+                w.u64(v.to_bits());
+            }
+        }
+        ToClient::Particles(list) => {
+            w.u8(29);
+            w.len(list.len());
+            for b in list {
+                w.u32(b.kind);
+                w.dvec(DVec3::from_array(b.pos));
+                for v in b.spread.into_iter().chain(b.velocity).chain([b.speed]) {
+                    w.f32(v);
+                }
+                w.u32(b.count);
+                w.u32(b.block);
+            }
         }
         ToClient::EntityComponents(list) => {
             w.u8(28);
@@ -362,10 +407,11 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
-                let mut e = EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()?, health: r.f32()?, worn: Vec::new() };
+                let mut e = EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()?, health: r.f32()?, worn: Vec::new(), block: 0 };
                 for _ in 0..r.len()? {
                     e.worn.push(r.u32()?);
                 }
+                e.block = r.u32()?;
                 list.push(e);
             }
             ToClient::Spawn(list)
@@ -374,7 +420,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
-                list.push((r.u64()?, r.dvec()?, r.f32()?, r.f32()?));
+                list.push((r.u64()?, r.dvec()?, r.f32()?, r.f32()?, [r.f32()?, r.f32()?, r.f32()?], r.u8()? != 0));
             }
             ToClient::Moves(list)
         }
@@ -422,6 +468,42 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
                 list.push((r.u64()?, r.u32()?, r.bytes()?));
             }
             ToClient::EntityComponents(list)
+        }
+        29 => {
+            let n = r.len()?;
+            let mut list = Vec::with_capacity(n.min(4096));
+            for _ in 0..n {
+                let (kind, pos) = (r.u32()?, r.dvec()?.to_array());
+                let spread = [r.f32()?, r.f32()?, r.f32()?];
+                let velocity = [r.f32()?, r.f32()?, r.f32()?];
+                let speed = r.f32()?;
+                list.push(voxide_abi::ParticleBurst { kind, pos, spread, velocity, speed, count: r.u32()?, block: r.u32()?, ..voxide_abi::Versioned::DEFAULT });
+            }
+            ToClient::Particles(list)
+        }
+        30 => {
+            let n = r.len()?;
+            let mut list = Vec::with_capacity(n.min(4096));
+            for _ in 0..n {
+                list.push((r.u32()?, f64::from_bits(r.u64()?)));
+            }
+            ToClient::Configs(list)
+        }
+        31 => {
+            let n = r.len()?;
+            let mut list = Vec::with_capacity(n.min(4096));
+            for _ in 0..n {
+                list.push((r.u32()?, r.dvec()?, r.f32()?, r.f32()?));
+            }
+            ToClient::Sounds(list)
+        }
+        32 => {
+            let n = r.len()?;
+            let mut list = Vec::with_capacity(n.min(4096));
+            for _ in 0..n {
+                list.push((r.u64()?, r.str()?, r.u8()? != 0));
+            }
+            ToClient::Animate(list)
         }
         14 => {
             let n = r.len()?;
@@ -496,12 +578,12 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.str(name);
             w.str(key);
         }
-        ToServer::Move { pos, yaw, pitch, on_ground } => {
+        ToServer::Move { pos, yaw, pitch, on_ground, crouched } => {
             w.u8(1);
             w.dvec(*pos);
             w.f32(*yaw);
             w.f32(*pitch);
-            w.u8(*on_ground as u8);
+            w.u8(*on_ground as u8 | (*crouched as u8) << 1);
         }
         ToServer::Break { pos } => {
             w.u8(2);
@@ -594,7 +676,10 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
     let mut r = R(data);
     Some(match r.u8()? {
         0 => ToServer::Join { name: r.str()?, key: r.str()? },
-        1 => ToServer::Move { pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, on_ground: r.u8()? != 0 },
+        1 => {
+            let (pos, yaw, pitch, flags) = (r.dvec()?, r.f32()?, r.f32()?, r.u8()?);
+            ToServer::Move { pos, yaw, pitch, on_ground: flags & 1 != 0, crouched: flags & 2 != 0 }
+        }
         2 => ToServer::Break { pos: r.ivec()? },
         3 => ToServer::Use { pos: r.ivec()?, face: r.u8()?.min(5), look: [r.f32()?, r.f32()?, r.f32()?], sneak: r.u8()? != 0 },
         4 => ToServer::UseItem {

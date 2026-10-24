@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
-use voxide_abi::{self as abi, Callback, ModId, entity_flags as ef, part_role};
+use voxide_abi::{self as abi, Callback, ModId, Versioned, entity_flags as ef, part_role};
 
 use crate::components::{self as comps, Components, RawSet, RawValue};
 
@@ -22,21 +22,64 @@ pub struct HudElement {
 pub const ITEM: &str = "core:item";
 /// Holder of virtual inventories (`Host::inventory_create`).
 pub const VIRTUAL: &str = "core:virtual";
+/// A block falling as an entity (`Host::fall_block`), placed again where it lands.
+pub const FALLING: &str = "core:falling_block";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Cuboid {
+    /// Model pixels, relative to the part's pivot.
     pub origin: [f32; 3],
     pub size: [f32; 3],
     pub uv: [f32; 2],
     pub inflate: f32,
+    pub mirror: bool,
+    /// Own texel rectangle per face (-X, +X, -Y, +Y, -Z, +Z), instead of the box unwrap.
+    pub faces: Option<[[f32; 4]; 6]>,
 }
 
-#[derive(Clone)]
+impl Cuboid {
+    pub fn boxed(origin: [f32; 3], size: [f32; 3], uv: [f32; 2]) -> Cuboid {
+        Cuboid { origin, size, uv, inflate: 0.0, mirror: false, faces: None }
+    }
+
+    /// Texel rectangles of the faces (-X, +X, -Y, +Y, -Z, +Z): its own, or the classic box
+    /// unwrap (mirrored: each face flipped and the side faces swapped).
+    pub fn face_rects(&self) -> [[f32; 4]; 6] {
+        if let Some(f) = self.faces {
+            return f;
+        }
+        let [w, h, d] = self.size;
+        let [u, v] = self.uv;
+        let mut r = [
+            [u, v + d, d, h],
+            [u + d + w, v + d, d, h],
+            [u + d + w, v, w, d],
+            [u + d, v, w, d],
+            [u + d, v + d, w, h],
+            [u + d * 2.0 + w, v + d, w, h],
+        ];
+        if self.mirror {
+            r.swap(0, 1);
+            for f in &mut r {
+                f[0] += f[2];
+                f[2] = -f[2];
+            }
+        }
+        r
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Part {
+    pub name: String,
+    /// Index of the part it hangs from.
+    pub parent: Option<u32>,
     pub pivot: [f32; 3],
     pub role: u32,
     pub cuboids: Vec<Cuboid>,
     pub rest: [f32; 3],
+    /// Free-form triangles: model pixels (absolute, not pivot relative) and texels.
+    pub mesh: Vec<voxide_abi::MeshVertex>,
 }
 
 pub struct EntityKind {
@@ -61,6 +104,10 @@ pub struct EntityKind {
     pub components: Vec<u32>,
     /// Size of the inventory created with it (block entities), 0 = none.
     pub slots: u32,
+    /// Sound events hurt, death, ambient, step (`u32::MAX` none), from its `sound` component.
+    pub sounds: [u32; 4],
+    /// Solid bodies: riders up to this high above it move with it.
+    pub carry_height: f32,
 }
 
 impl EntityKind {
@@ -136,6 +183,7 @@ pub struct Game {
     pub player_kind: u32,
     pub item_kind: u32,
     pub virtual_kind: u32,
+    pub falling_kind: u32,
     pub energy: u32,
     /// (owner, hook, callback) in mod order, see `abi::client_hook`.
     pub client_hooks: Vec<(ModId, u32, Callback)>,
@@ -160,7 +208,68 @@ pub struct Game {
     pub menu_comps: Vec<u32>,
     /// (owner, component, system) in mod order.
     pub systems: Vec<(ModId, u32, Callback)>,
+    /// `{if:name}` conditions mods answer.
+    pub text_conditions: FxHashMap<String, (ModId, Callback)>,
+    /// Particle kinds by id (sorted by name).
+    pub particles: Vec<ParticleDef>,
+    pub particle_names: FxHashMap<String, u32>,
+    /// Particle texture names, index = layer in the particle texture array.
+    pub particle_textures: Vec<String>,
+    /// Items shown with a recipe type in the recipe viewer (the machines making them).
+    pub recipe_stations: FxHashMap<String, Vec<u32>>,
+    /// Sound events by id (sorted by name).
+    pub sounds: Vec<SoundDef>,
+    pub sound_names: FxHashMap<String, u32>,
+    /// Background music, in mod load order.
+    pub music: Vec<MusicDef>,
+    /// Natural spawning rules, in mod load order.
+    pub spawns: Vec<SpawnRule>,
+    /// Settings by id (sorted by name), see `config.rs`.
+    pub configs: Vec<crate::config::ConfigDef>,
+    pub config_names: FxHashMap<String, u32>,
 }
+
+pub struct SoundDef {
+    pub name: String,
+    pub files: Vec<String>,
+    pub category: u32,
+    pub volume: f32,
+    pub pitch: [f32; 2],
+    pub range: f32,
+}
+
+pub struct MusicDef {
+    pub name: String,
+    pub tracks: Vec<String>,
+    pub dimension: Option<u32>,
+    pub when: u32,
+}
+
+pub struct ParticleDef {
+    pub name: String,
+    /// Frames over its life (indices into `particle_textures`); empty for block dust.
+    pub frames: Vec<u32>,
+    pub life: [f32; 2],
+    pub scale: [f32; 2],
+    pub gravity: f32,
+    pub drag: f32,
+    pub color: u32,
+    pub color_end: u32,
+    pub flags: u32,
+    pub shader: String,
+}
+
+pub struct RawParticle {
+    pub name: String,
+    pub cell: usize,
+    pub textures: Vec<String>,
+    /// Numbers only: its `Str`s and `cell` are copied out (they point into the mod).
+    pub desc: abi::ParticleDesc,
+    pub shader: String,
+}
+
+// The descriptor's pointers are cleared when it is copied.
+unsafe impl Send for RawParticle {}
 
 #[derive(Default)]
 pub struct PacketDef {
@@ -214,6 +323,7 @@ pub struct RawGame {
     pub block_entities: Vec<(String, String, u32)>,
     pub attach: Vec<(String, String)>,
     pub ores: Vec<RawOre>,
+    pub structures: Vec<RawStructure>,
     /// (name, icon item) in registration order.
     pub creative_tabs: Vec<(String, String)>,
     /// Components and tags set on other mods' entries.
@@ -241,6 +351,44 @@ pub struct RawGame {
     pub stack_components: Vec<(String, String, u32)>,
     /// (owner, component, schema, system).
     pub systems: Vec<(ModId, String, String, Callback)>,
+    pub text_conditions: Vec<(ModId, String, Callback)>,
+    pub particles: Vec<RawParticle>,
+    /// (handle cell, setting).
+    pub configs: Vec<(usize, crate::config::ConfigDef)>,
+    /// (recipe type, item).
+    pub recipe_stations: Vec<(String, String)>,
+    /// (handle cell, event).
+    pub sounds: Vec<(usize, SoundDef)>,
+    /// (dimension name, music).
+    pub music: Vec<(String, MusicDef)>,
+    pub spawns: Vec<RawSpawn>,
+}
+
+/// A spawning rule as registered (names).
+pub struct RawSpawn {
+    pub entity: String,
+    pub biome: String,
+    pub ground: String,
+    pub dimension: String,
+    pub light: [u32; 2],
+    pub y: [i32; 2],
+    pub group: [u32; 2],
+    pub weight: u32,
+    pub chance: f32,
+}
+
+/// A spawning rule with its names resolved (see `abi::SpawnDesc`).
+pub struct SpawnRule {
+    pub entity: u32,
+    pub category: u32,
+    pub biome: Option<u32>,
+    pub ground: Option<u32>,
+    pub dimension: Option<u32>,
+    pub light: [u32; 2],
+    pub y: [i32; 2],
+    pub group: [u32; 2],
+    pub weight: u32,
+    pub chance: f32,
 }
 
 /// A mod's addition to a command registered elsewhere.
@@ -290,6 +438,17 @@ pub struct RawOre {
     pub max_y: i32,
     pub veins: u32,
     pub size: u32,
+    pub biome: String,
+}
+
+pub struct RawStructure {
+    pub name: String,
+    pub dimension: String,
+    pub blocks: Vec<([i32; 3], String)>,
+    pub spacing: u32,
+    pub chance: f32,
+    pub biome: String,
+    pub sink: i32,
 }
 
 fn opt(c: Callback) -> Option<Callback> {
@@ -301,8 +460,12 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
         let mut parts = Vec::new();
         abi::each_sized(d.parts, |p| {
             let mut cuboids = Vec::new();
-            abi::each_sized(p.cuboids, |c| cuboids.push(Cuboid { origin: c.origin, size: c.extent, uv: c.uv, inflate: c.inflate }));
-            parts.push(Part { pivot: p.pivot, role: p.role, rest: p.rest, cuboids });
+            abi::each_sized(p.cuboids, |c| {
+                cuboids.push(Cuboid { origin: c.origin, size: c.extent, uv: c.uv, inflate: c.inflate, mirror: c.mirror != 0, faces: (c.per_face != 0).then_some(c.faces) })
+            });
+            let n = parts.len() as i32;
+            let parent = (p.parent >= 0 && p.parent < n).then_some(p.parent as u32);
+            parts.push(Part { name: p.name.as_str().to_string(), parent, pivot: p.pivot, role: p.role, rest: p.rest, cuboids, mesh: p.mesh.as_slice().to_vec() });
         });
         let one = |c: Callback| opt(c).map(|c| vec![(owner, c)]).unwrap_or_default();
         RawEntity {
@@ -329,6 +492,8 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 on_interact: one(d.on_interact),
                 components: Vec::new(),
                 slots: 0,
+                sounds: [u32::MAX; 4],
+                carry_height: d.carry_height,
             },
         }
     }
@@ -398,19 +563,30 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         on_interact: Vec::new(),
         components: Vec::new(),
         slots: 0,
+        sounds: [u32::MAX; 4],
+        carry_height: 0.0,
     }
 }
 
-/// Classic player model so other players are visible without any mod providing one.
+/// Classic player model so other players are visible without any mod providing one (a
+/// `core:models/player.geo.json` in a resource pack replaces it).
 fn player_parts() -> Vec<Part> {
-    let c = |o: [f32; 3], s: [f32; 3], uv: [f32; 2]| Cuboid { origin: o, size: s, uv, inflate: 0.0 };
+    let part = |name: &str, pivot: [f32; 3], role: u32, o: [f32; 3], s: [f32; 3], uv: [f32; 2]| Part {
+        name: name.into(),
+        parent: None,
+        pivot,
+        role,
+        rest: [0.0; 3],
+        cuboids: vec![Cuboid::boxed(o, s, uv)],
+        mesh: Vec::new(),
+    };
     vec![
-        Part { pivot: [0.0, 24.0, 0.0], role: part_role::HEAD, rest: [0.0; 3], cuboids: vec![c([-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0])] },
-        Part { pivot: [0.0, 24.0, 0.0], role: part_role::STATIC, rest: [0.0; 3], cuboids: vec![c([-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0])] },
-        Part { pivot: [-6.0, 22.0, 0.0], role: part_role::ARM_LEFT, rest: [0.0; 3], cuboids: vec![c([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0])] },
-        Part { pivot: [6.0, 22.0, 0.0], role: part_role::ARM_RIGHT, rest: [0.0; 3], cuboids: vec![c([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0])] },
-        Part { pivot: [-2.0, 12.0, 0.0], role: part_role::LEG_LEFT, rest: [0.0; 3], cuboids: vec![c([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0])] },
-        Part { pivot: [2.0, 12.0, 0.0], role: part_role::LEG_RIGHT, rest: [0.0; 3], cuboids: vec![c([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0])] },
+        part("head", [0.0, 24.0, 0.0], part_role::HEAD, [-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0]),
+        part("body", [0.0, 24.0, 0.0], part_role::STATIC, [-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0]),
+        part("rightArm", [-6.0, 22.0, 0.0], part_role::ARM_LEFT, [-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
+        part("leftArm", [6.0, 22.0, 0.0], part_role::ARM_RIGHT, [-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
+        part("rightLeg", [-2.0, 12.0, 0.0], part_role::LEG_LEFT, [-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
+        part("leftLeg", [2.0, 12.0, 0.0], part_role::LEG_RIGHT, [-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
     ]
 }
 
@@ -436,6 +612,7 @@ pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entiti
     entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false, components: Vec::new() });
     entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE), replace: false, components: Vec::new() });
     entities.push(RawEntity { name: VIRTUAL.into(), cell: 0, desc: builtin(VIRTUAL, 0.0, 0.0, ef::INVULNERABLE | ef::NO_GRAVITY), replace: false, components: Vec::new() });
+    entities.push(RawEntity { name: FALLING.into(), cell: 0, desc: builtin(FALLING, 0.98, 0.98, ef::INVULNERABLE), replace: false, components: Vec::new() });
     entities.sort_by(|a, b| a.name.cmp(&b.name).then(a.replace.cmp(&b.replace)));
     let mut kept: Vec<RawEntity> = Vec::with_capacity(entities.len());
     let mut replaced_cells: Vec<(usize, String)> = Vec::new();
@@ -474,6 +651,7 @@ pub fn freeze(
     block_names: &FxHashMap<String, u32>,
     item_names: &FxHashMap<String, u32>,
     items: &[crate::content::ItemDef],
+    dim_names: &FxHashMap<String, u32>,
     c: &Components,
     order: &dyn Fn(ModId) -> u32,
     errors: &mut Vec<String>,
@@ -492,11 +670,28 @@ pub fn freeze(
     let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
     let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
     let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0)];
+    let mut particles: Vec<RawParticle> = engine_particles();
+    let mut configs: Vec<(usize, crate::config::ConfigDef)> = crate::config::engine_configs().into_iter().map(|d| (0, d)).collect();
+    let mut stations: Vec<(String, String)> = Vec::new();
+    let mut sounds: Vec<(usize, SoundDef)> = engine_sounds();
+    let mut music: Vec<(String, MusicDef)> = Vec::new();
+    let mut spawns: Vec<RawSpawn> = Vec::new();
     for r in raws {
+        sounds.extend(r.sounds);
+        music.extend(r.music);
+        particles.extend(r.particles);
+        configs.extend(r.configs);
+        stations.extend(r.recipe_stations);
+        for (owner, name, cb) in r.text_conditions {
+            if g.text_conditions.insert(name.clone(), (owner, cb)).is_some() {
+                errors.push(format!("text condition {name} registered twice"));
+            }
+        }
         g.client_hooks.extend(r.client_hooks);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
         g.rules.extend(r.rules);
+        spawns.extend(r.spawns);
         event_handlers.extend(r.event_handlers);
         systems.extend(r.systems);
         interceptors.extend(r.interceptors);
@@ -517,8 +712,77 @@ pub fn freeze(
     g.entity_names = entities.names;
     g.player_kind = g.entity_names[PLAYER];
     g.item_kind = g.entity_names[ITEM];
+    g.falling_kind = g.entity_names[FALLING];
     g.virtual_kind = g.entity_names[VIRTUAL];
     g.client_hooks.sort_by_key(|h| h.0.0);
+    freeze_particles(&mut g, particles, errors);
+    sounds.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    for (cell, d) in sounds {
+        if g.sound_names.contains_key(&d.name) {
+            errors.push(format!("sound {} registered twice", d.name));
+            continue;
+        }
+        let id = g.sounds.len() as u32;
+        write_cell(cell, id);
+        g.sound_names.insert(d.name.clone(), id);
+        g.sounds.push(d);
+    }
+    for (dim, mut m) in music {
+        if !dim.is_empty() {
+            match dim_names.get(&dim) {
+                Some(&d) => m.dimension = Some(d),
+                None => {
+                    errors.push(format!("music {} plays in unknown dimension {dim}", m.name));
+                    continue;
+                }
+            }
+        }
+        g.music.push(m);
+    }
+    for (kind, item) in stations {
+        match item_names.get(&item) {
+            Some(&i) => g.recipe_stations.entry(kind).or_default().push(i),
+            None => errors.push(format!("recipe station {item} for {kind} is not an item")),
+        }
+    }
+    configs.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    for (cell, d) in configs {
+        if g.config_names.contains_key(&d.name) {
+            errors.push(format!("setting {} registered twice", d.name));
+            continue;
+        }
+        let id = g.configs.len() as u32;
+        write_cell(cell, id);
+        g.config_names.insert(d.name.clone(), id);
+        g.configs.push(d);
+    }
+    for s in spawns {
+        let Some(&entity) = g.entity_names.get(&s.entity) else {
+            errors.push(format!("spawn rule for unknown entity {}", s.entity));
+            continue;
+        };
+        let tag = |name: &str, what: &str, errors: &mut Vec<String>| -> Result<Option<u32>, ()> {
+            if name.is_empty() {
+                return Ok(None);
+            }
+            c.id(name).map(Some).ok_or_else(|| errors.push(format!("spawn rule for {}: no {what} tag {name}", s.entity)))
+        };
+        let (Ok(biome), Ok(ground)) = (tag(&s.biome, "biome", errors), tag(&s.ground, "block", errors)) else { continue };
+        let dimension = match s.dimension.as_str() {
+            "" => None,
+            d => match dim_names.get(d) {
+                Some(&id) => Some(id),
+                None => {
+                    errors.push(format!("spawn rule for {}: unknown dimension {d}", s.entity));
+                    continue;
+                }
+            },
+        };
+        let category = g.entities[entity as usize].category;
+        g.spawns.push(SpawnRule { entity, category, biome, ground, dimension, light: s.light, y: s.y, group: s.group, weight: s.weight, chance: s.chance });
+    }
+    // Natural spawning (`spawns`) runs while this is on.
+    g.rules.push(("core:mob_spawning".into(), 1));
     g.rules.sort_by(|a, b| a.0.cmp(&b.0));
     g.rules.dedup_by(|a, b| a.0 == b.0);
 
@@ -784,6 +1048,68 @@ impl Game {
 
     pub fn process(&self, kind: &str, input: u32, tags: &Components) -> Option<&Recipe> {
         self.recipes.get(kind)?.iter().find(|r| r.inputs.first().is_some_and(|i| i.matches(input, tags)))
+    }
+}
+
+/// Sounds the engine plays itself (files in its own assets, packs may replace them).
+fn engine_sounds() -> Vec<(usize, SoundDef)> {
+    let one = |name: &str, file: &str, category: u32, volume: f32, pitch: [f32; 2]| (0, SoundDef { name: name.into(), files: vec![file.into()], category, volume, pitch, range: 16.0 });
+    vec![
+        one("core:ui.click", "core:ui/click", abi::sound_category::UI, 0.6, [1.0, 1.0]),
+        one("core:item.pickup", "core:item/pickup", abi::sound_category::PLAYERS, 0.4, [1.4, 2.2]),
+    ]
+}
+
+/// Kinds the engine spawns itself; mods may replace their look by registering the same name.
+fn engine_particles() -> Vec<RawParticle> {
+    use abi::particle_flags as pf;
+    let block = abi::ParticleDesc { life: [0.2, 1.0], scale: [0.05, 0.1], gravity: 16.0, color: 0x999999FF, color_end: 0x999999FF, flags: pf::COLLIDE, ..abi::ParticleDesc::DEFAULT };
+    let poof = abi::ParticleDesc { life: [0.4, 1.1], scale: [0.15, 0.3], gravity: -2.0, drag: 0.9, color: 0xD0D0D0FF, color_end: 0x909090FF, ..abi::ParticleDesc::DEFAULT };
+    let frames = (0..8).map(|i| format!("core:particle/generic_{}", 7 - i)).collect();
+    vec![
+        RawParticle { name: abi::particle::BLOCK.into(), cell: 0, textures: Vec::new(), desc: block, shader: String::new() },
+        RawParticle { name: abi::particle::POOF.into(), cell: 0, textures: frames, desc: poof, shader: String::new() },
+    ]
+}
+
+/// Ids by sorted name; a later registration of a name (a mod after the engine) replaces it.
+fn freeze_particles(g: &mut Game, raws: Vec<RawParticle>, errors: &mut Vec<String>) {
+    let mut by_name: std::collections::BTreeMap<String, RawParticle> = Default::default();
+    for p in raws {
+        if p.name.is_empty() {
+            errors.push("particle without a name".into());
+            continue;
+        }
+        by_name.insert(p.name.clone(), p);
+    }
+    let mut tex_ids: FxHashMap<String, u32> = FxHashMap::default();
+    for (i, (name, p)) in by_name.into_iter().enumerate() {
+        let frames = p
+            .textures
+            .iter()
+            .map(|t| {
+                *tex_ids.entry(t.clone()).or_insert_with(|| {
+                    g.particle_textures.push(t.clone());
+                    g.particle_textures.len() as u32 - 1
+                })
+            })
+            .collect();
+        let d = p.desc;
+        write_cell(p.cell, i as u32);
+        let order = |r: [f32; 2]| [r[0].min(r[1]), r[0].max(r[1])];
+        g.particle_names.insert(name.clone(), i as u32);
+        g.particles.push(ParticleDef {
+            name,
+            frames,
+            life: order(d.life).map(|v| v.max(0.01)),
+            scale: order(d.scale),
+            gravity: d.gravity,
+            drag: d.drag.clamp(0.0, 1.0),
+            color: d.color,
+            color_end: d.color_end,
+            flags: d.flags,
+            shader: p.shader,
+        });
     }
 }
 

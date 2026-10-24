@@ -26,7 +26,26 @@ pub async fn f3_overlay(t: T) -> R {
     t.idle().await?;
     t.press("core:debug");
     t.frames(10).await?;
-    t.shot("f3").await
+    t.shot("f3").await?;
+    t.press("core:debug");
+    Ok(())
+}
+
+/// The widest case of F3: Russian at GUI scale 3, the CPU and GPU panels side by side must stay
+/// on screen.
+pub async fn f3_russian_large(t: T) -> R {
+    t.world(5).await?;
+    t.idle().await?;
+    t.c().setting("language", "ru_ru");
+    t.c().setting("gui_scale", "3");
+    t.c().look(0.0, 0.0);
+    t.press("core:debug");
+    t.frames(10).await?;
+    t.shot("f3_ru_3").await?;
+    t.press("core:debug");
+    t.c().setting("language", "en_us");
+    t.c().setting("gui_scale", "2");
+    Ok(())
 }
 
 fn id(name: &str) -> u32 {
@@ -125,5 +144,100 @@ pub async fn client_command_completion(t: T) -> R {
     t.check(help.contains("testmod:energy") && help.contains("probe"), format!("/help gizmo said '{help}'"));
     let reply = t.cmd("/probe beta").await?;
     t.check_eq(reply, "probe beta on the client".into(), "mod client command");
+    Ok(())
+}
+
+/// Settings mods declare get a screen built from the declarations; changes apply and are saved.
+pub async fn mod_settings(t: T) -> R {
+    static SPARKS: Config<bool> = Config::named("testmod:crystal_sparks");
+    t.c().open_screen("core:mod_settings");
+    t.screen("core:mod_settings").await?;
+    t.frames(2).await?;
+    t.check(t.click_ui("text:Test Mod", 0), "test mod listed");
+    t.screen("core:config").await?;
+    t.frames(3).await?;
+    t.shot("testmod").await?;
+    let before = SPARKS.get();
+    t.check(t.click_ui("text:Crystal sparks", 0), "sparks toggle shown");
+    t.until("toggled", std::time::Duration::from_secs(2), |_| SPARKS.get() != before).await?;
+    let file = std::fs::read_to_string(format!("{}/config/testmod.txt", t.c().run_dir())).unwrap_or_default();
+    t.check(file.contains(&format!("crystal_sparks = {}", !before)), format!("saved: {file:?}"));
+    SPARKS.set(before);
+    t.c().close_screen();
+    t.c().close_screen();
+    Ok(())
+}
+
+/// The recipe viewer: R over an item shows what makes it, U what it is used in; tagged
+/// ingredients and machines of every mod show up.
+pub async fn recipe_viewer(t: T) -> R {
+    t.flat().await?;
+    t.op("put me 0 iron_ingot 3").await?;
+    t.press("core:inventory");
+    t.screen("core:menu").await?;
+    let Some([x, y, w, h]) = t.c().ui_rect("slot:36") else { return Err("no hotbar slot".into()) };
+    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.frames(3).await?;
+    t.press("core:recipes");
+    t.screen("core:recipes").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:smelting").is_some(), "smelting recipe for the ingot");
+    t.shot("iron_recipes").await?;
+    t.c().close_screen();
+    t.screen("core:menu").await?;
+    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.frames(3).await?;
+    t.press("core:uses");
+    t.screen("core:recipes").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:crafting").is_some(), "crafting uses of the ingot");
+    t.shot("iron_uses").await?;
+    t.c().close_screen();
+    t.c().close_screen();
+    t.no_screen().await
+}
+
+/// Inventory hotkeys: a number key over a slot swaps it with that hotbar slot, a double click
+/// gathers matching items onto the cursor, and shift with the left button held moves every
+/// stack swept over (mouse tweaks).
+pub async fn inventory_hotkeys(t: T) -> R {
+    t.flat().await?;
+    t.op("put me 9 stone 5").await?;
+    t.op("put me 10 dirt 10").await?;
+    t.op("put me 11 dirt 7").await?;
+    t.op("put me 20 cobblestone 3").await?;
+    t.op("put me 21 cobblestone 4").await?;
+    t.press("core:inventory");
+    t.screen("core:menu").await?;
+    let hover = |slot: u32| -> R {
+        let Some([x, y, w, h]) = t.c().ui_rect(&format!("slot:{slot}")) else { return Err(format!("no slot {slot}")) };
+        t.c().cursor(x + w / 2.0, y + h / 2.0);
+        Ok(())
+    };
+    hover(9)?;
+    t.frames(3).await?;
+    t.press("core:hotbar3");
+    t.secs(0.3).await?;
+    t.check_eq(t.slot("me", 2).await?.0, "base:stone".to_string(), "number key 3 moved the stack to hotbar slot 3");
+    t.check_eq(t.slot("me", 9).await?.1, 0, "and emptied the slot it was in");
+
+    hover(10)?;
+    t.frames(3).await?;
+    t.c().click(0, 0.0);
+    t.frames(4).await?;
+    t.c().click(0, 0.0);
+    t.secs(0.3).await?;
+    t.check_eq(t.c().cursor_stack().count, 17, "a double click gathered both dirt stacks");
+    t.c().click(0, 0.0);
+    t.secs(0.3).await?;
+
+    t.c().key("ShiftLeft", 1.0);
+    hover(20)?;
+    t.frames(3).await?;
+    t.c().click(0, 0.6);
+    t.frames(3).await?;
+    hover(21)?;
+    t.secs(0.8).await?;
+    t.check(t.slot("me", 20).await?.1 == 0 && t.slot("me", 21).await?.1 == 0, "shift-sweeping moved both cobblestone stacks to the hotbar");
     Ok(())
 }

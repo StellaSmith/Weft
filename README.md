@@ -1,12 +1,13 @@
 # Voxide
 
-A voxel sandbox engine in Rust, built for speed and for mods. The game itself (`mods/base`) is a mod
-like any other: it only uses the public SDK.
+A voxel sandbox engine in Rust, built for speed and for mods. The game itself is a mod
+like any other only using public SDK.
 
-- Native mods behind a stable C ABI (`crates/abi`), written with the safe `crates/sdk` wrapper
+- Native mods behind a stable C ABI, written with the safe SDK wrapper
 - Cubic 16³ chunks, unbounded in every direction; regions simulate in parallel
-- Own render API (`crates/render`), Vulkan backend in `backends/vulkan`
-- Client/server split from the start, peer-to-peer multiplayer
+- 
+- Own render API, Vulkan backend
+- Client/server split, peer-to-peer multiplayer
 
 ## Running
 

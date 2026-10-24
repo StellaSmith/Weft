@@ -41,6 +41,8 @@ pub struct EntityView {
     pub item: ItemStack,
     pub health: f32,
     pub worn: Vec<u32>,
+    /// Falling blocks: the state.
+    pub block: u32,
 }
 
 /// A debug shape for a gizmo group (`client::gizmo`): `kind` 0 is a line from `a` to `b`, 1 a box
@@ -67,8 +69,9 @@ pub enum ToClient {
     Time { dim: u32, time: u64 },
     Teleport { dim: u32, pos: DVec3 },
     Spawn(Vec<EntityView>),
-    /// id, position, yaw, pitch.
-    Moves(Vec<(u64, DVec3, f32, f32)>),
+    /// id, position, yaw, pitch, velocity (blocks/s; clients predict solid bodies with it),
+    /// crouching.
+    Moves(Vec<(u64, DVec3, f32, f32, [f32; 3], bool)>),
     Despawn(Vec<u64>),
     Hurt(Vec<(u64, f32)>),
     /// Every known entity that is on fire, sent once a second.
@@ -97,13 +100,20 @@ pub enum ToClient {
     Packet { channel: u32, data: Vec<u8> },
     /// Components of other entities: (entity, component id, bytes).
     EntityComponents(Vec<(u64, u32, Vec<u8>)>),
+    Particles(Vec<voxide_abi::ParticleBurst>),
+    /// The server's values of `SYNCED` settings: (config id, value).
+    Configs(Vec<(u32, f64)>),
+    /// Sound events: (event, position, volume, pitch or 0).
+    Sounds(Vec<(u32, DVec3, f32, f32)>),
+    /// Keyframe animations started on entities: (entity, name, looping); empty name = none.
+    Animate(Vec<(u64, String, bool)>),
 }
 
 #[derive(Clone)]
 pub enum ToServer {
     /// `key`: the player's public key, their identity across sessions and addresses.
     Join { name: String, key: String },
-    Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool },
+    Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, crouched: bool },
     Break { pos: IVec3 },
     /// Right click on a block: the block reacts first (chests), otherwise the held item is used or
     /// placed against the clicked face.
@@ -144,7 +154,7 @@ impl Message for ToClient {
     const KINDS: &'static [&'static str] = &[
         "Welcome", "Cube", "Unload", "Blocks", "Time", "Teleport", "Spawn", "Moves", "Despawn", "Hurt", "Burning", "Worn", "GameMode", "Players", "Inventory",
         "Components", "Health", "Knockback", "OpenMenu", "MenuSlots", "MenuData", "Cursor", "CloseMenu", "Died", "Chat", "Disconnect", "Gizmos", "Packet",
-        "EntityComponents",
+        "EntityComponents", "Particles", "Configs", "Sounds", "Animate",
     ];
     fn kind(&self) -> usize {
         use ToClient::*;
@@ -178,6 +188,10 @@ impl Message for ToClient {
             Gizmos(_) => 26,
             Packet { .. } => 27,
             EntityComponents(_) => 28,
+            Particles(_) => 29,
+            Configs(_) => 30,
+            Sounds(_) => 31,
+            Animate(_) => 32,
         }
     }
 }

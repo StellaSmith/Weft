@@ -165,8 +165,60 @@ fn armor_ok(c: &Content, flags: u32, item: u32) -> bool {
     item == 0 || c.item_has_tag(item, tag)
 }
 
-/// `button`: 0 left, 1 right. `slot == u32::MAX` means outside the window (drop the cursor).
+/// `button` 2..=10 over a slot: number key 1..9, swaps it with that hotbar slot (vanilla).
+pub const HOTBAR_SWAP: u8 = 2;
+/// Double click: gathers matching items from every slot onto the cursor, up to a full stack.
+pub const GATHER: u8 = 11;
+
+/// `button`: 0 left, 1 right, or `HOTBAR_SWAP + n`, `GATHER`. `slot == u32::MAX` means outside
+/// the window (drop the cursor).
 pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, slot: u32, button: u8, shift: bool) {
+    if (HOTBAR_SWAP..HOTBAR_SWAP + 9).contains(&button) {
+        let hot = (button - HOTBAR_SWAP) as u32;
+        let Some(h) = m.slots.iter().position(|s| s.owner == Owner::Player && s.index == hot).map(|i| i as u32) else { return };
+        let (Some(a), Some(b)) = (m.slots.get(slot as usize).copied(), m.slots.get(h as usize).copied()) else { return };
+        if h == slot || !m.cursor.is_empty() {
+            return;
+        }
+        let (sa, sb) = (get(m, dim, player, slot), get(m, dim, player, h));
+        // Results only come out (into an empty hotbar slot), and fitted slots take what fits.
+        let output = a.flags & sf::OUTPUT != 0;
+        if (output && !sb.is_empty()) || !armor_ok(c, a.flags, sb.item) || !armor_ok(c, b.flags, sa.item) {
+            return;
+        }
+        set(m, dim, player, slot, sb);
+        set(m, dim, player, h, sa);
+        if output {
+            call(m, dim, c, player, slot, |d| d.on_take);
+        }
+        call(m, dim, c, player, slot, |d| d.on_change);
+        call(m, dim, c, player, h, |d| d.on_change);
+        return;
+    }
+    if button == GATHER {
+        let want = m.cursor;
+        if want.is_empty() {
+            return;
+        }
+        let max = c.max_stack(want.item);
+        // Partial stacks first, like vanilla, so full ones stay put when they are not needed.
+        for full in [false, true] {
+            for i in 0..m.slots.len() as u32 {
+                if m.cursor.count >= max {
+                    break;
+                }
+                let s = get(m, dim, player, i);
+                if m.slots[i as usize].flags & sf::OUTPUT != 0 || s.is_empty() || s.item != want.item || s.data != want.data || (s.count >= max) != full {
+                    continue;
+                }
+                let n = s.count.min(max - m.cursor.count);
+                m.cursor.count += n;
+                set(m, dim, player, i, if n == s.count { ItemStack::EMPTY } else { ItemStack { count: s.count - n, ..s } });
+                call(m, dim, c, player, i, |d| d.on_change);
+            }
+        }
+        return;
+    }
     if slot == u32::MAX {
         if !m.cursor.is_empty() {
             let drop = if button == 1 { ItemStack { count: 1, ..m.cursor } } else { m.cursor };

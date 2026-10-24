@@ -27,11 +27,14 @@ pub struct Cube {
     blocks: Blocks,
     light: Light,
     pub biomes: Option<Box<[u8; 256]>>,
+    /// World time it was simulated to when it was last unloaded (0: never), for growth to catch
+    /// up on.
+    pub ticked: u64,
 }
 
 impl Cube {
     pub fn uniform(state: u32, light: u32) -> Cube {
-        Cube { blocks: Blocks::Uniform(state), light: Light::Uniform(light), biomes: None }
+        Cube { blocks: Blocks::Uniform(state), light: Light::Uniform(light), biomes: None, ticked: 0 }
     }
 
     pub fn from_states(states: &[u32; VOLUME]) -> Cube {
@@ -159,10 +162,10 @@ impl Cube {
             let mut states = Box::new([0u32; VOLUME]);
             self.decode(&mut states);
             let light = std::mem::replace(&mut self.light, Light::Uniform(0));
-            let biomes = self.biomes.take();
+            let (biomes, ticked) = (self.biomes.take(), self.ticked);
             *self = Cube::from_states(&states);
             self.light = light;
-            self.biomes = biomes;
+            (self.biomes, self.ticked) = (biomes, ticked);
         }
         if let Light::Full(l) = &self.light {
             if l.iter().all(|&v| v == l[0]) {
@@ -250,12 +253,13 @@ impl Cube {
                 }
             }
         }
-        match &self.biomes {
-            None => out.push(0),
-            Some(b) => {
-                out.push(1);
-                out.extend_from_slice(&b[..]);
-            }
+        // Bit 0: biomes follow, bit 1: the simulated time follows.
+        out.push(self.biomes.is_some() as u8 | ((self.ticked != 0) as u8) << 1);
+        if let Some(b) = &self.biomes {
+            out.extend_from_slice(&b[..]);
+        }
+        if self.ticked != 0 {
+            out.extend_from_slice(&self.ticked.to_le_bytes());
         }
     }
 
@@ -288,15 +292,16 @@ impl Cube {
                 Light::Full(l)
             }
         };
-        let biomes = match take_bytes(data, 1)?[0] {
-            0 => None,
-            _ => {
-                let mut b = Box::new([0u8; 256]);
-                b.copy_from_slice(take_bytes(data, 256)?);
-                Some(b)
-            }
+        let flags = take_bytes(data, 1)?[0];
+        let biomes = if flags & 1 != 0 {
+            let mut b = Box::new([0u8; 256]);
+            b.copy_from_slice(take_bytes(data, 256)?);
+            Some(b)
+        } else {
+            None
         };
-        Some(Cube { blocks, light, biomes })
+        let ticked = if flags & 2 != 0 { u64::from_le_bytes(take_bytes(data, 8)?.try_into().ok()?) } else { 0 };
+        Some(Cube { blocks, light, biomes, ticked })
     }
 }
 

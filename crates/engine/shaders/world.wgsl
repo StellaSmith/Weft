@@ -12,7 +12,8 @@ struct Globals {
     look: vec4<f32>,
     // Origins are relative to this cube.
     cam_cube: vec4<i32>,
-    // x: start of the overlay table in `frames` (per texture: overlay texture + 1, or 0)
+    // x: start of the overlay table in `frames` (per texture: overlay texture + 1, or 0),
+    // y: start of the bitset of textures with a glow mask, z: the glow mask array (all ones: none)
     extra: vec4<u32>,
 }
 
@@ -54,6 +55,15 @@ struct VOut {
     // in `color`.
     @location(7) @interpolate(flat) overlay: u32,
     @location(8) tint: vec3<f32>,
+    // Has a glow mask (LabPBR emission).
+    @location(9) @interpolate(flat) glows: u32,
+}
+
+fn glows(name: u32) -> u32 {
+    if g.extra.z == 0xffffffffu {
+        return 0u;
+    }
+    return (frames[g.extra.y + name / 32u] >> (name % 32u)) & 1u;
 }
 
 fn unpack_rgb(c: u32) -> vec3<f32> {
@@ -158,6 +168,7 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.layer = fr.a;
     out.layer2 = fr.b;
     out.blend = fr.blend;
+    out.glows = glows(w1 & 65535u);
     var lw = w2;
     if c >= 2u {
         lw = w3;
@@ -219,6 +230,7 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.layer = fr.a;
     out.layer2 = fr.b;
     out.blend = fr.blend;
+    out.glows = glows(w4 & 65535u);
     out.light = unpack_light(l);
     let o = origins[ii] + g.cam_cube;
     out.color = tint_color(w4, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z))) * shade;
@@ -248,10 +260,16 @@ fn lightmap(light: vec4<f32>) -> vec3<f32> {
 }
 
 fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
-    let light = lightmap(in.light);
+    var light = in.color * lightmap(in.light);
+    // Glowing texels are lifted towards full brightness by their mask: lit = albedo * max(light,
+    // emission), so they stay their own colour in the dark.
+    if in.glows != 0u {
+        let e = textureSampleLevel(texture_arrays[g.extra.z], nearest_clamp, in.uv, in.layer, 0.0).r;
+        light = max(light, vec3(e));
+    }
     // Shading factors are meant for gamma space like vanilla's; the target is sRGB, so apply them
     // as their linear equivalent or AO and shadows come out washed out.
-    var rgb = albedo.rgb * pow(in.color * light, vec3(2.2));
+    var rgb = albedo.rgb * pow(light, vec3(2.2));
     let fog = clamp((in.dist - g.params.y) / max(g.params.z - g.params.y, 1.0), 0.0, 1.0);
     rgb = mix(rgb, g.fog_color.rgb, fog);
     return vec4(rgb, albedo.a);
@@ -315,7 +333,8 @@ fn sample_cutout(in: VOut) -> vec4<f32> {
 @fragment
 fn fs_cutout(in: VOut) -> @location(0) vec4<f32> {
     let albedo = with_overlay(in, sample_cutout(in));
-    if albedo.a < 0.5 {
+    // Vanilla's alpha test (GL_GREATER 0.1).
+    if albedo.a <= 0.1 {
         discard;
     }
     return vec4(shade(in, albedo).rgb, 1.0);

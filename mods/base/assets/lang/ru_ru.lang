@@ -50,7 +50,7 @@ block.base.blue_lamp = Синяя лампа
 block.base.crafting_table = Верстак
 block.base.furnace = Печь
 block.base.furnace.tooltip = Плавит руду и готовит еду.
-    {shift}Топливо ({item:base:coal} уголь, {item:base:oak_planks} доски и др.) кладётся в нижний слот.
+    {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Топливо ({item:base:coal} уголь, {item:base:oak_planks} доски и др.) кладётся в нижний слот.{/on_key}
 block.base.chest = Сундук
 block.base.torch = Факел
 block.base.ladder = Лестница
@@ -139,3 +139,5 @@ tab.base.tools = Инструменты и приспособления
 tab.base.combat = Оружие и броня
 tab.base.food = Еда и напитки
 tab.base.ingredients = Ингредиенты
+recipe.base.crafting = Крафт
+recipe.base.smelting = Плавка

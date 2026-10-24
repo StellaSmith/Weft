@@ -36,9 +36,20 @@ pub struct Entity {
     /// Hotbar slot the player holds.
     pub selected: u32,
     pub anchor: Option<IVec3>,
-    pub sent: Option<(DVec3, f32, f32)>,
+    pub sent: Option<(DVec3, f32, f32, DVec3, bool)>,
     /// Worn items as last sent to clients.
     pub worn: Vec<u32>,
+    /// The solid body it rides (stands on, or flies above within its carry height).
+    pub support: Option<u64>,
+    /// Falling blocks: the state they carry (0 for everything else).
+    pub block: u32,
+    /// Crouching players: a 1.5 high box with lower eyes.
+    pub crouched: bool,
+    /// Where it walks to by itself (`Host::navigate`).
+    pub nav: Option<super::path::Nav>,
+    /// Solid bodies: how far it moved last tick (clients predict it from this, not from `vel`,
+    /// which keeps gravity's pull while it rests).
+    pub last_move: DVec3,
 }
 
 impl Entity {
@@ -69,7 +80,22 @@ impl Entity {
             anchor: None,
             sent: None,
             worn: Vec::new(),
+            support: None,
+            block: 0,
+            crouched: false,
+            nav: None,
+            last_move: DVec3::ZERO,
         }
+    }
+
+    /// Height of its box: the kind's, lower while crouching.
+    pub fn height(&self, c: &Content) -> f64 {
+        if self.crouched { physics::CROUCH_HEIGHT } else { c.game.entities[self.kind as usize].height as f64 }
+    }
+
+    /// Eye height: the kind's (1.62 for players), lower while crouching.
+    pub fn eye(&self, c: &Content) -> f64 {
+        if self.crouched { physics::CROUCH_EYE } else { c.game.entities[self.kind as usize].eye as f64 }
     }
 
     pub fn state(&self, c: &Content) -> voxide_abi::EntityState {
@@ -237,16 +263,47 @@ impl Entities {
     }
 }
 
-/// One physics step (1/20 s) for a non-player entity. `block` gives states, `None` = unloaded.
-pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) -> Option<u32>) -> Option<f32> {
+/// What a step did besides moving: the fall it landed from, and whether a crushing body
+/// squeezed it into blocks.
+pub struct Stepped {
+    pub land: Option<f32>,
+    pub crushed: bool,
+}
+
+/// One physics step (1/20 s) for a non-player entity. `block` gives states, `None` = unloaded;
+/// `bodies` are the solid bodies that moved this tick before it.
+pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) -> Option<u32>, bodies: &[physics::Body]) -> Stepped {
     const DT: f64 = 0.05;
     let k = &c.game.entities[e.kind as usize];
+    let mut out = Stepped { land: None, crushed: false };
     if e.anchor.is_some() {
-        return None;
+        return out;
+    }
+    if k.is(ef::KINEMATIC) {
+        e.pos += e.vel * DT;
+        e.moved = (e.vel.with_y(0.0) * DT).length() as f32;
+        return out;
+    }
+    let (hw, h) = (k.width as f64 / 2.0, k.height as f64);
+    // The body it rides moves it first (blocks still stop it), then bodies that ran into it push.
+    let ride = physics::ride(e.pos, hw, &mut e.support, bodies);
+    if ride.carry != DVec3::ZERO {
+        e.pos = physics::move_box(c, block, e.pos, hw, h, ride.carry, 0.0).pos;
+    }
+    if let Some(d) = ride.released {
+        e.vel += d / DT;
+    }
+    let (shift, crushes) = physics::push(e.pos, hw, h, bodies, e.id, e.support);
+    if shift != DVec3::ZERO {
+        // Blocks stop the push; a crushing body hurts what it cannot push away.
+        let to = physics::move_box(c, block, e.pos, hw, h, shift, 0.0).pos;
+        out.crushed = crushes && (to - e.pos - shift).length_squared() > 1e-6;
+        e.pos = to;
     }
     let feet = e.pos.floor().as_ivec3();
     let flags_at = |p: IVec3| block(p).map_or(0, |s| c.states[s as usize].flags);
     e.in_liquid = flags_at(feet) & voxide_abi::block_flags::LIQUID != 0;
+    // After riding: falls and walking are measured relative to the body.
     let start = e.pos;
 
     match e.walk.take() {
@@ -271,7 +328,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
         }
     }
     let step_h = if e.item.is_empty() && e.on_ground { 0.6 } else { 0.0 };
-    let r = physics::move_box(c, block, e.pos, k.width as f64 / 2.0, k.height as f64, e.vel * DT, step_h);
+    let r = physics::move_box_with(c, block, bodies, e.id, e.pos, hw, h, e.vel * DT, step_h);
     e.pos = r.pos;
     for i in 0..3 {
         if r.hit[i] {
@@ -294,16 +351,63 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
     e.blocked = r.hit[0] || r.hit[2];
     let was_ground = e.on_ground;
     e.on_ground = r.on_ground;
+    if r.on_ground {
+        if let Some(b) = physics::standing_on(e.pos, hw, bodies, e.id) {
+            e.support = Some(b);
+        }
+    }
     let dy = e.pos.y - start.y;
     e.moved = ((e.pos.x - start.x).powi(2) + (e.pos.z - start.z).powi(2)).sqrt() as f32;
-    let mut land = None;
     if e.on_ground || e.in_liquid {
         if !was_ground && e.fall > 0.0 && !e.in_liquid {
-            land = Some(e.fall);
+            out.land = Some(e.fall);
         }
         e.fall = 0.0;
     } else if dy < 0.0 {
         e.fall += (-dy) as f32;
     }
-    land
+    out
+}
+
+/// Soft bodies (`PUSHABLE`) overlapping each other drift apart like vanilla mobs: a push of up
+/// to 1 block/s per neighbour. `pushers` may push without being pushed (players move on their
+/// clients). Returns the velocity change per entity.
+pub fn soft_push(c: &Content, list: &[Entity]) -> Vec<(usize, DVec3)> {
+    let soft = |e: &Entity| {
+        let k = &c.game.entities[e.kind as usize];
+        !e.removed && e.item.is_empty() && e.anchor.is_none() && k.is(ef::PUSHABLE) && !k.is(ef::SOLID)
+    };
+    let mut cells: FxHashMap<(i32, i32), Vec<usize>> = FxHashMap::default();
+    for (i, e) in list.iter().enumerate().filter(|(_, e)| soft(e)) {
+        cells.entry(((e.pos.x / 2.0).floor() as i32, (e.pos.z / 2.0).floor() as i32)).or_default().push(i);
+    }
+    let mut out = Vec::new();
+    for (i, e) in list.iter().enumerate().filter(|(_, e)| soft(e) && !e.player) {
+        let k = &c.game.entities[e.kind as usize];
+        let (cx, cz) = ((e.pos.x / 2.0).floor() as i32, (e.pos.z / 2.0).floor() as i32);
+        let mut push = DVec3::ZERO;
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                for &j in cells.get(&(cx + dx, cz + dz)).into_iter().flatten() {
+                    let o = &list[j];
+                    let ko = &c.game.entities[o.kind as usize];
+                    let reach = (k.width + ko.width) as f64 / 2.0;
+                    let d = e.pos - o.pos;
+                    if j == i || d.x.abs() >= reach || d.z.abs() >= reach || d.y >= o.height(c) || -d.y >= e.height(c) {
+                        continue;
+                    }
+                    // Vanilla's applyEntityCollision: along the larger axis, 0.05 per tick.
+                    // Exactly on top of each other: split by id so they still drift apart.
+                    let d = if d.x.abs() + d.z.abs() < 1e-4 { DVec3::new(if e.id < o.id { -0.01 } else { 0.01 }, d.y, 0.0) } else { d };
+                    let dist = d.x.abs().max(d.z.abs()).max(0.01).sqrt();
+                    let f = (1.0 / dist).min(1.0) / dist;
+                    push += DVec3::new(d.x, 0.0, d.z) * f;
+                }
+            }
+        }
+        if push != DVec3::ZERO {
+            out.push((i, push * 0.05 * 20.0));
+        }
+    }
+    out
 }

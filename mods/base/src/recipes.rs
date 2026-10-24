@@ -7,6 +7,8 @@ const C: &str = "crafting";
 const S: &str = "smelting";
 
 pub fn register(r: &mut Registry) {
+    r.recipe_station(C, "crafting_table");
+    r.recipe_station("smelting", "furnace");
     for wood in ["oak", "birch", "spruce"] {
         r.shapeless(C, &format!("{wood}_planks"), 4, &[&format!("{wood}_log")], 0);
     }

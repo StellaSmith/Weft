@@ -65,6 +65,8 @@ impl Default for Input {
             ("core:perspective", Key::Code(F5)),
             // Also F3+T, like vanilla.
             ("core:reload", Key::Code(F8)),
+            ("core:recipes", Key::Code(KeyR)),
+            ("core:uses", Key::Code(KeyU)),
             ("core:attack", Key::Mouse(0)),
             ("core:use", Key::Mouse(1)),
             ("core:pick", Key::Mouse(2)),

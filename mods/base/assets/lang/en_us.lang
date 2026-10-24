@@ -50,7 +50,7 @@ block.base.blue_lamp = Blue Lamp
 block.base.crafting_table = Crafting Table
 block.base.furnace = Furnace
 block.base.furnace.tooltip = Smelts ores and cooks food.
-    {shift}Burns {item:base:coal} coal, {item:base:oak_planks} planks or other {#ffe070}fuel{/} in the bottom slot.
+    {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Burns {item:base:coal} coal, {item:base:oak_planks} planks or other {#ffe070}fuel{/} in the bottom slot.{/on_key}
 block.base.chest = Chest
 block.base.torch = Torch
 block.base.ladder = Ladder
@@ -139,3 +139,5 @@ tab.base.tools = Tools & Utilities
 tab.base.combat = Combat
 tab.base.food = Food & Drinks
 tab.base.ingredients = Ingredients
+recipe.base.crafting = Crafting
+recipe.base.smelting = Smelting

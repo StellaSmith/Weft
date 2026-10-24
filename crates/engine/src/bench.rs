@@ -18,6 +18,8 @@ pub struct Bench {
     phases: [f64; 6],
     start: Instant,
     mods: crate::diag::ModWindow,
+    /// Per frame sums: GPU draws (indirect records counted), draw commands, pipeline binds.
+    calls: [u64; 3],
 }
 
 impl Bench {
@@ -35,10 +37,25 @@ impl Bench {
             gpu_frames: 0,
             server: Vec::new(),
             phases: [0.0; 6],
+            calls: [0; 3],
         }
     }
 
-    pub fn sample(&mut self, frame_ms: f32, cpu: &[f32; 5], gpu: &[f32], server_ms: f32, phases: [f32; 6]) {
+    pub fn sample(&mut self, frame_ms: f32, cpu: &[f32; 5], gpu: &[f32], server_ms: f32, phases: [f32; 6], list: &voxide_render::CommandList) {
+        use voxide_render::Cmd;
+        for c in &list.cmds {
+            let draws = match *c {
+                Cmd::Draw { .. } | Cmd::DrawIndirectCount { .. } => 1,
+                Cmd::DrawIndirect { count, .. } | Cmd::DrawIndexedIndirect { count, .. } => count as u64,
+                Cmd::SetPipeline(_) => {
+                    self.calls[2] += 1;
+                    continue;
+                }
+                _ => continue,
+            };
+            self.calls[0] += draws;
+            self.calls[1] += 1;
+        }
         for (s, v) in self.phases.iter_mut().zip(phases) {
             *s += v as f64;
         }
@@ -88,7 +105,7 @@ impl Bench {
         let phases: Vec<String> =
             crate::server::PHASES.iter().zip(self.phases).map(|(k, v)| format!("{k} {:.2}", v / self.server.len().max(1) as f64)).collect();
         format!(
-            "BENCH {} | {} frames, {:.0} fps, frame avg {avg:.2} p50 {:.2} p99 {:.2} max {:.2} ms | cpu ms: {} | gpu {gpu_total:.2} ms: {} | server avg {srv_avg:.2} max {srv_max:.2} ms ({}) | mods per tick: {} | {extra}",
+            "BENCH {} | {} frames, {:.0} fps, frame avg {avg:.2} p50 {:.2} p99 {:.2} max {:.2} ms | cpu ms: {} | gpu {gpu_total:.2} ms: {} | per frame: {:.0} draws in {:.0} commands, {:.0} pipeline binds | server avg {srv_avg:.2} max {srv_max:.2} ms ({}) | mods per tick: {} | {extra}",
             self.label,
             self.frames.len(),
             1000.0 / avg.max(1e-3),
@@ -97,6 +114,9 @@ impl Bench {
             pct(1.0),
             cpu.join(", "),
             gpu.join(", "),
+            self.calls[0] as f64 / n,
+            self.calls[1] as f64 / n,
+            self.calls[2] as f64 / n,
             phases.join(", "),
             mods.join(", "),
         )

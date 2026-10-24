@@ -259,7 +259,7 @@ impl Dim {
     /// The block an entity looks at from its eyes.
     pub fn look_ray(&self, c: &Content, id: u64, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let e = self.entities.get(id)?;
-        let eye = e.pos + DVec3::Y * (c.game.entities[e.kind as usize].height as f64 * 0.9);
+        let eye = e.pos + DVec3::Y * e.eye(c);
         let (sy, cy) = (e.yaw as f64).sin_cos();
         let (sp, cp) = (e.pitch as f64).sin_cos();
         let dir = DVec3::new(-sy * cp, sp, -cy * cp);

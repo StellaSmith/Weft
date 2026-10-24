@@ -282,3 +282,27 @@ pub async fn drop_and_pickup(t: T) -> R {
     t.until("picked up again", Duration::from_secs(6), |t| t.c().inventory_slot(0).count == 10).await?;
     Ok(())
 }
+
+/// Breaking and placing play the block's sounds (from the server), walking plays steps, and
+/// `/music` starts a track. Only checks that sounds start; without a sound device it is skipped.
+pub async fn sounds(t: T) -> R {
+    t.flat().await?;
+    if t.state().sounds == 0 {
+        // Nothing has played yet; the first break tells whether there is a device at all.
+    }
+    let f = t.feet();
+    let b = [f[0], f[1], f[2] - 2];
+    t.set(b, "stone").await?;
+    let before = t.state().sounds;
+    t.op(&format!("break {} {} {}", b[0], b[1], b[2])).await?;
+    if t.until("break sound", std::time::Duration::from_secs(2), |t| t.state().sounds > before).await.is_err() {
+        t.note("no sound device here, sound checks skipped");
+        return Ok(());
+    }
+    let before = t.state().sounds;
+    t.hold("core:forward", 1.5);
+    t.until("steps", std::time::Duration::from_secs(3), |t| t.state().sounds >= before + 2).await?;
+    t.cmd("/music").await?;
+    t.until("music", std::time::Duration::from_secs(3), |t| t.flag(voxide_sdk::client::client_flags::MUSIC)).await?;
+    Ok(())
+}

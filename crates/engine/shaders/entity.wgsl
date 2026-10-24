@@ -12,6 +12,7 @@ struct Box {
     color: vec4<f32>,
     // texture index, mode (0 skin, 1 block faces, 2 solid colour), face layers packed 16 bit.
     ids: vec4<u32>,
+    // x: last face layers, y: glow mask array of the texture array (all ones: none)
     ids2: vec4<u32>,
 }
 
@@ -45,6 +46,7 @@ struct VOut {
     @location(3) @interpolate(flat) layer: u32,
     @location(4) @interpolate(flat) mode: u32,
     @location(5) dist: f32,
+    @location(6) @interpolate(flat) glow: u32,
 }
 
 // Texel rectangle (x, y, w, h) of a face in the classic box unwrap.
@@ -80,6 +82,7 @@ fn vertex(vi: u32) -> VOut {
     let uv = UVS[c];
     out.mode = b.ids.y;
     out.tex = b.ids.x;
+    out.glow = b.ids2.y;
     if b.ids.y == 4u {
         // One texel for the whole box (pixels of held item sprites); `ids.w` = faces to skip.
         if (b.ids.w & (1u << face)) != 0u {
@@ -87,6 +90,10 @@ fn vertex(vi: u32) -> VOut {
         }
         out.layer = b.ids.z;
         out.uv = b.uvo.xy;
+    } else if b.ids.y == 5u {
+        // Filled gizmo box: its alpha rides along as bits.
+        out.layer = b.ids.z;
+        out.uv = uv;
     } else if b.ids.y == 1u || b.ids.y == 3u {
         var packed = b.ids.z;
         if face >= 2u && face < 4u {
@@ -154,7 +161,12 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     if albedo.a < 0.5 {
         discard;
     }
-    return vec4(fog(in, albedo.rgb * in.color.rgb), 1.0);
+    var light = in.color.rgb;
+    if (in.mode == 1u || in.mode == 4u) && in.glow != 0xffffffffu {
+        let e = textureSampleLevel(texture_arrays[in.glow], nearest_clamp, in.uv, in.layer, 0.0).r;
+        light = max(light, vec3(pow(e, 2.2)));
+    }
+    return vec4(fog(in, albedo.rgb * light), 1.0);
 }
 
 @fragment
@@ -166,6 +178,9 @@ fn fs_overlay(in: VOut) -> @location(0) vec4<f32> {
             discard;
         }
         return vec4(t.rgb * in.color.rgb, t.a * view.fog.z);
+    }
+    if in.mode == 5u {
+        return vec4(in.color.rgb, bitcast<f32>(in.layer));
     }
     return vec4(in.color.rgb, view.fog.z);
 }

@@ -20,7 +20,7 @@ pub const TAG_CROSSHAIR: u32 = 2;
 #[derive(Default)]
 pub struct Hud {
     pub ui: Ui,
-    key: Option<(bool, usize, usize, bool, u32, u8)>,
+    key: Option<(bool, usize, usize, bool, u32, u8, bool)>,
     /// Player overrides from `config/hud.txt`: element name -> (anchor, order).
     layout: rustc_hash::FxHashMap<String, (String, i32)>,
 }
@@ -49,7 +49,8 @@ impl Hud {
     /// `groups`: bit per `DEBUG_GROUPS` entry shown with the debug overlay.
     pub fn update(&mut self, client: &Client, debug: bool, groups: u32, chat_open: bool, lang: &Lang, input: &crate::input::Input) -> bool {
         let chat_visible = if chat_open { 0 } else { client.chat.iter().filter(|(_, t)| t.elapsed().as_secs() < 10).count() };
-        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8);
+        // Narrow screens stack the debug panels, so a width change rebuilds.
+        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, self.ui.size.x >= 640.0);
         if self.key == Some(key) {
             return false;
         }
@@ -91,7 +92,9 @@ impl Hud {
         // Both halves start at zero height and split the rest evenly, so the crosshair sits at the
         // exact screen centre whatever they contain.
         ui.container(Style::row().h(0.0).grow().pad(4.0).align(Align::Start), |ui| {
-            ui.container(Style::default().gap(1.0).align(Align::Start), |ui| {
+            // Half the screen each, so wide text on one side never pushes the other off screen
+            // (the two may overlap on narrow screens, like vanilla's).
+            ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::Start), |ui| {
                 if debug {
                     debug_groups(ui, groups, false);
                 }
@@ -99,8 +102,7 @@ impl Hud {
                     draw(ui, p);
                 }
             });
-            ui.container(Style::default().grow(), |_| {});
-            ui.container(Style::default().gap(1.0).align(Align::End), |ui| {
+            ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::End), |ui| {
                 if debug {
                     debug_groups(ui, groups, true);
                 }
@@ -159,29 +161,41 @@ impl Hud {
 
 type DebugLine = (&'static str, fn(&Ctx) -> Vec<Arg>);
 
-/// Debug overlay groups in F3+number order: title key, right side, lines.
-pub const DEBUG_GROUPS: &[(&str, bool, &[DebugLine])] = &[
-    ("hud.debug.group.performance", true, PERFORMANCE),
-    ("hud.debug.group.position", false, POSITION),
-    ("hud.debug.group.world", false, WORLD),
-    ("hud.debug.group.mods", true, MODS),
-    ("hud.debug.group.system", true, SYSTEM),
+type Panels = &'static [(&'static str, &'static [DebugLine])];
+
+/// Debug overlay groups in F3+number order: title key (for the help), right side, and its
+/// panels (title, lines), side by side.
+pub const DEBUG_GROUPS: &[(&str, bool, Panels)] = &[
+    ("hud.debug.group.performance", true, &[("hud.debug.group.cpu", CPU), ("hud.debug.group.gpu", GPU)]),
+    ("hud.debug.group.position", false, &[("hud.debug.group.position", POSITION)]),
+    ("hud.debug.group.world", false, &[("hud.debug.group.world", WORLD)]),
+    ("hud.debug.group.mods", true, &[("hud.debug.group.mods", MODS)]),
+    ("hud.debug.group.system", true, &[("hud.debug.group.system", SYSTEM)]),
 ];
 
-const PERFORMANCE: &[DebugLine] = &[
+fn cpu(c: &Ctx) -> Vec<Arg> {
+    c.stats.cpu.iter().map(|v| Arg::Float(*v as f64, 2)).collect()
+}
+
+fn gpu(c: &Ctx) -> Vec<Arg> {
+    let g = &c.stats.gpu;
+    let at = |i: usize| Arg::Float(g.get(i).copied().unwrap_or(0.0) as f64, 2);
+    vec![Arg::Float(g.iter().sum::<f32>() as f64, 2), at(1), at(2), at(3)]
+}
+
+// Short lines: the two panels stand side by side, also at GUI scale 3 in Russian.
+const CPU: &[DebugLine] = &[
     ("hud.debug.fps", |c| vec![Arg::Int(c.stats.fps.round() as i64), Arg::Float(c.stats.frame_ms as f64, 2)]),
-    ("hud.debug.cpu", |c| c.stats.cpu.iter().map(|v| Arg::Float(*v as f64, 2)).collect()),
-    ("hud.debug.gpu", |c| {
-        let g = &c.stats.gpu;
-        let at = |i: usize| Arg::Float(g.get(i).copied().unwrap_or(0.0) as f64, 2);
-        vec![Arg::Float(g.iter().sum::<f32>() as f64, 2), at(1), at(2), at(3)]
-    }),
+    ("hud.debug.cpu", cpu),
+    ("hud.debug.cpu_submit", cpu),
     ("hud.debug.server", |c| vec![Arg::Float(c.stats.server_ms as f64, 2), Arg::Int(c.stats.regions as i64)]),
     ("hud.debug.phases", |c| {
         let p = c.stats.phases;
         vec![Arg::Float(p[0] as f64, 2), Arg::Float(p[2] as f64, 2), Arg::Float((p[3] + p[4]) as f64, 2)]
     }),
 ];
+
+const GPU: &[DebugLine] = &[("hud.debug.gpu", gpu), ("hud.debug.gpu_world", gpu), ("hud.debug.gpu_ui", gpu)];
 
 const POSITION: &[DebugLine] = &[
     ("hud.debug.pos", |c| {
@@ -233,7 +247,7 @@ const WORLD: &[DebugLine] = &[
         let Some(cl) = c.client.as_ref() else { return vec![] };
         vec![Arg::Int(cl.render.drawn as i64), Arg::Int((cl.render.faces_drawn / 1000) as i64)]
     }),
-    ("hud.debug.entities", |c| vec![Arg::Int(c.client.as_ref().map_or(0, |cl| cl.entities.len()) as i64)]),
+    ("hud.debug.entities", |c| vec![Arg::Int(c.client.as_ref().map_or(0, |cl| cl.entities.len()) as i64), Arg::Int(c.client.as_ref().map_or(0, |cl| cl.particles.len()) as i64)]),
     ("hud.debug.load", |c| vec![Arg::Int(c.stats.load.0 as i64), Arg::Int(c.stats.load.1 as i64)]),
 ];
 
@@ -387,15 +401,15 @@ pub fn item_name(lang: &Lang, item: u32) -> String {
     }
 }
 
-/// The name, then the `<name key>.tooltip` translation in grey (the part after `{shift}` only while
-/// sneak is held, a hint otherwise), then durability for damaged tools.
+/// The name, then the `<name key>.tooltip` translation in grey (details usually behind
+/// `{on_key:core:sneak}`), then durability for damaged tools.
 pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi::ItemStack) -> Vec<text::Span> {
     const GREY: u32 = 0xA8A8A8;
     let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
     let cx = text::Ctx { lang, input: Some(input), item_name: &items };
     let mut out = text::plain(&item_name(lang, stack.item));
     let line = |template: &str, args: &[text::Arg], out: &mut Vec<text::Span>| {
-        out.push(text::Span { piece: text::Piece::Text("\n".into()), color: None });
+        out.push(text::Span::text("\n", None));
         let start = out.len();
         text::format(template, args, &cx, out);
         for s in &mut out[start..] {
@@ -403,21 +417,7 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi:
         }
     };
     if let Some(key) = item_key(lang, stack.item).map(|k| format!("{k}.tooltip")).filter(|k| lang.has(k)) {
-        let template = lang.get(&key);
-        match template.split_once("{shift}") {
-            Some((always, more)) => {
-                let always = always.trim_end_matches('\n');
-                if !always.is_empty() {
-                    line(always, &[], &mut out);
-                }
-                if input.held("core:sneak") {
-                    line(more.trim_start_matches('\n'), &[], &mut out);
-                } else {
-                    line(lang.get("tooltip.more"), &[], &mut out);
-                }
-            }
-            None => line(template, &[], &mut out),
-        }
+        line(lang.get(&key), &[], &mut out);
     }
     let max = content().items.get(stack.item as usize).map_or(0, |d| d.durability);
     let damage = crate::stack::damage(&stack);
@@ -431,30 +431,39 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi:
 /// left lists the F3 combinations.
 fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
     let align = if right { Align::End } else { Align::Start };
-    for (i, (title, side, lines)) in DEBUG_GROUPS.iter().enumerate() {
+    for (i, (_, side, panels)) in DEBUG_GROUPS.iter().enumerate() {
         if *side != right || groups & (1 << i) == 0 {
             continue;
         }
-        ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
-            ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
-            let t = ui.text_bound("debug_title", Box::new(move |_: &Ctx| (title.to_string(), vec![])));
-            if let Some(t) = ui.text_mut(t) {
-                t.wrap = false;
-            }
-            for (key, f) in lines.iter() {
-                let key = key.to_string();
-                let n = ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
-                if let Some(t) = ui.text_mut(n) {
-                    t.wrap = false;
-                    t.mono = true;
-                }
+        // Side by side where they fit (GUI scale 3 in Russian does not), else stacked.
+        let style = if ui.size.x >= 640.0 { Style::row().gap(2.0).align(Align::Start) } else { Style::default().gap(2.0).align(align) };
+        ui.container(style, |ui| {
+            for (title, lines) in panels.iter() {
+                ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
+                    ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
+                    let t = ui.text_bound("debug_title", Box::new(move |_: &Ctx| (title.to_string(), vec![])));
+                    if let Some(t) = ui.text_mut(t) {
+                        t.wrap = false;
+                    }
+                    for (key, f) in lines.iter() {
+                        let key = key.to_string();
+                        let n = ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
+                        if let Some(t) = ui.text_mut(n) {
+                            t.wrap = false;
+                            t.mono = true;
+                        }
+                    }
+                });
             }
         });
     }
     if !right {
         ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
             ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
-            ui.text_bound("debug_title", Box::new(|_: &Ctx| ("hud.debug.group.help".into(), vec![])));
+            let t = ui.text_bound("debug_title", Box::new(|_: &Ctx| ("hud.debug.group.help".into(), vec![])));
+            if let Some(t) = ui.text_mut(t) {
+                t.wrap = false;
+            }
             for (i, (title, ..)) in DEBUG_GROUPS.iter().enumerate() {
                 let on = groups & (1 << i) != 0;
                 let state = if on { "hud.debug.shown" } else { "hud.debug.hidden" };

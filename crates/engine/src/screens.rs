@@ -16,6 +16,8 @@ pub struct BuildCx<'a> {
     pub settings: &'a Settings,
     pub languages: &'a [(String, String)],
     pub in_game: bool,
+    /// Joined someone else's world (their synced settings apply).
+    pub remote: bool,
     pub mods: usize,
     pub client: Option<&'a crate::client::Client>,
 }
@@ -147,7 +149,7 @@ impl Screen for SettingsScreen {
         let s = cx.settings;
         frame(ui, cx, "settings.title", |ui| {
             ui.panel("panel", Style::default().pad(8.0).gap(6.0).stretch().w(320.0), |ui| {
-                slider(ui, "settings.view_distance", 4.0, 32.0, 1.0, |s| s.view_distance as f32, |c, v| {
+                slider(ui, "settings.view_distance", 4.0, 64.0, 1.0, |s| s.view_distance as f32, |c, v| {
                     if c.settings.view_distance != v as i32 {
                         c.settings.view_distance = v as i32;
                         c.requests.push(Request::ApplySettings);
@@ -176,6 +178,12 @@ impl Screen for SettingsScreen {
                     ui.nodes[b].style.grow = 1.0;
                 });
                 ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
+                    let b = button(ui, cx, "settings.sound", &[], 147.0, |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: "core".into(), title: Some("settings.sound".into()) }))));
+                    ui.nodes[b].style.grow = 1.0;
+                    let b = button(ui, cx, "settings.mods", &[], 147.0, |c| c.requests.push(Request::Open(Box::new(ModSettings))));
+                    ui.nodes[b].style.grow = 1.0;
+                });
+                ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
                     let b = button(ui, cx, "settings.resource_packs", &[], 147.0, |c| {
                         let current = c.settings.resource_packs.clone();
                         c.requests.push(Request::Open(Box::new(crate::packs::ResourcePacks::new(&current))));
@@ -192,6 +200,138 @@ impl Screen for SettingsScreen {
                 c.settings.save();
                 c.requests.push(Request::Close);
             });
+        });
+    }
+}
+
+// ---------------------------------------------------------------- settings mods declare
+
+/// Mods that declared settings (`Host::reg_config`).
+pub struct ModSettings;
+
+impl Screen for ModSettings {
+    fn name(&self) -> &str {
+        "core:mod_settings"
+    }
+
+    fn pauses(&self) -> bool {
+        true
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        let c = crate::content::content();
+        let mut namespaces: Vec<&str> = c.game.configs.iter().filter_map(|d| d.name.split_once(':').map(|x| x.0)).filter(|ns| *ns != "core").collect();
+        namespaces.dedup();
+        frame(ui, cx, "settings.mods", |ui| {
+            if namespaces.is_empty() {
+                label(ui, cx, "settings.mods.none", &[], "dim");
+            }
+            for ns in namespaces {
+                let name = c.mods.iter().find(|m| m.id == ns).map_or(ns.to_string(), |m| m.name.clone());
+                let ns = ns.to_string();
+                button(ui, cx, "settings.mods.entry", &[Arg::Text(name)], 220.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: ns.clone(), title: None }))));
+            }
+            button(ui, cx, "menu.done", &[], 200.0, |c| c.requests.push(Request::Close));
+        });
+    }
+}
+
+/// Every setting of one namespace, built from its declarations: toggles, sliders, choices.
+pub struct ConfigScreen {
+    pub ns: String,
+    /// Title key; the mod's name when `None`.
+    pub title: Option<String>,
+}
+
+impl Screen for ConfigScreen {
+    fn name(&self) -> &str {
+        "core:config"
+    }
+
+    fn pauses(&self) -> bool {
+        true
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        use voxide_abi::config_kind as ck;
+        let c = crate::content::content();
+        let ns = self.ns.clone();
+        let title = self.title.clone().unwrap_or_else(|| "settings.mods.title".into());
+        let mod_name = c.mods.iter().find(|m| m.id == ns).map_or(ns.clone(), |m| m.name.clone());
+        frame(ui, cx, &title, |ui| {
+            if self.title.is_none() {
+                label(ui, cx, "settings.mods.of", &[Arg::Text(mod_name)], "default");
+            }
+            let list = ui.panel("panel", Style::default().pad(8.0).gap(6.0).stretch().w(320.0).h(0.0).grow().min_h(40.0).scroll(), |ui| {
+                for (id, d) in c.game.configs.iter().enumerate().filter(|(_, d)| d.name.split_once(':').is_some_and(|x| x.0 == ns)) {
+                    let id = id as u32;
+                    let key = format!("config.{}", d.name.replace(':', "."));
+                    let locked = d.synced() && cx.remote;
+                    let show = |d: &crate::config::ConfigDef, key: &str, v: f64| -> Arg {
+                        match d.kind {
+                            ck::BOOL => on_off(v != 0.0),
+                            ck::CHOICE => {
+                                let choice = d.choices.get(v as usize).cloned().unwrap_or_default();
+                                Arg::Key(format!("{key}.{choice}"))
+                            }
+                            _ => Arg::Text(d.show(v)),
+                        }
+                    };
+                    let row = match d.kind {
+                        ck::BOOL | ck::CHOICE => {
+                            let (key2, d2) = (key.clone(), d.clone());
+                            let (kind, count) = (d.kind, d.choices.len().max(1) as f64);
+                            let b = ui.button(
+                                "button",
+                                Style::default().min_h(20.0).pad_xy(6.0, 4.0).stretch(),
+                                Rc::new(move |_: &mut Ctx| {
+                                    let v = crate::config::get(id);
+                                    let next = if kind == ck::BOOL { 1.0 - v } else { (v + 1.0) % count };
+                                    crate::config::set(id, next);
+                                }),
+                                |ui| {
+                                    let (k, d3) = (key2.clone(), d2.clone());
+                                    ui.text_bound("button", Box::new(move |_: &Ctx| ("settings.config_value".into(), vec![Arg::Key(k.clone()), show(&d3, &k, crate::config::get(id))])));
+                                },
+                            );
+                            if let Kind::Button { enabled, .. } = &mut ui.nodes[b].kind {
+                                *enabled = !locked;
+                            }
+                            b
+                        }
+                        _ => ui.container(Style::default().gap(2.0).stretch(), |ui| {
+                            let (k, d2) = (key.clone(), d.clone());
+                            ui.text_bound("default", Box::new(move |_: &Ctx| ("settings.config_value".into(), vec![Arg::Key(k.clone()), show(&d2, &k, crate::config::get(id))])));
+                            if !locked {
+                                let (min, range) = (d.min, (d.max - d.min).max(1e-9));
+                                ui.add(
+                                    Kind::Slider {
+                                        value: 0.0,
+                                        bind: Box::new(move |_: &Ctx| ((crate::config::get(id) - min) / range) as f32),
+                                        on_change: Rc::new(move |_: &mut Ctx, f: f32| crate::config::set(id, min + f as f64 * range)),
+                                    },
+                                    Style::default().h(20.0).stretch(),
+                                );
+                            }
+                        }),
+                    };
+                    let tip = format!("{key}.tooltip");
+                    let mut spans = if cx.lang.has(&tip) { cx.t(&tip, &[]) } else { Vec::new() };
+                    for (on, note) in [(locked, "settings.config_synced"), (d.flags & voxide_abi::config_flags::RESTART != 0, "settings.config_restart")] {
+                        if on {
+                            if !spans.is_empty() {
+                                spans.push(Span::text("\n", None));
+                            }
+                            spans.extend(cx.t(note, &[]));
+                        }
+                    }
+                    if !spans.is_empty() {
+                        ui.nodes[row].tooltip = Some(spans);
+                    }
+                }
+            });
+            ui.set_id(list, "config");
+            button(ui, cx, "menu.done", &[], 200.0, |c| c.requests.push(Request::Close));
         });
     }
 }

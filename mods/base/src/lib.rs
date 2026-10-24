@@ -7,6 +7,7 @@ mod machines;
 mod mobs;
 mod player;
 mod recipes;
+mod sounds;
 mod worldgen;
 
 use voxide_sdk::*;
@@ -35,11 +36,16 @@ fn init(r: &mut Registry) {
     player::register(r);
     machines::register(r);
     recipes::register(r);
+    sounds::register(r);
     mobs::register(r);
     worldgen::register(r);
     r.dimension("overworld").handle(&OVERWORLD)
         .generator(worldgen::overworld)
         .spawn(worldgen::spawn)
+        .column(|seed, x, z| {
+            let c = worldgen::column(seed, x, z);
+            (c.height, c.biome.id())
+        })
         .sky_above(16)
         .day_length(24000);
     // Second dimension on purpose: nothing in the engine may assume there is only one world.

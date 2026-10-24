@@ -12,3 +12,23 @@ item.testmod.tin_ingot = Tin Ingot
 block.testmod.oil = Oil
 item.testmod.oil_bucket = Oil Bucket
 block.testmod.red_sand = Red Sand
+block.testmod.glow_crystal = Glow Crystal
+entity.testmod.wisp = Wisp
+entity.testmod.idol = Idol
+entity.testmod.orb = Orb
+entity.testmod.lift = Lift
+entity.testmod.skiff = Skiff
+entity.testmod.crate = Crate
+item.testmod.rune = Rune of Light
+item.testmod.rune.tooltip = {fx:core:rainbow}Shines in every colour{/fx}, {fx:testmod:glitch}flickers{/fx} and {fx:core:wave}hums{/fx}.
+    {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Use it to scatter {fx:core:pulse}sparks{/fx}; held, it shows its reach.{/on_key}{if:testmod:hurt}
+    {#ff8080}It feels your wounds.{/if}{if:creative}
+    {#80ff80}Creative: it never tires.{/if}
+key.testmod.dream = Daydream
+config.testmod.crystal_sparks = Crystal sparks
+config.testmod.crystal_sparks.tooltip = Glow crystals shed sparks now and then.
+config.testmod.wisp_sparks = Sparks per wisp
+config.testmod.dream_strength = Daydream strength
+config.testmod.dream_style = Daydream style
+config.testmod.dream_style.warm = Warm
+config.testmod.dream_style.cold = Cold

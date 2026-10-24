@@ -1,8 +1,10 @@
 //! Player-chosen client packs. Resource packs (`resourcepacks/<id>/`) are laid out like mod assets
 //! per namespace (`<ns>/textures/...`, `<ns>/lang/...`, `.ctm`, themes) and stack in the order the
 //! player picks. A shader pack (`shaderpacks/<id>/`) replaces engine shaders file by file
-//! (`world.wgsl`, `entity.wgsl`, `model.wgsl`) and has to keep their entry points and bindings; a
-//! file that fails to compile falls back to the built-in one. Both may have a `pack.cfg` with
+//! (`world.wgsl`, `entity.wgsl`, `model.wgsl`, `particle.wgsl`, `post.wgsl`) and has to keep
+//! their entry points and bindings; a file that fails to compile falls back to the built-in one.
+//! Snippets mods ship (`shaders/<kind>/`, see `shaders.rs`) are assets, overridden by resource
+//! packs like textures. Both may have a `pack.cfg` with
 //! `name = ...` and `description = ...`.
 
 use std::path::{Path, PathBuf};
@@ -58,8 +60,22 @@ pub fn set_shader_pack(dir: Option<PathBuf>) {
     *SHADER_PACK.write().unwrap() = dir;
 }
 
-/// `name` from the shader pack if it has a valid one, else the engine's (read from the source tree
-/// in development builds so it can be edited live).
+/// Source of engine shader `name`: the shader pack's if it has one, else the engine's (read from
+/// the source tree in development builds so it can be edited live).
+pub fn source(name: &str, builtin: &str) -> String {
+    let pack = SHADER_PACK.read().unwrap().as_ref().map(|d| d.join(name));
+    if let Some(src) = pack.and_then(|p| std::fs::read_to_string(p).ok()) {
+        return src;
+    }
+    builtin_source(name, builtin)
+}
+
+fn builtin_source(name: &str, builtin: &str) -> String {
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders").join(name);
+    std::fs::read_to_string(dev).unwrap_or_else(|_| builtin.to_string())
+}
+
+/// `name` from the shader pack if it has a valid one, else the engine's.
 pub fn shader(name: &str, builtin: &str) -> Result<Shader, ShaderError> {
     let pack = SHADER_PACK.read().unwrap().as_ref().map(|d| d.join(name));
     if let Some(src) = pack.and_then(|p| std::fs::read_to_string(p).ok()) {
@@ -68,8 +84,7 @@ pub fn shader(name: &str, builtin: &str) -> Result<Shader, ShaderError> {
             Err(e) => log::error!("shader pack {name}: {}", e.0),
         }
     }
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders").join(name);
-    Shader::from_wgsl(name, &std::fs::read_to_string(dev).unwrap_or_else(|_| builtin.to_string()))
+    Shader::from_wgsl(name, &builtin_source(name, builtin))
 }
 
 fn open_folder(dir: &Path) {
@@ -237,7 +252,7 @@ impl Screen for ShaderPacks {
                     }
                 }
             });
-            label(ui, cx, "packs.shaders_note", &[Arg::Text("world.wgsl, entity.wgsl, model.wgsl".into())], "dim");
+            label(ui, cx, "packs.shaders_note", &[Arg::Text("world.wgsl, entity.wgsl, model.wgsl, particle.wgsl, post.wgsl".into())], "dim");
             ui.container(Style::row().gap(6.0).justify(Justify::Center), |ui| {
                 button(ui, cx, "packs.open_folder", &[], 140.0, move |_| open_folder(&dir));
                 button(ui, cx, "menu.done", &[], 140.0, move |c| {

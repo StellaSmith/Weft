@@ -40,5 +40,3 @@ chat.text = #ffffff
 chat.shadow = #202020
 debug.text = #ffffff
 debug.shadow = #202020
-label.text = #404040
-label.shadow = none

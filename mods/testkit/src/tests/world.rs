@@ -111,6 +111,12 @@ pub async fn sand_and_support(t: T) -> R {
     let f = t.feet();
     let air = add(f, [3, 4, -2]);
     t.set(air, "sand").await?;
+    let mut falling = false;
+    for _ in 0..20 {
+        falling |= t.count_near("falling_block", 8.0).await? == 1;
+        t.frames(2).await?;
+    }
+    t.check(falling, "the sand falls as an entity");
     t.secs(2.0).await?;
     t.check_eq(t.block(air).await?, "core:air".into(), "sand left the air");
     t.check_eq(t.block(add(f, [3, 0, -2])).await?, "base:sand".into(), "sand landed on the ground");
@@ -136,5 +142,86 @@ pub async fn load_benchmark(t: T) -> R {
     let b = t.bench(4.0, "idle").await?;
     t.check(b[2] < 50.0, format!("p99 frame {:.1} ms", b[2]));
     t.check(b[4] < 25.0, format!("server tick {:.1} ms", b[4]));
+    Ok(())
+}
+
+/// Underground (3D) biomes: deep under the surface whole cubes turn into deep caves, and the
+/// test mod's glow crystals (an ore limited to the `cave` biome tag) grow only there.
+pub async fn deep_caves(t: T) -> R {
+    t.world(5).await?;
+    t.op("mode spectator").await?;
+    let (mut caves, mut inside, mut outside) = (0, 0, 0);
+    for (i, x) in [0, 200].into_iter().enumerate() {
+        t.cmd(&format!("/tp {x} -60 {}", i * 150)).await?;
+        t.secs(0.5).await?;
+        t.loaded().await?;
+        let survey = t.op("survey 12").await?;
+        let (biomes, crystals) = survey.split_once(" | crystals ").ok_or(format!("survey: {survey}"))?;
+        caves += biomes.split_whitespace().filter_map(|e| e.strip_prefix("base:deep_caves=")).filter_map(|n| n.parse::<u32>().ok()).sum::<u32>();
+        let n: Vec<u32> = crystals.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+        inside += n.first().copied().unwrap_or(0);
+        outside += n.get(1).copied().unwrap_or(0);
+        t.note(format!("{x}: {survey}"));
+    }
+    t.check(caves > 0, "deep caves were found underground");
+    t.check(inside > 0, format!("glow crystals grow in deep caves ({inside})"));
+    t.check_eq(outside, 0, "glow crystals outside deep caves");
+    Ok(())
+}
+
+/// Plants grow by world time: wheat ripens when the clock jumps ahead, and sugar cane in an area
+/// nobody was in catches up when the player comes back.
+pub async fn growth(t: T) -> R {
+    t.flat().await?;
+    t.op("time 1000").await?;
+    let f = t.feet();
+    let farm = add(f, [2, -1, 0]);
+    t.set(farm, "farmland").await?;
+    t.set(add(farm, [0, 1, 0]), "wheat").await?;
+    // Sugar cane needs water beside the block it stands on.
+    let cane = add(f, [-2, 0, 0]);
+    t.set(cane, "sugar_cane").await?;
+    t.secs(0.2).await?;
+    t.check_eq(t.block(cane).await?, "core:air".to_string(), "sugar cane without water breaks off");
+    t.set(add(cane, [0, -1, 1]), "water").await?;
+    t.set(cane, "sugar_cane").await?;
+    t.op("time 200000").await?;
+    t.secs(0.5).await?;
+    t.check_eq(t.block(add(farm, [0, 1, 0])).await?, "base:wheat#7".to_string(), "wheat after a jump of 2.5 hours");
+    t.check_eq(t.block(add(cane, [0, 2, 0])).await?, "base:sugar_cane".to_string(), "sugar cane after the jump");
+    // Far away the cane's area unloads; time passes; coming back, it has grown.
+    let cane2 = add(f, [-4, 0, 0]);
+    t.set(add(cane2, [0, -1, -1]), "water").await?;
+    t.set(cane2, "sugar_cane").await?;
+    t.cmd("/tp 3000 10 3000").await?;
+    t.secs(3.0).await?;
+    t.check_eq(t.block(cane2).await?, "core:air".to_string(), "far away, the cane's area is not here");
+    t.op("time 400000").await?;
+    t.cmd(&format!("/tp {} {} {}", f[0], f[1], f[2])).await?;
+    t.secs(1.0).await?;
+    t.loaded().await?;
+    t.secs(0.5).await?;
+    t.check_eq(t.block(add(cane2, [0, 2, 0])).await?, "base:sugar_cane".to_string(), "sugar cane grown while unloaded");
+    Ok(())
+}
+
+/// Structures: a well stands where the engine says one is, built as its template says.
+pub async fn structures(t: T) -> R {
+    t.world(5).await?;
+    t.op("mode spectator").await?;
+    let at = t.op("structure base:well 2000").await?;
+    let a: Vec<i32> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    let [x, y, z] = a[..] else { return Err(format!("no well near spawn: {at}")) };
+    t.cmd(&format!("/tp {} {} {}", x + 1, y + 6, z - 3)).await?;
+    t.secs(1.0).await?;
+    t.loaded().await?;
+    t.secs(0.5).await?;
+    t.check_eq(t.block([x, y, z]).await?, "base:cobblestone".to_string(), "the well's rim");
+    t.check_eq(t.block([x + 1, y, z + 1]).await?, "base:water".to_string(), "its water");
+    t.check_eq(t.block([x, y + 3, z]).await?, "base:cobblestone".to_string(), "its roof");
+    t.check(t.op("structure testmod:obelisk 3000").await? != "none", "another mod's obelisks are in the world too");
+    t.c().look(180.0, -40.0);
+    t.secs(0.5).await?;
+    t.shot("well").await?;
     Ok(())
 }

@@ -7,7 +7,7 @@ use winit::keyboard::KeyCode;
 
 use crate::app::{Ctx, Request};
 use crate::input::Key;
-use crate::ui::text::{self, Piece, Span};
+use crate::ui::text::{self, Span};
 use crate::client::modui;
 use crate::content::content;
 use crate::screens::{BuildCx, Screen, button, label};
@@ -203,12 +203,12 @@ impl Screen for Chat {
                     ui.panel("suggest", Style::default().pad(2.0).self_align(crate::ui::Align::Start), |ui| {
                         for (i, s) in comp.suggestions.iter().enumerate().skip(first).take(10) {
                             let color = if i == st.selected { 0xFFFF55 } else { 0xA0A0A0 };
-                            ui.text(vec![Span { piece: Piece::Text(s.clone()), color: Some(color) }], "chat");
+                            ui.text(vec![Span::text(s.clone(), Some(color))], "chat");
                         }
                     });
                 } else if !comp.hint.is_empty() {
                     ui.container(Style::default().pad(2.0).self_align(crate::ui::Align::Start), |ui| {
-                        ui.text(vec![Span { piece: Piece::Text(comp.hint.clone()), color: Some(0x808080) }], "chat");
+                        ui.text(vec![Span::text(comp.hint.clone(), Some(0x808080))], "chat");
                     });
                 }
             }
@@ -282,4 +282,150 @@ impl Screen for Chat {
             _ => false,
         }
     }
+}
+
+/// Recipes making an item, or using it, of every recipe type (JEI/NEI style). Opened with the
+/// recipe/uses keys over any item in a screen; clicking an item in it shows that item's recipes.
+/// Ingredients given by tag cycle through the items carrying it.
+pub struct RecipeView {
+    pub item: u32,
+    pub uses: bool,
+}
+
+/// What the cursor points at in a screen: a slot, a creative entry, or an icon (also inside a
+/// button, like the recipe viewer's).
+pub fn hovered_item(ui: &Ui, client: Option<&crate::client::Client>) -> Option<u32> {
+    let h = ui.hovered?;
+    let item = |n: usize| match ui.nodes[n].kind {
+        Kind::Custom { tag: modui::TAG_SLOT, data } => client.and_then(|c| c.menu.as_ref()).and_then(|m| m.slots.get(data as usize)).map(|s| s.item),
+        Kind::Custom { tag: modui::TAG_CREATIVE | modui::TAG_ICON, data } => Some(data as u32),
+        Kind::Custom { tag: crate::hud::TAG_HOTBAR, data } => client.and_then(|c| c.inventory.get(data as usize)).map(|s| s.item),
+        Kind::Item { last, .. } => Some(last.0),
+        _ => None,
+    };
+    item(h).or_else(|| ui.nodes[h].children.iter().find_map(|&c| item(c))).filter(|&i| i != 0)
+}
+
+impl Screen for RecipeView {
+    fn name(&self) -> &str {
+        "core:recipes"
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        use crate::registry::Ingredient;
+        let c = content();
+        let item = self.item;
+        let mut found: Vec<(&str, &crate::registry::Recipe)> = Vec::new();
+        let mut kinds: Vec<&String> = c.game.recipes.keys().collect();
+        kinds.sort();
+        for kind in kinds {
+            for r in &c.game.recipes[kind] {
+                let uses = r.inputs.iter().chain(r.shaped.iter().flat_map(|s| s.2.iter())).any(|i| !matches!(i, Ingredient::Empty) && i.matches(item, &c.components));
+                if if self.uses { uses } else { r.output == item } {
+                    found.push((kind.as_str(), r));
+                }
+            }
+        }
+        found.truncate(200);
+        let title = if self.uses { "recipes.uses" } else { "recipes.made_by" };
+        let name = crate::hud::item_name(cx.lang, item);
+        ui.root_style(Style::default().stretch());
+        ui.panel("overlay", Style::default().grow().center().pad(10.0).gap(6.0), |ui| {
+            label(ui, cx, title, &[text::Arg::Text(name)], "title");
+            if found.is_empty() {
+                label(ui, cx, "recipes.none", &[], "dim");
+            }
+            let list = ui.panel("panel", Style::default().pad(7.0).gap(8.0).w(230.0).h(0.0).grow().min_h(40.0).scroll(), |ui| {
+                for (kind, r) in &found {
+                    recipe_row(ui, cx, kind, r);
+                }
+            });
+            ui.set_id(list, "recipes");
+            button(ui, cx, "menu.back", &[], 160.0, |c| c.requests.push(Request::Close));
+        });
+    }
+}
+
+/// An ingredient or result: a slot showing the item (cycling a tag's items), clicking it shows
+/// that item's recipes.
+fn recipe_slot(ui: &mut Ui, cx: &BuildCx, ing: &crate::registry::Ingredient, count: u32) {
+    use crate::registry::Ingredient;
+    let c = content();
+    let items: Vec<u32> = match ing {
+        Ingredient::Empty => Vec::new(),
+        Ingredient::Item(i) => vec![*i],
+        Ingredient::Tag(t) => (1..c.items.len() as u32).filter(|&i| c.components.has(crate::components::ITEM, i, *t)).collect(),
+    };
+    if items.is_empty() {
+        ui.add(Kind::Container { class: Some("recipe_slot".into()) }, Style::default().size(18.0, 18.0));
+        return;
+    }
+    let first = items[0];
+    let shown = items.clone();
+    let b = ui.button("recipe_slot", Style::default().size(18.0, 18.0), Rc::new(move |ctx: &mut Ctx| {
+        // The item the slot shows right now.
+        let i = shown[(std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_secs()) as usize) % shown.len()];
+        ctx.requests.push(Request::Open(Box::new(RecipeView { item: i, uses: false })));
+    }), |ui| {
+        let list = items.clone();
+        ui.add(
+            Kind::Item { bind: Box::new(move |_: &Ctx| (list[(std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_secs()) as usize) % list.len()], count)), last: (first, count) },
+            Style::default().size(16.0, 16.0),
+        );
+    });
+    let tip = match ing {
+        Ingredient::Tag(t) => cx.t("recipes.tag", &[text::Arg::Text(c.components.names[*t as usize].clone())]),
+        _ => crate::hud::item_tooltip(cx.lang, cx.input, voxide_abi::ItemStack::new(first, count.max(1))),
+    };
+    ui.nodes[b].tooltip = Some(tip);
+}
+
+fn recipe_row(ui: &mut Ui, cx: &BuildCx, kind: &str, r: &crate::registry::Recipe) {
+    use crate::registry::Ingredient;
+    let c = content();
+    ui.container(Style::default().gap(2.0), |ui| {
+        ui.container(Style::row().gap(4.0), |ui| {
+            for &station in c.game.recipe_stations.get(kind).map_or(&[][..], |v| v.as_slice()) {
+                ui.add(Kind::Custom { tag: modui::TAG_ICON, data: station as u64 }, Style::default().size(12.0, 12.0));
+            }
+            let key = format!("recipe.{}", kind.replace(':', "."));
+            let title = if cx.lang.has(&key) { cx.t(&key, &[]) } else { text::plain(kind) };
+            ui.text(title, "default");
+        });
+        ui.container(Style::row().gap(6.0), |ui| {
+            match &r.shaped {
+                Some((w, h, cells)) => {
+                    ui.container(Style::default().gap(1.0), |ui| {
+                        for y in 0..*h {
+                            ui.container(Style::row().gap(1.0), |ui| {
+                                for x in 0..*w {
+                                    recipe_slot(ui, cx, &cells[(y * w + x) as usize], 1);
+                                }
+                            });
+                        }
+                    });
+                }
+                None if r.inputs.len() > 1 => {
+                    let w = (r.inputs.len() as f32).sqrt().ceil() as usize;
+                    ui.container(Style::default().gap(1.0), |ui| {
+                        for row in r.inputs.chunks(w) {
+                            ui.container(Style::row().gap(1.0), |ui| {
+                                for i in row {
+                                    recipe_slot(ui, cx, i, 1);
+                                }
+                            });
+                        }
+                    });
+                }
+                None => recipe_slot(ui, cx, r.inputs.first().unwrap_or(&Ingredient::Empty), 1),
+            }
+            ui.container(Style::default().gap(1.0).center(), |ui| {
+                ui.add(Kind::Progress { class: "arrow".into(), bind: Box::new(|_: &Ctx| 1.0), value: 1.0, dir: voxide_abi::ui_dir::RIGHT }, Style::default().size(24.0, 16.0));
+                if r.time > 0 {
+                    label(ui, cx, "recipes.time", &[text::Arg::Float(r.time as f64 / 20.0, 1)], "dim");
+                }
+            });
+            recipe_slot(ui, cx, &Ingredient::Item(r.output), r.count);
+        });
+    });
 }

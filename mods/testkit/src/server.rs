@@ -214,7 +214,10 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             Ok(w.spawn_kind(k, [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5]).to_string())
         }
         "entity" => {
-            let id: u64 = a.word()?.trim_start_matches('#').parse().map_err(|_| "bad id".to_string())?;
+            let id: u64 = match a.word()? {
+                "me" => player,
+                w => w.trim_start_matches('#').parse().map_err(|_| "bad id".to_string())?,
+            };
             let e = w.entity(id).ok_or("no such entity")?;
             Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos[0], e.pos[1], e.pos[2], e.health))
         }
@@ -224,6 +227,55 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let ids = w.near([p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], r, None);
             let parts: Vec<String> = ids.iter().filter(|&&id| id != player).filter_map(|&id| w.entity(id).map(|e| format!("{id}:{}", name_of(ek::ENTITY, e.kind)))).collect();
             Ok(parts.join(" "))
+        }
+        "animate" => {
+            let id = a.owner(w, player)?;
+            w.play_animation(id, a.word().unwrap_or(""), false);
+            Ok(String::new())
+        }
+        "survey" => {
+            // Biomes of every block within `r` of the player, and where glow crystals are.
+            let r: i32 = a.num()?;
+            let me = w.entity(player).ok_or("no player")?;
+            let c = [me.pos[0].floor() as i32, me.pos[1].floor() as i32, me.pos[2].floor() as i32];
+            let crystal = find_block("testmod:glow_crystal").ok_or("no crystal block")?;
+            let cave = Tag::new("cave");
+            let mut biomes: std::collections::BTreeMap<&str, u32> = Default::default();
+            let (mut in_cave, mut elsewhere) = (0, 0);
+            for y in c[1] - r..=c[1] + r {
+                for z in c[2] - r..=c[2] + r {
+                    for x in c[0] - r..=c[0] + r {
+                        let b = w.biome([x, y, z]);
+                        *biomes.entry(name_of(ek::BIOME, b)).or_default() += 1;
+                        if block_of(w.get([x, y, z])) == block_of(crystal) {
+                            if cave.on_biome(b) { in_cave += 1 } else { elsewhere += 1 }
+                        }
+                    }
+                }
+            }
+            let list: Vec<String> = biomes.iter().map(|(n, k)| format!("{n}={k}")).collect();
+            Ok(format!("{} | crystals {in_cave} {elsewhere}", list.join(" ")))
+        }
+        "onto" => {
+            // `onto #id h`: the player on top of an entity `h` high, in the same tick (moving
+            // platforms move on while a teleport by command makes its way).
+            let id = a.owner(w, player)?;
+            let h: f64 = a.num()?;
+            let e = w.entity(id).ok_or("no such entity")?;
+            w.teleport(player, None, [e.pos[0], e.pos[1] + h + 0.05, e.pos[2]]);
+            Ok(String::new())
+        }
+        "navigate" => {
+            let id = a.owner(w, player)?;
+            let p = a.pos()?;
+            Ok((w.navigate(id, [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], 1.0) as u32).to_string())
+        }
+        "structure" => {
+            let name = a.word()?;
+            let r: i32 = a.num()?;
+            let me = w.entity(player).ok_or("no player")?;
+            let p = [me.pos[0].floor() as i32, me.pos[1].floor() as i32, me.pos[2].floor() as i32];
+            Ok(w.structure_near(name, p, r).map_or("none".into(), |a| format!("{} {} {}", a[0], a[1], a[2])))
         }
         "health" => {
             let id = a.owner(w, player).unwrap_or(player);

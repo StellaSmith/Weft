@@ -20,12 +20,28 @@ value! {
 static EATEN: Event<Eaten> = Event::new("eaten");
 static SMELTED: Event<Smelted> = Event::new("smelted");
 static GOLD: Block = Block::named("base:gold_block");
+/// Shared with everyone who sees the entity, for the sync test.
+pub static MARK: Component<u32> = Component::new("testkit:mark");
+/// Server-side stack data that is not saved either.
+pub static SECRET: Component<u32> = Component::new("testkit:secret");
 
 fn count(i: usize, n: usize) {
     COUNTS[i].fetch_add(n as u32, Ordering::Relaxed);
 }
 
 pub fn register(r: &mut Registry) {
+    r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS, &["base:pig"]);
+    r.rule("count_marks", 0);
+    // While the rule is on, every marked pig counts up once a tick.
+    r.system(&MARK, |b| {
+        if b.world().rule("testkit:count_marks") == 0 {
+            return;
+        }
+        for m in b.values().iter_mut().filter(|m| **m > 0) {
+            *m += 1;
+        }
+    });
+    r.stack_component(&SECRET, abi::stack_flags::SERVER_ONLY | abi::stack_flags::NO_SAVE);
     // Switches for the tests of the extension mechanisms, off unless a test turns them on.
     r.rule("protect_gold", 0);
     r.rule("half_damage", 0);
@@ -255,6 +271,25 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let id: u64 = a.word()?.trim_start_matches('#').parse().map_err(|_| "bad id".to_string())?;
             w.remove(id);
             Ok(String::new())
+        }
+        "mark" => {
+            let id: u64 = a.word()?.trim_start_matches('#').parse().map_err(|_| "bad id".to_string())?;
+            let v: u32 = a.num()?;
+            *w.component_mut(id, &MARK).ok_or("no mark component")? = v;
+            Ok(String::new())
+        }
+        "secret" => {
+            let owner = a.owner(w, player)?;
+            let slot: u32 = a.num()?;
+            let inv = w.inventory(owner);
+            let s = inv.get(slot);
+            match a.num::<u32>() {
+                Ok(v) => {
+                    inv.set(slot, s.with(&SECRET, v));
+                    Ok(String::new())
+                }
+                Err(_) => Ok(SECRET.stack_only(&s).map_or("none".into(), |v| v.to_string())),
+            }
         }
         "events" => {
             if a.word() == Ok("reset") {

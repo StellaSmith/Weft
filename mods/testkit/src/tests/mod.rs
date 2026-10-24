@@ -3,6 +3,7 @@
 mod extend;
 mod gameplay;
 mod liquids;
+mod sync;
 mod ui;
 mod visual;
 mod world;
@@ -49,6 +50,9 @@ pub fn all() -> Vec<TestDef> {
         extend::loot_tables,
         extend::tool_tiers,
         extend::healing_food,
+        sync::menu_sync,
+        sync::watcher_sync,
+        sync::server_only_stack_data,
         visual::held_items,
         visual::tooltips,
         visual::night_light,

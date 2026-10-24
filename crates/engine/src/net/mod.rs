@@ -84,7 +84,7 @@ pub enum ToClient {
     Health { health: f32, max: f32 },
     /// Hit by something at this horizontal direction from the player.
     Knockback([f32; 2]),
-    OpenMenu { kind: u32, window: u32, slots: u32 },
+    OpenMenu { kind: u32, window: u32, slots: u32, owner: u64 },
     MenuSlots(Vec<(u32, ItemStack)>),
     MenuData(Vec<(u32, i64)>),
     Cursor(ItemStack),
@@ -95,6 +95,8 @@ pub enum ToClient {
     Gizmos(Vec<GizmoShape>),
     /// Mod channel message (`Host::reg_packet`).
     Packet { channel: u32, data: Vec<u8> },
+    /// Components of other entities: (entity, component id, bytes).
+    EntityComponents(Vec<(u64, u32, Vec<u8>)>),
 }
 
 #[derive(Clone)]
@@ -142,6 +144,7 @@ impl Message for ToClient {
     const KINDS: &'static [&'static str] = &[
         "Welcome", "Cube", "Unload", "Blocks", "Time", "Teleport", "Spawn", "Moves", "Despawn", "Hurt", "Burning", "Worn", "GameMode", "Players", "Inventory",
         "Components", "Health", "Knockback", "OpenMenu", "MenuSlots", "MenuData", "Cursor", "CloseMenu", "Died", "Chat", "Disconnect", "Gizmos", "Packet",
+        "EntityComponents",
     ];
     fn kind(&self) -> usize {
         use ToClient::*;
@@ -174,6 +177,7 @@ impl Message for ToClient {
             Disconnect(_) => 25,
             Gizmos(_) => 26,
             Packet { .. } => 27,
+            EntityComponents(_) => 28,
         }
     }
 }

@@ -549,6 +549,8 @@ impl Dim {
             }
         }
 
+        self.run_systems(c);
+
         let gravity = c.dims[self.id as usize].gravity as f64;
         let day = self.daylight(c);
         let players: Vec<DVec3> = self.entities.list.iter().filter(|e| e.player && !e.removed).map(|e| e.pos).collect();
@@ -628,6 +630,41 @@ impl Dim {
             }
         }
         self.items(c);
+    }
+
+    /// Systems over per-entity components: values copied into one aligned array, handed over
+    /// in one call, written back (changes of synced components marked for sending).
+    fn run_systems(&mut self, c: &'static Content) {
+        for &(owner, comp, cb) in &c.game.systems {
+            let size = c.game.components[comp as usize].size as usize;
+            if size == 0 {
+                continue;
+            }
+            let ids: Vec<u64> = self.entities.list.iter().filter(|e| !e.removed && self.entities.comps.contains_key(&(e.id, comp))).map(|e| e.id).collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let mut buf = vec![0u64; (ids.len() * size).div_ceil(8)];
+            let bytes = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, ids.len() * size) };
+            for (i, id) in ids.iter().enumerate() {
+                bytes[i * size..(i + 1) * size].copy_from_slice(&self.entities.comps[&(*id, comp)]);
+            }
+            let (ids_ptr, values, count) = (ids.as_ptr(), bytes.as_mut_ptr(), ids.len() as u32);
+            self.call(owner, cb, |w| abi::SystemArgs { world: w, component: comp, ids: ids_ptr, values, count, stride: size as u32 });
+            let synced = c.game.components[comp as usize].flags & (abi::component_flags::SYNC_OWNER | abi::component_flags::SYNC_WATCHERS | abi::component_flags::SYNC_MENU) != 0;
+            let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, ids.len() * size) };
+            for (i, id) in ids.iter().enumerate() {
+                let new = &bytes[i * size..(i + 1) * size];
+                if let Some(old) = self.entities.comps.get_mut(&(*id, comp)) {
+                    if &old[..] != new {
+                        old.copy_from_slice(new);
+                        if synced {
+                            self.entities.dirty_comp.insert((*id, comp));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Item entities: merge neighbours, get picked up by players.

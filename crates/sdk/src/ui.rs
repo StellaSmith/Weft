@@ -34,6 +34,25 @@ impl ClientView {
     pub fn menu_data(&self, i: u32) -> i64 {
         unsafe { (host().client_menu_data)(self.raw, i) }
     }
+    /// Another entity's component the server shares with this client (`SYNC_WATCHERS`, or
+    /// `SYNC_MENU` while its menu is open).
+    pub fn component_of<T: Value>(&self, entity: u64, c: &Component<T>) -> Option<T> {
+        if entity == 0 {
+            return None;
+        }
+        let p = unsafe { (host().client_component)(self.raw, entity, c.id()) };
+        (!p.is_null()).then(|| unsafe { std::ptr::read_unaligned(p as *const T) })
+    }
+    /// The entity whose menu is open (a machine), if any.
+    pub fn menu_owner(&self) -> Option<u64> {
+        let o = unsafe { (host().client_menu_owner)(self.raw) };
+        (o != 0).then_some(o)
+    }
+    /// A component of the open menu's machine, synced with `SYNC_MENU`: screens bind to it
+    /// instead of copying values into menu data.
+    pub fn menu_component<T: Value>(&self, c: &Component<T>) -> Option<T> {
+        self.component_of(self.menu_owner()?, c)
+    }
 }
 
 /// Text argument for translation templates.
@@ -263,9 +282,15 @@ impl Ui {
 
     /// Progress from any value 0..1.
     pub fn progress_bind(&mut self, class: &str, s: S, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
+        self.progress_bind_dir(class, s, abi::ui_dir::RIGHT, f)
+    }
+
+    /// Like `progress_bind`, filling in direction `dir` (`abi::ui_dir`).
+    pub fn progress_bind_dir(&mut self, class: &str, s: S, dir: u32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
         let mut n = node(k::PROGRESS, s);
         n.class = Str::new(class);
         n.bind = bind(f);
+        n.dir = dir;
         self.leaf(n)
     }
 

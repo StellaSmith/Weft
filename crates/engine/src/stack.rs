@@ -88,6 +88,28 @@ pub fn with_damage(stack: ItemStack, damage: u32) -> ItemStack {
     ItemStack { data: with(stack.data, comp, (damage > 0).then_some(&bytes[..])), ..stack }
 }
 
+fn without(data: u32, flag: u32) -> u32 {
+    let Some(c) = crate::content::try_content() else { return data };
+    if data == 0 || c.stack_flags.is_empty() {
+        return data;
+    }
+    let d = get(data);
+    if !d.iter().any(|(id, _)| c.stack_flags.get(id).is_some_and(|f| f & flag != 0)) {
+        return data;
+    }
+    intern(d.iter().filter(|(id, _)| !c.stack_flags.get(id).is_some_and(|f| f & flag != 0)).cloned().collect())
+}
+
+/// The stack as clients may see it: without `SERVER_ONLY` components.
+pub fn for_client(s: ItemStack) -> ItemStack {
+    ItemStack { data: without(s.data, voxide_abi::stack_flags::SERVER_ONLY), ..s }
+}
+
+/// Stack data to write to saves: without `NO_SAVE` components.
+pub fn for_save(data: u32) -> u32 {
+    without(data, voxide_abi::stack_flags::NO_SAVE)
+}
+
 /// Components by name, for saves and the network; names the reader does not know are dropped.
 pub fn to_names(data: u32) -> Vec<(String, Vec<u8>)> {
     let Some(c) = crate::content::try_content() else { return Vec::new() };

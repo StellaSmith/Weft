@@ -82,7 +82,7 @@ fn init(r: &mut Registry) {
         .hardness(0.0)
         .needs(2, "");
 
-    r.entity_component(&MACHINE, Machine::default(), component_flags::SAVE, &["testmod:generator", "testmod:electric_furnace"]);
+    r.entity_component(&MACHINE, Machine::default(), component_flags::SAVE | component_flags::SYNC_MENU, &["testmod:generator", "testmod:electric_furnace"]);
     r.entity("generator").handle(&GENERATOR_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_generators);
     r.entity("electric_furnace").handle(&FURNACE_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_furnaces);
     r.attach("generator", "energy");
@@ -90,35 +90,32 @@ fn init(r: &mut Registry) {
     r.block_entity("generator", "generator", 1);
     r.block_entity("electric_furnace", "electric_furnace", 2);
 
+    // The machine and energy components sync to open menus; screens bind to them.
     r.menu("generator").handle(&GENERATOR_MENU)
-        .data(4)
         .setup(|m| {
             m.slots(m.owner(), 0, 1, 0);
             m.slots(PLAYER, 9, 27, 0);
             m.slots(PLAYER, 0, 9, 0);
         })
-        .on_tick(|m| sync(m))
         .screen(|ui| {
             machine_screen(ui, "testmod.generator", 1, |ui| {
                 ui.column(S::col().gap(2.0).center(), |ui| {
                     ui.slot(0);
-                    ui.progress_dir("flame", S::default().size(14.0, 14.0), 2, 3, abi::ui_dir::UP);
+                    ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.burn, m.burn_max)));
                 });
             })
         });
     r.menu("electric_furnace").handle(&FURNACE_MENU)
-        .data(4)
         .setup(|m| {
             m.slots(m.owner(), 0, 1, 0);
             m.slots(m.owner(), 1, 1, sf::OUTPUT);
             m.slots(PLAYER, 9, 27, 0);
             m.slots(PLAYER, 0, 9, 0);
         })
-        .on_tick(|m| sync(m))
         .screen(|ui| {
             machine_screen(ui, "testmod.electric_furnace", 2, |ui| {
                 ui.slot(0);
-                ui.progress("arrow", S::default().size(24.0, 16.0), 2, 3);
+                ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.progress, m.progress_max)));
                 ui.slot(1);
             })
         });
@@ -195,8 +192,11 @@ fn machine_screen(ui: &mut Ui, title: &'static str, first: u32, slots: impl FnOn
         ui.text(title);
         ui.row(S::row().gap(8.0), |ui| {
             ui.column(S::col().gap(2.0), |ui| {
-                ui.text_bind(|c, out| out.set("testmod.energy", &[Arg::Int(c.menu_data(0)), Arg::Int(c.menu_data(1))]));
-                ui.progress("energy", S::default().size(80.0, 8.0), 0, 1);
+                ui.text_bind(|c, out| {
+                    let e = c.menu_component(&ENERGY).unwrap_or_default();
+                    out.set("testmod.energy", &[Arg::Int(e.stored), Arg::Int(e.capacity)]);
+                });
+                ui.progress_bind("energy", S::default().size(80.0, 8.0), |c| c.menu_component(&ENERGY).map_or(0.0, |e| if e.capacity > 0 { e.stored as f32 / e.capacity as f32 } else { 0.0 }));
             });
             ui.spacer();
             ui.row(S::row().gap(6.0), slots);
@@ -209,20 +209,8 @@ fn machine_screen(ui: &mut Ui, title: &'static str, first: u32, slots: impl FnOn
     });
 }
 
-/// Menu data: 0 stored energy, 1 capacity, 2 progress, 3 progress max.
-fn sync(m: &MenuCtx) {
-    let w = m.world();
-    let id = m.owner();
-    if let Some(e) = w.energy(id) {
-        let e = *e;
-        m.set_data(0, e.stored);
-        m.set_data(1, e.capacity);
-    }
-    if let Some(s) = w.component(id, &MACHINE) {
-        let (a, b) = if s.burn_max > 0 { (s.burn, s.burn_max) } else { (s.progress, s.progress_max) };
-        m.set_data(2, a as i64);
-        m.set_data(3, b as i64);
-    }
+fn ratio(a: u32, b: u32) -> f32 {
+    if b == 0 { 0.0 } else { a as f32 / b as f32 }
 }
 
 /// `/gizmo testmod:energy`: stored energy above every machine, the mod-side use of gizmos.

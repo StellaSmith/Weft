@@ -155,6 +155,11 @@ pub struct Game {
     pub attr_names: FxHashMap<String, u32>,
     /// The engine component holding entities' attribute modifiers.
     pub modifiers_comp: u32,
+    /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
+    pub watched_comps: Vec<u32>,
+    pub menu_comps: Vec<u32>,
+    /// (owner, component, system) in mod order.
+    pub systems: Vec<(ModId, u32, Callback)>,
 }
 
 #[derive(Default)]
@@ -231,6 +236,8 @@ pub struct RawGame {
     pub loot_mods: Vec<crate::loot::RawLootMod>,
     /// (component, schema, `stack_flags`).
     pub stack_components: Vec<(String, String, u32)>,
+    /// (owner, component, schema, system).
+    pub systems: Vec<(ModId, String, String, Callback)>,
 }
 
 /// An event mods can subscribe to; `size` is learned from the first value emitted when the
@@ -472,6 +479,7 @@ pub fn freeze(
     let mut attach: Vec<(String, String)> = Vec::new();
     let mut packets: Vec<(ModId, String, u32, Callback)> = Vec::new();
     let mut event_handlers: Vec<(ModId, String, String, Callback)> = Vec::new();
+    let mut systems: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
     let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
     let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0)];
@@ -481,6 +489,7 @@ pub fn freeze(
         g.keys.extend(r.keys);
         g.rules.extend(r.rules);
         event_handlers.extend(r.event_handlers);
+        systems.extend(r.systems);
         interceptors.extend(r.interceptors);
         modifiers.extend(r.modifiers);
         attributes.extend(r.attributes);
@@ -574,6 +583,17 @@ pub fn freeze(
     g.component_names = g.components.iter().enumerate().filter(|(_, d)| d.runtime).map(|(i, d)| (d.name.clone(), i as u32)).collect();
     g.energy = g.component_names[abi::comp::ENERGY];
     g.modifiers_comp = g.component_names[MODIFIERS];
+    let with_flag = |f: u32| g.components.iter().enumerate().filter(|(_, d)| d.runtime && d.flags & f != 0).map(|(i, _)| i as u32).collect::<Vec<u32>>();
+    g.watched_comps = with_flag(abi::component_flags::SYNC_WATCHERS);
+    g.menu_comps = with_flag(abi::component_flags::SYNC_MENU);
+    systems.sort_by_key(|s| order(s.0));
+    for (owner, name, schema, cb) in systems {
+        match g.component_names.get(&name) {
+            Some(&id) if c.schemas[id as usize] == schema || schema.is_empty() => g.systems.push((owner, id, cb)),
+            Some(&id) => errors.push(format!("system over {name}: it is '{}', the system takes '{schema}'", c.schemas[id as usize])),
+            None => errors.push(format!("system over {name}: no entity component of that name")),
+        }
+    }
     for (kind, comp) in attach {
         match (g.entity_names.get(&kind), g.component_names.get(&comp)) {
             (Some(&k), Some(&cid)) => g.entities[k as usize].components.push(cid),

@@ -142,6 +142,8 @@ pub static HOST: Host = Host {
     roll_loot,
     break_block,
     reg_stack_component,
+    client_menu_owner: crate::client::modui::client_menu_owner,
+    reg_system,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -334,8 +336,9 @@ unsafe extern "C" fn component(w: *mut abi::WorldCtx, id: u64, comp: u32, write:
         let d = dim(w);
         match d.entities.comps.get_mut(&(id, comp)) {
             Some(b) => {
-                // Only owner-synced components need to know about writes.
-                if write != 0 && content().game.components.get(comp as usize).is_some_and(|c| c.flags & voxide_abi::component_flags::SYNC_OWNER != 0) {
+                // Only synced components need to know about writes.
+                use voxide_abi::component_flags as cf;
+                if write != 0 && content().game.components.get(comp as usize).is_some_and(|c| c.flags & (cf::SYNC_OWNER | cf::SYNC_WATCHERS | cf::SYNC_MENU) != 0) {
                     d.entities.dirty_comp.insert((id, comp));
                 }
                 b.as_mut_ptr()
@@ -1020,6 +1023,14 @@ unsafe extern "C" fn roll_loot(w: *mut abi::WorldCtx, name: Str, ctx: *const abi
 
 unsafe extern "C" fn break_block(w: *mut abi::WorldCtx, pos: *const [i32; 3], tool: ItemStack, player: u64, drops: u32) -> u32 {
     unsafe { dim(w).break_block(content(), ip(pos), tool, player, drops != 0) as u32 }
+}
+
+unsafe extern "C" fn reg_system(r: *mut abi::Registrar, name: Str, schema: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.systems.push((owner, name.as_str().to_string(), schema.as_str().to_string(), cb));
+    }
 }
 
 unsafe extern "C" fn reg_stack_component(r: *mut abi::Registrar, name: Str, schema: Str, flags: u32) {

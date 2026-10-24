@@ -32,29 +32,20 @@ const FUEL_SLOT: u32 = 1;
 const OUTPUT: u32 = 2;
 
 pub fn register(r: &mut Registry) {
-    r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE, &["base:furnace"]);
+    // Synced to whoever has the furnace open: the screen binds to it directly.
+    r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU, &["base:furnace"]);
     r.entity("furnace").handle(&FURNACE_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_furnaces);
     r.entity("chest").handle(&CHEST_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE);
     r.block_entity("furnace", "furnace", 3);
     r.block_entity("chest", "chest", 27);
 
     r.menu("furnace").handle(&FURNACE_MENU)
-        .data(4)
         .setup(|m| {
             m.slots(m.owner(), INPUT, 1, 0);
             m.slots(m.owner(), FUEL_SLOT, 1, 0);
             m.slots(m.owner(), OUTPUT, 1, sf::OUTPUT);
             m.slots(PLAYER, 9, 27, 0);
             m.slots(PLAYER, 0, 9, 0);
-        })
-        .on_tick(|m| {
-            if let Some(s) = m.world().component(m.owner(), &SMELTING) {
-                let s = *s;
-                m.set_data(0, s.burn as i64);
-                m.set_data(1, s.burn_max as i64);
-                m.set_data(2, s.cook as i64);
-                m.set_data(3, s.cook_max as i64);
-            }
         })
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
@@ -63,10 +54,10 @@ pub fn register(r: &mut Registry) {
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
                         ui.slot(0);
-                        ui.progress_dir("flame", S::default().size(14.0, 14.0), 0, 1, abi::ui_dir::UP);
+                        ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.burn, s.burn_max)));
                         ui.slot(1);
                     });
-                    ui.progress("arrow", S::default().size(24.0, 16.0), 2, 3);
+                    ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
                     ui.slot(2);
                     ui.spacer();
                 });
@@ -87,6 +78,10 @@ pub fn register(r: &mut Registry) {
                 player_slots(ui, 27, true);
             });
         });
+}
+
+fn ratio(a: u32, b: u32) -> f32 {
+    if b == 0 { 0.0 } else { a as f32 / b as f32 }
 }
 
 /// Called from the block registrations: right click opens the menu of the block's entity.

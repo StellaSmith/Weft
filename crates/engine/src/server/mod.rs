@@ -551,7 +551,7 @@ impl Server {
         }
         p.window += 1;
         let m = menu::open(r, c, p.entity, kind, owner, p.window);
-        p.conn.send(ToClient::OpenMenu { kind, window: p.window, slots: m.slots.len() as u32 });
+        p.conn.send(ToClient::OpenMenu { kind, window: p.window, slots: m.slots.len() as u32, owner });
         p.menu = Some(m);
     }
 
@@ -1603,7 +1603,7 @@ impl Server {
                     visible.insert(e.id);
                     if !p.known.contains(&e.id) {
                         let worn = e.worn.clone();
-                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: e.item, health: e.health, worn });
+                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: crate::stack::for_client(e.item), health: e.health, worn });
                     }
                 }
             }
@@ -1619,8 +1619,25 @@ impl Server {
             if !gone.is_empty() {
                 p.conn.send(ToClient::Despawn(gone));
             }
+            // Components every viewer gets: all of newly seen entities, changes of known ones.
+            let mut shared: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+            for reg in &dim.regions {
+                for &(id, comp) in &reg.entities.dirty_comp {
+                    if id != p.entity && p.known.contains(&id) && visible.contains(&id) && c.game.components[comp as usize].flags & cf::SYNC_WATCHERS != 0 {
+                        shared.extend(reg.entities.comps.get(&(id, comp)).map(|b| (id, comp, b.to_vec())));
+                    }
+                }
+                for v in &spawn {
+                    for &comp in &c.game.watched_comps {
+                        shared.extend(reg.entities.comps.get(&(v.id, comp)).map(|b| (v.id, comp, b.to_vec())));
+                    }
+                }
+            }
             if !spawn.is_empty() {
                 p.conn.send(ToClient::Spawn(spawn));
+            }
+            if !shared.is_empty() {
+                p.conn.send(ToClient::EntityComponents(shared));
             }
             let moves: Vec<(u64, DVec3, f32, f32)> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
             if !moves.is_empty() {
@@ -1651,7 +1668,7 @@ impl Server {
                 // Own inventory and synced components.
                 if p.first_sync || reg.entities.dirty_inv.contains(&p.entity) {
                     if let Some(inv) = reg.entities.inventories.get(&p.entity) {
-                        p.conn.send(ToClient::Inventory(inv.iter().enumerate().map(|(i, s)| (i as u32, *s)).collect()));
+                        p.conn.send(ToClient::Inventory(inv.iter().enumerate().map(|(i, s)| (i as u32, crate::stack::for_client(*s))).collect()));
                     }
                 }
                 let comps: Vec<(u32, Vec<u8>)> = reg
@@ -1670,6 +1687,19 @@ impl Server {
                 }
                 p.first_sync = false;
                 if let Some(m) = &mut p.menu {
+                    // The machine's menu-synced components, all at first, then what changed.
+                    let owner = m.owner;
+                    let first = !std::mem::replace(&mut m.comps_sent, true);
+                    let comps: Vec<(u64, u32, Vec<u8>)> = c
+                        .game
+                        .menu_comps
+                        .iter()
+                        .filter(|&&comp| owner != 0 && (first || reg.entities.dirty_comp.contains(&(owner, comp))))
+                        .filter_map(|&comp| reg.entities.comps.get(&(owner, comp)).map(|b| (owner, comp, b.to_vec())))
+                        .collect();
+                    if !comps.is_empty() {
+                        p.conn.send(ToClient::EntityComponents(comps));
+                    }
                     let (slots, data, cursor) = menu::changes(m, reg, p.entity);
                     if !slots.is_empty() {
                         p.conn.send(ToClient::MenuSlots(slots));
@@ -1910,7 +1940,7 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
     if let Some(inv) = d.entities.inventories.get(&p.entity) {
         let items: Vec<String> = inv
             .iter()
-            .map(|s| if s.is_empty() { "-".into() } else { format!("{}*{}*{}", c.items[s.item as usize].name, s.count, crate::stack::to_text(s.data)) })
+            .map(|s| if s.is_empty() { "-".into() } else { format!("{}*{}*{}", c.items[s.item as usize].name, s.count, crate::stack::to_text(crate::stack::for_save(s.data))) })
             .collect();
         text.push_str(&format!("inventory = {}\n", items.join(" ")));
     }

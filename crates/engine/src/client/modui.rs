@@ -235,9 +235,15 @@ pub unsafe extern "C" fn client_component(c: *mut abi::ClientCtx, id: u64, comp:
     unsafe {
         match view(c) {
             Some(cl) if id == cl.player_id || id == 0 => cl.components.get(&comp).map_or(std::ptr::null(), |v| v.as_ptr()),
-            _ => std::ptr::null(),
+            // Other entities' components the server shares (`SYNC_WATCHERS`, `SYNC_MENU`).
+            Some(cl) => cl.entity_components.get(&(id, comp)).map_or(std::ptr::null(), |v| v.as_ptr()),
+            None => std::ptr::null(),
         }
     }
+}
+
+pub unsafe extern "C" fn client_menu_owner(c: *mut abi::ClientCtx) -> u64 {
+    unsafe { view(c).and_then(|cl| cl.menu.as_ref()).map_or(0, |m| m.owner) }
 }
 
 pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mut abi::EntityState) -> u32 {

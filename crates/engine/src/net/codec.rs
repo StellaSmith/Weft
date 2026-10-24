@@ -238,8 +238,18 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.f32(*health);
             w.f32(*max);
         }
-        ToClient::OpenMenu { kind, window, slots } => {
+        ToClient::EntityComponents(list) => {
+            w.u8(28);
+            w.len(list.len());
+            for (id, comp, b) in list {
+                w.u64(*id);
+                w.u32(*comp);
+                w.bytes(b);
+            }
+        }
+        ToClient::OpenMenu { kind, window, slots, owner } => {
             w.u8(13);
+            w.u64(*owner);
             w.u32(*kind);
             w.u32(*window);
             w.u32(*slots);
@@ -401,7 +411,18 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             ToClient::Components(list)
         }
         12 => ToClient::Health { health: r.f32()?, max: r.f32()? },
-        13 => ToClient::OpenMenu { kind: r.u32()?, window: r.u32()?, slots: r.u32()? },
+        13 => {
+            let owner = r.u64()?;
+            ToClient::OpenMenu { kind: r.u32()?, window: r.u32()?, slots: r.u32()?, owner }
+        }
+        28 => {
+            let n = r.len()?;
+            let mut list = Vec::with_capacity(n.min(4096));
+            for _ in 0..n {
+                list.push((r.u64()?, r.u32()?, r.bytes()?));
+            }
+            ToClient::EntityComponents(list)
+        }
         14 => {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);

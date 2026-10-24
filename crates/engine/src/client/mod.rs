@@ -84,6 +84,8 @@ pub struct Puff {
 pub struct ClientMenu {
     pub kind: u32,
     pub window: u32,
+    /// The entity it belongs to, 0 for none.
+    pub owner: u64,
     pub slots: Vec<ItemStack>,
     pub data: Vec<i64>,
     pub cursor: ItemStack,
@@ -159,6 +161,8 @@ pub struct Client {
     pub events: Vec<ClientEvent>,
     /// Mod channel messages waiting for their client handler.
     pub packets: Vec<(u32, Vec<u8>)>,
+    /// Components of other entities the server shares.
+    pub entity_components: FxHashMap<(u64, u32), Vec<u8>>,
     pub chat: Vec<(String, Instant)>,
     pub gizmos: gizmo::Gizmos,
     /// This frame's gizmo shapes, from `collect_gizmos`.
@@ -280,6 +284,7 @@ on: {on}", list.join("
             menu: None,
             events: Vec::new(),
             packets: Vec::new(),
+            entity_components: FxHashMap::default(),
             chat: Vec::new(),
             gizmos: Default::default(),
             gizmo_lines: Vec::new(),
@@ -367,6 +372,7 @@ on: {on}", list.join("
                     }
                 }
                 ToClient::Despawn(ids) => {
+                    self.entity_components.retain(|(e, _), _| !ids.contains(e));
                     for id in ids {
                         // Killed mobs stay a moment for the death animation.
                         match self.entities.get_mut(&id) {
@@ -431,11 +437,12 @@ on: {on}", list.join("
                         self.dead = false;
                     }
                 }
-                ToClient::OpenMenu { kind, window, slots } => {
+                ToClient::OpenMenu { kind, window, slots, owner } => {
                     let data = c.game.menus.get(kind as usize).map_or(0, |m| m.data_count);
                     self.menu = Some(ClientMenu {
                         kind,
                         window,
+                        owner,
                         slots: vec![ItemStack::EMPTY; slots as usize],
                         data: vec![0; data as usize],
                         cursor: ItemStack::EMPTY,
@@ -490,6 +497,11 @@ on: {on}", list.join("
                 ToClient::Disconnect(reason) => self.disconnected = Some(reason),
                 ToClient::Gizmos(shapes) => self.gizmos.receive(shapes),
                 ToClient::Packet { channel, data } => self.packets.push((channel, data)),
+                ToClient::EntityComponents(list) => {
+                    for (id, comp, bytes) in list {
+                        self.entity_components.insert((id, comp), bytes);
+                    }
+                }
                 _ => {}
             }
         }

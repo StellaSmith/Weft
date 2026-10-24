@@ -1328,6 +1328,23 @@ pub struct Host {
     pub break_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], tool: ItemStack, player: u64, drops: u32) -> u32,
     /// Declares a stack component's flags (`stack_flags`).
     pub reg_stack_component: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, flags: u32),
+    /// Client: the entity the open menu belongs to (a machine), 0 if none.
+    pub client_menu_owner: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
+    /// A system: once per tick and region `cb` gets `SystemArgs` with every entity that has the
+    /// per-entity component `name` and their values side by side, to change in place.
+    pub reg_system: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, cb: Callback),
+}
+
+/// Values are copied out before the call and written back after it (changes of synced
+/// components get sent), so they form one dense, aligned array.
+#[repr(C)]
+pub struct SystemArgs {
+    pub world: *mut WorldCtx,
+    pub component: u32,
+    pub ids: *const u64,
+    pub values: *mut u8,
+    pub count: u32,
+    pub stride: u32,
 }
 
 /// Engine events (`Host::reg_event_handler`); values are the structs named in each line.

@@ -33,6 +33,8 @@ pub struct OpenMenu {
     pub sent_slots: Vec<ItemStack>,
     pub sent_data: Vec<i64>,
     pub sent_cursor: ItemStack,
+    /// The owner's menu-synced components went out once.
+    pub comps_sent: bool,
 }
 
 /// What `MenuCtx` pointers handed to mods point at.
@@ -124,6 +126,7 @@ pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64, wind
         sent_slots: Vec::new(),
         sent_data: Vec::new(),
         sent_cursor: ItemStack::EMPTY,
+        comps_sent: false,
     };
     call(&mut m, dim, c, player, 0, |d| d.setup);
     call(&mut m, dim, c, player, 0, |d| d.on_change);
@@ -373,7 +376,7 @@ pub fn changes(m: &mut OpenMenu, dim: &Dim, player: u64) -> (Vec<(u32, ItemStack
         let s = get(m, dim, player, i);
         if m.sent_slots[i as usize] != s {
             m.sent_slots[i as usize] = s;
-            slots.push((i, s));
+            slots.push((i, crate::stack::for_client(s)));
         }
     }
     let mut data = Vec::new();
@@ -385,7 +388,7 @@ pub fn changes(m: &mut OpenMenu, dim: &Dim, player: u64) -> (Vec<(u32, ItemStack
     }
     let cursor = (m.sent_cursor != m.cursor).then(|| {
         m.sent_cursor = m.cursor;
-        m.cursor
+        crate::stack::for_client(m.cursor)
     });
     (slots, data, cursor)
 }

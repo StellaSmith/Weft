@@ -46,7 +46,7 @@ impl W<'_> {
         self.u32(s.count);
         // Saves before stack components had the damage here.
         self.u32(STACK_DATA);
-        let data = crate::stack::to_names(s.data);
+        let data = crate::stack::to_names(crate::stack::for_save(s.data));
         self.u32(data.len() as u32);
         for (name, bytes) in &data {
             self.str(name);

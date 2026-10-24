@@ -397,7 +397,43 @@ impl LootModBuilder<'_> {
     }
 }
 
+/// Every entity of a region that has a component, with the values side by side.
+pub struct SystemBatch<'a, T> {
+    world: World,
+    ids: &'a [u64],
+    values: &'a mut [T],
+}
+
+impl<T> SystemBatch<'_, T> {
+    pub fn world(&self) -> World {
+        self.world
+    }
+    pub fn ids(&self) -> &[u64] {
+        self.ids
+    }
+    pub fn values(&mut self) -> &mut [T] {
+        self.values
+    }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (u64, &mut T)> {
+        self.ids.iter().copied().zip(self.values.iter_mut())
+    }
+}
+
 impl Registry {
+    /// A system over a per-entity component (`Registry::entity_component`): once per tick and
+    /// region with all values in one slice, no host call per entity.
+    pub fn system<T: Value>(&mut self, comp: &crate::Component<T>, f: impl Fn(&mut SystemBatch<T>) + Send + Sync + 'static) {
+        let cb = callback(move |a: &mut abi::SystemArgs| {
+            if a.stride as usize != size_of::<T>() || a.count == 0 {
+                return;
+            }
+            let n = a.count as usize;
+            let mut b = SystemBatch { world: World::from_raw(a.world), ids: unsafe { std::slice::from_raw_parts(a.ids, n) }, values: unsafe { std::slice::from_raw_parts_mut(a.values as *mut T, n) } };
+            f(&mut b);
+        });
+        unsafe { (host().reg_system)(self.raw, Str::new(comp.name()), Str::new(&T::schema()), cb) }
+    }
+
     /// Handles every value of `event` once per tick (and region), in one call.
     pub fn on<T: Value>(&mut self, event: &Event<T>, f: impl Fn(&EventBatch<T>) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::EventArgs| {

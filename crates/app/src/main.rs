@@ -107,7 +107,8 @@ fn main() {
                 Err(e) => log::warn!("cannot pack {}: {e}", dir.display()),
             }
         }
-        opts.mod_dirs.clear();
+        let sources = root.join("mods");
+        opts.mod_dirs.retain(|d| *d != sources);
     }
     opts.mod_dirs.push(player_mods);
     voxide_engine::init_workers();

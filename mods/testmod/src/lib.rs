@@ -2,7 +2,8 @@
 //! `voxide_sdk`:
 //! - a generator, a cable and an electric furnace talking through the engine's energy contract,
 //! - a block with its own screen (energy bar bound to synced menu data),
-//! - reads the base game's data (fuel values, smelting recipes) by name, no code dependency,
+//! - reads the base game's data (fuel values, smelting recipes) by name, no code dependency: it
+//!   declares the common `fuel` component itself and the engine checks both agree on its type,
 //! - replaces a base game block (torches burn blue),
 //! - adds its own dimensions, one of them a planet built only from terrain presets,
 //! - adds an ore to the base game's overworld.
@@ -41,31 +42,29 @@ static MARS_TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
         .biome(BiomeRule::new(&DUST).surface(&REGOLITH, &REGOLITH, 3))
 });
 
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct Machine {
-    burn: u32,
-    burn_max: u32,
-    progress: u32,
-    progress_max: u32,
+value! {
+    #[derive(Default)]
+    struct Machine { burn: u32, burn_max: u32, progress: u32, progress_max: u32 }
 }
 
-static MACHINE: Component<Machine> = Component::new();
+static MACHINE: Component<Machine> = Component::new("testmod:machine");
+/// The common fuel value; the base game sets it, this mod only reads it.
+static FUEL: Component<u32> = Component::new("fuel");
 
 const PER_TICK: i64 = 40;
 const FURNACE_USE: i64 = 20;
 
 fn init(r: &mut Registry) {
-    r.block("generator", &GENERATOR).textures("machine_top", "generator", "machine_top").hardness(3.0).tool("pickaxe", 1).on_use(open(&GENERATOR_MENU));
-    r.block("electric_furnace", &ELECTRIC_FURNACE)
+    r.block("generator").handle(&GENERATOR).textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0).on_use(open(&GENERATOR_MENU));
+    r.block("electric_furnace").handle(&ELECTRIC_FURNACE)
         .textures("machine_top", "electric_furnace", "machine_top")
         .hardness(3.0)
-        .tool("pickaxe", 1)
+        .mineable("pickaxe").needs_tool(0)
         .on_use(open(&FURNACE_MENU));
-    r.block("cable", &CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("core:conductor").hardness(0.5);
+    r.block("cable").handle(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor").hardness(0.5);
 
     // Same name as the base game's torch: the base game's handle, item and recipes now give this.
-    r.block("base:torch", &SOUL_TORCH)
+    r.block("base:torch").handle(&SOUL_TORCH)
         .replace()
         .model_box([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], "soul_torch")
         .not_solid()
@@ -73,15 +72,15 @@ fn init(r: &mut Registry) {
         .hardness(0.0)
         .needs(2, "");
 
-    r.component("machine", &MACHINE, Machine::default(), component_flags::SAVE, &["testmod:generator", "testmod:electric_furnace"]);
-    r.entity("generator", &GENERATOR_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_generators);
-    r.entity("electric_furnace", &FURNACE_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_furnaces);
-    r.attach("generator", "core:energy");
-    r.attach("electric_furnace", "core:energy");
+    r.entity_component(&MACHINE, Machine::default(), component_flags::SAVE, &["testmod:generator", "testmod:electric_furnace"]);
+    r.entity("generator").handle(&GENERATOR_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_generators);
+    r.entity("electric_furnace").handle(&FURNACE_ENTITY).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE).on_tick(tick_furnaces);
+    r.attach("generator", "energy");
+    r.attach("electric_furnace", "energy");
     r.block_entity("generator", "generator", 1);
     r.block_entity("electric_furnace", "electric_furnace", 2);
 
-    r.menu("generator", &GENERATOR_MENU)
+    r.menu("generator").handle(&GENERATOR_MENU)
         .data(4)
         .setup(|m| {
             m.slots(m.owner(), 0, 1, 0);
@@ -93,11 +92,11 @@ fn init(r: &mut Registry) {
             machine_screen(ui, "testmod.generator", 1, |ui| {
                 ui.column(S::col().gap(2.0).center(), |ui| {
                     ui.slot(0);
-                    ui.progress("flame", S::default().size(14.0, 14.0), 2, 3);
+                    ui.progress_dir("flame", S::default().size(14.0, 14.0), 2, 3, abi::ui_dir::UP);
                 });
             })
         });
-    r.menu("electric_furnace", &FURNACE_MENU)
+    r.menu("electric_furnace").handle(&FURNACE_MENU)
         .data(4)
         .setup(|m| {
             m.slots(m.owner(), 0, 1, 0);
@@ -118,15 +117,15 @@ fn init(r: &mut Registry) {
     r.shaped("base:crafting", "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "base:furnace"), ('c', "cable")]);
     r.shaped("base:crafting", "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
 
-    r.block("regolith", &REGOLITH).hardness(0.5).tool("shovel", 0);
-    r.block("basalt", &BASALT).hardness(1.5).tool("pickaxe", 0);
+    r.block("regolith").handle(&REGOLITH).hardness(0.5).mineable("shovel");
+    r.block("basalt").handle(&BASALT).hardness(1.5).mineable("pickaxe");
     // Only tags: the base game's `#ores/*` smelting recipe and tools pick these up.
-    r.block("tin_ore", &TIN_ORE).hardness(3.0).tool("pickaxe", 1).tag("ores/tin");
-    r.item("tin_ingot", &TIN_INGOT).tag("ingots/tin");
-    r.biome("dust", &DUST, 0xb5764a, 0x9a6040, 0x8a5a40, 1.5, 0.0);
-    r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("base:stone");
+    r.block("tin_ore").handle(&TIN_ORE).hardness(3.0).mineable("pickaxe").needs_tool(0).tag("ores/tin");
+    r.item("tin_ingot").handle(&TIN_INGOT).tag("ingots/tin");
+    r.biome("dust").handle(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
+    r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("#stone");
     r.ore("mars", "tin_ore").y(-64, 90).veins(6).size(8).replace("basalt");
-    r.dimension("mars", &MARS)
+    r.dimension("mars").handle(&MARS)
         .generator(|g| {
             MARS_TERRAIN.generate(g);
         })
@@ -137,7 +136,9 @@ fn init(r: &mut Registry) {
         .fixed_time(5000)
         .sky(0xd8a080, 0xe0b090);
 
-    r.dimension("void", &VOID)
+    r.command("tagbench", "[millions:int]", tag_bench);
+
+    r.dimension("void").handle(&VOID)
         .generator(island)
         .spawn(|_| [0, 64, 0])
         .height(2, 6)
@@ -166,7 +167,7 @@ fn machine_screen(ui: &mut Ui, title: &'static str, first: u32, slots: impl FnOn
         ui.text(title);
         ui.row(S::row().gap(8.0), |ui| {
             ui.column(S::col().gap(2.0), |ui| {
-                ui.text_bind(|c, out| out.set("testmod.energy", &[Arg::Int(c.menu_data(0) as i64), Arg::Int(c.menu_data(1) as i64)]));
+                ui.text_bind(|c, out| out.set("testmod.energy", &[Arg::Int(c.menu_data(0)), Arg::Int(c.menu_data(1))]));
                 ui.progress("energy", S::default().size(80.0, 8.0), 0, 1);
             });
             ui.spacer();
@@ -186,13 +187,13 @@ fn sync(m: &MenuCtx) {
     let id = m.owner();
     if let Some(e) = w.energy(id) {
         let e = *e;
-        m.set_data(0, e.stored.min(i32::MAX as i64) as i32);
-        m.set_data(1, e.capacity.min(i32::MAX as i64) as i32);
+        m.set_data(0, e.stored);
+        m.set_data(1, e.capacity);
     }
     if let Some(s) = w.component(id, &MACHINE) {
         let (a, b) = if s.burn_max > 0 { (s.burn, s.burn_max) } else { (s.progress, s.progress_max) };
-        m.set_data(2, a as i32);
-        m.set_data(3, b as i32);
+        m.set_data(2, a as i64);
+        m.set_data(3, b as i64);
     }
 }
 
@@ -214,26 +215,26 @@ fn tick_generators(t: &EntityTick) {
     energy_gizmos(t);
     let w = t.world();
     for &id in t.ids() {
-        let Some(e) = w.energy(id) else { continue };
+        let Some(e) = w.energy_mut(id) else { continue };
         if e.capacity == 0 {
             *e = Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 };
         }
         let room = e.capacity - e.stored;
-        let Some(m) = w.component(id, &MACHINE) else { continue };
+        let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if m.burn == 0 && room >= PER_TICK {
             let inv = w.inventory(id);
             let fuel = inv.get(0);
-            // Any mod's fuel works: the value comes from the base game's "base:fuel" property.
-            if let Some(ticks) = item_prop::<u32>(fuel.item, "base:fuel").filter(|_| !fuel.is_empty()) {
+            // Any mod's fuel works: the value is the common `fuel` component.
+            if let Some(ticks) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) {
                 m.burn = ticks;
                 m.burn_max = ticks;
-                inv.set(0, ItemStack { count: fuel.count - 1, ..fuel });
+                inv.set(0, fuel.shrink(1));
             }
         }
-        let Some(m) = w.component(id, &MACHINE) else { continue };
+        let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if m.burn > 0 {
             m.burn -= 1;
-            if let Some(e) = w.energy(id) {
+            if let Some(e) = w.energy_mut(id) {
                 e.stored = (e.stored + PER_TICK).min(e.capacity);
             }
         }
@@ -244,7 +245,7 @@ fn tick_furnaces(t: &EntityTick) {
     energy_gizmos(t);
     let w = t.world();
     for &id in t.ids() {
-        let Some(e) = w.energy(id) else { continue };
+        let Some(e) = w.energy_mut(id) else { continue };
         if e.capacity == 0 {
             *e = Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 };
         }
@@ -252,8 +253,8 @@ fn tick_furnaces(t: &EntityTick) {
         let inv = w.inventory(id);
         let (input, output) = (inv.get(0), inv.get(1));
         let recipe = (!input.is_empty()).then(|| recipe_process("base:smelting", input.item)).flatten();
-        let fits = recipe.is_some_and(|(out, _)| output.is_empty() || (output.item == out.item && output.count + out.count <= item_info(out.item).0));
-        let Some(m) = w.component(id, &MACHINE) else { continue };
+        let fits = recipe.is_some_and(|(out, _)| output.is_empty() || (output.stacks_with(&out) && output.count + out.count <= max_stack(out.item)));
+        let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if !fits || stored < FURNACE_USE {
             m.progress = 0;
             continue;
@@ -266,12 +267,12 @@ fn tick_furnaces(t: &EntityTick) {
         if done {
             m.progress = 0;
         }
-        if let Some(e) = w.energy(id) {
+        if let Some(e) = w.energy_mut(id) {
             e.stored -= FURNACE_USE;
         }
         if done {
-            inv.set(0, ItemStack { count: input.count - 1, ..input });
-            inv.set(1, if output.is_empty() { out } else { ItemStack { count: output.count + out.count, ..output } });
+            inv.set(0, input.shrink(1));
+            inv.set(1, if output.is_empty() { out } else { output.grow(out.count) });
         }
     }
 }
@@ -294,4 +295,26 @@ fn island(g: &mut Gen) {
             }
         }
     }
+}
+
+/// `/tagbench`: what a tag check costs a mod compared with reading a field.
+fn tag_bench(cmd: &mut Command) {
+    static PLANT_SOIL: Tag = Tag::new("plant_soil");
+    let n = cmd.int("millions").unwrap_or(10).clamp(1, 1000) as u32 * 1_000_000;
+    let states: Vec<u32> = (0..256).map(|i| i * 7 % 120).collect();
+    let flags: Vec<u32> = (0..256).map(|i| i * 31).collect();
+    let time = |f: &dyn Fn(u32) -> u32| {
+        let t = std::time::Instant::now();
+        let mut acc = 0u32;
+        for i in 0..n {
+            acc = acc.wrapping_add(f(states[(i & 255) as usize]));
+        }
+        std::hint::black_box(acc);
+        t.elapsed().as_secs_f64() * 1e9 / n as f64
+    };
+    let field = time(&|s| flags[s as usize & 255]);
+    let tag = time(&|s| PLANT_SOIL.on_block(s) as u32);
+    let host_call = time(&|s| state_flags(s));
+    let by_name = time(&|s| block_has_tag(s, "plant_soil") as u32);
+    cmd.reply(&format!("ns per lookup: field {field:.2}, tag {tag:.2}, host call {host_call:.2}, tag by name {by_name:.2}"));
 }

@@ -85,7 +85,7 @@ pub struct ClientMenu {
     pub kind: u32,
     pub window: u32,
     pub slots: Vec<ItemStack>,
-    pub data: Vec<i32>,
+    pub data: Vec<i64>,
     pub cursor: ItemStack,
 }
 

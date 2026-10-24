@@ -2,18 +2,13 @@
 
 use voxide_sdk::*;
 
-
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct Brain {
-    pub target: u64,
-    pub timer: u32,
-    pub wander: [f32; 2],
-    pub cooldown: u32,
-    pub panic: u32,
+value! {
+    #[derive(Default)]
+    pub struct Brain { pub target: u64, pub timer: u32, pub wander: [f32; 2], pub cooldown: u32, pub panic: u32 }
 }
 
-pub static BRAIN: Component<Brain> = Component::new();
+pub static BRAIN: Component<Brain> = Component::new("base:brain");
+pub static ANIMAL_SPAWN: Tag = Tag::new("animal_spawn");
 pub static ZOMBIE: Entity = Entity::new();
 pub static SPIDER: Entity = Entity::new();
 pub static PIG: Entity = Entity::new();
@@ -22,8 +17,8 @@ pub static COW: Entity = Entity::new();
 struct Drop(&'static str, u32, u32);
 
 pub fn register(r: &mut Registry) {
-    r.component("brain", &BRAIN, Brain::default(), 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
-    r.entity("zombie", &ZOMBIE)
+    r.entity_component(&BRAIN, Brain::default(), 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
+    r.entity("zombie").handle(&ZOMBIE)
         .size(0.6, 1.95)
         .health(20.0)
         .speed(2.6)
@@ -33,7 +28,7 @@ pub fn register(r: &mut Registry) {
         .model(biped(true))
         .on_tick(|t| hostile_ai(t, 3.0, false))
         .on_death(|e| drops(e, &[Drop("rotten_flesh", 0, 2)]));
-    r.entity("spider", &SPIDER)
+    r.entity("spider").handle(&SPIDER)
         .size(1.3, 0.9)
         .health(16.0)
         .speed(3.6)
@@ -42,7 +37,7 @@ pub fn register(r: &mut Registry) {
         .model(spider())
         .on_tick(|t| hostile_ai(t, 2.0, true))
         .on_death(|e| drops(e, &[Drop("string", 0, 2)]));
-    r.entity("pig", &PIG)
+    r.entity("pig").handle(&PIG)
         .size(0.9, 0.9)
         .health(10.0)
         .speed(2.5)
@@ -52,7 +47,7 @@ pub fn register(r: &mut Registry) {
         .on_tick(passive_ai)
         .on_hurt(panic)
         .on_death(|e| drops(e, &[Drop("porkchop", 1, 3)]));
-    r.entity("cow", &COW)
+    r.entity("cow").handle(&COW)
         .size(0.9, 1.3)
         .health(10.0)
         .speed(2.2)
@@ -77,7 +72,7 @@ fn drops(e: &mut EntityEvent, list: &[Drop]) {
 }
 
 fn panic(e: &mut EntityEvent) {
-    if let Some(b) = e.world().component(e.entity(), &BRAIN) {
+    if let Some(b) = e.world().component_mut(e.entity(), &BRAIN) {
         b.panic = 60;
         b.wander = [0.0, 0.0];
     }
@@ -104,7 +99,7 @@ fn hostile_ai(t: &EntityTick, damage: f32, only_dark: bool) {
     let players = w.players();
     for &id in t.ids() {
         let Some(mut st) = w.entity(id) else { continue };
-        let Some(b) = w.component(id, &BRAIN) else { continue };
+        let Some(b) = w.component_mut(id, &BRAIN) else { continue };
         b.cooldown = b.cooldown.saturating_sub(1);
         b.timer = b.timer.saturating_sub(1);
         let feet = [st.pos[0].floor() as i32, (st.pos[1] + 0.5).floor() as i32, st.pos[2].floor() as i32];
@@ -123,7 +118,7 @@ fn hostile_ai(t: &EntityTick, damage: f32, only_dark: bool) {
                 st.yaw = yaw_of(dir);
                 st.pitch = 0.0;
                 w.set_entity(id, &st);
-                let Some(b) = w.component(id, &BRAIN) else { continue };
+                let Some(b) = w.component_mut(id, &BRAIN) else { continue };
                 if dist < 1.6 && (ps.pos[1] - st.pos[1]).abs() < 1.8 && b.cooldown == 0 {
                     b.cooldown = 20;
                     w.damage(p, damage, id, damage::ATTACK);
@@ -138,7 +133,7 @@ fn passive_ai(t: &EntityTick) {
     let w = t.world();
     for &id in t.ids() {
         let Some(mut st) = w.entity(id) else { continue };
-        let Some(b) = w.component(id, &BRAIN) else { continue };
+        let Some(b) = w.component_mut(id, &BRAIN) else { continue };
         if b.panic > 0 {
             b.panic -= 1;
             if b.panic % 20 == 0 || b.wander == [0.0, 0.0] {
@@ -156,7 +151,7 @@ fn passive_ai(t: &EntityTick) {
 }
 
 fn wander(w: &World, id: u64, st: &mut EntityState, speed: f32) {
-    let Some(b) = w.component(id, &BRAIN) else { return };
+    let Some(b) = w.component_mut(id, &BRAIN) else { return };
     if b.timer == 0 {
         b.timer = 40 + w.random_below(80);
         b.wander = if w.random_below(3) == 0 {
@@ -199,7 +194,7 @@ fn spawn_around_players(t: &EntityTick) {
             if dark && hostiles < 8 {
                 let kind = if w.random_below(3) == 0 { &SPIDER } else { &ZOMBIE };
                 w.spawn(kind, at);
-            } else if !dark && animals < 6 && w.random_below(20) == 0 && block_has_tag(w.get([x, y - 1, z]), "base:animal_spawn") {
+            } else if !dark && animals < 6 && w.random_below(20) == 0 && ANIMAL_SPAWN.on_block(w.get([x, y - 1, z])) {
                 let kind = if w.random_below(2) == 0 { &PIG } else { &COW };
                 for _ in 0..2 + w.random_below(2) {
                     w.spawn(kind, at);

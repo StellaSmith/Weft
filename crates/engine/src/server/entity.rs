@@ -75,6 +75,7 @@ impl Entity {
     pub fn state(&self, c: &Content) -> voxide_abi::EntityState {
         let k = &c.game.entities[self.kind as usize];
         voxide_abi::EntityState {
+            size: size_of::<voxide_abi::EntityState>() as u32,
             kind: self.kind,
             flags: k.flags | if self.blocked { ef::BLOCKED } else { 0 },
             pos: self.pos.to_array(),
@@ -206,7 +207,7 @@ impl Entities {
             if stack.count == 0 {
                 break;
             }
-            if s.item == stack.item && s.damage == stack.damage && s.count < max && !s.is_empty() {
+            if s.item == stack.item && s.data == stack.data && s.count < max && !s.is_empty() {
                 let n = (max - s.count).min(stack.count);
                 s.count += n;
                 stack.count -= n;

@@ -47,22 +47,17 @@ impl World {
     }
 }
 
-/// The block of `state` carries `tag` (its own or added by any mod with `Registry::tag`).
-pub fn block_has_tag(state: u32, tag: &str) -> bool {
-    unsafe { (host().block_has_tag)(state, crate::abi::Str::new(tag)) != 0 }
-}
-
 pub fn state_flags(state: u32) -> u32 {
     unsafe { (host().state_flags)(state) }
 }
 
 pub fn find_block(name: &str) -> Option<u32> {
-    let id = unsafe { (host().find_block)(Str::new(name)) };
+    let id = unsafe { (host().find)(abi::entry_kind::BLOCK, Str::new(name), std::ptr::null_mut()) };
     (id != u32::MAX).then_some(id)
 }
 
 pub fn find_item(name: &str) -> Option<u32> {
-    let id = unsafe { (host().find_item)(Str::new(name)) };
+    let id = unsafe { (host().find)(abi::entry_kind::ITEM, Str::new(name), std::ptr::null_mut()) };
     (id != u32::MAX).then_some(id)
 }
 

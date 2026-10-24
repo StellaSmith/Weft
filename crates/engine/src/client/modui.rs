@@ -66,18 +66,19 @@ pub fn build(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input>, owne
 }
 
 fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
+    let mut out = Vec::new();
     unsafe {
-        list.as_slice()
-            .iter()
-            .map(|a| match a.kind {
+        abi::each_sized(list, |a| {
+            out.push(match a.kind {
                 0 => Arg::Text(a.text.as_str().to_string()),
                 1 => Arg::Key(a.text.as_str().to_string()),
                 2 => Arg::Int(a.num as i64),
                 3 => Arg::Float(a.num, 1),
                 _ => Arg::Item(a.num as u32),
             })
-            .collect()
-    }
+        })
+    };
+    out
 }
 
 fn float_bind(owner: ModId, cb: Callback) -> Box<dyn Fn(&Ctx) -> f32> {
@@ -96,7 +97,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             return;
         }
         let b = &mut *(u as *mut UiBuild);
-        let n = &*node;
+        let n = &abi::read_sized(node);
         let owner = b.owner;
         let class = n.class.as_str().to_string();
         let len = |v: f32| if v.is_nan() { Len::Auto } else { Len::Px(v) };
@@ -181,7 +182,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                         if top > 0.0 { v / top } else { 0.0 }
                     })
                 };
-                b.ui.open(Kind::Progress { class: if class.is_empty() { "progress".into() } else { class }, bind, value: 0.0 }, style)
+                b.ui.open(Kind::Progress { class: if class.is_empty() { "progress".into() } else { class }, bind, value: 0.0, dir: n.dir }, style)
             }
             uk::ICONS => {
                 let bind = if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
@@ -241,7 +242,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
         let Some(cl) = view(c) else { return 0 };
         let content = crate::content::content();
         if id == cl.player_id || id == 0 {
-            *out = abi::EntityState {
+            let state = abi::EntityState {
                 kind: content.game.player_kind,
                 pos: cl.player.pos.to_array(),
                 vel: cl.player.vel.to_array(),
@@ -253,11 +254,12 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                 max_health: cl.max_health,
                 ..Default::default()
             };
+            abi::write_sized(out, &state);
             return 1;
         }
         match cl.entities.get(&id) {
             Some(e) => {
-                *out = abi::EntityState {
+                let state = abi::EntityState {
                     kind: e.kind,
                     pos: e.pos.to_array(),
                     yaw: e.yaw,
@@ -266,6 +268,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                     max_health: content.game.entities[e.kind as usize].max_health,
                     ..Default::default()
                 };
+                abi::write_sized(out, &state);
                 1
             }
             None => 0,
@@ -277,6 +280,6 @@ pub unsafe extern "C" fn client_creative(c: *mut abi::ClientCtx) -> u32 {
     unsafe { view(c).is_some_and(|cl| cl.mode.invulnerable()) as u32 }
 }
 
-pub unsafe extern "C" fn client_menu_data(c: *mut abi::ClientCtx, index: u32) -> i32 {
+pub unsafe extern "C" fn client_menu_data(c: *mut abi::ClientCtx, index: u32) -> i64 {
     unsafe { view(c).and_then(|cl| cl.menu.as_ref()).and_then(|m| m.data.get(index as usize).copied()).unwrap_or(0) }
 }

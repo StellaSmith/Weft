@@ -743,8 +743,9 @@ impl Server {
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 let dmg = c.items.get(held.item as usize).filter(|_| held.item != 0).map_or(1.0, |i| i.attack);
                 if r.damage(c, target, dmg, entity, damage::ATTACK) {
-                    let tool = c.items.get(held.item as usize).map_or("", |i| i.tool.as_str());
-                    wear(c, r, entity, sel, if tool == "sword" { 1 } else { 2 });
+                    // Like vanilla, weapons wear by one per hit and tools (made for blocks) by two.
+                    let weapon = c.item_has_tag(held.item, "tools/sword");
+                    wear(c, r, entity, sel, if weapon { 1 } else { 2 });
                 }
             }
             ToServer::Interact(_) if self.mode(pi) == GameMode::Spectator => {}
@@ -777,7 +778,7 @@ impl Server {
                     let max = c.max_stack(item);
                     m.cursor = if m.cursor.is_empty() {
                         ItemStack::new(item, if button == 1 { 1 } else { max })
-                    } else if m.cursor.item == item && m.cursor.damage == 0 {
+                    } else if m.cursor.item == item && m.cursor.data == 0 {
                         ItemStack { count: (m.cursor.count + 1).min(max), ..m.cursor }
                     } else {
                         ItemStack::EMPTY
@@ -1789,8 +1790,8 @@ fn wear(c: &Content, d: &mut Dim, player: u64, slot: u32, amount: u32) {
     if def.durability == 0 || stack.is_empty() {
         return;
     }
-    let damage = stack.damage + amount;
-    let next = if damage >= def.durability { ItemStack::EMPTY } else { ItemStack { damage, ..stack } };
+    let damage = crate::stack::damage(&stack) + amount;
+    let next = if damage >= def.durability { ItemStack::EMPTY } else { crate::stack::with_damage(stack, damage) };
     d.entities.set_slot(player, slot, next);
 }
 
@@ -1830,7 +1831,7 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
     if let Some(inv) = d.entities.inventories.get(&p.entity) {
         let items: Vec<String> = inv
             .iter()
-            .map(|s| if s.is_empty() { "-".into() } else { format!("{}*{}*{}", c.items[s.item as usize].name, s.count, s.damage) })
+            .map(|s| if s.is_empty() { "-".into() } else { format!("{}*{}*{}", c.items[s.item as usize].name, s.count, crate::stack::to_text(s.data)) })
             .collect();
         text.push_str(&format!("inventory = {}\n", items.join(" ")));
     }
@@ -1872,7 +1873,12 @@ fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerData> {
                     let parts: Vec<&str> = tok.split('*').collect();
                     if parts.len() == 3 {
                         if let Some(&item) = c.item_names.get(parts[0]) {
-                            slots[i] = ItemStack { item, count: parts[1].parse().unwrap_or(1), damage: parts[2].parse().unwrap_or(0), extra: 0 };
+                            let stack = ItemStack { item, count: parts[1].parse().unwrap_or(1), data: 0 };
+                            // Older player files store a bare damage number.
+                            slots[i] = match parts[2].parse::<u32>() {
+                                Ok(d) => crate::stack::with_damage(stack, d),
+                                Err(_) => ItemStack { data: crate::stack::from_text(parts[2]), ..stack },
+                            };
                         }
                     }
                 }

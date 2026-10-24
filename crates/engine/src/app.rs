@@ -1195,7 +1195,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         }
         let mut h = g.client.selected as u64;
         for s in g.client.inventory.iter().chain(g.client.menu.iter().flat_map(|m| m.slots.iter().chain([&m.cursor]))) {
-            h = crate::world::mix(h ^ ((s.item as u64) << 32 | s.count as u64) ^ (s.damage as u64) << 48);
+            h = crate::world::mix(h ^ ((s.item as u64) << 32 | s.count as u64) ^ (s.data as u64) << 48);
         }
         h = crate::world::mix(h ^ (g.client.hurt_flash * 60.0) as u64);
         if h != r.client_hash {

@@ -564,13 +564,18 @@ impl UiRenderer {
                     icons.push((r.x, r.y, r.w.min(r.h), last.0));
                 }
             }
-            Kind::Progress { class, value, .. } => {
+            Kind::Progress { class, value, dir, .. } => {
                 background(self, class, "background");
                 let fill = theme.get(class, "fill_texture").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n));
                 let v = value.clamp(0.0, 1.0);
-                let fr = Rect { w: r.w * v, ..r };
+                let (fr, uv) = match *dir {
+                    voxide_abi::ui_dir::UP => (Rect { y: r.y + r.h * (1.0 - v), h: r.h * v, ..r }, [0.0, 1.0 - v, 1.0, 1.0]),
+                    voxide_abi::ui_dir::LEFT => (Rect { x: r.x + r.w * (1.0 - v), w: r.w * v, ..r }, [1.0 - v, 0.0, 1.0, 1.0]),
+                    voxide_abi::ui_dir::DOWN => (Rect { h: r.h * v, ..r }, [0.0, 0.0, 1.0, v]),
+                    _ => (Rect { w: r.w * v, ..r }, [0.0, 0.0, v, 1.0]),
+                };
                 match fill {
-                    Some((idx, _, _)) => self.image(fr, idx, [0.0, 0.0, v, 1.0], 0xFFFFFFFF),
+                    Some((idx, _, _)) => self.image(fr, idx, uv, 0xFFFFFFFF),
                     None => self.rect(fr, theme.color(class, "fill", 0x60C060FF)),
                 }
             }

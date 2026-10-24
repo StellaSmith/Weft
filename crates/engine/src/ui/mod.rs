@@ -206,7 +206,8 @@ pub enum Kind {
     Button { class: String, action: Option<Action>, enabled: bool, selected: bool },
     Image { texture: String, color: u32 },
     Item { bind: ItemBind, last: (u32, u32) },
-    Progress { class: String, bind: FloatBind, value: f32 },
+    /// `dir`: `abi::ui_dir` the bar fills towards.
+    Progress { class: String, bind: FloatBind, value: f32, dir: u32 },
     /// `count` icons showing `value` in half steps (hearts): theme `class.full/half/empty`.
     Icons { class: String, count: u32, bind: FloatBind, value: f32, rtl: bool },
     /// Single-line text field; `caret` is a char index.

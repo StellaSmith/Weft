@@ -86,7 +86,7 @@ pub enum ToClient {
     Knockback([f32; 2]),
     OpenMenu { kind: u32, window: u32, slots: u32 },
     MenuSlots(Vec<(u32, ItemStack)>),
-    MenuData(Vec<(u32, i32)>),
+    MenuData(Vec<(u32, i64)>),
     Cursor(ItemStack),
     CloseMenu,
     Died,

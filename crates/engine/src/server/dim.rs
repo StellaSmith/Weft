@@ -9,6 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use voxide_abi::{self as abi, ItemStack, block_flags as bf, damage, entity_flags as ef};
 
 use super::entity::{Entities, Entity, step};
+use crate::components as comps;
 use crate::content::{AIR, Content};
 use crate::host::{self, CallCtx};
 use crate::world::cube::VOLUME;
@@ -154,12 +155,14 @@ pub fn break_time(c: &Content, state: u32, tool: u32) -> (f32, bool) {
     if s.hardness < 0.0 {
         return (f32::INFINITY, false);
     }
-    let item = c.items.get(tool as usize);
-    let matches = !b.tool.is_empty() && item.is_some_and(|i| i.tool == b.tool);
-    let level = if matches { item.map_or(0, |i| i.tool_level + 1) } else { 0 };
-    // harvest_level N > 0 needs a matching tool of level N-1 or better.
-    let harvest = b.harvest_level == 0 || level >= b.harvest_level;
-    let speed = if matches { item.map_or(1.0, |i| i.tool_speed) } else { 1.0 };
+    let _ = b;
+    // A tool fits when it is of a class the block is mineable with (`mineable/pickaxe` on the
+    // block, `tools/pickaxe` on the item).
+    let fits = tool != 0 && c.tool_classes.iter().any(|&(mineable, tools)| c.components.has(comps::BLOCK, state, mineable) && c.item_has(tool, tools));
+    let level = c.item_value::<u32>(tool, c.ids.tool_level).unwrap_or(0);
+    let needed = c.block_value::<u32>(state, c.ids.harvest_level).unwrap_or(0);
+    let harvest = !c.block_has(state, c.ids.needs_tool) || (fits && level >= needed);
+    let speed = if fits { c.item_value::<f32>(tool, c.ids.mining_speed).unwrap_or(1.0) } else { 1.0 };
     let base = s.hardness * if harvest { 1.5 } else { 5.0 };
     (base / speed, harvest)
 }
@@ -611,7 +614,7 @@ impl Dim {
                     o.id != id
                         && !o.removed
                         && o.item.item == stack.item
-                        && o.item.damage == stack.damage
+                        && o.item.data == stack.data
                         && o.item.count + stack.count <= max
                         && (o.pos - pos).length_squared() < 1.0
                 });

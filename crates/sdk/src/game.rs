@@ -1,47 +1,13 @@
-use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, Ordering};
-
-use crate::abi::{self, ItemStack, Slice, Str};
+use crate::abi::{self, ItemStack, Slice, Str, Versioned};
+use crate::component::{Component, ENERGY, Value};
+use crate::content::{Handle, Pending, kind};
 use crate::ui::{Ui, ui_callback};
 use crate::{Registry, World, callback, host, qualify};
 
 pub use abi::{Energy, EntityState, component_flags, damage, entity_flags, part_role, slot_flags};
 
-/// The engine's energy component (`core:energy`), shared by every mod.
-pub fn energy_component() -> u32 {
-    static ID: AtomicU32 = AtomicU32::new(u32::MAX);
-    let id = ID.load(Ordering::Relaxed);
-    if id != u32::MAX {
-        return id;
-    }
-    let id = unsafe { (host().find_component)(Str::new("core:energy")) };
-    ID.store(id, Ordering::Relaxed);
-    id
-}
-
-/// Typed handle to a component; the value type must be plain old data (`Copy`, `repr(C)`).
-pub struct Component<T: Copy> {
-    id: AtomicU32,
-    _p: PhantomData<fn() -> T>,
-}
-
-impl<T: Copy> Component<T> {
-    pub const fn new() -> Self {
-        Component { id: AtomicU32::new(u32::MAX), _p: PhantomData }
-    }
-    pub fn id(&self) -> u32 {
-        self.id.load(Ordering::Relaxed)
-    }
-}
-
-impl<T: Copy> Default for Component<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub type Entity = crate::Handle;
-pub type Menu = crate::Handle;
+pub type Entity = Handle<kind::Entity>;
+pub type Menu = Handle<kind::Menu>;
 
 // ---------------------------------------------------------------- world helpers
 
@@ -100,18 +66,26 @@ impl World {
         buf.truncate(n);
         buf
     }
-    pub fn component<T: Copy>(&self, id: u64, c: &Component<T>) -> Option<&mut T> {
-        let p = unsafe { (host().component)(self.raw(), id, c.id()) };
+    /// An entity's component, read only (`component_mut` to change it).
+    pub fn component<T: Value>(&self, id: u64, c: &Component<T>) -> Option<&T> {
+        let p = unsafe { (host().component)(self.raw(), id, c.id(), 0) };
+        (!p.is_null()).then(|| unsafe { &*(p as *const T) })
+    }
+    /// Marks the component changed (saved, synced to its owner) and lends it out for writing.
+    pub fn component_mut<T: Value>(&self, id: u64, c: &Component<T>) -> Option<&mut T> {
+        let p = unsafe { (host().component)(self.raw(), id, c.id(), 1) };
         (!p.is_null()).then(|| unsafe { &mut *(p as *mut T) })
     }
     /// A player in creative mode: no damage, hunger or item costs.
     pub fn creative(&self, id: u64) -> bool {
         unsafe { (host().is_creative)(self.raw(), id) != 0 }
     }
-    /// The entity's `core:energy` state, if it takes part in the energy contract.
-    pub fn energy(&self, id: u64) -> Option<&mut Energy> {
-        let p = unsafe { (host().component)(self.raw(), id, energy_component()) };
-        (!p.is_null()).then(|| unsafe { &mut *(p as *mut Energy) })
+    /// The entity's `energy` state, if it takes part in the energy contract.
+    pub fn energy(&self, id: u64) -> Option<&Energy> {
+        self.component(id, &ENERGY)
+    }
+    pub fn energy_mut(&self, id: u64) -> Option<&mut Energy> {
+        self.component_mut(id, &ENERGY)
     }
 
     /// Accepts up to `amount`, respecting capacity and input rate. Returns what was accepted.
@@ -188,24 +162,7 @@ impl Inventory {
     }
 }
 
-// ---------------------------------------------------------------- item queries
-
-pub fn item_prop<T: Copy>(item: u32, key: &str) -> Option<T> {
-    let mut len = 0usize;
-    let p = unsafe { (host().item_prop)(item, Str::new(key), &mut len) };
-    (!p.is_null() && len >= size_of::<T>()).then(|| unsafe { std::ptr::read_unaligned(p as *const T) })
-}
-
-/// (max stack, durability, placed block state or 0).
-pub fn item_info(item: u32) -> (u32, u32, u32) {
-    let (mut m, mut d) = (0, 0);
-    let b = unsafe { (host().item_info)(item, &mut m, &mut d) };
-    (m, d, b)
-}
-
-pub fn item_has_tag(item: u32, tag: &str) -> bool {
-    unsafe { (host().item_has_tag)(item, Str::new(tag)) != 0 }
-}
+// ---------------------------------------------------------------- recipes
 
 pub fn recipe_match(kind: &str, grid: &[ItemStack], width: u32, height: u32) -> ItemStack {
     unsafe { (host().recipe_match)(Str::new(kind), grid.as_ptr(), width, height) }
@@ -266,8 +223,8 @@ fn event_cb(f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) -> abi::Callba
     callback(move |a: &mut abi::EntityEventArgs| f(unsafe { &mut *(a as *mut abi::EntityEventArgs as *mut EntityEvent) }))
 }
 
+/// Events on entities of another mod's kind; ticks go through `Registry::hook_tick`.
 pub enum Hook {
-    Tick,
     Hurt,
     Death,
     Interact,
@@ -292,7 +249,7 @@ impl Part {
     }
     /// Box relative to the pivot in model pixels, `uv` = top-left texel of its unwrap.
     pub fn cube(mut self, origin: [f32; 3], size: [f32; 3], uv: [f32; 2]) -> Part {
-        self.boxes.push(abi::ModelCuboid { origin, size, uv, inflate: 0.0 });
+        self.boxes.push(abi::ModelCuboid { origin, extent: size, uv, ..abi::ModelCuboid::DEFAULT });
         self
     }
 }
@@ -351,7 +308,8 @@ pub fn quadruped(body: [f32; 3], leg: f32, head: [f32; 3]) -> Vec<Part> {
 pub struct EntityBuilder<'a> {
     reg: &'a mut Registry,
     name: String,
-    handle: &'static Entity,
+    handle: Option<&'static Entity>,
+    components: Vec<Pending>,
     width: f32,
     height: f32,
     eye: f32,
@@ -370,6 +328,19 @@ pub struct EntityBuilder<'a> {
 }
 
 impl EntityBuilder<'_> {
+    pub fn handle(mut self, h: &'static Entity) -> Self {
+        self.handle = Some(h);
+        self
+    }
+    pub fn tag(mut self, tag: &str) -> Self {
+        self.components.push(Pending::value(tag, String::new(), Vec::new()));
+        self
+    }
+    /// A component of the kind (not per entity; see `Registry::entity_component` for that).
+    pub fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
+        self.components.push(comp.raw_value(&v));
+        self
+    }
     /// Replaces the entity kind with this name from a mod listed in `deps`.
     pub fn replace(mut self) -> Self {
         self.replace = true;
@@ -436,10 +407,12 @@ impl Drop for EntityBuilder<'_> {
             return;
         }
         let parts: Vec<abi::ModelPart> =
-            self.parts.iter().map(|p| abi::ModelPart { pivot: p.pivot, role: p.role, cuboids: Slice::new(&p.boxes), rest: p.rest }).collect();
+            self.parts.iter().map(|p| abi::ModelPart { pivot: p.pivot, role: p.role, cuboids: Slice::new(&p.boxes), rest: p.rest, ..abi::ModelPart::DEFAULT }).collect();
+        let mut scratch = Vec::new();
+        let values = crate::content::raw_values_pub(&self.components, &mut scratch);
         let desc = abi::EntityDesc {
             name: Str::new(&self.name),
-            cell: self.handle.cell(),
+            cell: self.handle.map_or(std::ptr::null(), |h| h.cell()),
             width: self.width,
             height: self.height,
             eye: self.eye,
@@ -455,6 +428,8 @@ impl Drop for EntityBuilder<'_> {
             on_death: self.on_death,
             on_interact: self.on_interact,
             replace: self.replace as u32,
+            components: Slice::new(&values),
+            ..abi::EntityDesc::DEFAULT
         };
         unsafe { (host().reg_entity)(self.reg.raw, &desc) }
     }
@@ -489,7 +464,7 @@ impl MenuCtx {
     pub fn set(&self, slot: u32, stack: ItemStack) {
         unsafe { (host().menu_set)(self.args.menu, slot, stack) }
     }
-    pub fn set_data(&self, index: u32, value: i32) {
+    pub fn set_data(&self, index: u32, value: i64) {
         unsafe { (host().menu_set_data)(self.args.menu, index, value) }
     }
 }
@@ -504,11 +479,15 @@ fn menu_cb(f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> abi::Callback {
 pub struct MenuBuilder<'a> {
     reg: &'a mut Registry,
     name: String,
-    handle: &'static Menu,
+    handle: Option<&'static Menu>,
     desc: abi::MenuDesc,
 }
 
 impl MenuBuilder<'_> {
+    pub fn handle(mut self, h: &'static Menu) -> Self {
+        self.handle = Some(h);
+        self
+    }
     pub fn temp_slots(mut self, n: u32) -> Self {
         self.desc.temp_slots = n;
         self
@@ -545,26 +524,28 @@ impl Drop for MenuBuilder<'_> {
             return;
         }
         self.desc.name = Str::new(&self.name);
-        self.desc.cell = self.handle.cell();
+        self.desc.cell = self.handle.map_or(std::ptr::null(), |h| h.cell());
         unsafe { (host().reg_menu)(self.reg.raw, &self.desc) }
     }
 }
 
 impl Registry {
-    pub fn entity<'a>(&'a mut self, name: &str, handle: &'static Entity) -> EntityBuilder<'a> {
+    pub fn entity<'a>(&'a mut self, name: &str) -> EntityBuilder<'a> {
+        let d = abi::EntityDesc::DEFAULT;
         EntityBuilder {
             name: qualify(self.ns, name),
             reg: self,
-            handle,
-            width: 0.6,
-            height: 1.8,
-            eye: 1.6,
-            health: 20.0,
-            speed: 3.0,
-            flags: entity_flags::FALL_DAMAGE | entity_flags::PUSHABLE,
+            handle: None,
+            components: Vec::new(),
+            width: d.width,
+            height: d.height,
+            eye: d.eye,
+            health: d.max_health,
+            speed: d.speed,
+            flags: d.flags,
             category: 0,
             texture: String::new(),
-            texture_size: [64, 32],
+            texture_size: d.texture_size,
             parts: Vec::new(),
             on_tick: abi::Callback::NONE,
             on_hurt: abi::Callback::NONE,
@@ -574,30 +555,31 @@ impl Registry {
         }
     }
 
-    /// Plain-data component; `attach_to` lists entity kinds that get it on spawn ("core:player").
-    pub fn component<T: Copy>(&mut self, name: &str, handle: &'static Component<T>, default: T, flags: u32, attach_to: &[&str]) {
-        let name = qualify(self.ns, name);
-        let bytes = unsafe { std::slice::from_raw_parts(&default as *const T as *const u8, size_of::<T>()) };
+    /// Per-entity storage for `comp`, created with `default` on every spawned entity of the kinds
+    /// in `attach_to` ("core:player"); flags from `component_flags`.
+    pub fn entity_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32, attach_to: &[&str]) {
+        let bytes = crate::component::pod_bytes(&default);
+        let schema = T::schema();
         let attach: Vec<Str> = attach_to.iter().map(|s| Str::new(s)).collect();
         let desc = abi::ComponentDesc {
-            name: Str::new(&name),
-            cell: &handle.id,
-            size: size_of::<T>() as u32,
+            name: Str::new(comp.name()),
+            schema: Str::new(&schema),
+            value_size: size_of::<T>() as u32,
             flags,
-            default: Slice::new(bytes),
+            default: Slice::new(&bytes),
             attach_to: Slice::new(&attach),
+            ..abi::ComponentDesc::DEFAULT
         };
         unsafe { (host().reg_component)(self.raw, &desc) }
     }
 
     /// Adds behaviour to an entity kind registered elsewhere (the engine's player, another mod's mob).
     pub fn hook_tick(&mut self, kind: &str, f: impl Fn(&EntityTick) + Send + Sync + 'static) {
-        unsafe { (host().reg_entity_hook)(self.raw, Str::new(kind), 0, tick_cb(f)) }
+        unsafe { (host().reg_entity_tick_hook)(self.raw, Str::new(kind), tick_cb(f)) }
     }
 
     pub fn hook(&mut self, kind: &str, hook: Hook, f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) {
         let h = match hook {
-            Hook::Tick => 0,
             Hook::Hurt => 1,
             Hook::Death => 2,
             Hook::Interact => 3,
@@ -605,23 +587,8 @@ impl Registry {
         unsafe { (host().reg_entity_hook)(self.raw, Str::new(kind), h, event_cb(f)) }
     }
 
-    pub fn menu<'a>(&'a mut self, name: &str, handle: &'static Menu) -> MenuBuilder<'a> {
-        MenuBuilder {
-            name: qualify(self.ns, name),
-            reg: self,
-            handle,
-            desc: abi::MenuDesc {
-                name: Str::EMPTY,
-                cell: std::ptr::null(),
-                temp_slots: 0,
-                data_count: 0,
-                setup: abi::Callback::NONE,
-                on_change: abi::Callback::NONE,
-                on_take: abi::Callback::NONE,
-                on_tick: abi::Callback::NONE,
-                screen: abi::Callback::NONE,
-            },
-        }
+    pub fn menu<'a>(&'a mut self, name: &str) -> MenuBuilder<'a> {
+        MenuBuilder { name: qualify(self.ns, name), reg: self, handle: None, desc: abi::MenuDesc::DEFAULT }
     }
 
     /// The menu the inventory key opens.
@@ -640,10 +607,6 @@ impl Registry {
     pub fn attach(&mut self, kind: &str, component: &str) {
         let k = qualify(self.ns, kind);
         unsafe { (host().reg_attach)(self.raw, Str::new(&k), Str::new(component)) }
-    }
-
-    pub fn hud(&mut self, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
-        unsafe { (host().reg_hud)(self.raw, ui_callback(f)) }
     }
 
     /// Chat command `/name`; `usage` declares its arguments (`<name:type>`, `[name:type]`,
@@ -666,15 +629,7 @@ impl Registry {
         let keys: Vec<abi::RecipeKey> = keys.iter().zip(&key_names).map(|((c, _), n)| abi::RecipeKey { ch: *c as u32, item: Str::new(n) }).collect();
         let output = self.ingredient(output);
         let kind = qualify(self.ns, kind);
-        let desc = abi::RecipeDesc {
-            kind: Str::new(&kind),
-            pattern: Slice::new(&pattern),
-            keys: Slice::new(&keys),
-            inputs: Slice::EMPTY,
-            output: Str::new(&output),
-            count,
-            time: 0,
-        };
+        let desc = abi::RecipeDesc { kind: Str::new(&kind), pattern: Slice::new(&pattern), keys: Slice::new(&keys), output: Str::new(&output), count, ..abi::RecipeDesc::DEFAULT };
         unsafe { (host().reg_recipe)(self.raw, &desc) }
     }
 
@@ -684,25 +639,8 @@ impl Registry {
         let inputs: Vec<Str> = names.iter().map(|n| Str::new(n)).collect();
         let output = self.ingredient(output);
         let kind = qualify(self.ns, kind);
-        let desc = abi::RecipeDesc {
-            kind: Str::new(&kind),
-            pattern: Slice::EMPTY,
-            keys: Slice::EMPTY,
-            inputs: Slice::new(&inputs),
-            output: Str::new(&output),
-            count,
-            time,
-        };
+        let desc = abi::RecipeDesc { kind: Str::new(&kind), inputs: Slice::new(&inputs), output: Str::new(&output), count, time, ..abi::RecipeDesc::DEFAULT };
         unsafe { (host().reg_recipe)(self.raw, &desc) }
-    }
-
-    /// Adds `tag` to blocks and items of any mod, e.g. `r.tag("ingots/tin", &["othermod:tin_ingot"])`
-    /// or `r.tag("base:plant_soil", &["othermod:mud"])`.
-    pub fn tag(&mut self, tag: &str, items: &[&str]) {
-        for item in items {
-            let item = qualify(self.ns, item);
-            unsafe { (host().reg_tag)(self.raw, Str::new(tag), Str::new(&item)) }
-        }
     }
 
     fn ingredient(&self, n: &str) -> String {

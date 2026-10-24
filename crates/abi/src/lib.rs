@@ -1,6 +1,12 @@
 //! The stable boundary between the engine and mods. Everything here is `repr(C)` so a mod built
 //! with any rustc (or another language) keeps working. Rules:
 //! - [`Host`] only grows at the end, `size` tells a mod how much of it exists.
+//! - Every descriptor a mod hands to the engine starts with `size: u32`, the struct size the mod
+//!   was built with. Descriptors only grow at the end; the engine reads what the mod has and uses
+//!   the `DEFAULT` of the fields it does not know. Structs passed in slices carry their size too,
+//!   so the engine walks them with the mod's stride.
+//! - Structs the engine writes into mod memory (`EntityState`) start with `size` as well.
+//! - Callback args only grow at the end; older mods read the part they know.
 //! - Descriptor structs passed to the host are read during the call only.
 //! - Strings are UTF-8 `(ptr, len)`, never NUL terminated.
 #![no_std]
@@ -8,7 +14,8 @@
 use core::ffi::c_void;
 use core::sync::atomic::AtomicU32;
 
-pub const ABI_VERSION: u32 = 1;
+/// Version 2: sized descriptors, components instead of props and fixed item fields.
+pub const ABI_VERSION: u32 = 2;
 /// Symbol every mod library exports: `extern "C" fn() -> *const ModDecl`.
 pub const ENTRY_SYMBOL: &[u8] = b"voxide_mod_v1\0";
 
@@ -66,6 +73,66 @@ impl<T> Slice<T> {
     }
 }
 
+/// A descriptor that starts with its own size (see the crate docs).
+///
+/// # Safety
+/// The type must be `repr(C)` with `size: u32` as its first field.
+pub unsafe trait Versioned: Copy {
+    const DEFAULT: Self;
+}
+
+/// Reads a sized descriptor written by a mod built against any older or equal ABI: the bytes it
+/// has over the defaults of the rest.
+///
+/// # Safety
+/// `p` must point to a descriptor of type `T` (of the mod's version).
+pub unsafe fn read_sized<T: Versioned>(p: *const T) -> T {
+    let mut out = T::DEFAULT;
+    unsafe {
+        let theirs = *(p as *const u32) as usize;
+        let n = theirs.min(size_of::<T>());
+        core::ptr::copy_nonoverlapping(p as *const u8, &mut out as *mut T as *mut u8, n);
+        *(&mut out as *mut T as *mut u32) = size_of::<T>() as u32;
+    }
+    out
+}
+
+/// Calls `f` with every element of a slice of sized descriptors, stepping by the mod's size.
+///
+/// # Safety
+/// `s` must hold `len` descriptors of type `T` laid out with the size their first one names.
+pub unsafe fn each_sized<T: Versioned>(s: Slice<T>, mut f: impl FnMut(T)) {
+    if s.len == 0 {
+        return;
+    }
+    unsafe {
+        let stride = (*(s.ptr as *const u32) as usize).max(4);
+        for i in 0..s.len {
+            f(read_sized((s.ptr as *const u8).add(i * stride) as *const T));
+        }
+    }
+}
+
+/// Writes a struct into memory a mod owns, at most the size it says it has.
+///
+/// # Safety
+/// `out` must point to a `T` of the mod's version whose first field is its size.
+pub unsafe fn write_sized<T: Versioned>(out: *mut T, value: &T) {
+    unsafe {
+        let theirs = *(out as *const u32) as usize;
+        let n = theirs.min(size_of::<T>());
+        core::ptr::copy_nonoverlapping((value as *const T as *const u8).add(4), (out as *mut u8).add(4), n.saturating_sub(4));
+    }
+}
+
+macro_rules! versioned {
+    ($t:ident { $($f:ident: $v:expr),* $(,)? }) => {
+        unsafe impl Versioned for $t {
+            const DEFAULT: Self = $t { size: size_of::<$t>() as u32, $($f: $v),* };
+        }
+    };
+}
+
 /// A mod-side function plus its captured state. `args` points to the callback-specific args struct.
 /// Returns 0 on success, anything else means the callback failed (the SDK catches panics).
 pub type CallbackFn = unsafe extern "C" fn(data: *const c_void, args: *mut c_void) -> u32;
@@ -118,6 +185,107 @@ pub struct ModDecl {
 
 unsafe impl Sync for ModDecl {}
 
+// ---------------------------------------------------------------- components
+
+/// One component value on a content entry. `schema` names the value type (see the SDK's `Value`):
+/// empty for a tag, `u32`, `f32`, `str` (a `Str`, copied by the engine), `{a:u32,b:f32}` for
+/// structs. Every use of a name must agree on the schema; the engine checks at freeze.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CompValue {
+    pub name: Str,
+    pub schema: Str,
+    pub value: Slice<u8>,
+}
+
+/// Registry kinds for `Host::find`; the first `COUNT` also have component tables (blocks per state).
+pub mod entry_kind {
+    pub const BLOCK: u32 = 0;
+    pub const ITEM: u32 = 1;
+    pub const ENTITY: u32 = 2;
+    pub const BIOME: u32 = 3;
+    pub const DIMENSION: u32 = 4;
+    pub const MENU: u32 = 5;
+    pub const COUNT: usize = 5;
+}
+
+/// What a `SetDesc` applies to.
+pub mod set_target {
+    /// The block (all states, or one with `name#3`) and the item of that name, whichever exist.
+    pub const NAME: u32 = 0;
+    /// Blocks and items carrying a tag; `*` in it matches any text (`ingots/*`).
+    pub const TAGGED: u32 = 1;
+    pub const ENTITY: u32 = 2;
+    pub const BIOME: u32 = 3;
+    pub const DIMENSION: u32 = 4;
+}
+
+/// Sets (or with `remove` takes away) a component on entries any mod registered. Applied after
+/// every mod registered, in mod load order; the last one wins and overrides are logged.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SetDesc {
+    pub size: u32,
+    pub target_kind: u32,
+    pub target: Str,
+    pub value: CompValue,
+    pub remove: u32,
+}
+versioned!(SetDesc { target_kind: 0, target: Str::EMPTY, value: CompValue { name: Str::EMPTY, schema: Str::EMPTY, value: Slice::EMPTY }, remove: 0 });
+
+/// Frozen components of one entry kind, readable directly by mods: whether entry `e` has
+/// component `c` is bit `c % 64` of `bits[e * words + c / 64]`; its value (if the component has
+/// one on this kind) is at `columns[c].data + e * columns[c].stride`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KindTable {
+    pub entries: u32,
+    pub words: u32,
+    pub bits: *const u64,
+    /// One per component id; `stride` 0 when no entry of this kind has a value for it.
+    pub columns: *const Column,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Column {
+    pub data: *const u8,
+    pub stride: u32,
+}
+
+#[repr(C)]
+pub struct ComponentTable {
+    pub size: u32,
+    /// Number of component ids.
+    pub components: u32,
+    pub kinds: [KindTable; entry_kind::COUNT],
+}
+
+unsafe impl Sync for ComponentTable {}
+unsafe impl Send for ComponentTable {}
+
+/// Component names the engine itself reads. Items: `max_stack: u32` (default 64), `durability: u32`,
+/// `attack_damage: f32` (default 1), `tool_level: u32` with a `tools/<class>` tag and
+/// `mining_speed: f32` (default 1). Blocks: `mineable/<class>` tags; `needs_tool` means nothing
+/// drops without a tool of a matching class and at least `harvest_level: u32`. Stacks: `damage: u32`.
+pub mod comp {
+    pub const MAX_STACK: &str = "max_stack";
+    pub const DURABILITY: &str = "durability";
+    pub const ATTACK_DAMAGE: &str = "attack_damage";
+    pub const MINING_SPEED: &str = "mining_speed";
+    pub const TOOL_LEVEL: &str = "tool_level";
+    pub const HARVEST_LEVEL: &str = "harvest_level";
+    pub const NEEDS_TOOL: &str = "needs_tool";
+    pub const DAMAGE: &str = "damage";
+    /// Blocks connecting energy networks.
+    pub const CONDUCTOR: &str = "conductor";
+    /// Entity component, layout `Energy`.
+    pub const ENERGY: &str = "energy";
+    /// Item shown on the wearer's model: `Worn`, plus `worn_texture: str` in the wearer's skin layout.
+    pub const WORN: &str = "worn";
+    pub const WORN_TEXTURE: &str = "worn_texture";
+}
+
 // ---------------------------------------------------------------- content descriptors
 
 pub mod block_flags {
@@ -164,22 +332,18 @@ pub enum Layer {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModelBox {
+    pub size: u32,
     /// In 1/16 block units.
     pub min: [f32; 3],
     pub max: [f32; 3],
     pub textures: [Str; 6],
 }
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Prop {
-    pub key: Str,
-    pub value: Slice<u8>,
-}
+versioned!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6] });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct StateDesc {
+    pub size: u32,
     pub flags: u32,
     /// Emitted light per colour channel. 15 is a normal full-strength source (torch is 14); higher
     /// values are allowed and simply reach further (up to 255).
@@ -210,21 +374,42 @@ pub struct StateDesc {
     pub support_side: u8,
     /// Block tag the supporting block needs; empty = any solid block.
     pub support: Str,
+    /// Components of this state only, on top of the block's.
+    pub components: Slice<CompValue>,
 }
+versioned!(StateDesc {
+    flags: block_flags::SOLID | block_flags::OPAQUE,
+    light: [0; 3],
+    filter: [0; 3],
+    opacity: 15,
+    tint: 0,
+    tint_faces: 0x3F,
+    layer: Layer::Opaque,
+    level: 0,
+    model: Model::Cube,
+    textures: [Str::EMPTY; 6],
+    boxes: Slice::EMPTY,
+    collision: Slice::EMPTY,
+    hardness: 1.0,
+    friction: 0.6,
+    drag: 1.0,
+    support_side: 255,
+    support: Str::EMPTY,
+    components: Slice::EMPTY,
+});
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct BlockDesc {
+    pub size: u32,
     pub name: Str,
-    /// Receives the id of the first state once registries are frozen.
+    /// Receives the id of the first state once registries are frozen (null = no handle).
     pub cell: *const AtomicU32,
     pub states: Slice<StateDesc>,
-    /// Tool class tag that speeds up mining ("pickaxe"), empty = any.
-    pub tool: Str,
-    /// Minimum harvest level of the tool for the block to drop anything.
-    pub harvest_level: u32,
-    pub tags: Slice<Str>,
-    pub props: Slice<Prop>,
-    /// Item dropped when broken, empty = the item with the same name if it exists.
+    /// Components of every state (tags, mining, fuel ...). Its item gets them too unless it sets
+    /// its own.
+    pub components: Slice<CompValue>,
+    /// Item dropped when broken, empty = the item with the same name if it exists, `-` = none.
     pub drop: Str,
     pub drop_count: u32,
     /// `UseArgs`; return `handled = 1` to consume the click.
@@ -240,30 +425,44 @@ pub struct BlockDesc {
     /// Non-zero: replaces a block of the same name registered by a mod this one depends on.
     pub replace: u32,
 }
+versioned!(BlockDesc {
+    name: Str::EMPTY,
+    cell: core::ptr::null(),
+    states: Slice::EMPTY,
+    components: Slice::EMPTY,
+    drop: Str::EMPTY,
+    drop_count: 1,
+    on_use: Callback::NONE,
+    on_placed: Callback::NONE,
+    on_broken: Callback::NONE,
+    on_random_tick: Callback::NONE,
+    on_neighbor: Callback::NONE,
+    on_scheduled: Callback::NONE,
+    placement: Callback::NONE,
+    replace: 0,
+});
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ItemDesc {
+    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
-    pub max_stack: u32,
-    /// 0 = not damageable.
-    pub durability: u32,
     /// Texture for the flat icon. Empty with `block` set means a 3D block icon.
     pub texture: Str,
     /// Block placed on use, empty = none.
     pub block: Str,
-    pub tool: Str,
-    pub tool_level: u32,
-    pub tool_speed: f32,
-    pub attack: f32,
-    pub tags: Slice<Str>,
-    pub props: Slice<Prop>,
+    /// Stack size, durability, tool and weapon numbers, food ... (see `comp`).
+    pub components: Slice<CompValue>,
     /// `ItemUseArgs`.
     pub on_use: Callback,
 }
+versioned!(ItemDesc { name: Str::EMPTY, cell: core::ptr::null(), texture: Str::EMPTY, block: Str::EMPTY, components: Slice::EMPTY, on_use: Callback::NONE });
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct BiomeDesc {
+    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     pub grass: u32,
@@ -271,7 +470,9 @@ pub struct BiomeDesc {
     pub water: u32,
     pub temperature: f32,
     pub rainfall: f32,
+    pub components: Slice<CompValue>,
 }
+versioned!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), grass: 0x8db360, foliage: 0x77ab2f, water: 0x3f76e4, temperature: 0.8, rainfall: 0.4, components: Slice::EMPTY });
 
 #[repr(C)]
 pub struct GenArgs {
@@ -291,7 +492,9 @@ pub struct SpawnArgs {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct DimensionDesc {
+    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     /// `GenArgs`, called in parallel from worker threads, must be a pure function of its args.
@@ -313,7 +516,25 @@ pub struct DimensionDesc {
     pub fog_color: u32,
     /// Light level everything gets at least, 0..15.
     pub ambient: u32,
+    pub components: Slice<CompValue>,
 }
+versioned!(DimensionDesc {
+    name: Str::EMPTY,
+    cell: core::ptr::null(),
+    generator: Callback::NONE,
+    spawn: Callback::NONE,
+    min_cube_y: i32::MIN,
+    max_cube_y: i32::MAX,
+    sky_cube_y: i32::MAX,
+    sky_light: 1,
+    gravity: 32.0,
+    day_length: 24000,
+    fixed_time: 6000,
+    sky_color: 0x78a7ff,
+    fog_color: 0xc0d8ff,
+    ambient: 0,
+    components: Slice::EMPTY,
+});
 
 // ---------------------------------------------------------------- callback args
 
@@ -362,25 +583,31 @@ pub struct ItemUseArgs {
 
 // ---------------------------------------------------------------- items, entities, menus
 
+/// `data` is 0 for a plain stack, otherwise a handle to its stack components (damage taken,
+/// charge, contents ...). Handles are interned: two stacks with equal data have equal handles,
+/// so stacks merge exactly when `item` and `data` match. Read and change data through the host.
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Hash)]
 pub struct ItemStack {
     pub item: u32,
     pub count: u32,
-    pub damage: u32,
-    /// Reserved for item data handles; 0 for plain stacks.
-    pub extra: u32,
+    pub data: u32,
 }
 
 impl ItemStack {
-    pub const EMPTY: ItemStack = ItemStack { item: 0, count: 0, damage: 0, extra: 0 };
+    pub const EMPTY: ItemStack = ItemStack { item: 0, count: 0, data: 0 };
 
     pub fn new(item: u32, count: u32) -> ItemStack {
-        ItemStack { item, count, damage: 0, extra: 0 }
+        ItemStack { item, count, data: 0 }
     }
 
     pub fn is_empty(&self) -> bool {
         self.item == 0 || self.count == 0
+    }
+
+    /// Same item and data, so the two can share a slot.
+    pub fn stacks_with(&self, other: &ItemStack) -> bool {
+        self.item == other.item && self.data == other.data
     }
 }
 
@@ -421,15 +648,18 @@ pub mod part_role {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModelCuboid {
+    pub size: u32,
     pub origin: [f32; 3],
-    pub size: [f32; 3],
+    pub extent: [f32; 3],
     pub uv: [f32; 2],
     pub inflate: f32,
 }
+versioned!(ModelCuboid { origin: [0.0; 3], extent: [1.0; 3], uv: [0.0; 2], inflate: 0.0 });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModelPart {
+    pub size: u32,
     /// Pivot in model pixels, y up from the feet.
     pub pivot: [f32; 3],
     pub role: u32,
@@ -437,9 +667,12 @@ pub struct ModelPart {
     /// Resting rotation in radians about x, y, z, applied x first; the role's animation adds to it.
     pub rest: [f32; 3],
 }
+versioned!(ModelPart { pivot: [0.0; 3], role: 0, cuboids: Slice::EMPTY, rest: [0.0; 3] });
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct EntityDesc {
+    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     pub width: f32,
@@ -462,7 +695,28 @@ pub struct EntityDesc {
     pub on_interact: Callback,
     /// Non-zero: replaces an entity kind of the same name from a mod this one depends on.
     pub replace: u32,
+    pub components: Slice<CompValue>,
 }
+versioned!(EntityDesc {
+    name: Str::EMPTY,
+    cell: core::ptr::null(),
+    width: 0.6,
+    height: 1.8,
+    eye: 1.6,
+    max_health: 20.0,
+    speed: 3.0,
+    flags: entity_flags::FALL_DAMAGE | entity_flags::PUSHABLE,
+    category: 0,
+    texture: Str::EMPTY,
+    texture_size: [64, 32],
+    parts: Slice::EMPTY,
+    on_tick: Callback::NONE,
+    on_hurt: Callback::NONE,
+    on_death: Callback::NONE,
+    on_interact: Callback::NONE,
+    replace: 0,
+    components: Slice::EMPTY,
+});
 
 #[repr(C)]
 pub struct EntityTickArgs {
@@ -495,8 +749,9 @@ pub mod damage {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct EntityState {
+    pub size: u32,
     pub kind: u32,
     pub flags: u32,
     pub pos: [f64; 3],
@@ -513,6 +768,27 @@ pub struct EntityState {
     /// Distance walked this tick (hunger exhaustion).
     pub moved: f32,
 }
+versioned!(EntityState {
+    kind: 0,
+    flags: 0,
+    pos: [0.0; 3],
+    vel: [0.0; 3],
+    yaw: 0.0,
+    pitch: 0.0,
+    on_ground: 0,
+    in_liquid: 0,
+    health: 0.0,
+    max_health: 0.0,
+    age: 0,
+    fall: 0.0,
+    moved: 0.0,
+});
+
+impl Default for EntityState {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 pub mod component_flags {
     pub const SAVE: u32 = 1;
@@ -520,17 +796,23 @@ pub mod component_flags {
     pub const SYNC_OWNER: u32 = 2;
 }
 
+/// Per-entity data storage (hunger, machine state): created with `default` on spawn of the kinds
+/// in `attach_to`. The name lives in the same namespace as content components.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ComponentDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
     pub size: u32,
+    pub name: Str,
+    pub schema: Str,
+    /// Value size in bytes.
+    pub value_size: u32,
     pub flags: u32,
-    /// Initial bytes, `size` long.
+    /// Initial bytes, `value_size` long.
     pub default: Slice<u8>,
     /// Entity kinds ("core:player") that get this component when spawned.
     pub attach_to: Slice<Str>,
 }
+versioned!(ComponentDesc { name: Str::EMPTY, schema: Str::EMPTY, value_size: 0, flags: 0, default: Slice::EMPTY, attach_to: Slice::EMPTY });
 
 /// Recipe ingredients are item names or `#tag`.
 #[repr(C)]
@@ -541,7 +823,9 @@ pub struct RecipeKey {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct RecipeDesc {
+    pub size: u32,
     /// Recipe type, e.g. "base:crafting", "base:smelting". Any mod can add types.
     pub kind: Str,
     /// Shaped recipes: rows of key characters. Empty for shapeless/processing.
@@ -554,6 +838,7 @@ pub struct RecipeDesc {
     /// Processing time in ticks, meaning is up to the recipe type.
     pub time: u32,
 }
+versioned!(RecipeDesc { kind: Str::EMPTY, pattern: Slice::EMPTY, keys: Slice::EMPTY, inputs: Slice::EMPTY, output: Str::EMPTY, count: 1, time: 0 });
 
 pub mod slot_flags {
     /// Can only be taken from (crafting result).
@@ -565,7 +850,9 @@ pub mod slot_flags {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct MenuDesc {
+    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     /// Slots in the menu's own temporary inventory (crafting grids), returned to the player on close.
@@ -583,6 +870,17 @@ pub struct MenuDesc {
     /// `UiArgs`, client: build the screen. Slot widgets refer to menu slot indices.
     pub screen: Callback,
 }
+versioned!(MenuDesc {
+    name: Str::EMPTY,
+    cell: core::ptr::null(),
+    temp_slots: 0,
+    data_count: 0,
+    setup: Callback::NONE,
+    on_change: Callback::NONE,
+    on_take: Callback::NONE,
+    on_tick: Callback::NONE,
+    screen: Callback::NONE,
+});
 
 #[repr(C)]
 pub struct MenuCtx {
@@ -612,12 +910,9 @@ pub struct ClientCtx {
     _p: [u8; 0],
 }
 
-/// Item prop: the item shows on an entity model while worn. Bytes are `Worn` followed by the
-/// UTF-8 name of a texture laid out like the wearer's skin.
-pub const WORN: &str = "core:worn";
-
+/// Layout of the `worn` item component; see `comp::WORN`.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Worn {
     /// Bit `1 << role` for every model part role it covers, see `worn_parts`.
     pub roles: u32,
@@ -640,7 +935,8 @@ pub mod ui_kind {
     pub const BUTTON: u32 = 3;
     /// Menu slot `slot`.
     pub const SLOT: u32 = 4;
-    /// Bound value 0..1: `bind`, or menu data `data / data_max` (max index, or `max` constant).
+    /// Bound value 0..1: `bind`, or menu data `data / data_max` (max index, or `max` constant),
+    /// filling in direction `dir`.
     pub const PROGRESS: u32 = 5;
     pub const IMAGE: u32 = 6;
     pub const SPACER: u32 = 7;
@@ -651,17 +947,29 @@ pub mod ui_kind {
     pub const ENTITY: u32 = 9;
 }
 
+/// Fill directions of progress bars.
+pub mod ui_dir {
+    pub const RIGHT: u32 = 0;
+    pub const UP: u32 = 1;
+    pub const LEFT: u32 = 2;
+    pub const DOWN: u32 = 3;
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct UiArg {
+    pub size: u32,
     /// 0 text, 1 translation key, 2 integer, 3 float, 4 item id.
     pub kind: u32,
     pub text: Str,
     pub num: f64,
 }
+versioned!(UiArg { kind: 0, text: Str::EMPTY, num: 0.0 });
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct UiNode {
+    pub size: u32,
     pub kind: u32,
     pub class: Str,
     /// Translation key (or texture for IMAGE).
@@ -687,7 +995,32 @@ pub struct UiNode {
     pub bind: Callback,
     pub on_click: Callback,
     pub tooltip: Str,
+    /// `ui_dir` for progress bars.
+    pub dir: u32,
 }
+versioned!(UiNode {
+    kind: 0,
+    class: Str::EMPTY,
+    text: Str::EMPTY,
+    args: Slice::EMPTY,
+    width: f32::NAN,
+    height: f32::NAN,
+    grow: 0.0,
+    gap: 0.0,
+    pad: [0.0; 4],
+    row: 0,
+    align: 0,
+    justify: 0,
+    slot: 0,
+    data: u32::MAX,
+    data_max: u32::MAX,
+    max: 0.0,
+    count: 0,
+    bind: Callback::NONE,
+    on_click: Callback::NONE,
+    tooltip: Str::EMPTY,
+    dir: 0,
+});
 
 #[repr(C)]
 pub struct UiArgs {
@@ -719,11 +1052,61 @@ pub struct Host {
     /// `size_of::<Host>()` of the engine build, see crate docs.
     pub size: usize,
     pub log: unsafe extern "C" fn(me: ModId, level: u32, msg: Str),
+    /// Like `log` under a sub-target of the mod's own: `mod:<id>::<target>` (`mod:<id>` if empty),
+    /// so players can filter it with `--log`/`/log`.
+    pub log_at: unsafe extern "C" fn(me: ModId, level: u32, target: Str, msg: Str),
+    /// Non-zero when a record at `level` for that target would be written; check before building
+    /// costly diagnostics.
+    pub log_enabled: unsafe extern "C" fn(me: ModId, level: u32, target: Str) -> u32,
 
     pub reg_block: unsafe extern "C" fn(reg: *mut Registrar, desc: *const BlockDesc),
     pub reg_item: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ItemDesc),
     pub reg_biome: unsafe extern "C" fn(reg: *mut Registrar, desc: *const BiomeDesc),
     pub reg_dimension: unsafe extern "C" fn(reg: *mut Registrar, desc: *const DimensionDesc),
+    pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
+    pub reg_component: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ComponentDesc),
+    /// Extra callbacks on an entity kind owned by someone else: hook 1 hurt, 2 death, 3 interact
+    /// (`EntityEventArgs`); tick hooks go through `reg_entity_tick_hook`.
+    pub reg_entity_hook: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, hook: u32, cb: Callback),
+    /// `EntityTickArgs` with every entity of `kind` once per tick.
+    pub reg_entity_tick_hook: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
+    pub reg_recipe: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeDesc),
+    pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
+    /// Menu opened by the inventory key.
+    pub set_player_menu: unsafe extern "C" fn(reg: *mut Registrar, menu: Str),
+    /// Block entity kind created (with an inventory of `slots`) when the block is placed, removed
+    /// (dropping its items) when broken.
+    pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str, slots: u32),
+    /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at spawn.
+    pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str),
+    /// HUD element `name` placed at `anchor` (see `hud_anchor`), `order` 0 nearest the anchor's
+    /// edge. Players can move any element to another anchor in `config/hud.txt`.
+    pub reg_hud_element: unsafe extern "C" fn(reg: *mut Registrar, name: Str, anchor: Str, order: i32, cb: Callback),
+    /// Chat command `/name`, arguments described by `usage` (see the engine's command syntax);
+    /// `cb` gets `CommandArgs` with one value per named parameter.
+    pub reg_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
+    pub reg_ore: unsafe extern "C" fn(reg: *mut Registrar, desc: *const OreDesc),
+    /// Creative inventory tab shown with `icon` (an item name); items join it with the tag
+    /// `tab/<name>`. Tabs appear in mod load order, then registration order.
+    pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
+    /// Sets or removes a component (or tag) on entries of any mod, see `SetDesc`.
+    pub reg_set: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SetDesc),
+
+    /// Looks up a frozen id by full name ("base:stone"), `u32::MAX` if missing. Blocks give their
+    /// first state and write the state count to `count` (others write 1). `kind` is `entry_kind`.
+    pub find: unsafe extern "C" fn(kind: u32, name: Str, count: *mut u32) -> u32,
+    /// State id -> first state id of its block.
+    pub block_of: unsafe extern "C" fn(state: u32) -> u32,
+    pub state_flags: unsafe extern "C" fn(state: u32) -> u32,
+    /// Component id by name, `u32::MAX` if nothing uses it. A non-empty `schema` that differs from
+    /// the registered one is an error (logged) and also gives `u32::MAX`.
+    pub find_component: unsafe extern "C" fn(name: Str, schema: Str) -> u32,
+    /// The frozen component tables (null before freeze); stable for the whole session.
+    pub components: unsafe extern "C" fn() -> *const ComponentTable,
+    /// Value bytes of stack component `comp` on stack data `data`, null if absent.
+    pub stack_get: unsafe extern "C" fn(data: u32, comp: u32, len: *mut usize) -> *const u8,
+    /// Stack data with `comp` set to `value` (or removed when `remove` is non-zero).
+    pub stack_with: unsafe extern "C" fn(data: u32, comp: u32, value: Slice<u8>, remove: u32) -> u32,
 
     pub get_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
     /// Returns 0 if the position is not loaded.
@@ -732,28 +1115,6 @@ pub struct Host {
     pub world_time: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
     /// Deterministic per-world random stream.
     pub random: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
-
-    /// Looks up a frozen id by full name ("base:stone"), `u32::MAX` if missing.
-    pub find_block: unsafe extern "C" fn(name: Str) -> u32,
-    pub find_item: unsafe extern "C" fn(name: Str) -> u32,
-    /// State id -> first state id of its block.
-    pub block_of: unsafe extern "C" fn(state: u32) -> u32,
-    pub state_flags: unsafe extern "C" fn(state: u32) -> u32,
-
-    pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
-    pub reg_component: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ComponentDesc),
-    /// Extra callbacks on an entity kind owned by someone else: hook 0 tick, 1 hurt, 2 death, 3 interact.
-    pub reg_entity_hook: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, hook: u32, cb: Callback),
-    pub reg_recipe: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeDesc),
-    pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
-    /// HUD part, `UiArgs`, rebuilt when the HUD is.
-    pub reg_hud: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
-    /// Menu opened by the inventory key.
-    pub set_player_menu: unsafe extern "C" fn(reg: *mut Registrar, menu: Str),
-    /// Block entity kind created (with an inventory of `slots`) when the block is placed, removed
-    /// (dropping its items) when broken.
-    pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str, slots: u32),
-
     pub light: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
     /// 0..1 sun strength for the world's time of day.
     pub daylight: unsafe extern "C" fn(world: *mut WorldCtx) -> f32,
@@ -771,9 +1132,13 @@ pub struct Host {
     pub entity_look_at: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32) -> u32,
     /// Fills `out` with ids near `pos` (all kinds if `kind` is u32::MAX), returns how many matched.
     pub entities_near: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize,
-    pub component: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, comp: u32) -> *mut u8,
+    /// An entity's component bytes, null if it has none. `write` non-zero marks it changed (sent
+    /// to its owner, saved); reads pass 0, or every read would be synced.
+    pub component: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, comp: u32, write: u32) -> *mut u8,
     pub player_count: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
     pub player_at: unsafe extern "C" fn(world: *mut WorldCtx, index: u32) -> u64,
+    /// Non-zero for a player in creative mode (no damage, hunger or item use costs).
+    pub is_creative: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64) -> u32,
 
     pub inv_size: unsafe extern "C" fn(world: *mut WorldCtx, owner: u64) -> u32,
     pub inv_get: unsafe extern "C" fn(world: *mut WorldCtx, owner: u64, slot: u32) -> ItemStack,
@@ -790,18 +1155,14 @@ pub struct Host {
     pub menu_slots: unsafe extern "C" fn(menu: *mut MenuCtx, owner: u64, start: u32, count: u32, flags: u32),
     pub menu_get: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32) -> ItemStack,
     pub menu_set: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32, stack: ItemStack),
-    pub menu_set_data: unsafe extern "C" fn(menu: *mut MenuCtx, index: u32, value: i32),
+    pub menu_set_data: unsafe extern "C" fn(menu: *mut MenuCtx, index: u32, value: i64),
 
     /// Matches a grid against recipes of `kind`; returns the output stack (empty if none).
     pub recipe_match: unsafe extern "C" fn(kind: Str, grid: *const ItemStack, width: u32, height: u32) -> ItemStack,
     /// Processing recipe for one input item: output stack, time written to `time_out`.
     pub recipe_process: unsafe extern "C" fn(kind: Str, input: u32, time_out: *mut u32) -> ItemStack,
-    /// Typed per-item property bytes registered with `prop`, null if absent.
-    pub item_prop: unsafe extern "C" fn(item: u32, key: Str, len: *mut usize) -> *const u8,
-    /// Returns the placed block state (0 if none).
-    pub item_info: unsafe extern "C" fn(item: u32, max_stack: *mut u32, durability: *mut u32) -> u32,
-    pub item_has_tag: unsafe extern "C" fn(item: u32, tag: Str) -> u32,
-    pub block_has_tag: unsafe extern "C" fn(state: u32, tag: Str) -> u32,
+    /// The block state an item places, 0 if none.
+    pub item_block: unsafe extern "C" fn(item: u32) -> u32,
 
     pub ui_open: unsafe extern "C" fn(ui: *mut UiCtx, node: *const UiNode),
     pub ui_close: unsafe extern "C" fn(ui: *mut UiCtx),
@@ -811,40 +1172,16 @@ pub struct Host {
     /// Synced component of an entity the client knows (own player always), null if unknown.
     pub client_component: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, comp: u32) -> *const u8,
     pub client_entity: unsafe extern "C" fn(client: *mut ClientCtx, id: u64, out: *mut EntityState) -> u32,
-    pub client_menu_data: unsafe extern "C" fn(client: *mut ClientCtx, index: u32) -> i32,
-
-    /// Component id by full name ("core:energy"), u32::MAX if missing.
-    pub find_component: unsafe extern "C" fn(name: Str) -> u32,
-    /// Energy contract (`core:energy` component): returns how much was (or would be, when
-    /// `simulate` is non-zero) accepted / taken, respecting capacity and rate limits.
-    pub energy_insert: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
-    pub energy_extract: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
-    /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at spawn.
-    pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str),
-    /// HUD element `name` placed at `anchor` (see `hud_anchor`), `order` 0 nearest the anchor's
-    /// edge. Players can move any element to another anchor in `config/hud.txt`.
-    pub reg_hud_element: unsafe extern "C" fn(reg: *mut Registrar, name: Str, anchor: Str, order: i32, cb: Callback),
-    /// Chat command `/name`, arguments described by `usage` (see the engine's command syntax);
-    /// `cb` gets `CommandArgs` with one value per named parameter.
-    pub reg_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
-    /// Text shown to the player who ran the command.
-    pub command_reply: unsafe extern "C" fn(args: *mut CommandArgs, text: Str),
-    /// Non-zero for a player in creative mode (no damage, hunger or item use costs).
-    pub is_creative: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64) -> u32,
+    pub client_menu_data: unsafe extern "C" fn(client: *mut ClientCtx, index: u32) -> i64,
     /// Non-zero when the local player is in creative mode (client side, for HUDs and screens).
     pub client_creative: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
-    pub reg_ore: unsafe extern "C" fn(reg: *mut Registrar, desc: *const OreDesc),
-    /// Creative inventory tab shown with `icon` (an item name); items join it with the tag
-    /// `tab/<name>`. Tabs appear in mod load order, then registration order.
-    pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
-    /// Adds `tag` to an item (or block item) any mod registered, like Forge's ore dictionary.
-    pub reg_tag: unsafe extern "C" fn(reg: *mut Registrar, tag: Str, item: Str),
-    /// Like `log` under a sub-target of the mod's own: `mod:<id>::<target>` (`mod:<id>` if empty),
-    /// so players can filter it with `--log`/`/log`.
-    pub log_at: unsafe extern "C" fn(me: ModId, level: u32, target: Str, msg: Str),
-    /// Non-zero when a record at `level` for that target would be written; check before building
-    /// costly diagnostics.
-    pub log_enabled: unsafe extern "C" fn(me: ModId, level: u32, target: Str) -> u32,
+
+    /// Energy contract (`energy` component): returns how much was (or would be, when `simulate`
+    /// is non-zero) accepted / taken, respecting capacity and rate limits.
+    pub energy_insert: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
+    pub energy_extract: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
+    /// Text shown to the player who ran the command.
+    pub command_reply: unsafe extern "C" fn(args: *mut CommandArgs, text: Str),
     /// Non-zero when a player in this world shows gizmo group `group` (`/gizmo <group>`).
     pub gizmo_on: unsafe extern "C" fn(world: *mut WorldCtx, group: Str) -> u32,
     /// Debug shape for players showing `group`: `kind` 0 line from `a` to `b`, 1 box between
@@ -855,7 +1192,9 @@ pub struct Host {
 /// Ore veins a mod adds to any dimension, its own or another mod's. The engine scatters them after
 /// the dimension's generator, so generators never need to know about each other's ores.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct OreDesc {
+    pub size: u32,
     /// Full dimension name.
     pub dimension: Str,
     pub block: Str,
@@ -866,8 +1205,9 @@ pub struct OreDesc {
     /// Veins started per cube.
     pub veins: u32,
     /// Blocks per vein.
-    pub size: u32,
+    pub blocks: u32,
 }
+versioned!(OreDesc { dimension: Str::EMPTY, block: Str::EMPTY, replace: Str::EMPTY, min_y: i32::MIN, max_y: i32::MAX, veins: 4, blocks: 8 });
 
 /// One command argument; kinds in `command_value`.
 #[repr(C)]
@@ -916,7 +1256,7 @@ pub mod hud_anchor {
     pub const HOTBAR_RIGHT: &str = "hotbar_right";
 }
 
-/// Layout of the engine's `core:energy` component. Blocks tagged `core:conductor` connect the
+/// Layout of the engine's `energy` entity component. Blocks tagged `conductor` connect the
 /// block entities next to them into a network the engine balances every tick.
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -927,4 +1267,43 @@ pub struct Energy {
     /// with `max_in > 0`.
     pub max_in: i64,
     pub max_out: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_descriptors_get_defaults() {
+        // A mod built when OreDesc ended after `max_y` (veins and blocks unknown to it).
+        let mut d = OreDesc::DEFAULT;
+        d.min_y = -5;
+        d.veins = 99;
+        d.size = (core::mem::offset_of!(OreDesc, max_y) + 4) as u32;
+        let read = unsafe { read_sized(&d) };
+        assert_eq!((read.min_y, read.veins, read.blocks, read.size), (-5, 4, 8, size_of::<OreDesc>() as u32));
+    }
+
+    #[test]
+    fn slices_step_by_the_mods_size() {
+        // An older UiArg without `num`.
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Old {
+            size: u32,
+            kind: u32,
+            text: Str,
+        }
+        let n = size_of::<Old>() as u32;
+        let old = [Old { size: n, kind: 2, text: Str::EMPTY }, Old { size: n, kind: 3, text: Str::EMPTY }];
+        let mut seen = [(0u32, 1.0f64); 2];
+        let mut i = 0;
+        unsafe {
+            each_sized(Slice { ptr: old.as_ptr() as *const UiArg, len: 2 }, |a| {
+                seen[i] = (a.kind, a.num);
+                i += 1;
+            })
+        };
+        assert_eq!(seen, [(2, 0.0), (3, 0.0)]);
+    }
 }

@@ -4,6 +4,7 @@ pub mod autopilot;
 pub mod bench;
 pub mod client;
 pub mod commands;
+pub mod components;
 pub mod game_screens;
 pub mod clipboard;
 pub mod content;
@@ -21,6 +22,7 @@ pub mod saves;
 pub mod screens;
 pub mod server;
 pub mod settings;
+pub mod stack;
 pub mod ui;
 pub mod world;
 

@@ -168,7 +168,7 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
             unsafe { lib.get(abi::ENTRY_SYMBOL) }.map_err(|_| format!("{} is not a Voxide mod", lib_path.display()))?;
         let decl = unsafe { &*entry() };
         if decl.abi_version != abi::ABI_VERSION {
-            return Err(format!("mod {name} targets ABI {} but the engine has {}", decl.abi_version, abi::ABI_VERSION));
+            return Err(format!("mod {name} was built for mod ABI {} but this engine has ABI {}; rebuild it against the current voxide_sdk", decl.abi_version, abi::ABI_VERSION));
         }
         let id = unsafe { decl.id.as_str() }.to_string();
         if id != name {
@@ -187,6 +187,7 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
                 name: m.decl.name.as_str().to_string(),
                 version: m.decl.version.as_str().to_string(),
                 deps: m.decl.deps.as_slice().iter().map(|d| d.as_str().to_string()).collect(),
+                order: 0,
             }
         })
         .collect();

@@ -51,8 +51,12 @@ impl W {
     fn stack(&mut self, s: ItemStack) {
         self.u32(s.item);
         self.u32(s.count);
-        self.u32(s.damage);
-        self.u32(s.extra);
+        let data = if s.data == 0 { Vec::new() } else { crate::stack::to_names(s.data) };
+        self.len(data.len());
+        for (name, bytes) in &data {
+            self.str(name);
+            self.bytes(bytes);
+        }
     }
     fn len(&mut self, n: usize) {
         self.u32(n as u32);
@@ -107,7 +111,13 @@ impl R<'_> {
         Some(DVec3::new(self.f64()?, self.f64()?, self.f64()?))
     }
     fn stack(&mut self) -> Res<ItemStack> {
-        Some(ItemStack { item: self.u32()?, count: self.u32()?, damage: self.u32()?, extra: self.u32()? })
+        let (item, count) = (self.u32()?, self.u32()?);
+        let n = self.len()?;
+        let mut data = Vec::with_capacity(n.min(16));
+        for _ in 0..n {
+            data.push((self.str()?, self.bytes()?));
+        }
+        Some(ItemStack { item, count, data: crate::stack::from_names(data) })
     }
     fn len(&mut self) -> Res<usize> {
         let n = self.u32()? as usize;
@@ -247,7 +257,7 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.len(list.len());
             for (i, v) in list {
                 w.u32(*i);
-                w.i32(*v);
+                w.u64(*v as u64);
             }
         }
         ToClient::Cursor(s) => {
@@ -399,7 +409,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
-                list.push((r.u32()?, r.i32()?));
+                list.push((r.u32()?, r.u64()? as i64));
             }
             ToClient::MenuData(list)
         }

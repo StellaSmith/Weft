@@ -23,15 +23,15 @@ pub static OCEAN: Biome = Biome::new();
 pub static BEACH: Biome = Biome::new();
 
 pub fn register(r: &mut Registry) {
-    r.biome("plains", &PLAINS, 0x8db360, 0x77ab2f, 0x3f76e4, 0.8, 0.4);
-    r.biome("forest", &FOREST, 0x79c05a, 0x59ae30, 0x3f76e4, 0.7, 0.8);
-    r.biome("birch_forest", &BIRCH_FOREST, 0x88bb67, 0x6ba941, 0x3f76e4, 0.6, 0.6);
-    r.biome("taiga", &TAIGA, 0x86b783, 0x68a464, 0x3d57d6, 0.25, 0.8);
-    r.biome("snowy_plains", &SNOWY, 0x80b497, 0x60a17b, 0x3938c9, 0.0, 0.5);
-    r.biome("desert", &DESERT, 0xbfb755, 0xaea42a, 0x3f76e4, 2.0, 0.0);
-    r.biome("mountains", &MOUNTAINS, 0x8ab689, 0x6da36b, 0x3f76e4, 0.2, 0.3);
-    r.biome("ocean", &OCEAN, 0x8db360, 0x77ab2f, 0x3f76e4, 0.5, 0.5);
-    r.biome("beach", &BEACH, 0x8db360, 0x77ab2f, 0x3f76e4, 0.8, 0.4);
+    r.biome("plains").handle(&PLAINS).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4);
+    r.biome("forest").handle(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8);
+    r.biome("birch_forest").handle(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6);
+    r.biome("taiga").handle(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8);
+    r.biome("snowy_plains").handle(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5);
+    r.biome("desert").handle(&DESERT).colors(0xbfb755, 0xaea42a, 0x3f76e4).climate(2.0, 0.0);
+    r.biome("mountains").handle(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3);
+    r.biome("ocean").handle(&OCEAN).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5);
+    r.biome("beach").handle(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4);
 
     for (ore, max_y, veins, size) in [("coal_ore", 128, 8, 12), ("iron_ore", 64, 6, 8), ("gold_ore", 32, 2, 7), ("diamond_ore", 16, 1, 6)] {
         r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("stone");

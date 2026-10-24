@@ -333,8 +333,9 @@ pub fn stack_icon(ren: &mut UiRenderer, textures: &GameTextures, r: Rect, stack:
     let (x, y) = (r.x + (r.w - s) / 2.0, r.y + (r.h - s) / 2.0);
     ren.item_icon(c, textures, x, y, s, stack.item);
     let def = &c.items[stack.item as usize];
-    if def.durability > 0 && stack.damage > 0 {
-        let f = 1.0 - stack.damage as f32 / def.durability as f32;
+    let damage = crate::stack::damage(&stack);
+    if def.durability > 0 && damage > 0 {
+        let f = 1.0 - damage as f32 / def.durability as f32;
         let bar = Rect { x: x + scale, y: y + s - 2.0 * scale, w: 14.0 * scale, h: 2.0 * scale };
         ren.rect(bar, 0x000000FF);
         let g = (f * 255.0) as u32;
@@ -418,8 +419,9 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi:
         }
     }
     let max = content().items.get(stack.item as usize).map_or(0, |d| d.durability);
-    if max > 0 && stack.damage > 0 {
-        line(lang.get("tooltip.durability"), &[text::Arg::Int((max - stack.damage.min(max)) as i64), text::Arg::Int(max as i64)], &mut out);
+    let damage = crate::stack::damage(&stack);
+    if max > 0 && damage > 0 {
+        line(lang.get("tooltip.durability"), &[text::Arg::Int((max - damage.min(max)) as i64), text::Arg::Int(max as i64)], &mut out);
     }
     out
 }

@@ -11,28 +11,25 @@ pub static BUCKET: Item = Item::new();
 pub static WATER_BUCKET: Item = Item::new();
 pub static LAVA_BUCKET: Item = Item::new();
 
-/// Read by the hunger system; other mods attach it to their own food.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Food {
-    pub hunger: u32,
-    pub saturation: f32,
+value! {
+    /// Read by the hunger system; other mods set it on their own food.
+    pub struct Food { pub hunger: u32, pub saturation: f32 }
 }
 
-/// Burn time in ticks, read by the furnace.
-pub type Fuel = u32;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Armor {
-    /// 0 head, 1 chest, 2 legs, 3 feet.
-    pub slot: u32,
-    pub points: u32,
+value! {
+    /// `slot` 0 head, 1 chest, 2 legs, 3 feet.
+    pub struct Armor { pub slot: u32, pub points: u32 }
 }
 
-pub const FOOD: &str = "base:food";
-pub const FUEL: &str = "base:fuel";
-pub const ARMOR: &str = "base:armor";
+// The common vocabulary the base game reads; any mod may set these on its own content.
+pub static FOOD: Component<Food> = Component::new("food");
+/// Burn time in ticks.
+pub static FUEL: Component<u32> = Component::new("fuel");
+pub static ARMOR: Component<Armor> = Component::new("armor");
+/// How readily fire takes it.
+pub static FLAMMABLE: Component<u32> = Component::new("flammable");
+/// Item left behind when this one is used up as fuel or ingredient (the bucket of a lava bucket).
+pub static REMAINDER: Component<Text> = Component::new("remainder");
 /// Slot tags; `<slot>/<material>` tags pick the recipe (see recipes.rs).
 pub const ARMOR_SLOTS: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
 
@@ -53,19 +50,19 @@ const MATERIALS: [Material; 5] = [
 ];
 
 pub fn register(r: &mut Registry) {
-    r.item("stick", &STICK).prop(FUEL, 100 as Fuel).tab("ingredients");
-    r.item("coal", &COAL).tag("gems/coal").prop(FUEL, 1600 as Fuel).tab("ingredients");
-    r.item("iron_ingot", &IRON_INGOT).tag("ingots/iron").tag("materials/iron").tab("ingredients");
-    r.item("gold_ingot", &GOLD_INGOT).tag("ingots/gold").tag("materials/gold").tab("ingredients");
+    r.item("stick").handle(&STICK).set(&FUEL, 100).tab("ingredients");
+    r.item("coal").handle(&COAL).tag("gems/coal").set(&FUEL, 1600).tab("ingredients");
+    r.item("iron_ingot").handle(&IRON_INGOT).tag("ingots/iron").tag("materials/iron").tab("ingredients");
+    r.item("gold_ingot").handle(&GOLD_INGOT).tag("ingots/gold").tag("materials/gold").tab("ingredients");
     // Metal ores drop raw pieces (like modern versions) that smelt into ingots.
-    r.item("raw_iron", leak()).tag("raw_ores/iron").tab("ingredients");
-    r.item("raw_gold", leak()).tag("raw_ores/gold").tab("ingredients");
-    r.item("diamond", &DIAMOND).tag("gems/diamond").tag("materials/diamond").tab("ingredients");
-    r.item("wheat_seeds", &WHEAT_SEEDS).places("wheat").tab("natural");
-    r.item("wheat", &WHEAT).tab("ingredients");
-    r.item("bucket", &BUCKET).stack(16).on_use(fill_bucket).tab("tools");
-    r.item("water_bucket", &WATER_BUCKET).stack(1).on_use(|u| pour_bucket(u, &crate::blocks::WATER)).tab("tools");
-    r.item("lava_bucket", &LAVA_BUCKET).stack(1).prop(FUEL, 20000 as Fuel).on_use(|u| pour_bucket(u, &crate::blocks::LAVA)).tab("tools");
+    r.item("raw_iron").tag("raw_ores/iron").tab("ingredients");
+    r.item("raw_gold").tag("raw_ores/gold").tab("ingredients");
+    r.item("diamond").handle(&DIAMOND).tag("gems/diamond").tag("materials/diamond").tab("ingredients");
+    r.item("wheat_seeds").handle(&WHEAT_SEEDS).places("wheat").tab("natural");
+    r.item("wheat").handle(&WHEAT).tab("ingredients");
+    r.item("bucket").handle(&BUCKET).stack(16).on_use(fill_bucket).tab("tools");
+    r.item("water_bucket").handle(&WATER_BUCKET).stack(1).on_use(|u| pour_bucket(u, &crate::blocks::WATER)).tab("tools");
+    r.item("lava_bucket").handle(&LAVA_BUCKET).stack(1).set(&FUEL, 20000).set_text(&REMAINDER, "base:bucket").on_use(|u| pour_bucket(u, &crate::blocks::LAVA)).tab("tools");
 
     for (name, hunger, saturation, tag) in [
         ("apple", 4, 2.4, ""),
@@ -76,19 +73,19 @@ pub fn register(r: &mut Registry) {
         ("cooked_beef", 8, 12.8, "cooked_meat/beef"),
         ("rotten_flesh", 4, 0.8, ""),
     ] {
-        let i = r.item(name, leak()).prop(FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab("food");
+        let i = r.item(name).set(&FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab("food");
         if !tag.is_empty() {
             i.tag(tag);
         }
     }
-    r.item("leather", leak()).tag("materials/leather").tab("ingredients");
+    r.item("leather").tag("materials/leather").tab("ingredients");
     for name in ["bone", "string", "sugar"] {
-        r.item(name, leak()).tab("ingredients");
+        r.item(name).tab("ingredients");
     }
 
     for m in &MATERIALS {
         let tool = |r: &mut Registry, kind: &str, class: &str, damage: f32| {
-            r.item(&format!("{}_{kind}", m.name), leak())
+            r.item(&format!("{}_{kind}", m.name))
                 .tool(class, m.level, m.speed)
                 .durability(m.durability)
                 .attack(damage + m.damage)
@@ -108,9 +105,9 @@ pub fn register(r: &mut Registry) {
             let points = points + mult * (if slot == 1 { 3 } else { 1 });
             let tag = ARMOR_SLOTS[slot as usize];
             let (parts, inflate, layer) = [(worn_parts::HEAD, 1.0, 1), (worn_parts::BODY | worn_parts::ARMS, 1.0, 1), (worn_parts::BODY | worn_parts::LEGS, 0.5, 2), (worn_parts::LEGS, 1.0, 1)][slot as usize];
-            r.item(&format!("{mat}_{piece}"), leak())
+            r.item(&format!("{mat}_{piece}"))
                 .durability(durability * dur)
-                .prop(ARMOR, Armor { slot, points })
+                .set(&ARMOR, Armor { slot, points })
                 .tag(tag)
                 .tag(&format!("{tag}/{mat}"))
                 .worn(parts, inflate, &format!("armor/{mat}_{layer}"))
@@ -168,8 +165,4 @@ fn pour_bucket(u: &mut ItemUse, liquid: &Block) -> bool {
         u.set_stack(ItemStack::new(BUCKET.id(), 1));
     }
     true
-}
-
-fn leak() -> &'static Item {
-    Box::leak(Box::new(Item::new()))
 }

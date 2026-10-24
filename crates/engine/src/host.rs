@@ -16,27 +16,38 @@ use crate::server::menu::MenuCall;
 pub static HOST: Host = Host {
     size: size_of::<Host>(),
     log: host_log,
+    log_at,
+    log_enabled,
     reg_block,
     reg_item,
     reg_biome,
     reg_dimension,
+    reg_entity,
+    reg_component,
+    reg_entity_hook,
+    reg_entity_tick_hook,
+    reg_recipe,
+    reg_menu,
+    set_player_menu,
+    set_block_entity,
+    reg_attach,
+    reg_hud_element,
+    reg_command,
+    reg_ore,
+    reg_creative_tab,
+    reg_set,
+    find,
+    block_of,
+    state_flags,
+    find_component,
+    components,
+    stack_get,
+    stack_with,
     get_block,
     set_block,
     schedule_tick,
     world_time,
     random,
-    find_block,
-    find_item,
-    block_of,
-    state_flags,
-    reg_entity,
-    reg_component,
-    reg_entity_hook,
-    reg_recipe,
-    reg_menu,
-    reg_hud,
-    set_player_menu,
-    set_block_entity,
     light,
     daylight,
     entity_spawn,
@@ -44,12 +55,13 @@ pub static HOST: Host = Host {
     entity_get,
     entity_set,
     entity_walk,
-    entity_look_at,
     entity_damage,
+    entity_look_at,
     entities_near,
     component,
     player_count,
     player_at,
+    is_creative,
     inv_size,
     inv_get,
     inv_set,
@@ -64,10 +76,7 @@ pub static HOST: Host = Host {
     menu_set_data,
     recipe_match,
     recipe_process,
-    item_prop,
-    item_info,
-    item_has_tag,
-    block_has_tag,
+    item_block,
     ui_open: crate::client::modui::ui_open,
     ui_close: crate::client::modui::ui_close,
     ui_text: crate::client::modui::ui_text,
@@ -75,20 +84,10 @@ pub static HOST: Host = Host {
     client_component: crate::client::modui::client_component,
     client_entity: crate::client::modui::client_entity,
     client_menu_data: crate::client::modui::client_menu_data,
-    find_component,
+    client_creative: crate::client::modui::client_creative,
     energy_insert,
     energy_extract,
-    reg_attach,
-    reg_hud_element,
-    reg_command,
     command_reply,
-    is_creative,
-    client_creative: crate::client::modui::client_creative,
-    reg_ore,
-    reg_creative_tab,
-    reg_tag,
-    log_at,
-    log_enabled,
     gizmo_on,
     gizmo,
 };
@@ -206,7 +205,7 @@ unsafe extern "C" fn entity_get(w: *mut abi::WorldCtx, id: u64, out: *mut abi::E
     unsafe {
         match dim(w).entities.get(id) {
             Some(e) => {
-                *out = e.state(content());
+                abi::write_sized(out, &e.state(content()));
                 1
             }
             None => 0,
@@ -216,7 +215,7 @@ unsafe extern "C" fn entity_get(w: *mut abi::WorldCtx, id: u64, out: *mut abi::E
 
 unsafe extern "C" fn entity_set(w: *mut abi::WorldCtx, id: u64, s: *const abi::EntityState) {
     unsafe {
-        let s = &*s;
+        let s = &abi::read_sized(s);
         if let Some(e) = dim(w).entities.get_mut(id) {
             let pos = DVec3::from_array(s.pos);
             if pos.is_finite() {
@@ -272,13 +271,15 @@ unsafe extern "C" fn entities_near(w: *mut abi::WorldCtx, pos: *const [f64; 3], 
     }
 }
 
-unsafe extern "C" fn component(w: *mut abi::WorldCtx, id: u64, comp: u32) -> *mut u8 {
+unsafe extern "C" fn component(w: *mut abi::WorldCtx, id: u64, comp: u32, write: u32) -> *mut u8 {
     unsafe {
         let d = dim(w);
         match d.entities.comps.get_mut(&(id, comp)) {
             Some(b) => {
-                // Written through the pointer: assume dirty so owners get the new value.
-                d.entities.dirty_comp.insert((id, comp));
+                // Only owner-synced components need to know about writes.
+                if write != 0 && content().game.components.get(comp as usize).is_some_and(|c| c.flags & voxide_abi::component_flags::SYNC_OWNER != 0) {
+                    d.entities.dirty_comp.insert((id, comp));
+                }
                 b.as_mut_ptr()
             }
             None => std::ptr::null_mut(),
@@ -333,9 +334,40 @@ unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, ow
     unsafe { dim(w).events.push(crate::server::DimEvent::OpenMenu { player, menu, owner }) }
 }
 
-unsafe extern "C" fn find_component(name: Str) -> u32 {
-    let name = unsafe { name.as_str() };
-    try_content().and_then(|c| c.game.component(name)).unwrap_or(u32::MAX)
+unsafe extern "C" fn find_component(name: Str, schema: Str) -> u32 {
+    let (name, schema) = unsafe { (name.as_str(), schema.as_str()) };
+    let Some(c) = try_content() else { return u32::MAX };
+    let Some(id) = c.components.id(name) else { return u32::MAX };
+    let have = &c.components.schemas[id as usize];
+    if !schema.is_empty() && have != schema {
+        log::error!("component {name} is '{have}' but a mod reads it as '{schema}'");
+        return u32::MAX;
+    }
+    id
+}
+
+unsafe extern "C" fn components() -> *const abi::ComponentTable {
+    try_content().map_or(std::ptr::null(), |c| c.components.table())
+}
+
+unsafe extern "C" fn stack_get(data: u32, comp: u32, len: *mut usize) -> *const u8 {
+    match crate::stack::value(data, comp) {
+        Some(b) => {
+            if !len.is_null() {
+                unsafe { *len = b.len() }
+            }
+            b.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+unsafe extern "C" fn stack_with(data: u32, comp: u32, value: abi::Slice<u8>, remove: u32) -> u32 {
+    if try_content().is_none_or(|c| comp >= c.components.count()) {
+        return data;
+    }
+    let bytes = unsafe { value.as_slice() };
+    crate::stack::with(data, comp, (remove == 0).then_some(bytes))
 }
 
 unsafe extern "C" fn energy_insert(w: *mut abi::WorldCtx, id: u64, amount: i64, simulate: u32) -> i64 {
@@ -387,28 +419,24 @@ unsafe extern "C" fn menu_set(m: *mut abi::MenuCtx, slot: u32, stack: ItemStack)
     unsafe { menu(m).set(slot, stack) }
 }
 
-unsafe extern "C" fn menu_set_data(m: *mut abi::MenuCtx, index: u32, value: i32) {
+unsafe extern "C" fn menu_set_data(m: *mut abi::MenuCtx, index: u32, value: i64) {
     unsafe { menu(m).set_data(index, value) }
 }
 
 // ---------------------------------------------------------------- lookups
-
-fn tags(item: u32, tag: &str) -> bool {
-    content().item_has_tag(item, tag)
-}
 
 unsafe extern "C" fn recipe_match(kind: Str, grid: *const ItemStack, width: u32, height: u32) -> ItemStack {
     let kind = unsafe { kind.as_str() };
     let cells: Vec<u32> = (0..(width * height) as usize).map(|i| unsafe { (*grid.add(i)).item }).collect();
     content()
         .game
-        .match_grid(kind, &cells, width, height, &tags)
+        .match_grid(kind, &cells, width, height, &content().components)
         .map_or(ItemStack::EMPTY, |r| ItemStack::new(r.output, r.count))
 }
 
 unsafe extern "C" fn recipe_process(kind: Str, input: u32, time_out: *mut u32) -> ItemStack {
     let kind = unsafe { kind.as_str() };
-    match content().game.process(kind, input, &tags) {
+    match content().game.process(kind, input, &content().components) {
         Some(r) => {
             if !time_out.is_null() {
                 unsafe { *time_out = r.time }
@@ -419,48 +447,30 @@ unsafe extern "C" fn recipe_process(kind: Str, input: u32, time_out: *mut u32) -
     }
 }
 
-unsafe extern "C" fn item_prop(item: u32, key: Str, len: *mut usize) -> *const u8 {
-    let key = unsafe { key.as_str() };
-    match content().item_prop(item, key) {
-        Some(b) => {
-            if !len.is_null() {
-                unsafe { *len = b.len() }
-            }
-            b.as_ptr()
-        }
-        None => std::ptr::null(),
-    }
+unsafe extern "C" fn item_block(item: u32) -> u32 {
+    try_content().and_then(|c| c.items.get(item as usize)).and_then(|d| d.block).unwrap_or(0)
 }
 
-unsafe extern "C" fn item_info(item: u32, max_stack: *mut u32, durability: *mut u32) -> u32 {
-    let Some(d) = content().items.get(item as usize) else { return 0 };
-    unsafe {
-        if !max_stack.is_null() {
-            *max_stack = d.max_stack;
-        }
-        if !durability.is_null() {
-            *durability = d.durability;
-        }
-    }
-    d.block.unwrap_or(0)
-}
-
-unsafe extern "C" fn block_has_tag(state: u32, tag: Str) -> u32 {
-    content().block_has_tag(state, unsafe { tag.as_str() }) as u32
-}
-
-unsafe extern "C" fn item_has_tag(item: u32, tag: Str) -> u32 {
-    content().item_has_tag(item, unsafe { tag.as_str() }) as u32
-}
-
-unsafe extern "C" fn find_block(name: Str) -> u32 {
+unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
     let name = unsafe { name.as_str() };
-    try_content().and_then(|c| c.find_state(name)).unwrap_or(u32::MAX)
-}
-
-unsafe extern "C" fn find_item(name: Str) -> u32 {
-    let name = unsafe { name.as_str() };
-    try_content().and_then(|c| c.item_names.get(name).copied()).unwrap_or(u32::MAX)
+    let Some(c) = try_content() else { return u32::MAX };
+    let mut n = 1;
+    let id = match kind {
+        abi::entry_kind::BLOCK => c.block_names.get(name).map(|&b| {
+            n = c.blocks[b as usize].states;
+            c.blocks[b as usize].first_state
+        }),
+        abi::entry_kind::ITEM => c.item_names.get(name).copied(),
+        abi::entry_kind::ENTITY => c.game.entity_names.get(name).copied(),
+        abi::entry_kind::BIOME => c.biome_names.get(name).copied(),
+        abi::entry_kind::DIMENSION => c.dim_names.get(name).copied(),
+        abi::entry_kind::MENU => c.game.menu_names.get(name).copied(),
+        _ => None,
+    };
+    if !count.is_null() {
+        unsafe { *count = if id.is_some() { n } else { 0 } }
+    }
+    id.unwrap_or(u32::MAX)
 }
 
 unsafe extern "C" fn block_of(state: u32) -> u32 {
@@ -512,7 +522,7 @@ unsafe fn reg<'a>(r: *mut abi::Registrar) -> &'a mut RawRegistrar {
 
 unsafe extern "C" fn reg_block(r: *mut abi::Registrar, d: *const abi::BlockDesc) {
     unsafe {
-        let b = content::copy_block(&*d);
+        let b = content::copy_block(&abi::read_sized(d));
         let r = reg(r);
         if b.states.is_empty() {
             r.errors.push(format!("block {} has no states", b.name));
@@ -525,7 +535,7 @@ unsafe extern "C" fn reg_block(r: *mut abi::Registrar, d: *const abi::BlockDesc)
 unsafe extern "C" fn reg_item(r: *mut abi::Registrar, d: *const abi::ItemDesc) {
     unsafe {
         let r = reg(r);
-        let mut item = content::copy_item(&*d);
+        let mut item = content::copy_item(&abi::read_sized(d));
         item.seq = r.items.len() as u32;
         r.items.push(item);
     }
@@ -533,7 +543,7 @@ unsafe extern "C" fn reg_item(r: *mut abi::Registrar, d: *const abi::ItemDesc) {
 
 unsafe extern "C" fn reg_biome(r: *mut abi::Registrar, d: *const abi::BiomeDesc) {
     unsafe {
-        let d = &*d;
+        let d = &abi::read_sized(d);
         reg(r).biomes.push((
             content::BiomeDef {
                 name: d.name.as_str().to_string(),
@@ -544,6 +554,7 @@ unsafe extern "C" fn reg_biome(r: *mut abi::Registrar, d: *const abi::BiomeDesc)
                 rainfall: d.rainfall,
             },
             d.cell as usize,
+            crate::components::RawValue::list(d.components),
         ));
     }
 }
@@ -552,7 +563,7 @@ unsafe extern "C" fn reg_dimension(r: *mut abi::Registrar, d: *const abi::Dimens
     unsafe {
         let r = reg(r);
         let owner = r.owner;
-        r.dims.push(content::copy_dimension(owner, &*d));
+        r.dims.push(content::copy_dimension(owner, &abi::read_sized(d)));
     }
 }
 
@@ -560,18 +571,20 @@ unsafe extern "C" fn reg_entity(r: *mut abi::Registrar, d: *const abi::EntityDes
     unsafe {
         let r = reg(r);
         let owner = r.owner;
-        r.game.entities.push(registry::copy_entity(owner, &*d));
+        r.game.entities.push(registry::copy_entity(owner, &abi::read_sized(d)));
     }
 }
 
 unsafe extern "C" fn reg_component(r: *mut abi::Registrar, d: *const abi::ComponentDesc) {
     unsafe {
-        let d = &*d;
+        let d = &abi::read_sized(d);
         let mut default = d.default.as_slice().to_vec();
-        default.resize(d.size as usize, 0);
-        reg(r).game.components.push(registry::RawComponent {
-            cell: d.cell as usize,
-            def: registry::ComponentDef { name: d.name.as_str().to_string(), size: d.size, flags: d.flags, default },
+        default.resize(d.value_size as usize, 0);
+        let r = reg(r);
+        r.game.components.push(registry::RawComponent {
+            owner: r.owner,
+            def: registry::ComponentDef { name: d.name.as_str().to_string(), size: d.value_size, flags: d.flags, default, runtime: true },
+            schema: d.schema.as_str().to_string(),
             attach_to: d.attach_to.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
         });
     }
@@ -580,34 +593,55 @@ unsafe extern "C" fn reg_component(r: *mut abi::Registrar, d: *const abi::Compon
 unsafe extern "C" fn reg_entity_hook(r: *mut abi::Registrar, kind: Str, hook: u32, cb: Callback) {
     unsafe {
         let r = reg(r);
+        if hook == 0 || hook > 3 {
+            r.errors.push(format!("entity hook {hook} on {} does not exist (ticks use their own hook)", kind.as_str()));
+            return;
+        }
         let owner = r.owner;
         r.game.hooks.push((owner, kind.as_str().to_string(), hook, cb));
     }
 }
 
+unsafe extern "C" fn reg_entity_tick_hook(r: *mut abi::Registrar, kind: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.hooks.push((owner, kind.as_str().to_string(), 0, cb));
+    }
+}
+
 unsafe extern "C" fn reg_recipe(r: *mut abi::Registrar, d: *const abi::RecipeDesc) {
-    unsafe { reg(r).game.recipes.push(registry::copy_recipe(&*d)) }
+    unsafe { reg(r).game.recipes.push(registry::copy_recipe(&abi::read_sized(d))) }
 }
 
 unsafe extern "C" fn reg_menu(r: *mut abi::Registrar, d: *const abi::MenuDesc) {
     unsafe {
         let r = reg(r);
         let owner = r.owner;
-        r.game.menus.push(registry::copy_menu(owner, &*d));
+        r.game.menus.push(registry::copy_menu(owner, &abi::read_sized(d)));
     }
 }
 
-unsafe extern "C" fn reg_hud(r: *mut abi::Registrar, cb: Callback) {
+unsafe extern "C" fn reg_set(r: *mut abi::Registrar, d: *const abi::SetDesc) {
+    use crate::components::Target;
     unsafe {
+        let d = abi::read_sized(d);
         let r = reg(r);
-        let owner = r.owner;
-        let name = format!("{}:hud{}", crate::modloader::mod_id_name(owner), r.game.huds.len());
-        r.game.huds.push(registry::HudElement { name, anchor: abi::hud_anchor::HOTBAR_LEFT.into(), order: 0, owner, cb });
+        let name = d.target.as_str().to_string();
+        let target = match d.target_kind {
+            abi::set_target::NAME => Target::Name(name),
+            abi::set_target::TAGGED => Target::Tagged(name),
+            abi::set_target::ENTITY => Target::Entity(name),
+            abi::set_target::BIOME => Target::Biome(name),
+            abi::set_target::DIMENSION => Target::Dimension(name),
+            k => {
+                r.errors.push(format!("set {}: unknown target kind {k}", d.value.name.as_str()));
+                return;
+            }
+        };
+        let value = crate::components::RawValue::copy(&d.value);
+        r.game.sets.push(crate::components::RawSet { owner: r.owner, target, value, remove: d.remove != 0 });
     }
-}
-
-unsafe extern "C" fn reg_tag(r: *mut abi::Registrar, tag: Str, item: Str) {
-    unsafe { reg(r).game.tags.push((tag.as_str().to_string(), item.as_str().to_string())) }
 }
 
 unsafe extern "C" fn reg_creative_tab(r: *mut abi::Registrar, name: Str, icon: Str) {
@@ -620,7 +654,7 @@ unsafe extern "C" fn reg_creative_tab(r: *mut abi::Registrar, name: Str, icon: S
 unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
     unsafe {
         let r = reg(r);
-        let d = &*d;
+        let d = &abi::read_sized(d);
         r.game.ores.push(registry::RawOre {
             dimension: d.dimension.as_str().to_string(),
             block: d.block.as_str().to_string(),
@@ -628,7 +662,7 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
             min_y: d.min_y,
             max_y: d.max_y,
             veins: d.veins,
-            size: d.size,
+            size: d.blocks,
         });
     }
 }

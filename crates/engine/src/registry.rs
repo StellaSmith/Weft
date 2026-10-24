@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use rustc_hash::FxHashMap;
 use voxide_abi::{self as abi, Callback, ModId, entity_flags as ef, part_role};
 
+use crate::components::{self as comps, Components, RawSet, RawValue};
+
 pub const ENGINE: ModId = ModId(u32::MAX);
 pub const PLAYER: &str = "core:player";
 
@@ -65,11 +67,15 @@ impl EntityKind {
     }
 }
 
+/// Per-entity storage of a component (indexed by component id; `runtime` false for components
+/// that only exist on content entries).
+#[derive(Clone, Default)]
 pub struct ComponentDef {
     pub name: String,
     pub size: u32,
     pub flags: u32,
     pub default: Vec<u8>,
+    pub runtime: bool,
 }
 
 pub struct MenuDef {
@@ -88,15 +94,17 @@ pub struct MenuDef {
 pub enum Ingredient {
     Empty,
     Item(u32),
-    Tag(String),
+    /// Component id of the tag; `u32::MAX` when nothing carries it.
+    Tag(u32),
 }
 
 impl Ingredient {
-    pub fn matches(&self, item: u32, tags: &dyn Fn(u32, &str) -> bool) -> bool {
+    #[inline]
+    pub fn matches(&self, item: u32, c: &Components) -> bool {
         match self {
             Ingredient::Empty => item == 0,
             Ingredient::Item(i) => *i == item,
-            Ingredient::Tag(t) => item != 0 && tags(item, t),
+            Ingredient::Tag(t) => item != 0 && c.has(comps::ITEM, item, *t),
         }
     }
 }
@@ -135,11 +143,13 @@ pub struct RawEntity {
     pub cell: usize,
     pub desc: EntityKind,
     pub replace: bool,
+    pub components: Vec<RawValue>,
 }
 
 pub struct RawComponent {
-    pub cell: usize,
+    pub owner: ModId,
     pub def: ComponentDef,
+    pub schema: String,
     pub attach_to: Vec<String>,
 }
 
@@ -157,6 +167,7 @@ pub struct RawRecipe {
 pub struct RawGame {
     pub entities: Vec<RawEntity>,
     pub components: Vec<RawComponent>,
+    /// (owner, kind, hook, callback); hook 0 is the tick.
     pub hooks: Vec<(ModId, String, u32, Callback)>,
     pub recipes: Vec<RawRecipe>,
     pub menus: Vec<(usize, MenuDef)>,
@@ -169,8 +180,8 @@ pub struct RawGame {
     pub ores: Vec<RawOre>,
     /// (name, icon item) in registration order.
     pub creative_tabs: Vec<(String, String)>,
-    /// (tag, item) added to items of any mod.
-    pub tags: Vec<(String, String)>,
+    /// Components and tags set on other mods' entries.
+    pub sets: Vec<RawSet>,
 }
 
 pub struct RawOre {
@@ -189,27 +200,18 @@ fn opt(c: Callback) -> Option<Callback> {
 
 pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity {
     unsafe {
-        let parts = d
-            .parts
-            .as_slice()
-            .iter()
-            .map(|p| Part {
-                pivot: p.pivot,
-                role: p.role,
-                rest: p.rest,
-                cuboids: p
-                    .cuboids
-                    .as_slice()
-                    .iter()
-                    .map(|c| Cuboid { origin: c.origin, size: c.size, uv: c.uv, inflate: c.inflate })
-                    .collect(),
-            })
-            .collect();
+        let mut parts = Vec::new();
+        abi::each_sized(d.parts, |p| {
+            let mut cuboids = Vec::new();
+            abi::each_sized(p.cuboids, |c| cuboids.push(Cuboid { origin: c.origin, size: c.extent, uv: c.uv, inflate: c.inflate }));
+            parts.push(Part { pivot: p.pivot, role: p.role, rest: p.rest, cuboids });
+        });
         let one = |c: Callback| opt(c).map(|c| vec![(owner, c)]).unwrap_or_default();
         RawEntity {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
             replace: d.replace != 0,
+            components: RawValue::list(d.components),
             desc: EntityKind {
                 name: d.name.as_str().to_string(),
                 owner,
@@ -314,44 +316,28 @@ fn player_parts() -> Vec<Part> {
     ]
 }
 
-pub fn freeze(
-    raws: Vec<RawGame>,
-    block_names: &FxHashMap<String, u32>,
-    item_names: &FxHashMap<String, u32>,
-    items: &[crate::content::ItemDef],
-    errors: &mut Vec<String>,
-) -> Game {
-    let mut g = Game::default();
-    let mut entities: Vec<RawEntity> = Vec::new();
-    let mut components: Vec<RawComponent> = Vec::new();
-    let mut hooks = Vec::new();
-    let mut recipes = Vec::new();
-    let mut menus = Vec::new();
-    let mut player_menu = None;
-    let mut block_entities = Vec::new();
-    let mut replaced_cells: Vec<(usize, String)> = Vec::new();
-    let mut attach: Vec<(String, String)> = Vec::new();
-    for r in raws {
-        entities.extend(r.entities);
-        components.extend(r.components);
-        hooks.extend(r.hooks);
-        recipes.extend(r.recipes);
-        menus.extend(r.menus);
-        g.huds.extend(r.huds);
-        if r.player_menu.is_some() {
-            player_menu = r.player_menu;
-        }
-        block_entities.extend(r.block_entities);
-        attach.extend(r.attach);
-    }
+/// Tags the engine refers to by name, so they have ids even when no mod uses them.
+pub const ENGINE_TAGS: &[&str] = &["armor_head", "armor_chest", "armor_legs", "armor_feet"];
+
+/// Entity kinds, frozen before components (which attach to them).
+pub struct Entities {
+    pub kinds: Vec<EntityKind>,
+    pub names: FxHashMap<String, u32>,
+    /// Each kind's own components and its owner.
+    pub values: Vec<(ModId, Vec<RawValue>)>,
+}
+
+pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entities {
+    let mut entities: Vec<RawEntity> = raws.iter_mut().flat_map(|r| std::mem::take(&mut r.entities)).collect();
     let mut player = builtin(PLAYER, 0.3, 1.8, ef::FALL_DAMAGE | ef::PUSHABLE);
     player.eye = 1.62;
     player.texture = "core:entity/player".into();
     player.parts = player_parts();
-    entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false });
-    entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE), replace: false });
+    entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false, components: Vec::new() });
+    entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE), replace: false, components: Vec::new() });
     entities.sort_by(|a, b| a.name.cmp(&b.name).then(a.replace.cmp(&b.replace)));
     let mut kept: Vec<RawEntity> = Vec::with_capacity(entities.len());
+    let mut replaced_cells: Vec<(usize, String)> = Vec::new();
     for e in entities {
         match kept.last() {
             Some(prev) if prev.name == e.name && e.replace => {
@@ -368,41 +354,74 @@ pub fn freeze(
             _ => kept.push(e),
         }
     }
-    let entities = kept;
-    for (i, e) in entities.into_iter().enumerate() {
+    let mut out = Entities { kinds: Vec::new(), names: FxHashMap::default(), values: Vec::new() };
+    for (i, e) in kept.into_iter().enumerate() {
         write_cell(e.cell, i as u32);
-        g.entity_names.insert(e.name.clone(), i as u32);
-        g.entities.push(e.desc);
+        out.names.insert(e.name.clone(), i as u32);
+        out.values.push((e.desc.owner, e.components));
+        out.kinds.push(e.desc);
     }
     for (cell, name) in replaced_cells {
-        write_cell(cell, g.entity_names[&name]);
+        write_cell(cell, out.names[&name]);
     }
+    out
+}
+
+pub fn freeze(
+    raws: Vec<RawGame>,
+    entities: Entities,
+    block_names: &FxHashMap<String, u32>,
+    item_names: &FxHashMap<String, u32>,
+    items: &[crate::content::ItemDef],
+    c: &Components,
+    errors: &mut Vec<String>,
+) -> Game {
+    let mut g = Game::default();
+    let mut components: Vec<RawComponent> = Vec::new();
+    let mut hooks = Vec::new();
+    let mut recipes = Vec::new();
+    let mut menus = Vec::new();
+    let mut player_menu = None;
+    let mut block_entities = Vec::new();
+    let mut attach: Vec<(String, String)> = Vec::new();
+    for r in raws {
+        components.extend(r.components);
+        hooks.extend(r.hooks);
+        recipes.extend(r.recipes);
+        menus.extend(r.menus);
+        g.huds.extend(r.huds);
+        if r.player_menu.is_some() {
+            player_menu = r.player_menu;
+        }
+        block_entities.extend(r.block_entities);
+        attach.extend(r.attach);
+    }
+    g.entities = entities.kinds;
+    g.entity_names = entities.names;
     g.player_kind = g.entity_names[PLAYER];
     g.item_kind = g.entity_names[ITEM];
 
+    // Entity storage, indexed by component id like everything else.
+    g.components = c.names.iter().map(|n| ComponentDef { name: n.clone(), ..Default::default() }).collect();
+    let energy = size_of::<voxide_abi::Energy>() as u32;
     components.push(RawComponent {
-        cell: 0,
-        def: ComponentDef {
-            name: "core:energy".into(),
-            size: size_of::<voxide_abi::Energy>() as u32,
-            flags: voxide_abi::component_flags::SAVE,
-            default: vec![0; size_of::<voxide_abi::Energy>()],
-        },
+        owner: ENGINE,
+        def: ComponentDef { name: abi::comp::ENERGY.into(), size: energy, flags: voxide_abi::component_flags::SAVE, default: vec![0; energy as usize], runtime: true },
+        schema: String::new(),
         attach_to: Vec::new(),
     });
-    components.sort_by(|a, b| a.def.name.cmp(&b.def.name));
-    for (i, c) in components.into_iter().enumerate() {
-        write_cell(c.cell, i as u32);
-        for k in &c.attach_to {
+    for rc in components {
+        let Some(id) = c.id(&rc.def.name) else { continue };
+        for k in &rc.attach_to {
             match g.entity_names.get(k) {
-                Some(&e) => g.entities[e as usize].components.push(i as u32),
-                None => errors.push(format!("component {} attaches to unknown entity {k}", c.def.name)),
+                Some(&e) => g.entities[e as usize].components.push(id),
+                None => errors.push(format!("component {} attaches to unknown entity {k}", rc.def.name)),
             }
         }
-        g.component_names.insert(c.def.name.clone(), i as u32);
-        g.components.push(c.def);
+        g.components[id as usize] = ComponentDef { runtime: true, ..rc.def };
     }
-    g.energy = g.component_names["core:energy"];
+    g.component_names = g.components.iter().enumerate().filter(|(_, d)| d.runtime).map(|(i, d)| (d.name.clone(), i as u32)).collect();
+    g.energy = g.component_names[abi::comp::ENERGY];
     for (kind, comp) in attach {
         match (g.entity_names.get(&kind), g.component_names.get(&comp)) {
             (Some(&k), Some(&cid)) => g.entities[k as usize].components.push(cid),
@@ -456,14 +475,14 @@ pub fn freeze(
     let mut ordered: Vec<u32> = (1..items.len() as u32).collect();
     ordered.sort_by_key(|&i| items[i as usize].order);
     for &i in &ordered {
-        for t in &items[i as usize].tags {
-            by_tag.entry(t.as_str()).or_default().push(i);
+        for t in c.of(comps::ITEM, i).filter(|&t| c.is_tag(t)) {
+            by_tag.entry(c.names[t as usize].as_str()).or_default().push(i);
         }
     }
     let recipes: Vec<RawRecipe> = recipes.into_iter().flat_map(|r| expand_wildcards(r, &by_tag)).collect();
     let ing = |s: &str, errors: &mut Vec<String>| -> Ingredient {
         if let Some(t) = s.strip_prefix('#') {
-            Ingredient::Tag(t.to_string())
+            Ingredient::Tag(c.id(t).unwrap_or(u32::MAX))
         } else if s.is_empty() {
             Ingredient::Empty
         } else {
@@ -524,7 +543,7 @@ impl Game {
 
     /// Finds the recipe whose pattern fits the grid (any position, mirrored allowed) or whose
     /// shapeless inputs match the grid contents exactly.
-    pub fn match_grid(&self, kind: &str, grid: &[u32], w: u32, h: u32, tags: &dyn Fn(u32, &str) -> bool) -> Option<&Recipe> {
+    pub fn match_grid(&self, kind: &str, grid: &[u32], w: u32, h: u32, tags: &Components) -> Option<&Recipe> {
         let list = self.recipes.get(kind)?;
         // Trim the grid to the bounding box of its items.
         let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
@@ -578,7 +597,7 @@ impl Game {
         })
     }
 
-    pub fn process(&self, kind: &str, input: u32, tags: &dyn Fn(u32, &str) -> bool) -> Option<&Recipe> {
+    pub fn process(&self, kind: &str, input: u32, tags: &Components) -> Option<&Recipe> {
         self.recipes.get(kind)?.iter().find(|r| r.inputs.first().is_some_and(|i| i.matches(input, tags)))
     }
 }

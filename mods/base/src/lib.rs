@@ -37,13 +37,13 @@ fn init(r: &mut Registry) {
     recipes::register(r);
     mobs::register(r);
     worldgen::register(r);
-    r.dimension("overworld", &OVERWORLD)
+    r.dimension("overworld").handle(&OVERWORLD)
         .generator(worldgen::overworld)
         .spawn(worldgen::spawn)
         .sky_above(16)
         .day_length(24000);
     // Second dimension on purpose: nothing in the engine may assume there is only one world.
-    r.dimension("flatlands", &FLATLANDS)
+    r.dimension("flatlands").handle(&FLATLANDS)
         .generator(worldgen::flat)
         .spawn(|_| [0, 3, 0])
         .height(-2, 8)

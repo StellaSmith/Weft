@@ -28,10 +28,10 @@ pub struct OpenMenu {
     pub window: u32,
     pub slots: Vec<SlotRef>,
     pub temp: Vec<ItemStack>,
-    pub data: Vec<i32>,
+    pub data: Vec<i64>,
     pub cursor: ItemStack,
     pub sent_slots: Vec<ItemStack>,
-    pub sent_data: Vec<i32>,
+    pub sent_data: Vec<i64>,
     pub sent_cursor: ItemStack,
 }
 
@@ -71,7 +71,7 @@ impl MenuCall {
         set(self.m(), self.d(), self.player, slot, stack)
     }
 
-    pub fn set_data(&mut self, index: u32, value: i32) {
+    pub fn set_data(&mut self, index: u32, value: i64) {
         if let Some(d) = self.m().data.get_mut(index as usize) {
             *d = value;
         }
@@ -191,7 +191,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
             // a result that does not fit is not taken (no partial inserts, no lost ingredients).
             for _ in 0..max(cur.item).max(64) {
                 let now = get(m, dim, player, slot);
-                if now.is_empty() || now.item != cur.item || now.damage != cur.damage {
+                if now.is_empty() || now.item != cur.item || now.data != cur.data {
                     break;
                 }
                 let backup = dim.entities.inventories.get(&player).cloned();
@@ -209,7 +209,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
             return;
         } else if m.cursor.is_empty() {
             m.cursor = cur;
-        } else if m.cursor.item == cur.item && m.cursor.damage == cur.damage && m.cursor.count + cur.count <= max(cur.item) {
+        } else if m.cursor.item == cur.item && m.cursor.data == cur.data && m.cursor.count + cur.count <= max(cur.item) {
             m.cursor.count += cur.count;
         } else {
             return;
@@ -261,7 +261,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
                     break;
                 }
                 let ts = get(m, dim, player, t);
-                if pass == 0 && !ts.is_empty() && ts.item == rest.item && ts.damage == rest.damage && ts.count < max(rest.item) {
+                if pass == 0 && !ts.is_empty() && ts.item == rest.item && ts.data == rest.data && ts.count < max(rest.item) {
                     let n = (max(rest.item) - ts.count).min(rest.count);
                     set(m, dim, player, t, ItemStack { count: ts.count + n, ..ts });
                     rest.count -= n;
@@ -282,7 +282,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
     }
     let mut cursor = m.cursor;
     let mut slot_stack = cur;
-    let same = !cursor.is_empty() && !slot_stack.is_empty() && cursor.item == slot_stack.item && cursor.damage == slot_stack.damage;
+    let same = !cursor.is_empty() && !slot_stack.is_empty() && cursor.item == slot_stack.item && cursor.data == slot_stack.data;
     match (button, cursor.is_empty(), slot_stack.is_empty()) {
         (_, true, true) => return,
         (0, true, false) => {
@@ -340,7 +340,7 @@ pub fn drag(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, s
         .filter(|&s| {
             let Some(r) = m.slots.get(s as usize) else { return false };
             let t = get(m, dim, player, s);
-            r.flags & sf::OUTPUT == 0 && armor_ok(c, r.flags, cur.item) && (t.is_empty() || (t.item == cur.item && t.damage == cur.damage && t.count < max))
+            r.flags & sf::OUTPUT == 0 && armor_ok(c, r.flags, cur.item) && (t.is_empty() || (t.item == cur.item && t.data == cur.data && t.count < max))
         })
         .take(cur.count as usize)
         .collect();
@@ -364,10 +364,10 @@ pub fn drag(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, s
 }
 
 /// Slots, data and cursor that changed since the last call.
-pub fn changes(m: &mut OpenMenu, dim: &Dim, player: u64) -> (Vec<(u32, ItemStack)>, Vec<(u32, i32)>, Option<ItemStack>) {
+pub fn changes(m: &mut OpenMenu, dim: &Dim, player: u64) -> (Vec<(u32, ItemStack)>, Vec<(u32, i64)>, Option<ItemStack>) {
     let n = m.slots.len();
     m.sent_slots.resize(n, ItemStack { count: u32::MAX, ..ItemStack::EMPTY });
-    m.sent_data.resize(m.data.len(), i32::MIN);
+    m.sent_data.resize(m.data.len(), i64::MIN);
     let mut slots = Vec::new();
     for i in 0..n as u32 {
         let s = get(m, dim, player, i);

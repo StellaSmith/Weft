@@ -1,8 +1,8 @@
 //! UI building for HUD parts and menu screens. Nodes are sent to the engine as they are created;
 //! bound values are callbacks the engine polls every frame and redraws only on change.
 
-use crate::abi::{self, ItemStack, Slice, Str, ui_kind as k};
-use crate::game::Component;
+use crate::abi::{self, ItemStack, Slice, Str, Versioned, ui_kind as k};
+use crate::component::{Component, Value};
 use crate::{callback, host};
 
 /// Read-only client state for bindings.
@@ -16,7 +16,7 @@ impl ClientView {
         unsafe { (host().client_player)(self.raw) }
     }
     /// Own player's synced component.
-    pub fn component<T: Copy>(&self, c: &Component<T>) -> Option<T> {
+    pub fn component<T: Value>(&self, c: &Component<T>) -> Option<T> {
         let p = unsafe { (host().client_component)(self.raw, 0, c.id()) };
         (!p.is_null()).then(|| unsafe { std::ptr::read_unaligned(p as *const T) })
     }
@@ -28,7 +28,7 @@ impl ClientView {
     pub fn creative(&self) -> bool {
         unsafe { (host().client_creative)(self.raw) != 0 }
     }
-    pub fn menu_data(&self, i: u32) -> i32 {
+    pub fn menu_data(&self, i: u32) -> i64 {
         unsafe { (host().client_menu_data)(self.raw, i) }
     }
 }
@@ -45,11 +45,11 @@ pub enum Arg<'a> {
 fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
     args.iter()
         .map(|a| match a {
-            Arg::Text(s) => abi::UiArg { kind: 0, text: Str::new(s), num: 0.0 },
-            Arg::Key(s) => abi::UiArg { kind: 1, text: Str::new(s), num: 0.0 },
-            Arg::Int(v) => abi::UiArg { kind: 2, text: Str::EMPTY, num: *v as f64 },
-            Arg::Float(v) => abi::UiArg { kind: 3, text: Str::EMPTY, num: *v },
-            Arg::Item(v) => abi::UiArg { kind: 4, text: Str::EMPTY, num: *v as f64 },
+            Arg::Text(s) => abi::UiArg { kind: 0, text: Str::new(s), ..abi::UiArg::DEFAULT },
+            Arg::Key(s) => abi::UiArg { kind: 1, text: Str::new(s), ..abi::UiArg::DEFAULT },
+            Arg::Int(v) => abi::UiArg { kind: 2, num: *v as f64, ..abi::UiArg::DEFAULT },
+            Arg::Float(v) => abi::UiArg { kind: 3, num: *v, ..abi::UiArg::DEFAULT },
+            Arg::Item(v) => abi::UiArg { kind: 4, num: *v as f64, ..abi::UiArg::DEFAULT },
         })
         .collect()
 }
@@ -132,9 +132,6 @@ pub(crate) fn ui_callback(f: impl Fn(&mut Ui) + Send + Sync + 'static) -> abi::C
 fn node(kind: u32, s: S) -> abi::UiNode {
     abi::UiNode {
         kind,
-        class: Str::EMPTY,
-        text: Str::EMPTY,
-        args: Slice::EMPTY,
         width: s.width.unwrap_or(f32::NAN),
         height: s.height.unwrap_or(f32::NAN),
         grow: s.grow,
@@ -143,14 +140,8 @@ fn node(kind: u32, s: S) -> abi::UiNode {
         row: s.row as u32,
         align: s.align,
         justify: s.justify,
-        slot: 0,
         data: 0,
-        data_max: u32::MAX,
-        max: 0.0,
-        count: 0,
-        bind: abi::Callback::NONE,
-        on_click: abi::Callback::NONE,
-        tooltip: Str::EMPTY,
+        ..abi::UiNode::DEFAULT
     }
 }
 
@@ -252,12 +243,18 @@ impl Ui {
         });
     }
 
-    /// Progress from menu data: `data[value] / data[max]`.
+    /// Progress from menu data: `data[value] / data[max]`, filling to the right.
     pub fn progress(&mut self, class: &str, s: S, value: u32, max: u32) {
+        self.progress_dir(class, s, value, max, abi::ui_dir::RIGHT)
+    }
+
+    /// Like `progress`, filling in direction `dir` (`abi::ui_dir`, e.g. a furnace flame goes `UP`).
+    pub fn progress_dir(&mut self, class: &str, s: S, value: u32, max: u32, dir: u32) {
         let mut n = node(k::PROGRESS, s);
         n.class = Str::new(class);
         n.data = value;
         n.data_max = max;
+        n.dir = dir;
         self.leaf(n)
     }
 

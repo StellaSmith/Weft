@@ -11,7 +11,10 @@ pub async fn title_screens(t: T) -> R {
     for name in ["core:settings", "core:language", "core:controls", "core:worlds"] {
         t.check(t.c().open_screen(name), format!("cannot open {name}"));
         t.screen(name).await?;
-        t.shot(name.trim_start_matches("core:")).await?;
+        // The world list shows the player's own saves: no fixed picture.
+        if name != "core:worlds" {
+            t.shot(name.trim_start_matches("core:")).await?;
+        }
         t.c().close_screen();
         t.screen("core:title").await?;
     }

@@ -2,6 +2,7 @@
 
 mod gameplay;
 mod ui;
+mod visual;
 mod world;
 
 use std::time::Duration;
@@ -32,6 +33,14 @@ pub fn all() -> Vec<TestDef> {
         gameplay::energy,
         gameplay::eating,
         gameplay::drop_and_pickup,
+        visual::held_items,
+        visual::tooltips,
+        visual::night_light,
+        visual::third_person,
+        visual::ladder_placement,
+        visual::pick_block,
+        visual::gizmos,
+        visual::multiplayer,
         world::load_benchmark,
     ]
 }

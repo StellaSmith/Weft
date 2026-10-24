@@ -31,7 +31,7 @@ pub struct Instance {
     pub roles: u32,
     pub shader: u32,
     pub glow: u32,
-    pub _pad: u32,
+    pub light: u32,
 }
 
 #[repr(C)]
@@ -83,6 +83,24 @@ impl KindModel {
     }
 }
 
+/// Layers one entity draws at most: its skin and what it wears.
+pub const MAX_LAYERS: usize = 8;
+
+/// One entity to pose this frame: kind, root transform, look pitch, limb swing, crouch, up to
+/// two keyframe animations (index, time, weight) and its layers.
+#[derive(Clone, Copy)]
+pub struct Posed {
+    pub kind: u32,
+    pub root: Mat4,
+    pub pitch: f32,
+    pub swing: f32,
+    pub crouch: bool,
+    pub anims: [(usize, f32, f32); 2],
+    pub anim_count: usize,
+    pub layers: [Instance; MAX_LAYERS],
+    pub layer_count: usize,
+}
+
 pub struct Models {
     pub kinds: Vec<KindModel>,
     cuboids: BufferId,
@@ -93,6 +111,8 @@ pub struct Models {
     queued: Vec<(u32, Instance)>,
     rows: Vec<[[f32; 4]; 3]>,
     scratch: Vec<Mat4>,
+    /// Bones per entity in `add_many`.
+    counts: Vec<usize>,
 }
 
 /// The kind's model: the file named by its `model` component, else `<ns>:<name>` if a model
@@ -132,6 +152,7 @@ impl Models {
             queued: Vec::new(),
             rows: Vec::new(),
             scratch: Vec::new(),
+            counts: Vec::new(),
         };
         m.reload(gpu, assets);
         m
@@ -192,29 +213,54 @@ impl Models {
         }
     }
 
-    /// Poses many models at once, in parallel: (kind, root, pitch, swing, keyframes) per entity,
-    /// with the layers of each.
-    pub fn add_many(&mut self, entities: Vec<(u32, Mat4, f32, f32, bool, Vec<(usize, f32, f32)>, Vec<Instance>)>) {
+    /// Poses many models at once, in parallel, straight into the bone table: per entity its kind,
+    /// root, pitch, swing, crouch, keyframes and layers. Nothing is allocated per entity (a
+    /// thousand mobs are a thousand of each every frame).
+    pub fn add_many(&mut self, entities: &[Posed]) {
         let kinds = &self.kinds;
-        let posed: Vec<(u32, Vec<[[f32; 4]; 3]>, Vec<Instance>)> = entities
-            .into_par_iter()
-            .with_min_len(64)
-            .map_init(Vec::new, |scratch, (kind, root, pitch, swing, crouch, anims, layers)| {
-                let Some(m) = kinds.get(kind as usize) else { return (kind, Vec::new(), Vec::new()) };
-                let anims: Vec<(&Bound, f32, f32)> = anims.iter().filter_map(|&(a, t, w)| m.anims.get(a).map(|b| (b, t, w))).collect();
-                model::pose(&m.parts, root, &Motion { pitch, swing, anims: &anims, crouch }, scratch);
-                (kind, scratch.iter().map(|b| [b.row(0).to_array(), b.row(1).to_array(), b.row(2).to_array()]).collect(), layers)
-            })
-            .collect();
-        for (kind, rows, layers) in posed {
-            let Some(m) = self.kinds.get(kind as usize) else { continue };
-            let first = self.rows.len() as u32;
-            self.rows.extend(rows);
-            for mut inst in layers {
-                (inst.bones, inst.cuboids, inst.cuboid_count, inst.vertices) = (first, m.cuboids.0, m.cuboids.1, m.corners.0);
-                self.queued.push((kind, inst));
-            }
+        let base = self.rows.len();
+        let mut counts = std::mem::take(&mut self.counts);
+        counts.clear();
+        counts.extend(entities.iter().map(|e| kinds.get(e.kind as usize).map_or(0, |m| m.parts.len())));
+        self.rows.resize(base + counts.iter().sum::<usize>(), [[0.0; 4]; 3]);
+        let mut slices: Vec<&mut [[[f32; 4]; 3]]> = Vec::with_capacity(entities.len());
+        let mut rest = &mut self.rows[base..];
+        for &n in &counts {
+            let (a, b) = rest.split_at_mut(n);
+            slices.push(a);
+            rest = b;
         }
+        entities.par_iter().zip(slices).with_min_len(64).for_each_init(Vec::new, |scratch, (e, out)| {
+            let Some(m) = kinds.get(e.kind as usize) else { return };
+            let a = |i: usize| e.anims[..e.anim_count].get(i).and_then(|&(a, t, w)| m.anims.get(a).map(|b| (b, t, w)));
+            let (single, both);
+            let anims: &[(&Bound, f32, f32)] = match (a(0), a(1)) {
+                (Some(x), Some(y)) => {
+                    both = [x, y];
+                    &both
+                }
+                (Some(x), None) | (None, Some(x)) => {
+                    single = [x];
+                    &single
+                }
+                (None, None) => &[],
+            };
+            model::pose(&m.parts, e.root, &Motion { pitch: e.pitch, swing: e.swing, anims, crouch: e.crouch }, scratch);
+            for (o, b) in out.iter_mut().zip(scratch.iter()) {
+                *o = [b.row(0).to_array(), b.row(1).to_array(), b.row(2).to_array()];
+            }
+        });
+        let mut first = base as u32;
+        for (e, &n) in entities.iter().zip(&counts) {
+            if let Some(m) = self.kinds.get(e.kind as usize) {
+                for mut inst in e.layers[..e.layer_count].iter().copied() {
+                    (inst.bones, inst.cuboids, inst.cuboid_count, inst.vertices) = (first, m.cuboids.0, m.cuboids.1, m.corners.0);
+                    self.queued.push((e.kind, inst));
+                }
+            }
+            first += n as u32;
+        }
+        self.counts = counts;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -228,20 +274,9 @@ impl Models {
             return;
         }
         self.queued.sort_by_key(|q| q.0);
-        let frames = gpu.frames_in_flight();
-        let grow = |slots: &mut Vec<(BufferId, u32)>, gpu: &mut dyn Backend, n: u32, stride: u64, label: &str| -> BufferId {
-            while slots.len() < frames {
-                slots.push((gpu.create_buffer(stride * 1024, usage::STORAGE | usage::HOST, label), 1024));
-            }
-            if slots[frame.slot].1 < n {
-                gpu.destroy_buffer(slots[frame.slot].0);
-                let cap = n.next_power_of_two();
-                slots[frame.slot] = (gpu.create_buffer(stride * cap as u64, usage::STORAGE | usage::HOST, label), cap);
-            }
-            slots[frame.slot].0
-        };
-        let ib = grow(&mut self.instances, gpu, self.queued.len() as u32, size_of::<Instance>() as u64, "model instances");
-        let bb = grow(&mut self.bones, gpu, self.rows.len().max(1) as u32, 48, "model bones");
+        let grow = crate::gpu_layout::frame_buffer;
+        let ib = grow(gpu, &mut self.instances, frame.slot, self.queued.len() as u32, size_of::<Instance>() as u64, usage::STORAGE, "model instances");
+        let bb = grow(gpu, &mut self.bones, frame.slot, self.rows.len().max(1) as u32, 48, usage::STORAGE, "model bones");
         let insts: Vec<Instance> = self.queued.iter().map(|q| q.1).collect();
         gpu.mapped(ib)[..insts.len() * size_of::<Instance>()].copy_from_slice(bytemuck::cast_slice(&insts));
         gpu.mapped(bb)[..self.rows.len() * 48].copy_from_slice(bytemuck::cast_slice(&self.rows));

@@ -1,13 +1,15 @@
 //! Authoritative simulation. Runs on its own thread; single player talks to it through the
 //! in-process transport. Each dimension is a set of regions ticked in parallel.
 
+mod builtin;
 mod dim;
 pub mod energy;
 pub mod entity;
 mod extend;
 mod liquid;
 pub mod path;
-pub use extend::explanation;
+pub use builtin::COMMANDS as BUILTIN_COMMANDS;
+pub use extend::{MAX_HEALTH, MOVEMENT_SPEED, explanation};
 pub mod menu;
 pub mod persist;
 pub mod regions;
@@ -72,7 +74,10 @@ pub struct Player {
     gen_done: Option<(u32, IVec3, i32, i32, u64)>,
     /// What the player can see; only these cubes (and the sky column) get loaded.
     vis: Option<visibility::Visibility>,
-    sync_done: Option<(u32, IVec3, i32, i32, u64)>,
+    /// Settled cubes in range not sent yet (waiting for their neighbours), and the range they
+    /// were gathered for: only cubes newly settled or newly in range are looked at.
+    unsent: FxHashSet<IVec3>,
+    sync_range: Option<(IVec3, i32, i32, i32)>,
     /// Set by teleports: moves sent before the client saw the teleport are stale and would read
     /// as a long fall, so they are ignored until one arrives near this point.
     teleported: Option<DVec3>,
@@ -80,12 +85,15 @@ pub struct Player {
     gizmos: Vec<String>,
     /// Health and maximum as last sent.
     sent_health: (f32, f32),
+    /// Burning entities this player was last told about (sorted).
+    sent_burning: Vec<u64>,
 }
 
 pub struct Generated {
     dim: u32,
     pos: IVec3,
-    cube: Cube,
+    /// `None`: dropped unmade, nobody's view reached it any more when its turn came.
+    cube: Option<Cube>,
     entities: Vec<u8>,
     conn: u16,
 }
@@ -117,6 +125,9 @@ pub struct Shared {
     /// Loaded cubes and live entities over all dimensions, refreshed every 10 ticks.
     pub cubes: AtomicU64,
     pub entities: AtomicU64,
+    /// Where players load cubes (dim, centre, radius, up, down), for generation jobs to skip
+    /// cubes a fast player already left behind.
+    pub views: parking_lot::RwLock<Vec<(u32, IVec3, i32, i32, i32)>>,
 }
 
 pub const PHASES: [&str; 6] = ["insert", "messages", "regions", "request", "sync", "rest"];
@@ -129,6 +140,12 @@ pub struct Server {
     pub dims: Vec<DimSet>,
     pub players: Vec<Player>,
     pub tick: u64,
+    /// `/tick`: ticks per second, the world held still (players still move), ticks left to step
+    /// while frozen, and a sprint (ticks left, ticks in all, started) run without waiting.
+    pub tick_rate: u32,
+    pub frozen: bool,
+    pub steps: u32,
+    pub sprint: Option<(u32, u32, Instant)>,
     gen_tx: Sender<Generated>,
     gen_rx: Receiver<Generated>,
     incoming: Receiver<ServerConn>,
@@ -219,7 +236,6 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
         .name("server".into())
         .spawn(move || {
             let mut server = Server::new(cfg, incoming, storage, sh);
-            let step = Duration::from_secs_f64(1.0 / TPS as f64);
             let mut next = Instant::now();
             loop {
                 if stop_rx.try_recv().is_ok() {
@@ -230,6 +246,11 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
                 } else {
                     server.tick();
                 }
+                if server.sprint.is_some() {
+                    next = Instant::now();
+                    continue;
+                }
+                let step = Duration::from_secs_f64(1.0 / server.tick_rate.max(1) as f64);
                 next += step;
                 // The rest of the tick goes to loading instead of sleeping.
                 server.load_until(next.checked_sub(Duration::from_millis(2)).unwrap_or(next));
@@ -291,6 +312,10 @@ impl Server {
             shared,
             next_id,
             online: Vec::new(),
+            tick_rate: TPS,
+            frozen: false,
+            steps: 0,
+            sprint: None,
             load_seen: (0, 0),
         }
     }
@@ -364,11 +389,13 @@ impl Server {
                 dead: false,
                 first_sync: true,
                 gen_done: None,
-                sync_done: None,
+                unsent: FxHashSet::default(),
+                sync_range: None,
                 vis: None,
                 teleported: None,
                 gizmos: Vec::new(),
                 sent_health: (-1.0, -1.0),
+                sent_burning: Vec::new(),
             });
         }
     }
@@ -389,8 +416,11 @@ impl Server {
         self.handle_messages(c);
         lap(1, &self.shared);
 
-        // Every region of every dimension is independent: tick them all in parallel.
-        for d in &mut self.dims {
+        // Every region of every dimension is independent: tick them all in parallel. A frozen
+        // world only runs the ticks it is stepped.
+        let runs = !self.frozen || self.steps > 0 || self.sprint.is_some();
+        self.steps -= (self.frozen && self.steps > 0) as u32;
+        for d in self.dims.iter_mut().filter(|_| runs) {
             let mut groups: Vec<String> = self.players.iter().filter(|p| p.dim == d.id).flat_map(|p| p.gizmos.iter().cloned()).collect();
             groups.sort();
             groups.dedup();
@@ -403,8 +433,20 @@ impl Server {
             }
             d.time += 1;
         }
-        self.dims.par_iter_mut().flat_map(|d| d.regions.par_iter_mut()).for_each(|r| r.tick(c));
+        if runs {
+            self.dims.par_iter_mut().flat_map(|d| d.regions.par_iter_mut()).for_each(|r| r.tick(c));
+        }
         lap(2, &self.shared);
+        if let Some((left, all, start)) = &mut self.sprint {
+            *left -= 1;
+            if *left == 0 {
+                let note = format!("sprinted {all} ticks in {} ms", start.elapsed().as_millis());
+                for p in &mut self.players {
+                    p.conn.send(ToClient::Chat(note.clone()));
+                }
+                self.sprint = None;
+            }
+        }
 
         self.dim_events(c);
         for pi in 0..self.players.len() {
@@ -542,7 +584,8 @@ impl Server {
                             menu::close(m, r, c, player);
                             p.conn.send(ToClient::CloseMenu);
                         }
-                        p.conn.send(ToClient::Health { health: 0.0, max: c.game.entities[c.game.player_kind as usize].max_health });
+                        p.sent_health.0 = 0.0;
+                        p.conn.send(ToClient::Health { health: 0.0, max: p.sent_health.1 });
                         p.conn.send(ToClient::Died);
                         log::info!("{} died", p.name);
                     }
@@ -633,6 +676,11 @@ impl Server {
         list.sort_by_key(|g| (g.dim, -g.pos.y, g.pos.x, g.pos.z));
         let mut pending: FxHashSet<(u32, IVec3)> = list.iter().map(|g| (g.dim, g.pos)).collect();
         for g in list {
+            if g.cube.is_none() {
+                self.dims[g.dim as usize].generating.remove(&g.pos);
+                pending.remove(&(g.dim, g.pos));
+                continue;
+            }
             let above = (g.dim, g.pos + IVec3::Y);
             let late = Instant::now() >= deadline;
             let above_coming = pending.contains(&above) || self.dims[g.dim as usize].generating.contains(&above.1) || self.wanted.contains(&above);
@@ -643,7 +691,7 @@ impl Server {
             pending.remove(&(g.dim, g.pos));
             self.wanted.remove(&(g.dim, g.pos));
             let t = Instant::now();
-            self.dims[g.dim as usize].insert(c, g.pos, g.cube, &g.entities, g.conn, true);
+            self.dims[g.dim as usize].insert(c, g.pos, g.cube.unwrap(), &g.entities, g.conn, true);
             self.shared.insert_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             self.shared.inserted.fetch_add(1, Ordering::Relaxed);
         }
@@ -683,8 +731,8 @@ impl Server {
                 p.last_y = pos.y;
                 let mut land = None;
                 if on_ground {
-                    if p.fall > 3.0 {
-                        land = Some(p.fall - 3.0);
+                    if p.fall > entity::SAFE_FALL {
+                        land = Some(p.fall - entity::SAFE_FALL);
                     }
                     p.fall = 0.0;
                 } else if dy < 0.0 {
@@ -715,7 +763,7 @@ impl Server {
             ToServer::Break { pos } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                if !within(e.pos, pos) {
+                if !within(e.pos + DVec3::Y * e.eye(c), pos) {
                     return;
                 }
                 let sel = e.selected;
@@ -729,12 +777,13 @@ impl Server {
             ToServer::Use { pos, face, look, sneak } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                if !within(e.pos, pos) {
+                if !within(e.pos + DVec3::Y * e.eye(c), pos) {
                     return;
                 }
-                let (sel, epos) = (e.selected, e.pos);
+                let (sel, player_box) = (e.selected, e.aabb(c));
                 if !sneak && r.player_use(c, pos, face, entity) {
                     self.dim_events(c);
+                    self.players[pi].conn.send(ToClient::Swing);
                     return;
                 }
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
@@ -745,13 +794,13 @@ impl Server {
                         } else {
                             pos + crate::world::DIRS[face as usize]
                         };
-                        let player_box = crate::physics::Aabb::around(epos, 0.3, 1.8);
                         let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
                         let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
                         if (!solid || !player_box.intersects(&block_box)) && r.place(c, target, face, state, look, entity, held.item) {
                             if !r.entities.get(entity).is_some_and(|e| e.mode == GameMode::Creative) {
                                 r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
                             }
+                            self.players[pi].conn.send(ToClient::Swing);
                         }
                     }
                     _ => self.handle(c, pi, ToServer::UseItem { target: Some((pos, face)) }),
@@ -763,10 +812,12 @@ impl Server {
                 let Some(sel) = r.entities.get(entity).map(|e| e.selected) else { return };
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 let Some(def) = c.items.get(held.item as usize) else { return };
+                let mut used = false;
                 if def.on_use.is_none() {
                     if let Some(after) = r.use_container(c, entity, held) {
                         if after != held {
                             r.entities.set_slot(entity, sel, after);
+                            used = true;
                         }
                     }
                 } else if let Some(cb) = def.on_use {
@@ -783,9 +834,13 @@ impl Server {
                     if a.handled != 0 && a.stack != held {
                         r.entities.set_slot(entity, sel, a.stack);
                     }
+                    used = a.handled != 0;
                 }
                 r.flush_neighbors(c);
                 r.finish_tick(c);
+                if used {
+                    self.players[pi].conn.send(ToClient::Swing);
+                }
             }
             ToServer::Pick { item } => {
                 let Some((r, entity)) = self.region(pi) else { return };
@@ -793,7 +848,7 @@ impl Server {
                 let (sel, creative) = (e.selected, e.mode == GameMode::Creative);
                 let Some(inv) = r.entities.inventories.get(&entity) else { return };
                 let current = inv.get(sel as usize).copied().unwrap_or_default();
-                if let Some(j) = (9..36).find(|&j| inv.get(j).is_some_and(|s| s.item == item && !s.is_empty())) {
+                if let Some(j) = c.game.player_layout.main().map(|j| j as usize).find(|&j| inv.get(j).is_some_and(|s| s.item == item && !s.is_empty())) {
                     let found = inv[j];
                     r.entities.set_slot(entity, j as u32, current);
                     r.entities.set_slot(entity, sel, found);
@@ -802,7 +857,7 @@ impl Server {
                 }
             }
             ToServer::Select(slot) => {
-                if slot < 9 {
+                if slot < c.game.player_layout.hotbar {
                     if let Some((r, entity)) = self.region(pi) {
                         if let Some(e) = r.entities.get_mut(entity) {
                             e.selected = slot;
@@ -826,17 +881,19 @@ impl Server {
                 let base = c.items.get(held.item as usize).filter(|_| held.item != 0).map_or(1.0, |i| i.attack);
                 let dmg = r.compute(c, abi::chain::ATTACK_DAMAGE, base as f64, &q, false) as f32;
                 if r.damage(c, target, dmg, entity, damage::ATTACK) {
-                    // Like vanilla, weapons wear by one per hit and tools (made for blocks) by two.
-                    let weapon = c.item_has_tag(held.item, "tools/sword");
-                    wear(c, r, entity, sel, if weapon { 1 } else { 2 });
+                    wear(c, r, entity, sel, c.item_value::<u32>(held.item, c.ids.wear_per_hit).unwrap_or(2));
                 }
             }
             ToServer::Interact(_) if self.mode(pi) == GameMode::Spectator => {}
             ToServer::Interact(target) => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(kind) = r.entities.get(target).map(|e| e.kind) else { return };
+                let mut handled = false;
                 for &(owner, cb) in &c.game.entities[kind as usize].on_interact {
-                    r.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: target, other: entity, amount: 0.0, cause: 0, handled: 0 });
+                    handled |= r.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: target, other: entity, amount: 0.0, cause: 0, handled: 0 }).handled != 0;
+                }
+                if handled {
+                    self.players[pi].conn.send(ToClient::Swing);
                 }
             }
             ToServer::OpenInventory => {
@@ -886,14 +943,14 @@ impl Server {
             ToServer::Drop { all } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                let (sel, pos, yaw, pitch) = (e.selected, e.pos, e.yaw, e.pitch);
+                let (sel, from, yaw, pitch) = (e.selected, e.drop_point(c), e.yaw, e.pitch);
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 if held.is_empty() {
                     return;
                 }
                 let n = if all { held.count } else { 1 };
                 r.entities.set_slot(entity, sel, ItemStack { count: held.count - n, ..held });
-                let id = r.spawn_item(c, pos + DVec3::Y * 1.3, ItemStack { count: n, ..held });
+                let id = r.spawn_item(c, from, ItemStack { count: n, ..held });
                 if let Some(it) = r.entities.get_mut(id) {
                     let (sy, cy) = (yaw as f64).sin_cos();
                     let (sp, cp) = (pitch as f64).sin_cos();
@@ -907,23 +964,21 @@ impl Server {
                 }
                 self.players[pi].dead = false;
                 self.players[pi].fall = 0.0;
-                let overworld = c.dim_names.get("base:overworld").copied().unwrap_or(0);
-                let spawn = self.dims[overworld as usize].spawn_point(c);
-                let max = c.game.entities[c.game.player_kind as usize].max_health;
-                self.change_dim(c, pi, overworld, spawn);
+                let spawn = self.dims[c.spawn_dim as usize].spawn_point(c);
+                self.change_dim(c, pi, c.spawn_dim, spawn);
                 if let Some((r, entity)) = self.region(pi) {
-                    if let Some(e) = r.entities.get_mut(entity) {
-                        e.health = max;
-                    }
                     let ents = &mut r.entities;
                     for ((id, comp), bytes) in ents.comps.iter_mut() {
                         if *id == entity {
                             bytes.copy_from_slice(&c.game.components[*comp as usize].default);
-                            ents.dirty_comp.insert((*id, *comp));
                         }
                     }
+                    // After the components: modifiers are gone with them. Sent as any change.
+                    let max = r.max_health(c, entity);
+                    if let Some(e) = r.entities.get_mut(entity) {
+                        e.health = max;
+                    }
                 }
-                self.players[pi].conn.send(ToClient::Health { health: max, max });
             }
             ToServer::Chat(text) => {
                 let name = self.players[pi].name.clone();
@@ -980,31 +1035,43 @@ impl Server {
             return;
         }
         let saved = self.storage.as_ref().and_then(|s| load_player(c, &s.lock(), &key));
-        let overworld = c.dim_names.get("base:overworld").copied().unwrap_or(0);
+        let spawn = || (c.spawn_dim, self.dims[c.spawn_dim as usize].spawn_point(c));
         let (dim, pos, health, inv, comps) = match saved {
-            Some(s) => s,
-            None => (overworld, self.dims[overworld as usize].spawn_point(c), -1.0, None, Vec::new()),
+            // A dimension that is gone (its mod removed), or the void while a real one exists:
+            // everything else is kept, the player starts at the spawn.
+            Some(s) => {
+                let ((dim, pos), keep) = match s.0 {
+                    Some(d) if d != c.void_dim || c.spawn_dim == c.void_dim => ((d, s.1), true),
+                    _ => (spawn(), false),
+                };
+                if !keep {
+                    log::warn!("player {name} was in a dimension that is not there now, placed at the spawn");
+                }
+                (dim, pos, s.2, s.3, s.4)
+            }
+            None => {
+                let (d, p) = spawn();
+                (d, p, -1.0, None, Vec::new())
+            }
         };
         let time = self.dims[dim as usize].time;
         let r = self.dims[dim as usize].ensure_region(c, pos);
         let id = r.new_id();
-        let kind = &c.game.entities[c.game.player_kind as usize];
-        let mut e = Entity::new(id, c.game.player_kind, pos, if health > 0.0 { health } else { kind.max_health });
+        let mut e = Entity::new(id, c.game.player_kind, pos, health);
         e.player = true;
         e.mode = self.storage.as_ref().map_or(GameMode::Survival, |s| saved_mode(&s.lock(), &key));
         let mode = e.mode;
-        r.entities.insert(c, e);
-        if let Some(inv) = inv {
-            r.entities.inventories.insert(id, inv);
-        }
-        for (k, v) in comps {
-            r.entities.comps.insert((id, k), v);
-        }
+        r.entities.insert_with(c, e, inv, comps);
+        mode_modifiers(c, r, id, mode);
         let worn = worn_of(c, &r.entities, id);
+        // Known only now that the modifiers are back; a new player starts full.
+        let max = r.max_health(c, id);
         if let Some(e) = r.entities.get_mut(id) {
             e.worn = worn;
+            if e.health <= 0.0 {
+                e.health = max;
+            }
         }
-        let health = r.entities.get(id).map_or(kind.max_health, |e| e.health);
         r.emit_engine(c, abi::event::PLAYER_JOINED, &abi::PlayerEvent { player: id });
         let p = &mut self.players[pi];
         p.name = name;
@@ -1018,14 +1085,19 @@ impl Server {
         p.conn.send(ToClient::Welcome { player: id, dim, pos, seed: self.cfg.seed });
         p.conn.send(ToClient::Configs(crate::config::synced()));
         p.conn.send(ToClient::Time { dim, time });
-        p.conn.send(ToClient::Health { health, max: kind.max_health });
         p.conn.send(ToClient::GameMode(mode));
+        if dim == c.void_dim {
+            p.conn.send(ToClient::Chat(void_note(c)));
+        }
     }
 
     fn set_mode(&mut self, pi: usize, mode: GameMode) {
         let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
-        if let Some(e) = self.dims[dim as usize].entity_region(entity).and_then(|r| r.entities.get_mut(entity)) {
-            e.mode = mode;
+        if let Some(r) = self.dims[dim as usize].entity_region(entity) {
+            if let Some(e) = r.entities.get_mut(entity) {
+                e.mode = mode;
+            }
+            mode_modifiers(content(), r, entity, mode);
         }
         self.players[pi].conn.send(ToClient::GameMode(mode));
     }
@@ -1048,33 +1120,35 @@ impl Server {
             }
         }
         let taken = dims[from].entity_region(p.entity).and_then(|r| r.entities.take(p.entity));
+        let mut frame = None;
         if let Some((mut e, inv, comps)) = taken {
             e.pos = pos;
             let id = e.id;
             let r = dims[to as usize].ensure_region(c, pos);
-            r.entities.insert(c, e);
-            if let Some(inv) = inv {
-                r.entities.inventories.insert(id, inv);
-                r.entities.dirty_inv.insert(id);
-            }
-            for (k, v) in comps {
-                r.entities.comps.insert((id, k), v);
-                r.entities.dirty_comp.insert((id, k));
-            }
+            let (hw, ..) = e.dims(c);
+            frame = r.body_under(c, pos, hw).map(|(b, at)| (b, pos - at));
+            e.support = frame.map(|f| f.0);
+            r.entities.insert_with(c, e, inv, comps);
+            // The client hears its inventory again (component changes are found by comparing).
+            r.entities.dirty_inv.insert(id);
         }
         if p.dim != to {
             p.dim = to;
             p.sent.clear();
             p.gen_done = None;
-            p.sync_done = None;
+            p.unsent.clear();
+            p.sync_range = None;
             p.vis = None;
             p.known.clear();
         }
         p.last_y = pos.y;
         p.fall = 0.0;
         p.teleported = Some(pos);
-        p.conn.send(ToClient::Teleport { dim: to, pos });
+        p.conn.send(ToClient::Teleport { dim: to, pos, frame });
         p.conn.send(ToClient::Time { dim: to, time: dims[to as usize].time });
+        if to == c.void_dim && from != to as usize {
+            p.conn.send(ToClient::Chat(void_note(c)));
+        }
     }
 
     fn command(&mut self, c: &'static Content, pi: usize, line: &str) -> String {
@@ -1198,13 +1272,7 @@ impl Server {
         let Some((mut e, inv, comps)) = self.dims[dim as usize].entity_region(id).and_then(|r| r.entities.take(id)) else { return };
         e.pos = pos;
         let r = self.dims[to_dim as usize].ensure_region(c, pos);
-        r.entities.insert(c, e);
-        if let Some(inv) = inv {
-            r.entities.inventories.insert(id, inv);
-        }
-        for (k, v) in comps {
-            r.entities.comps.insert((id, k), v);
-        }
+        r.entities.insert_with(c, e, inv, comps);
     }
 
     fn position_of(&self, dim: u32, id: u64) -> Option<DVec3> {
@@ -1213,190 +1281,9 @@ impl Server {
 
     fn builtin(&mut self, c: &'static Content, pi: usize, name: &str, a: &crate::commands::Args, here: DVec3) -> String {
         let me = (self.players[pi].dim, self.players[pi].entity);
-        let targets = |s: &Self, key: &str| -> Vec<(u32, u64)> {
-            match a.get(key) {
-                Some(crate::commands::Value::Targets(sel)) => s.select(pi, sel, here),
-                _ => vec![me],
-            }
-        };
-        let dim = me.0;
-        let block_at = |a: &crate::commands::Args| a.pos("pos").map(|p| p.floor().as_ivec3());
-        match name {
-            "help" => match a.text("command") {
-                Some(n) => c.commands.iter().find(|d| d.name == n).map_or(format!("unknown command /{n}"), |d| format!("/{} {}", d.name, d.usage)),
-                None => c.commands.iter().map(|d| format!("/{} {}", d.name, d.usage)).collect::<Vec<_>>().join("\n"),
-            },
-            "tp" => {
-                let who = targets(self, "who");
-                let dest = match (a.pos("pos"), a.get("to")) {
-                    (Some(p), _) => Some((me.0, p)),
-                    (None, Some(crate::commands::Value::Targets(sel))) => {
-                        self.select(pi, sel, here).first().and_then(|&(d, id)| self.position_of(d, id).map(|p| (d, p)))
-                    }
-                    _ => None,
-                };
-                let Some((to_dim, pos)) = dest else { return "no destination".into() };
-                for &(d, id) in &who {
-                    self.teleport(c, d, id, to_dim, pos);
-                }
-                format!("teleported {} to {:.1} {:.1} {:.1}", who.len(), pos.x, pos.y, pos.z)
-            }
-            "dim" => {
-                let d = a.id("dim").unwrap_or(0);
-                let spawn = self.dims[d as usize].spawn_point(c);
-                let who = targets(self, "who");
-                for &(from, id) in &who {
-                    self.teleport(c, from, id, d, spawn);
-                }
-                format!("now in {}", a.text("dim").unwrap_or_default())
-            }
-            "give" => {
-                let count = a.int("count").unwrap_or(1).clamp(1, 1 << 20) as u32;
-                let (item, iname) = (a.id("item").unwrap_or(0), a.text("item").unwrap_or_default().to_string());
-                let mut given = 0;
-                for (d, id) in targets(self, "who") {
-                    if let Some(r) = self.dims[d as usize].entity_region(id) {
-                        given += count - r.entities.insert_item(c, id, ItemStack::new(item, count)).count;
-                    }
-                }
-                format!("gave {given} x {iname}")
-            }
-            "time" => {
-                let d = &mut self.dims[me.0 as usize];
-                let len = c.dims[d.id as usize].day_length.max(1) as u64;
-                if a.get("query").is_some() {
-                    return format!("time is {} (day {})", d.time % len, d.time / len);
-                }
-                let now = match (a.int("time"), a.int("ticks")) {
-                    (Some(t), _) => d.time - d.time % len + t.max(0) as u64,
-                    (None, Some(add)) => d.time.saturating_add_signed(add),
-                    _ => d.time,
-                };
-                d.set_time(now);
-                format!("time set to {}", now % len)
-            }
-            "summon" => {
-                let count = a.int("count").unwrap_or(1).clamp(1, 100_000);
-                let pos = a.pos("pos").unwrap_or(here);
-                let (kind, kname) = (a.id("entity").unwrap_or(0), a.text("entity").unwrap_or_default().to_string());
-                let r = self.dims[me.0 as usize].ensure_region(c, pos);
-                for _ in 0..count {
-                    r.spawn(c, kind, pos);
-                }
-                format!("summoned {count} {kname}")
-            }
-            "kill" => {
-                let who = targets(self, "who");
-                for &(d, id) in &who {
-                    if let Some(r) = self.dims[d as usize].entity_region(id) {
-                        r.damage(c, id, f32::MAX, 0, damage::VOID);
-                    }
-                }
-                format!("killed {}", who.len())
-            }
-            "setblock" => {
-                let (Some(p), Some(state)) = (block_at(a), a.id("block")) else { return String::new() };
-                match self.dims[dim as usize].region_at(p) {
-                    Some(r) => {
-                        r.set(c, p, state);
-                        r.flush_neighbors(c);
-                        r.finish_tick(c);
-                        format!("set {}", a.text("block").unwrap_or_default())
-                    }
-                    None => "not loaded".into(),
-                }
-            }
-            "insert" => {
-                let (Some(p), Some(item)) = (block_at(a), a.id("item")) else { return String::new() };
-                let count = a.int("count").unwrap_or(1).clamp(1, 1 << 20) as u32;
-                match self.dims[dim as usize].region_at(p) {
-                    Some(r) => match r.entities.anchors.get(&p).copied() {
-                        Some(owner) => {
-                            let left = r.entities.insert_item(c, owner, ItemStack::new(item, count));
-                            format!("inserted {} x {}", count - left.count, a.text("item").unwrap_or_default())
-                        }
-                        None => "no block entity there".into(),
-                    },
-                    None => "not loaded".into(),
-                }
-            }
-            "block" => {
-                let Some(p) = block_at(a) else { return String::new() };
-                let d = &self.dims[dim as usize];
-                format!("{} in {}", d.get(p).map_or("unloaded".into(), |s| c.state_name(s)), c.dims[d.id as usize].name)
-            }
-            "gamemode" => {
-                let mode = GameMode::ALL.into_iter().find(|m| a.get(m.name()).is_some()).unwrap_or_default();
-                let who: Vec<usize> = targets(self, "who").iter().filter_map(|t| self.player_index(t.1)).collect();
-                for &p in &who {
-                    self.set_mode(p, mode);
-                }
-                format!("game mode: {} for {}", mode.name(), who.len())
-            }
-            "heal" => {
-                let max = c.game.entities[c.game.player_kind as usize].max_health;
-                for (d, id) in targets(self, "who") {
-                    if let Some(e) = self.dims[d as usize].entity_region(id).and_then(|r| r.entities.get_mut(id)) {
-                        e.health = c.game.entities[e.kind as usize].max_health;
-                    }
-                    if let Some(p) = self.player_index(id) {
-                        self.players[p].conn.send(ToClient::Health { health: max, max });
-                    }
-                }
-                "healed".into()
-            }
-            "debugblocks" => {
-                // Every block state in a grid two blocks apart, on a floor, like vanilla's
-                // debug world: for checking textures and models at a glance.
-                let floor = a.id("floor").unwrap_or_else(|| c.states.iter().position(|s| s.flags & abi::block_flags::OPAQUE != 0 && s.model == abi::Model::Cube).unwrap_or(0) as u32);
-                let n = c.states.len() as i32 - 1;
-                let side = (n as f64).sqrt().ceil() as i32;
-                // In the air above the player, so terrain does not hide anything.
-                let o = here.floor().as_ivec3() + IVec3::new(2, 12, 2);
-                let d = &mut self.dims[dim as usize];
-                let mut placed = 0;
-                for i in 0..n {
-                    let p = o + IVec3::new((i % side) * 2, 0, (i / side) * 2);
-                    for (q, s) in [(p - IVec3::Y, floor), (p, i as u32 + 1)] {
-                        if let Some(r) = d.region_at(q) {
-                            r.set(c, q, s);
-                            placed += (q == p) as u32;
-                        }
-                    }
-                }
-                for r in &mut d.regions {
-                    r.flush_neighbors(c);
-                    r.finish_tick(c);
-                }
-                format!("placed {placed} of {n} states in a {side}x{side} grid")
-            }
-            "regions" => {
-                let parts: Vec<String> = self
-                    .dims
-                    .iter()
-                    .filter(|d| !d.regions.is_empty())
-                    .map(|d| {
-                        let sizes: Vec<String> = d.regions.iter().map(|r| format!("{}/{}", r.cubes.len(), r.entities.list.len())).collect();
-                        format!("{}: {} ({})", c.dims[d.id as usize].name, d.regions.len(), sizes.join(" "))
-                    })
-                    .collect();
-                format!("regions {}", parts.join(", "))
-            }
-
-            "rule" => {
-                let rules = &c.game.rules;
-                let Some(name) = a.text("name") else {
-                    return rules.iter().zip(self.rules.iter()).map(|(r, v)| format!("{} = {v}", r.0)).collect::<Vec<_>>().join("\n");
-                };
-                let Some(i) = rules.iter().position(|r| r.0 == name || r.0.rsplit(':').next() == Some(name)) else { return format!("no rule {name}") };
-                if let Some(v) = a.int("value") {
-                    let mut now = self.rules.to_vec();
-                    now[i] = v;
-                    self.rules = now.into();
-                }
-                format!("{} = {}", rules[i].0, self.rules[i])
-            }
-            _ => format!("unknown command /{name}"),
+        match builtin::COMMANDS.iter().find(|b| b.0 == name) {
+            Some(b) => (b.2)(self, &builtin::Ctx { c, pi, a, here, me }),
+            None => format!("unknown command /{name}"),
         }
     }
 
@@ -1416,7 +1303,7 @@ impl Server {
     fn request_generation(&mut self, c: &'static Content) {
         // Enough jobs to keep every worker busy for a whole tick; the backlog counts too so
         // generation never runs far ahead of lighting.
-        let budget = rayon::current_num_threads() * 64;
+        let budget = crate::background().current_num_threads() * 64;
         let queued: FxHashSet<(u32, IVec3)> = self.backlog.iter().map(|g| (g.dim, g.pos)).collect();
         // Cubes the backlog waits on (the ones above, see `receive_generated`) go first, whatever
         // the budget: a backlog that fills the budget waiting for them would stall loading for good.
@@ -1435,8 +1322,10 @@ impl Server {
         if in_flight >= budget {
             return;
         }
+        *self.shared.views.write() = self.players.iter().filter(|p| p.joined).map(|p| (p.dim, self.view(p))).map(|(d, (c, r, h, down))| (d, c, r, h, down)).collect();
         let mut wanted: Vec<(i32, u32, IVec3)> = Vec::new();
         self.wanted.clear();
+        let edited: Vec<Vec<IVec3>> = self.dims.iter_mut().map(|d| d.take_edited()).collect();
         for pi in 0..self.players.len() {
             let p = &self.players[pi];
             if !p.joined {
@@ -1444,8 +1333,9 @@ impl Server {
             }
             let (center, r, h, down) = self.view(p);
             let pdim = p.dim;
+            let edited = &edited[pdim as usize];
             let key = (pdim, center, r, h + down * 1000, self.dims[pdim as usize].settled_version());
-            if p.gen_done == Some(key) {
+            if p.gen_done == Some(key) && edited.is_empty() {
                 continue;
             }
             let def = &c.dims[pdim as usize];
@@ -1457,18 +1347,9 @@ impl Server {
             let Server { players, dims, wanted: wanted_set, .. } = &mut *self;
             let dim = &mut dims[pdim as usize];
             let p = &mut players[pi];
-            let vkey = (pdim, center, r, h + down * 1000, dim.edit_version());
-            // The visibility fill goes on from cubes that arrived; it starts over only when the
-            // player moved to another cube, the view changed or blocks were edited.
-            let arrived = match &mut p.vis {
-                Some(v) if v.key == vkey => v.update(dim, c, &in_view),
-                _ => {
-                    let v = visibility::Visibility::new(vkey, dim, c, center, &in_view, NEAR);
-                    let loaded: Vec<IVec3> = v.seen.iter().copied().filter(|&q| dim.has(q)).collect();
-                    p.vis = Some(v);
-                    loaded
-                }
-            };
+            // The visibility fill follows the player and goes on from cubes that arrived.
+            let vis = p.vis.get_or_insert_with(visibility::Visibility::new);
+            let (arrived, left) = vis.update(dim, c, (center, r, h, down), &in_view, NEAR, edited);
             let vis = p.vis.as_ref().unwrap();
             let mut missing: Vec<IVec3> = vis.waiting.keys().copied().collect();
             // Above the view the column is loaded up to open sky, so light coming down is right.
@@ -1487,9 +1368,11 @@ impl Server {
                 }
             }
             // Columns capped by ground nobody will load are dark from above: their light is final.
+            // Candidates: cubes just reached, and the ones under cubes that left the view.
             let tops: Vec<IVec3> = arrived
                 .iter()
                 .copied()
+                .chain(left.iter().map(|&q| q - IVec3::Y))
                 .filter(|&q| dim.has(q) && !dim.settled(q) && !dim.has(q + IVec3::Y) && !vis.seen.contains(&(q + IVec3::Y)) && !sky_column(q + IVec3::Y))
                 .collect();
             for t in tops {
@@ -1538,7 +1421,16 @@ impl Server {
         let seed = self.cfg.seed;
         let storage = self.storage.clone();
         let shared = self.shared.clone();
-        rayon::spawn(move || {
+        crate::background().spawn(move || {
+            // Columns go up to open sky, so nothing above the view's floor counts as left behind.
+            let wanted = shared.views.read().iter().any(|&(d, c, r, _, down)| {
+                let o = pos - c;
+                d == dim && o.x * o.x + o.z * o.z <= (r + 2) * (r + 2) && o.y >= -down - 2
+            });
+            if !wanted {
+                let _ = tx.send(Generated { dim, pos, cube: None, entities: Vec::new(), conn: 0 });
+                return;
+            }
             let t = Instant::now();
             let loaded = storage.and_then(|s| s.lock().load(dim, pos));
             let (mut cube, entities) = loaded.unwrap_or_else(|| (dim::generate(content(), dim, seed, pos), Vec::new()));
@@ -1546,17 +1438,28 @@ impl Server {
             crate::world::light::prelight(content(), &mut cube, content().dims[dim as usize].sky_light);
             shared.gen_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             shared.generated.fetch_add(1, Ordering::Relaxed);
-            let _ = tx.send(Generated { dim, pos, cube, entities, conn });
+            let _ = tx.send(Generated { dim, pos, cube: Some(cube), entities, conn });
         });
     }
 
     fn sync_players(&mut self, c: &'static Content) {
+        let server_tick = self.tick;
+        let settled: Vec<Vec<IVec3>> = self.dims.iter_mut().map(|d| d.take_settled()).collect();
+        for d in &mut self.dims {
+            for r in &mut d.regions {
+                r.entities.find_changes(&c.game.synced_comps);
+            }
+        }
         // Entities that moved since last tick and changed equipment, per dimension (all regions).
-        let mut moved: Vec<Vec<(u64, DVec3, f32, f32, [f32; 3], bool)>> = Vec::with_capacity(self.dims.len());
+        let mut moved: Vec<Vec<crate::net::Move>> = Vec::with_capacity(self.dims.len());
         let mut worn: Vec<Vec<(u64, Vec<u32>)>> = Vec::with_capacity(self.dims.len());
+        let mut burning: Vec<Vec<u64>> = Vec::with_capacity(self.dims.len());
         for d in &mut self.dims {
             let mut m = Vec::new();
             let mut w = Vec::new();
+            let mut b: Vec<u64> = d.regions.iter().flat_map(|r| r.entities.list.iter()).filter(|e| e.fire > 0 && !e.removed).map(|e| e.id).collect();
+            b.sort_unstable();
+            burning.push(b);
             for r in &mut d.regions {
                 let changed: Vec<u64> = r.entities.dirty_inv.iter().copied().collect();
                 for id in changed {
@@ -1572,7 +1475,7 @@ impl Server {
                     let now = (e.pos, e.yaw, e.pitch, vel, e.crouched);
                     if e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01 || s.3 != now.3 || s.4 != now.4) {
                         if e.sent.is_some() {
-                            m.push((e.id, e.pos, e.yaw, e.pitch, vel.as_vec3().to_array(), e.crouched));
+                            m.push((e.id, e.pos, e.yaw, e.pitch, vel.as_vec3().to_array(), e.crouched, e.support.unwrap_or(0)));
                         }
                         e.sent = Some(now);
                     }
@@ -1637,6 +1540,10 @@ impl Server {
                     p.conn.send(ToClient::Hurt(hurt));
                 }
             }
+            let taken: Vec<(u64, u64)> = dim.regions.iter().flat_map(|r| r.entities.taken.iter()).filter(|t| p.known.contains(&t.0)).copied().collect();
+            if !taken.is_empty() {
+                p.conn.send(ToClient::Taken(taken));
+            }
             let gone: Vec<u64> = p.known.iter().copied().filter(|id| !visible.contains(id)).collect();
             if !gone.is_empty() {
                 p.conn.send(ToClient::Despawn(gone));
@@ -1655,31 +1562,50 @@ impl Server {
                     }
                 }
             }
+            // Sizes and looks of entities seen for the first time, and changes of known ones.
+            let mut shapes: Vec<(u64, [f32; 3], u32)> = Vec::new();
+            for reg in &dim.regions {
+                let fresh = spawn.iter().map(|v| v.id);
+                let changed = reg.entities.reshaped.iter().copied().filter(|id| p.known.contains(id) && visible.contains(id));
+                for id in fresh.chain(changed) {
+                    let Some(e) = reg.entities.get(id) else { continue };
+                    if e.size.is_some() || e.look.is_some() || reg.entities.reshaped.contains(&id) {
+                        shapes.push((id, e.size.unwrap_or([0.0; 3]), e.look.unwrap_or(u32::MAX)));
+                    }
+                }
+            }
+            if let Some(me) = dim.regions.iter().find(|r| r.entities.reshaped.contains(&p.entity)).and_then(|r| r.entities.get(p.entity)) {
+                shapes.push((p.entity, me.size.unwrap_or([0.0; 3]), me.look.unwrap_or(u32::MAX)));
+            }
             if !spawn.is_empty() {
                 p.conn.send(ToClient::Spawn(spawn));
+            }
+            if !shapes.is_empty() {
+                p.conn.send(ToClient::Shapes(shapes));
             }
             if !shared.is_empty() {
                 p.conn.send(ToClient::EntityComponents(shared));
             }
-            let moves: Vec<(u64, DVec3, f32, f32, [f32; 3], bool)> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
+            let moves: Vec<crate::net::Move> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
             if !moves.is_empty() {
-                p.conn.send(ToClient::Moves(moves));
+                p.conn.send(ToClient::Moves(server_tick, moves));
             }
             let worn: Vec<(u64, Vec<u32>)> = worn[p.dim as usize].iter().filter(|w| p.known.contains(&w.0) && visible.contains(&w.0)).cloned().collect();
             if !worn.is_empty() {
                 p.conn.send(ToClient::Worn(worn));
             }
             p.known = visible;
-            if *tick % 20 == 0 {
-                let burning: Vec<u64> =
-                    dim.regions.iter().flat_map(|r| r.entities.list.iter()).filter(|e| e.fire > 0 && !e.removed && p.known.contains(&e.id)).map(|e| e.id).collect();
-                p.conn.send(ToClient::Burning(burning));
+            // Only when it changes: fire shows at once and nothing is sent while nothing burns.
+            let burning: Vec<u64> = burning[p.dim as usize].iter().copied().filter(|id| p.known.contains(id)).collect();
+            if burning != p.sent_burning {
+                p.conn.send(ToClient::Burning(burning.clone()));
+                p.sent_burning = burning;
             }
 
             if let Some(reg) = dim.entity_region(p.entity) {
                 // Any change counts (regeneration, mods healing), not only hits.
                 let hp = reg.entities.get(p.entity).map_or(p.sent_health.0, |e| e.health);
-                let max = reg.attribute_named(c, p.entity, abi::attribute::MAX_HEALTH, false) as f32;
+                let max = reg.max_health(c, p.entity);
                 if !p.dead && (hp, max) != p.sent_health {
                     p.sent_health = (hp, max);
                     p.conn.send(ToClient::Health { health: hp, max });
@@ -1722,12 +1648,9 @@ impl Server {
                     if !comps.is_empty() {
                         p.conn.send(ToClient::EntityComponents(comps));
                     }
-                    let (slots, data, cursor) = menu::changes(m, reg, p.entity);
+                    let (slots, cursor) = menu::changes(m, reg, p.entity);
                     if !slots.is_empty() {
                         p.conn.send(ToClient::MenuSlots(slots));
-                    }
-                    if !data.is_empty() {
-                        p.conn.send(ToClient::MenuData(data));
                     }
                     if let Some(cur) = cursor {
                         p.conn.send(ToClient::Cursor(cur));
@@ -1742,33 +1665,50 @@ impl Server {
                 }
             }
 
-            let key = (p.dim, center, r, h + down * 1000, dim.settled_version());
-            if p.sync_done == Some(key) {
-                continue;
-            }
             let in_range = |pos: IVec3| {
                 let d = pos - center;
                 d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
             };
-            // Send a cube once its neighbours exist and its sky light is final.
-            let mut to_send: Vec<(i32, IVec3)> = Vec::new();
-            for dy in -down..=h {
-                for dz in -r..=r {
-                    for dx in -r..=r {
-                        let pos = center + IVec3::new(dx, dy, dz);
-                        if !in_range(pos) || p.sent.contains(&pos) || !dim.settled(pos) {
-                            continue;
-                        }
-                        let ready = crate::world::DIRS.iter().all(|d| {
-                            let n = pos + *d;
-                            dim.has(n) || !in_range(n) || !p.vis.as_ref().is_some_and(|v| v.seen.contains(&n))
-                        });
-                        if ready {
-                            to_send.push((dx * dx + dz * dz + dy * dy, pos));
+            let range = (center, r, h, down);
+            let moved = p.sync_range != Some(range);
+            if moved {
+                // Settled cubes that came into range; the ones that left are unloaded below.
+                let was = p.sync_range.map(|(oc, or, oh, od)| {
+                    move |pos: IVec3| {
+                        let d = pos - oc;
+                        d.x * d.x + d.z * d.z <= or * or && d.y <= oh && d.y >= -od
+                    }
+                });
+                p.unsent.retain(|&q| in_range(q));
+                for dy in -down..=h {
+                    for dz in -r..=r {
+                        for dx in -r..=r {
+                            let pos = center + IVec3::new(dx, dy, dz);
+                            if in_range(pos) && !was.as_ref().is_some_and(|w| w(pos)) && !p.sent.contains(&pos) && dim.settled(pos) {
+                                p.unsent.insert(pos);
+                            }
                         }
                     }
                 }
+                p.sync_range = Some(range);
             }
+            p.unsent.extend(settled[p.dim as usize].iter().copied().filter(|&q| in_range(q) && !p.sent.contains(&q)));
+            // Send a cube once its neighbours exist and its sky light is final.
+            let mut to_send: Vec<(i32, IVec3)> = p
+                .unsent
+                .iter()
+                .copied()
+                .filter(|&pos| {
+                    crate::world::DIRS.iter().all(|d| {
+                        let n = pos + *d;
+                        dim.has(n) || !in_range(n) || !p.vis.as_ref().is_some_and(|v| v.seen.contains(&n))
+                    })
+                })
+                .map(|pos| {
+                    let d = pos - center;
+                    (d.x * d.x + d.z * d.z + d.y * d.y, pos)
+                })
+                .collect();
             to_send.sort_by_key(|t| t.0);
             unsent += to_send.len().saturating_sub(SEND_PER_TICK) as u64;
             for &(_, pos) in to_send.iter().take(SEND_PER_TICK) {
@@ -1779,7 +1719,11 @@ impl Server {
                     });
                     p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, hidden });
                     p.sent.insert(pos);
+                    p.unsent.remove(&pos);
                 }
+            }
+            if !moved {
+                continue;
             }
             let far: Vec<IVec3> = p
                 .sent
@@ -1790,7 +1734,6 @@ impl Server {
                     d.x * d.x + d.z * d.z > (r + 2) * (r + 2) || d.y > h + 2 || d.y < -down - 2
                 })
                 .collect();
-            p.sync_done = (to_send.is_empty() && far.is_empty()).then_some(key);
             for pos in far {
                 p.sent.remove(&pos);
                 p.conn.send(ToClient::Unload { dim: p.dim, pos });
@@ -1804,6 +1747,8 @@ impl Server {
                 r.resend.clear();
                 r.changes.clear();
                 r.entities.hurt.clear();
+                r.entities.taken.clear();
+                r.entities.reshaped.clear();
                 r.entities.knocked.clear();
                 r.entities.dirty_comp.clear();
                 r.gizmos.clear();
@@ -1824,8 +1769,9 @@ impl Server {
         self.unload_unused(c);
     }
 
+    /// Every half second, so a fast flight drops a few thousand cubes at a time, not tens.
     fn unload_unused(&mut self, c: &'static Content) {
-        if self.tick % 40 != 0 {
+        if self.tick % 10 != 0 {
             return;
         }
         for di in 0..self.dims.len() {
@@ -1842,6 +1788,7 @@ impl Server {
                 .collect();
             let storage = self.storage.clone();
             let d = &mut self.dims[di];
+            let before: usize = d.regions.iter().map(|r| r.cubes.len()).sum();
             for r in &mut d.regions {
                 let removed = r.retain_cubes(c, |pos| {
                     views.iter().any(|&(center, rad, lo, hi)| {
@@ -1851,8 +1798,9 @@ impl Server {
                 });
                 for (pos, cube, inside) in removed {
                     if let Some(s) = &storage {
-                        let bytes = serialize(c, r, &inside);
-                        s.lock().save(c, r.id, pos, &cube, &bytes);
+                        // Written in the background; loads queue behind it there.
+                        let (s, bytes, dim) = (s.clone(), serialize(c, r, &inside), r.id);
+                        crate::background().spawn(move || s.lock().save(c, dim, pos, &cube, &bytes));
                     }
                     for id in inside {
                         r.entities.remove(id);
@@ -1860,7 +1808,7 @@ impl Server {
                 }
                 r.entities.compact();
             }
-            d.dirty = true;
+            d.dirty |= d.regions.iter().map(|r| r.cubes.len()).sum::<usize>() != before;
         }
     }
 }
@@ -1923,13 +1871,24 @@ fn gizmos_for(p: &Player, dim: &DimSet, tick: u64, me: DVec3) -> Vec<crate::net:
     out
 }
 
-fn worn_of(c: &Content, ents: &entity::Entities, id: u64) -> Vec<u32> {
-    let Some(inv) = ents.inventories.get(&id).filter(|i| i.len() == entity::PLAYER_SLOTS as usize) else { return Vec::new() };
-    inv[entity::PLAYER_WORN].iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()
+/// What a game mode changes through attributes: in creative mobs do not notice the player.
+fn mode_modifiers(c: &Content, r: &mut Dim, id: u64, mode: GameMode) {
+    if mode == GameMode::Survival {
+        r.remove_attr_modifier(c, id, extend::VISIBILITY, "core:game_mode");
+    } else {
+        r.set_attr_modifier(c, id, extend::VISIBILITY, "core:game_mode", abi::attr_op::MUL_TOTAL, -1.0, 0);
+    }
 }
 
-fn within(player: DVec3, block: IVec3) -> bool {
-    (block.as_dvec3() + DVec3::splat(0.5) - (player + DVec3::Y * 1.6)).length_squared() < REACH * REACH
+fn worn_of(c: &Content, ents: &entity::Entities, id: u64) -> Vec<u32> {
+    let worn = &c.game.player_layout.worn;
+    let Some(inv) = ents.inventories.get(&id).and_then(|i| i.get(worn.start as usize..worn.end as usize)) else { return Vec::new() };
+    inv.iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()
+}
+
+/// The block is within reach of these eyes.
+fn within(eye: DVec3, block: IVec3) -> bool {
+    (block.as_dvec3() + DVec3::splat(0.5) - eye).length_squared() < REACH * REACH
 }
 
 /// Damages the held tool; breaks it when used up.
@@ -1997,19 +1956,43 @@ fn save_player(s: &Storage, p: &Player, d: &Dim) {
 
 fn saved_mode(s: &Storage, key: &str) -> GameMode {
     let src = std::fs::read_to_string(s.player_path(key)).unwrap_or_default();
-    src.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == "mode").and_then(|(_, v)| GameMode::parse(v.trim()))).unwrap_or_default()
+    crate::kv::get(&src, "mode").and_then(GameMode::parse).unwrap_or_default()
 }
 
-type PlayerData = (u32, DVec3, f32, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
+/// Said to a player arriving in the engine's void.
+fn void_note(c: &Content) -> String {
+    if c.spawn_dim == c.void_dim {
+        "No dimension was found (no mods?), so you are in the void, where nothing can be changed".into()
+    } else {
+        "This is the void: nothing here can be changed".into()
+    }
+}
 
+/// Dimension (`None`: unknown now), position, health, inventory, components.
+type PlayerData = (Option<u32>, DVec3, f32, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
+
+/// A saved player. Content that no longer exists is dropped with a log line; a file that cannot
+/// be read is kept as `.bak` before it gets overwritten by a fresh player.
 fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerData> {
-    let src = std::fs::read_to_string(s.player_path(key)).ok()?;
+    let path = s.player_path(key);
+    let src = match std::fs::read_to_string(&path) {
+        Ok(src) => src,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            log::error!("reading player {key}: {e}; kept as .bak, the player starts anew");
+            let _ = std::fs::copy(&path, path.with_extension("bak"));
+            return None;
+        }
+    };
     let (mut dim, mut pos, mut health, mut inv, mut comps) = (None, None, -1.0, None, Vec::new());
-    for line in src.lines() {
-        let Some((k, v)) = line.split_once('=') else { continue };
-        let (k, v) = (k.trim(), v.trim());
+    for (_, k, v) in crate::kv::pairs(&src) {
         match k {
-            "dim" => dim = c.dim_names.get(v).copied(),
+            "dim" => {
+                dim = c.dim_names.get(v).copied();
+                if dim.is_none() {
+                    log::warn!("player {key}: dimension {v} does not exist now");
+                }
+            }
             "pos" => {
                 let n: Vec<f64> = v.split_whitespace().filter_map(|x| x.parse().ok()).collect();
                 if n.len() == 3 {
@@ -2018,17 +2001,16 @@ fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerData> {
             }
             "health" => health = v.parse().unwrap_or(-1.0),
             "inventory" => {
-                let mut slots = vec![ItemStack::EMPTY; entity::PLAYER_SLOTS as usize];
+                let mut slots = vec![ItemStack::EMPTY; c.game.player_layout.slots as usize];
                 for (i, tok) in v.split_whitespace().enumerate().take(slots.len()) {
                     let parts: Vec<&str> = tok.split('*').collect();
                     if parts.len() == 3 {
-                        if let Some(&item) = c.item_names.get(parts[0]) {
-                            let stack = ItemStack { item, count: parts[1].parse().unwrap_or(1), data: 0 };
-                            // Older player files store a bare damage number.
-                            slots[i] = match parts[2].parse::<u32>() {
-                                Ok(d) => crate::stack::with_damage(stack, d),
-                                Err(_) => ItemStack { data: crate::stack::from_text(parts[2]), ..stack },
-                            };
+                        let item = c.item_names.get(parts[0]).copied();
+                        if item.is_none() {
+                            log::warn!("player {key}: dropped {} {} (no such item now)", parts[1], parts[0]);
+                        }
+                        if let Some(item) = item {
+                            slots[i] = ItemStack { item, count: parts[1].parse().unwrap_or(1), data: crate::stack::from_text(parts[2]) };
                         }
                     }
                 }
@@ -2036,7 +2018,11 @@ fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerData> {
             }
             _ => {
                 if let Some(name) = k.strip_prefix("comp.") {
-                    if let Some(id) = c.game.component(name) {
+                    let id = c.game.component(name);
+                    if id.is_none() {
+                        log::warn!("player {key}: dropped component {name} (not registered now)");
+                    }
+                    if let Some(id) = id {
                         let mut b = persist::unhex(v);
                         let size = c.game.components[id as usize].size as usize;
                         if size > 0 {
@@ -2048,5 +2034,10 @@ fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerData> {
             }
         }
     }
-    Some((dim?, pos?, health, inv, comps))
+    let Some(pos) = pos else {
+        log::error!("player {key}: no position in the file; kept as .bak, the player starts anew");
+        let _ = std::fs::copy(&path, path.with_extension("bak"));
+        return None;
+    };
+    Some((dim, pos, health, inv, comps))
 }

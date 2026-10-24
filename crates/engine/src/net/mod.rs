@@ -58,6 +58,11 @@ pub struct GizmoShape {
     pub text: String,
 }
 
+/// An entity's move: id, position, yaw, pitch, velocity (blocks/s; clients predict solid bodies
+/// with it), crouching, and its frame: the solid body it stands on (0: the world), which clients
+/// draw it relative to.
+pub type Move = (u64, DVec3, f32, f32, [f32; 3], bool, u64);
+
 #[derive(Clone)]
 pub enum ToClient {
     Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },
@@ -67,13 +72,22 @@ pub enum ToClient {
     Unload { dim: u32, pos: IVec3 },
     Blocks { dim: u32, changes: Vec<(IVec3, u32)> },
     Time { dim: u32, time: u64 },
-    Teleport { dim: u32, pos: DVec3 },
+    /// `frame`: the solid body it was put on and the position relative to that body (clients
+    /// draw bodies ahead of the server, so only the relative position is right for them).
+    Teleport { dim: u32, pos: DVec3, frame: Option<(u64, DVec3)> },
     Spawn(Vec<EntityView>),
-    /// id, position, yaw, pitch, velocity (blocks/s; clients predict solid bodies with it),
-    /// crouching.
-    Moves(Vec<(u64, DVec3, f32, f32, [f32; 3], bool)>),
+    /// Moves of one server tick (its number: clients time the moves by it, not by when they
+    /// arrive).
+    Moves(u64, Vec<Move>),
     Despawn(Vec<u64>),
     Hurt(Vec<(u64, f32)>),
+    /// Items picked up: (item entity, who took it). They fly to the taker before going.
+    Taken(Vec<(u64, u64)>),
+    /// A use (right click) did something: the arm swings.
+    Swing,
+    /// Entities' own sizes (width, height, eye; width 0: the kind's) and looks (another kind,
+    /// `u32::MAX`: its own).
+    Shapes(Vec<(u64, [f32; 3], u32)>),
     /// Every known entity that is on fire, sent once a second.
     Burning(Vec<u64>),
     Worn(Vec<(u64, Vec<u32>)>),
@@ -89,7 +103,6 @@ pub enum ToClient {
     Knockback([f32; 2]),
     OpenMenu { kind: u32, window: u32, slots: u32, owner: u64 },
     MenuSlots(Vec<(u32, ItemStack)>),
-    MenuData(Vec<(u32, i64)>),
     Cursor(ItemStack),
     CloseMenu,
     Died,
@@ -149,85 +162,41 @@ pub trait Message {
     fn kind(&self) -> usize;
 }
 
-impl Message for ToClient {
-    const TO_SERVER: bool = false;
-    const KINDS: &'static [&'static str] = &[
-        "Welcome", "Cube", "Unload", "Blocks", "Time", "Teleport", "Spawn", "Moves", "Despawn", "Hurt", "Burning", "Worn", "GameMode", "Players", "Inventory",
-        "Components", "Health", "Knockback", "OpenMenu", "MenuSlots", "MenuData", "Cursor", "CloseMenu", "Died", "Chat", "Disconnect", "Gizmos", "Packet",
-        "EntityComponents", "Particles", "Configs", "Sounds", "Animate",
-    ];
-    fn kind(&self) -> usize {
-        use ToClient::*;
-        match self {
-            Welcome { .. } => 0,
-            Cube { .. } => 1,
-            Unload { .. } => 2,
-            Blocks { .. } => 3,
-            Time { .. } => 4,
-            Teleport { .. } => 5,
-            Spawn(_) => 6,
-            Moves(_) => 7,
-            Despawn(_) => 8,
-            Hurt(_) => 9,
-            Burning(_) => 10,
-            Worn(_) => 11,
-            GameMode(_) => 12,
-            Players(_) => 13,
-            Inventory(_) => 14,
-            Components(_) => 15,
-            Health { .. } => 16,
-            Knockback(_) => 17,
-            OpenMenu { .. } => 18,
-            MenuSlots(_) => 19,
-            MenuData(_) => 20,
-            Cursor(_) => 21,
-            CloseMenu => 22,
-            Died => 23,
-            Chat(_) => 24,
-            Disconnect(_) => 25,
-            Gizmos(_) => 26,
-            Packet { .. } => 27,
-            EntityComponents(_) => 28,
-            Particles(_) => 29,
-            Configs(_) => 30,
-            Sounds(_) => 31,
-            Animate(_) => 32,
+/// Every message kind once: its wire tag (position), the name in traffic counters, `kind()`.
+macro_rules! messages {
+    ($msg:ident, $tag:ident, $to_server:expr, [$($v:ident),* $(,)?]) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum $tag {
+            $($v),*
         }
-    }
+
+        impl $tag {
+            pub const ALL: &'static [$tag] = &[$($tag::$v),*];
+        }
+
+        impl Message for $msg {
+            const TO_SERVER: bool = $to_server;
+            const KINDS: &'static [&'static str] = &[$(stringify!($v)),*];
+            fn kind(&self) -> usize {
+                match self {
+                    $($msg::$v { .. } => $tag::$v as usize,)*
+                }
+            }
+        }
+    };
 }
 
-impl Message for ToServer {
-    const TO_SERVER: bool = true;
-    const KINDS: &'static [&'static str] = &[
-        "Join", "Move", "Break", "Use", "UseItem", "Select", "Attack", "Interact", "OpenInventory", "Click", "CreativeTake", "Pick", "Drag", "CloseMenu", "Drop",
-        "Respawn", "Chat", "Leave", "Gizmos", "Packet",
-    ];
-    fn kind(&self) -> usize {
-        use ToServer::*;
-        match self {
-            Join { .. } => 0,
-            Move { .. } => 1,
-            Break { .. } => 2,
-            Use { .. } => 3,
-            UseItem { .. } => 4,
-            Select(_) => 5,
-            Attack(_) => 6,
-            Interact(_) => 7,
-            OpenInventory => 8,
-            Click { .. } => 9,
-            CreativeTake { .. } => 10,
-            Pick { .. } => 11,
-            Drag { .. } => 12,
-            CloseMenu => 13,
-            Drop { .. } => 14,
-            Respawn => 15,
-            Chat(_) => 16,
-            Leave => 17,
-            Gizmos(_) => 18,
-            Packet { .. } => 19,
-        }
-    }
-}
+messages!(ToClient, ClientTag, false, [
+    Welcome, Cube, Unload, Blocks, Time, Teleport, Spawn, Moves, Despawn, Hurt, Burning, Worn,
+    GameMode, Players, Inventory, Components, Health, Knockback, OpenMenu, MenuSlots,
+    Cursor, CloseMenu, Died, Chat, Disconnect, Gizmos, Packet, EntityComponents, Particles,
+    Configs, Sounds, Animate, Taken, Swing, Shapes,
+]);
+
+messages!(ToServer, ServerTag, true, [
+    Join, Move, Break, Use, UseItem, Select, Attack, Interact, OpenInventory, Click, CreativeTake,
+    Pick, Drag, CloseMenu, Drop, Respawn, Chat, Leave, Gizmos, Packet,
+]);
 
 pub struct Conn<S, R> {
     tx: Sender<S>,

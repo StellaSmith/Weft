@@ -15,16 +15,19 @@ pub const SEA: i32 = 63;
 static PLANT_SOIL: Tag = Tag::new("plant_soil");
 static CACTUS_SOIL: Tag = Tag::new("cactus_soil");
 static SUGAR_CANE_SOIL: Tag = Tag::new("sugar_cane_soil");
-/// Desert and beach surfaces: the first block tagged `sand` (the base game's own, as it loads first).
-static SAND_SURFACE: Block = Block::named("#sand");
-/// What a biome grows, as data any mod's biome can carry: trees per 5x5 cell (0..1), share of
-/// grass on plantable soil, and tags `conifer` (spruces), `birch` (birches), `mixed_birch`
-/// (some birches among oaks), `snowy` (nothing grows), `dry` (cacti).
+/// What a biome grows, as data any mod can set on any biome: trees per 5x5 cell (0..1), share of
+/// grass on plantable soil, which trees and flowers, and tags `snowy` (nothing grows), `dry`
+/// (cacti).
 pub static TREES: Component<f32> = Component::new("trees");
 pub static GRASS_COVER: Component<f32> = Component::new("grass");
-static CONIFER: Tag = Tag::new("conifer");
-static BIRCH: Tag = Tag::new("birch");
-static MIXED_BIRCH: Tag = Tag::new("mixed_birch");
+/// The logs of the trees a biome grows, with weights: `"base:birch_log:1 base:oak_log:4"`
+/// (oaks where unset).
+pub static TREE_KINDS: Component<Text> = Component::new("tree_kinds");
+/// Flowers a biome grows, picked evenly (`"base:dandelion base:rose"` where unset).
+pub static FLOWERS: Component<Text> = Component::new("flowers");
+/// On a log, the tree it grows into: `round <leaves>` (like oaks, 4-6 high) or `cone <leaves>`
+/// (like spruces, 6-9 high).
+pub static TREE: Component<Text> = Component::new("tree");
 static SNOWY_TAG: Tag = Tag::new("snowy");
 static DRY: Tag = Tag::new("dry");
 
@@ -42,12 +45,12 @@ pub static DEEP_CAVES: Biome = Biome::new();
 pub fn register(r: &mut Registry) {
     // Tags say what a biome is (spawning, decoration and mods ask these, not names).
     r.biome("plains").handle(&PLAINS).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("animals").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
-    r.biome("forest").handle(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8).tag("forest").tag("animals").tag("mixed_birch").set(&TREES, 0.4).set(&GRASS_COVER, 0.12);
-    r.biome("birch_forest").handle(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6).tag("forest").tag("animals").tag("birch").set(&TREES, 0.45).set(&GRASS_COVER, 0.12);
-    r.biome("taiga").handle(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8).tag("forest").tag("cold").tag("animals").tag("conifer").set(&TREES, 0.45).set(&GRASS_COVER, 0.08);
-    r.biome("snowy_plains").handle(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5).tag("cold").tag("snowy").tag("animals").tag("conifer").set(&TREES, 0.03);
+    r.biome("forest").handle(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8).tag("forest").tag("animals").set(&TREES, 0.4).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log:1 base:oak_log:4");
+    r.biome("birch_forest").handle(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6).tag("forest").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log");
+    r.biome("taiga").handle(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8).tag("forest").tag("cold").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.08).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome("snowy_plains").handle(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5).tag("cold").tag("snowy").tag("animals").set(&TREES, 0.03).set_text(&TREE_KINDS, "base:spruce_log");
     r.biome("desert").handle(&DESERT).colors(0xbfb755, 0xaea42a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
-    r.biome("mountains").handle(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3).tag("mountain").tag("animals").tag("conifer").set(&TREES, 0.06).set(&GRASS_COVER, 0.05);
+    r.biome("mountains").handle(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3).tag("mountain").tag("animals").set(&TREES, 0.06).set(&GRASS_COVER, 0.05).set_text(&TREE_KINDS, "base:spruce_log");
     r.biome("ocean").handle(&OCEAN).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("ocean");
     r.biome("beach").handle(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("beach");
     // Underground (3D): whole cubes deep under the surface; spiders like it there.
@@ -92,7 +95,7 @@ static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
         .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.45, f64::INFINITY).surface(&GRASS, &DIRT, 3).bare_above(130))
         .biome(BiomeRule::new(&SNOWY).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
         .biome(BiomeRule::new(&TAIGA).temperature(f64::NEG_INFINITY, -0.15).surface(&GRASS, &DIRT, 3))
-        .biome(BiomeRule::new(&DESERT).temperature(0.35, f64::INFINITY).humidity(f64::NEG_INFINITY, 0.0).surface(&SAND_SURFACE, &SAND_SURFACE, 3).under(&SANDSTONE, 1))
+        .biome(BiomeRule::new(&DESERT).temperature(0.35, f64::INFINITY).humidity(f64::NEG_INFINITY, 0.0).surface(&SAND, &SAND, 3).under(&SANDSTONE, 1))
         .biome(BiomeRule::new(&FOREST).humidity(0.25, f64::INFINITY).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&BIRCH_FOREST).humidity(0.05, f64::INFINITY).temperature(f64::NEG_INFINITY, 0.1).surface(&GRASS, &DIRT, 3))
         .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
@@ -106,19 +109,41 @@ pub fn column(seed: u64, x: i32, z: i32) -> Column {
 
 const TREE_CELL: i32 = 5;
 
-#[derive(Clone, Copy)]
-enum Tree {
-    Oak,
-    Birch,
-    Spruce,
-}
-
 struct TreeAt {
     x: i32,
     y: i32,
     z: i32,
-    kind: Tree,
+    log: u32,
+    leaves: u32,
+    cone: bool,
     height: i32,
+}
+
+/// One of `"name:weight name ..."` (weight 1 when left out) by `roll`, as a block state.
+fn pick(list: &str, roll: u64) -> Option<u32> {
+    let entries = || {
+        list.split_whitespace().map(|e| match e.rsplit_once(':').and_then(|(n, w)| Some((n, w.parse::<u32>().ok()?))) {
+            Some(nw) => nw,
+            None => (e, 1),
+        })
+    };
+    let total: u32 = entries().map(|e| e.1).sum();
+    let mut r = (roll % total.max(1) as u64) as u32;
+    for (name, w) in entries() {
+        if r < w {
+            return find_block(name);
+        }
+        r -= w;
+    }
+    None
+}
+
+/// A tree growing from `log` (its `tree` component), `h` deciding the height.
+fn tree_at(log: u32, x: i32, y: i32, z: i32, h: u64) -> Option<TreeAt> {
+    let (shape, leaves) = TREE.on_block(log)?.as_str().split_once(' ')?;
+    let cone = shape == "cone";
+    let height = if cone { 6 + (h % 4) as i32 } else { 4 + (h % 3) as i32 };
+    Some(TreeAt { x, y, z, log, leaves: find_block(leaves.trim())?, cone, height })
 }
 
 fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {
@@ -130,30 +155,16 @@ fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {
     if col.height < SEA || unit(h.rotate_left(17)) >= TREES.on_biome(b).unwrap_or(0.0) as f64 || TERRAIN.surface_carved(seed, x, z) {
         return None;
     }
-    let kind = if CONIFER.on_biome(b) {
-        Tree::Spruce
-    } else if BIRCH.on_biome(b) || (MIXED_BIRCH.on_biome(b) && (h >> 40) % 5 == 0) {
-        Tree::Birch
-    } else {
-        Tree::Oak
-    };
-    let height = match kind {
-        Tree::Spruce => 6 + ((h >> 32) % 4) as i32,
-        _ => 4 + ((h >> 32) % 3) as i32,
-    };
-    Some(TreeAt { x, y: col.height + 1, z, kind, height })
+    let log = pick(TREE_KINDS.on_biome(b).map_or("base:oak_log", |t| t.as_str()), h >> 40)?;
+    tree_at(log, x, col.height + 1, z, h >> 32)
 }
 
 /// Calls `put(x, y, z, state, overwrite)` for every block of the tree.
 fn tree_blocks(t: &TreeAt, mut put: impl FnMut(i32, i32, i32, u32, bool)) {
-    let (log, leaves) = match t.kind {
-        Tree::Oak => (OAK_LOG.id(), OAK_LEAVES.id()),
-        Tree::Birch => (BIRCH_LOG.id(), BIRCH_LEAVES.id()),
-        Tree::Spruce => (SPRUCE_LOG.id(), SPRUCE_LEAVES.id()),
-    };
+    let (log, leaves) = (t.log, t.leaves);
     let top = t.y + t.height;
-    match t.kind {
-        Tree::Spruce => {
+    match t.cone {
+        true => {
             for dy in 2..=t.height + 1 {
                 let y = t.y + dy;
                 let r = if dy == t.height + 1 { 0 } else { 1 + ((t.height + 1 - dy) % 3).min(2) };
@@ -166,7 +177,7 @@ fn tree_blocks(t: &TreeAt, mut put: impl FnMut(i32, i32, i32, u32, bool)) {
                 }
             }
         }
-        _ => {
+        false => {
             for y in top - 3..=top {
                 let r: i32 = if y >= top - 1 { 1 } else { 2 };
                 for dz in -r..=r {
@@ -189,8 +200,7 @@ fn tree_blocks(t: &TreeAt, mut put: impl FnMut(i32, i32, i32, u32, bool)) {
 
 /// Places a tree into a live world (saplings). Checks for room first.
 pub fn grow_tree(w: World, p: [i32; 3]) {
-    let h = w.random();
-    let t = TreeAt { x: p[0], y: p[1], z: p[2], kind: Tree::Oak, height: 4 + (h % 3) as i32 };
+    let Some(t) = tree_at(OAK_LOG.id(), p[0], p[1], p[2], w.random()) else { return };
     for y in t.y + 1..t.y + t.height {
         if w.get([t.x, y, t.z]) != 0 {
             return;
@@ -256,7 +266,9 @@ pub fn overworld(g: &mut Gen) {
             if PLANT_SOIL.on_block(below) {
                 let grass_chance = GRASS_COVER.on_biome(b).unwrap_or(0.05) as f64;
                 if roll < 0.012 {
-                    g.set(x, y, z, if (h >> 32) & 1 == 0 { DANDELION.id() } else { ROSE.id() });
+                    if let Some(f) = pick(FLOWERS.on_biome(b).map_or("base:dandelion base:rose", |t| t.as_str()), h >> 32) {
+                        g.set(x, y, z, f);
+                    }
                 } else if roll < grass_chance {
                     g.set(x, y, z, TALL_GRASS.id());
                 }

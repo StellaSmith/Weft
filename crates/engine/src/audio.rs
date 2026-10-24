@@ -54,10 +54,15 @@ pub struct Audio {
     music: Option<StreamingSoundHandle<kira::sound::FromFileError>>,
     next_music: Instant,
     state: (bool, bool),
-    volumes: [f64; 7],
+    /// Per category, then the master volume.
+    volumes: Vec<f64>,
     rng: u64,
     /// Sounds started so far.
     pub played: u32,
+    /// Automated runs (tests, scripts): everything plays and counts, silently.
+    pub muted: bool,
+    /// Each category's volume setting id, then the master volume's, looked up once.
+    volume_ids: Option<Vec<Option<u32>>>,
 }
 
 const QUICK: Tween = Tween { start_time: kira::StartTime::Immediate, duration: Duration::from_millis(400), easing: kira::Easing::Linear };
@@ -82,9 +87,9 @@ impl Audio {
             let lowpass = wb.add_effect(FilterBuilder::new().cutoff(20_000.0));
             let mut world = mgr.add_sub_track(wb)?;
             let mut groups = Vec::new();
-            for c in 0..=cat::UI {
+            for k in &crate::content::content().game.sound_categories {
                 let b = TrackBuilder::new().sub_track_capacity(256).sound_capacity(256);
-                groups.push(if c == cat::MUSIC || c == cat::UI { mgr.add_sub_track(b)? } else { world.add_sub_track(b)? });
+                groups.push(if k.world { world.add_sub_track(b)? } else { mgr.add_sub_track(b)? });
             }
             Ok(Audio {
                 mgr,
@@ -97,9 +102,11 @@ impl Audio {
                 music: None,
                 next_music: Instant::now() + Duration::from_secs(20),
                 state: (false, false),
-                volumes: [-1.0; 7],
+                volumes: Vec::new(),
                 rng: 0x2545_F491_4F6C_DD1D,
                 played: 0,
+                muted: false,
+                volume_ids: None,
             })
         })();
         match made {
@@ -141,22 +148,22 @@ impl Audio {
 
     /// Settings, listener, environment and music, once a frame.
     pub fn update(&mut self, assets: &Assets, l: Option<&Listener>) {
-        let vol = |name: &str| crate::config::by_name(name).map_or(1.0, |id| crate::config::get(id) / 100.0);
-        let volumes = [
-            vol("core:volume_blocks"),
-            vol("core:volume_creatures"),
-            vol("core:volume_players"),
-            vol("core:volume_ambient"),
-            vol("core:volume_music"),
-            1.0,
-            vol("core:volume_master"),
-        ];
+        let ids = self.volume_ids.get_or_insert_with(|| {
+            let mut ids: Vec<Option<u32>> = crate::content::content().game.sound_categories.iter().map(|k| crate::config::by_name(&k.setting)).collect();
+            ids.push(crate::config::by_name("core:volume_master"));
+            ids
+        });
+        // UI has no setting of its own: full volume.
+        let mut volumes: Vec<f64> = ids.iter().map(|id| id.map_or(1.0, |id| crate::config::get(id) / 100.0)).collect();
+        if self.muted {
+            *volumes.last_mut().unwrap() = 0.0;
+        }
         if volumes != self.volumes {
-            self.volumes = volumes;
-            for (g, v) in self.groups.iter_mut().zip(volumes) {
-                g.set_volume(db(v), Tween::default());
+            for (g, v) in self.groups.iter_mut().zip(&volumes) {
+                g.set_volume(db(*v), Tween::default());
             }
-            self.mgr.main_track().set_volume(db(volumes[6]), Tween::default());
+            self.mgr.main_track().set_volume(db(*volumes.last().unwrap()), Tween::default());
+            self.volumes = volumes;
         }
         let Some(l) = l else {
             if let Some(m) = &mut self.music {
@@ -236,7 +243,7 @@ impl Audio {
         let pitch = if p.pitch > 0.0 { p.pitch } else { def.pitch[0] + (def.pitch[1] - def.pitch[0]) * self.random() };
         let volume = (p.volume * def.volume).max(0.0);
         let data = data.volume(db(volume as f64)).playback_rate(pitch as f64);
-        let g = (def.category as usize).min(self.groups.len() - 1);
+        let g = (def.category as usize).min(self.groups.len().saturating_sub(1));
         let group = &mut self.groups[g];
         let played = match p.pos {
             Some(pos) => {

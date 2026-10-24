@@ -73,11 +73,15 @@ fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
     unsafe {
         abi::each_sized(list, |a| {
             out.push(match a.kind {
-                0 => Arg::Text(a.text.as_str().to_string()),
-                1 => Arg::Key(a.text.as_str().to_string()),
-                2 => Arg::Int(a.num as i64),
-                3 => Arg::Float(a.num, 1),
-                _ => Arg::Item(a.num as u32),
+                abi::ui_arg::TEXT => Arg::Text(a.text.as_str().to_string()),
+                abi::ui_arg::KEY => Arg::Key(a.text.as_str().to_string()),
+                abi::ui_arg::INT => Arg::Int(a.num as i64),
+                abi::ui_arg::FLOAT => Arg::Float(a.num, 1),
+                abi::ui_arg::ITEM => Arg::Item(a.num as u32),
+                k => {
+                    crate::host::misuse("ui_text", || format!("no argument kind {k}"));
+                    Arg::Text(String::new())
+                }
             })
         })
     };
@@ -97,6 +101,7 @@ fn float_bind(owner: ModId, cb: Callback) -> Box<dyn Fn(&Ctx) -> f32> {
 pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
     unsafe {
         if u.is_null() || *(u as *const u32) != 1 {
+            crate::host::misuse("ui_open", || "called outside a UI build".into());
             return;
         }
         let b = &mut *(u as *mut UiBuild);
@@ -112,15 +117,15 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             h: len(n.height),
             grow: n.grow,
             align: match n.align {
-                1 => Align::Center,
-                2 => Align::End,
-                3 => Align::Stretch,
+                abi::ui_align::CENTER => Align::Center,
+                abi::ui_align::END => Align::End,
+                abi::ui_align::STRETCH => Align::Stretch,
                 _ => Align::Start,
             },
             justify: match n.justify {
-                1 => Justify::Center,
-                2 => Justify::End,
-                3 => Justify::Between,
+                abi::ui_justify::CENTER => Justify::Center,
+                abi::ui_justify::END => Justify::End,
+                abi::ui_justify::BETWEEN => Justify::Between,
                 _ => Justify::Start,
             },
             ..Style::default()
@@ -175,17 +180,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 id
             }
             uk::PROGRESS => {
-                let bind: Box<dyn Fn(&Ctx) -> f32> = if n.bind.is_some() {
-                    float_bind(owner, n.bind)
-                } else {
-                    let (data, data_max, max) = (n.data, n.data_max, n.max);
-                    Box::new(move |ctx: &Ctx| {
-                        let Some(m) = ctx.client.as_ref().and_then(|c| c.menu.as_ref()) else { return 0.0 };
-                        let v = m.data.get(data as usize).copied().unwrap_or(0) as f32;
-                        let top = if data_max != u32::MAX { m.data.get(data_max as usize).copied().unwrap_or(0) as f32 } else { max };
-                        if top > 0.0 { v / top } else { 0.0 }
-                    })
-                };
+                let bind = if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
                 b.ui.open(Kind::Progress { class: if class.is_empty() { "progress".into() } else { class }, bind, value: 0.0, dir: n.dir }, style)
             }
             uk::ICONS => {
@@ -208,6 +203,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
 pub unsafe extern "C" fn ui_close(u: *mut abi::UiCtx) {
     unsafe {
         if u.is_null() || *(u as *const u32) != 1 {
+            crate::host::misuse("ui_close", || "called outside a UI build".into());
             return;
         }
         let b = &mut *(u as *mut UiBuild);
@@ -221,6 +217,7 @@ pub unsafe extern "C" fn ui_close(u: *mut abi::UiCtx) {
 pub unsafe extern "C" fn ui_text(u: *mut abi::UiCtx, key: Str, a: abi::Slice<abi::UiArg>) {
     unsafe {
         if u.is_null() || *(u as *const u32) != 2 {
+            crate::host::misuse("ui_text", || "called outside a text binding".into());
             return;
         }
         let s = &mut *(u as *mut TextSink);
@@ -274,6 +271,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                     pos: e.pos.to_array(),
                     yaw: e.yaw,
                     pitch: e.pitch,
+                    moved: e.swing,
                     health: e.health,
                     max_health: content.game.entities[e.kind as usize].max_health,
                     ..Default::default()
@@ -290,6 +288,3 @@ pub unsafe extern "C" fn client_creative(c: *mut abi::ClientCtx) -> u32 {
     unsafe { view(c).is_some_and(|cl| cl.mode.invulnerable()) as u32 }
 }
 
-pub unsafe extern "C" fn client_menu_data(c: *mut abi::ClientCtx, index: u32) -> i64 {
-    unsafe { view(c).and_then(|cl| cl.menu.as_ref()).and_then(|m| m.data.get(index as usize).copied()).unwrap_or(0) }
-}

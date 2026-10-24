@@ -30,8 +30,7 @@ impl Hud {
     pub fn load_layout(&mut self, run_dir: &std::path::Path) {
         self.layout.clear();
         let src = std::fs::read_to_string(run_dir.join("config").join("hud.txt")).unwrap_or_default();
-        for line in src.lines() {
-            let Some((name, v)) = line.split_once('=') else { continue };
+        for (_, name, v) in crate::kv::pairs(&src) {
             let mut it = v.split_whitespace();
             let Some(anchor) = it.next() else { continue };
             let order = it.next().and_then(|o| o.parse().ok()).unwrap_or(0);
@@ -67,6 +66,7 @@ impl Hud {
                 })
                 .collect();
         placed.sort_by_key(|p| p.1);
+        let mods_debug = mod_debug_groups();
         let at = |anchor: &str, upwards: bool| -> Vec<Option<(voxide_abi::ModId, voxide_abi::Callback)>> {
             let mut v: Vec<_> = placed.iter().filter(|p| p.0 == anchor).map(|p| p.2).collect();
             if upwards {
@@ -79,7 +79,7 @@ impl Hud {
             None if client.mode == crate::world::GameMode::Spectator => {}
             None => {
                 ui.container(Style::row().gap(0.0), |ui| {
-                    for i in 0..9 {
+                    for i in 0..content().game.player_layout.hotbar as u64 {
                         ui.add(Kind::Custom { tag: TAG_HOTBAR, data: i }, Style::default().size(20.0, 20.0));
                     }
                 });
@@ -96,7 +96,7 @@ impl Hud {
             // (the two may overlap on narrow screens, like vanilla's).
             ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::Start), |ui| {
                 if debug {
-                    debug_groups(ui, groups, false);
+                    debug_groups(ui, groups, false, &mods_debug, &|ui, p| draw(ui, Some(p)));
                 }
                 for p in at(a::TOP_LEFT, false) {
                     draw(ui, p);
@@ -104,7 +104,7 @@ impl Hud {
             });
             ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::End), |ui| {
                 if debug {
-                    debug_groups(ui, groups, true);
+                    debug_groups(ui, groups, true, &mods_debug, &|ui, p| draw(ui, Some(p)));
                 }
                 for p in at(a::TOP_RIGHT, false) {
                     draw(ui, p);
@@ -427,9 +427,26 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi:
     out
 }
 
+type ModPart = (voxide_abi::ModId, voxide_abi::Callback);
+
+/// Mods' F3 panels in group order (after the engine's): title key, right side, part.
+pub fn mod_debug_groups() -> Vec<(&'static str, bool, ModPart)> {
+    use voxide_abi::hud_anchor as a;
+    let mut v: Vec<_> = content().game.huds.iter().filter(|h| h.anchor == a::DEBUG_LEFT || h.anchor == a::DEBUG_RIGHT).collect();
+    v.sort_by_key(|h| h.order);
+    v.into_iter().take(9 - DEBUG_GROUPS.len()).map(|h| (h.title.as_str(), h.anchor == a::DEBUG_RIGHT, (h.owner, h.cb))).collect()
+}
+
+fn panel_title(ui: &mut Ui, key: String) {
+    let t = ui.text_bound("debug_title", Box::new(move |_: &Ctx| (key.clone(), vec![])));
+    if let Some(t) = ui.text_mut(t) {
+        t.wrap = false;
+    }
+}
+
 /// The debug overlay groups of one side, each a dark panel with a title; the help panel on the
 /// left lists the F3 combinations.
-fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
+fn debug_groups(ui: &mut Ui, groups: u32, right: bool, mods: &[(&'static str, bool, ModPart)], draw: &dyn Fn(&mut Ui, ModPart)) {
     let align = if right { Align::End } else { Align::Start };
     for (i, (_, side, panels)) in DEBUG_GROUPS.iter().enumerate() {
         if *side != right || groups & (1 << i) == 0 {
@@ -441,10 +458,7 @@ fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
             for (title, lines) in panels.iter() {
                 ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
                     ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
-                    let t = ui.text_bound("debug_title", Box::new(move |_: &Ctx| (title.to_string(), vec![])));
-                    if let Some(t) = ui.text_mut(t) {
-                        t.wrap = false;
-                    }
+                    panel_title(ui, title.to_string());
                     for (key, f) in lines.iter() {
                         let key = key.to_string();
                         let n = ui.text_bound("debug", Box::new(move |c: &Ctx| (key.clone(), f(c))));
@@ -457,14 +471,29 @@ fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
             }
         });
     }
+    for (i, (name, side, part)) in mods.iter().enumerate() {
+        if *side != right || groups & (1 << (DEBUG_GROUPS.len() + i)) == 0 {
+            continue;
+        }
+        ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
+            ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
+            panel_title(ui, name.to_string());
+            let first = ui.nodes.len();
+            draw(ui, *part);
+            // Lines as wide as they need, like the engine's panels.
+            for n in &mut ui.nodes[first..] {
+                if let Kind::Text(t) = &mut n.kind {
+                    t.wrap = false;
+                }
+            }
+        });
+    }
     if !right {
         ui.container(Style::default().pad(2.0).gap(0.0).align(align), |ui| {
             ui.nodes.last_mut().unwrap().kind = Kind::Container { class: Some("debug_panel".into()) };
-            let t = ui.text_bound("debug_title", Box::new(|_: &Ctx| ("hud.debug.group.help".into(), vec![])));
-            if let Some(t) = ui.text_mut(t) {
-                t.wrap = false;
-            }
-            for (i, (title, ..)) in DEBUG_GROUPS.iter().enumerate() {
+            panel_title(ui, "hud.debug.group.help".into());
+            let titles = DEBUG_GROUPS.iter().map(|g| g.0).chain(mods.iter().map(|m| m.0));
+            for (i, title) in titles.enumerate() {
                 let on = groups & (1 << i) != 0;
                 let state = if on { "hud.debug.shown" } else { "hud.debug.hidden" };
                 let n = ui.text_bound(

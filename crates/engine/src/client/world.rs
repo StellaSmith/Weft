@@ -19,6 +19,9 @@ pub struct ClientWorld {
     pub cubes: FxHashMap<IVec3, Arc<Cube>>,
     pub time: u64,
     dirty: FxHashSet<IVec3>,
+    /// Dirty cubes whose six neighbours are all known: meshable now. Kept up to date as cubes
+    /// come and go, so a frame never walks every dirty cube (tens of thousands while loading).
+    ready: FxHashSet<IVec3>,
     versions: FxHashMap<IVec3, u32>,
     in_flight: FxHashSet<IVec3>,
     tx: Sender<MeshResult>,
@@ -37,7 +40,7 @@ pub struct ClientWorld {
 /// Biomes of a block column, taken from the first of its cubes that has them; cubes store none
 /// when every biome is 0.
 struct Column {
-    biomes: Option<Box<[u8; 256]>>,
+    biomes: Option<Box<[u16; 256]>>,
     cubes: u32,
 }
 
@@ -47,7 +50,8 @@ const BLEND: i32 = 4;
 const TINTS_PER_FRAME: usize = 64;
 
 /// Grass, foliage and water colours of one block column, 0xFFRRGGBB.
-pub type ColumnTints = [[u32; 4]; 256];
+/// Blended colours of a column: per block (z, x), one per tint kind.
+pub type ColumnTints = [u32];
 
 impl ClientWorld {
     pub fn new(dim: u32) -> Self {
@@ -57,6 +61,7 @@ impl ClientWorld {
             cubes: FxHashMap::default(),
             time: 0,
             dirty: FxHashSet::default(),
+            ready: FxHashSet::default(),
             versions: FxHashMap::default(),
             in_flight: FxHashSet::default(),
             tx,
@@ -76,10 +81,21 @@ impl ClientWorld {
         self.cubes.contains_key(&n) || n.y < min_y || n.y > max_y || self.hidden.get(&p).is_some_and(|h| h & (1 << d) != 0)
     }
 
+    /// Updates whether `p` is meshable now.
+    fn refresh(&mut self, p: IVec3) {
+        let def = &content().dims[self.dim as usize];
+        if self.dirty.contains(&p) && (0..6).all(|d| self.neighbour_known(p, d, def.min_cube_y, def.max_cube_y)) {
+            self.ready.insert(p);
+        } else {
+            self.ready.remove(&p);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.removed.extend(self.cubes.keys().copied());
         self.cubes.clear();
         self.dirty.clear();
+        self.ready.clear();
         self.versions.clear();
         self.hidden.clear();
         self.columns.clear();
@@ -96,6 +112,7 @@ impl ClientWorld {
     fn touch(&mut self, pos: IVec3, neighbours: bool) {
         self.bump(pos);
         self.dirty.insert(pos);
+        self.refresh(pos);
         if neighbours {
             for dz in -1..=1 {
                 for dy in -1..=1 {
@@ -104,6 +121,7 @@ impl ClientWorld {
                         if n != pos && self.cubes.contains_key(&n) {
                             self.bump(n);
                             self.dirty.insert(n);
+                            self.refresh(n);
                         }
                     }
                 }
@@ -146,8 +164,12 @@ impl ClientWorld {
             }
             self.hidden.remove(&pos);
             self.dirty.remove(&pos);
+            self.ready.remove(&pos);
             self.versions.remove(&pos);
             self.removed.push(pos);
+            for d in crate::world::DIRS {
+                self.refresh(pos + d);
+            }
         }
     }
 
@@ -191,53 +213,55 @@ impl ClientWorld {
 
     fn blend_column(&self, col: IVec2) -> Box<ColumnTints> {
         const W: usize = 16 + 2 * BLEND as usize;
+        const SPAN: usize = 2 * BLEND as usize + 1;
         let c = content();
-        let fallback = crate::content::BiomeDef { name: String::new(), grass: 0x7fb238, foliage: 0x48b518, water: 0x3f76e4, temperature: 0.5, rainfall: 0.5 };
+        let k = c.tint_kinds.len();
+        let defaults: Vec<u32> = c.tint_kinds.iter().map(|t| t.1).collect();
         let get = |c: &Column, x: i32, z: i32| c.biomes.as_ref().map_or(0, |b| b[(z * 16 + x) as usize]);
         let own = &self.columns[&col];
         // Blocks of missing neighbour columns repeat this column's edge.
-        let biome_at = |x: i32, z: i32| -> u8 {
+        let biome_at = |x: i32, z: i32| -> u16 {
             match self.columns.get(&(col + IVec2::new(x.div_euclid(16), z.div_euclid(16)))) {
                 Some(other) => get(other, x.rem_euclid(16), z.rem_euclid(16)),
                 None => get(own, x.clamp(0, 15), z.clamp(0, 15)),
             }
         };
-        // Per tint and channel, summed along x then along z.
-        let mut rows = vec![[[0u32; 3]; 3]; W * 16];
+        // Per block, tint and channel, summed along x then along z.
+        let mut rows = vec![[0u32; 3]; W * 16 * k];
+        let mut line = vec![[0u32; 3]; W * k];
         for gz in 0..W {
-            let mut line = [[[0u32; 3]; 3]; W];
-            for (gx, v) in line.iter_mut().enumerate() {
-                let b = c.biomes.get(biome_at(gx as i32 - BLEND, gz as i32 - BLEND) as usize).unwrap_or(c.biomes.first().unwrap_or(&fallback));
-                for (t, rgb) in [b.grass, b.foliage, b.water].into_iter().enumerate() {
-                    v[t] = [rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255];
+            for gx in 0..W {
+                let id = biome_at(gx as i32 - BLEND, gz as i32 - BLEND) as usize;
+                let tints = c.biomes.get(id).or(c.biomes.first()).map_or(&defaults[..], |b| &b.tints[..]);
+                for (t, rgb) in tints.iter().enumerate() {
+                    line[gx * k + t] = [rgb >> 16 & 255, rgb >> 8 & 255, rgb & 255];
                 }
             }
             for x in 0..16 {
-                let out = &mut rows[gz * 16 + x];
-                for v in &line[x..x + 2 * BLEND as usize + 1] {
-                    for t in 0..3 {
+                let out = &mut rows[(gz * 16 + x) * k..][..k];
+                for v in line[x * k..(x + SPAN) * k].chunks_exact(k) {
+                    for (o, v) in out.iter_mut().zip(v) {
                         for ch in 0..3 {
-                            out[t][ch] += v[t][ch];
+                            o[ch] += v[ch];
                         }
                     }
                 }
             }
         }
-        let n = ((2 * BLEND + 1) * (2 * BLEND + 1)) as u32;
-        let mut out = Box::new([[0u32; 4]; 256]);
+        let n = (SPAN * SPAN) as u32;
+        let mut out = vec![0u32; 256 * k].into_boxed_slice();
         for z in 0..16 {
             for x in 0..16 {
-                let mut sum = [[0u32; 3]; 3];
-                for gz in z..z + 2 * BLEND as usize + 1 {
-                    for t in 0..3 {
+                for t in 0..k {
+                    let mut sum = [0u32; 3];
+                    for gz in z..z + SPAN {
+                        let v = rows[(gz * 16 + x) * k + t];
                         for ch in 0..3 {
-                            sum[t][ch] += rows[gz * 16 + x][t][ch];
+                            sum[ch] += v[ch];
                         }
                     }
-                }
-                for t in 0..3 {
-                    let [r, g, b] = sum[t].map(|s| (s + n / 2) / n);
-                    out[z * 16 + x][t] = 0xFF00_0000 | r << 16 | g << 8 | b;
+                    let [r, g, b] = sum.map(|s| (s + n / 2) / n);
+                    out[(z * 16 + x) * k + t] = 0xFF00_0000 | r << 16 | g << 8 | b;
                 }
             }
         }
@@ -267,19 +291,10 @@ impl ClientWorld {
 
     /// Starts meshing jobs for dirty cubes nearest to `center` first.
     pub fn schedule_meshing(&mut self, center: IVec3, max_in_flight: usize) {
-        if self.dirty.is_empty() || self.in_flight.len() >= max_in_flight {
+        if self.ready.is_empty() || self.in_flight.len() >= max_in_flight {
             return;
         }
-        let c = content();
-        let def = &c.dims[self.dim as usize];
-        let mut ready: Vec<(i32, IVec3)> = self
-            .dirty
-            .iter()
-            .copied()
-            .filter(|&p| !self.in_flight.contains(&p))
-            .filter(|&p| (0..6).all(|d| self.neighbour_known(p, d, def.min_cube_y, def.max_cube_y)))
-            .map(|p| ((p - center).length_squared(), p))
-            .collect();
+        let mut ready: Vec<(i32, IVec3)> = self.ready.iter().copied().filter(|p| !self.in_flight.contains(p)).map(|p| ((p - center).length_squared(), p)).collect();
         // Only the nearest few are started; no need to order the rest.
         let take = max_in_flight - self.in_flight.len();
         if ready.len() > take {
@@ -288,6 +303,7 @@ impl ClientWorld {
         }
         for (_, pos) in ready {
             self.dirty.remove(&pos);
+            self.ready.remove(&pos);
             let center_cube = self.cubes[&pos].clone();
             // Air cubes never produce faces themselves; neighbours draw the faces facing them.
             if center_cube.uniform_state() == Some(AIR) {
@@ -336,20 +352,14 @@ impl ClientWorld {
     /// Jobs running plus dirty cubes that could be meshed now (edge cubes wait for neighbours
     /// that may never come and are not counted).
     pub fn pending_meshes(&self) -> usize {
-        let def = &content().dims[self.dim as usize];
-        let ready = self
-            .dirty
-            .iter()
-            .filter(|&&p| (0..6).all(|d| self.neighbour_known(p, d, def.min_cube_y, def.max_cube_y)))
-            .count();
-        ready + self.in_flight.len()
+        self.ready.len() + self.in_flight.len()
     }
 }
 
 fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32, pos: IVec3) -> Neighborhood {
     let mut states = Box::new([AIR; PAD_VOLUME]);
     let mut light = Box::new([15u32; PAD_VOLUME]);
-    let mut biomes = [0u8; 256];
+    let mut biomes = [0u16; 256];
     let center = around[13].as_ref().unwrap();
     for z in 0..16 {
         for x in 0..16 {

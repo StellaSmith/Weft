@@ -1,3 +1,5 @@
+pub mod gpu_layout;
+pub mod kv;
 pub mod app;
 pub mod assets;
 pub mod audio;
@@ -38,6 +40,17 @@ pub use app::{BackendFactory, Options, run};
 /// Background workers (generation, meshing, region ticks) leave two cores to the render and
 /// server threads: a full pool starved the render thread during loading and frames missed vsync.
 pub fn init_workers() {
-    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(cores.saturating_sub(2).max(1)).build_global();
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(workers()).build_global();
+}
+
+fn workers() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get()).saturating_sub(2).max(1)
+}
+
+/// The pool for bulk work queued by the thousand (generating and saving cubes). Work that
+/// something waits for (region ticks, path searches, meshing) runs on the global pool: queued
+/// behind a full generation backlog there, a tick or a frame waited for all of it.
+pub fn background() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(workers()).thread_name(|i| format!("background {i}")).build().expect("background pool"))
 }

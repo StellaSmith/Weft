@@ -32,6 +32,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::ENERGY, "{stored:i64,capacity:i64,max_in:i64,max_out:i64}"),
     (abi::comp::WORN, "{roles:u32,inflate:f32}"),
     (abi::comp::WORN_TEXTURE, "str"),
+    (abi::comp::WEAR_PER_HIT, "u32"),
 ];
 
 /// One value as a mod registered it; `text` holds the copied string of a `str` value.
@@ -197,11 +198,13 @@ pub struct Builder {
     texts: Vec<Box<str>>,
     /// Mod that last set a value through `r.set`, for override logs.
     setters: FxHashMap<(usize, u32, u32), String>,
+    /// Values that could not be stored (freeze errors).
+    pub errors: Vec<String>,
 }
 
 impl Default for Builder {
     fn default() -> Self {
-        let mut b = Builder { decl: FxHashMap::default(), names: Vec::new(), ids: FxHashMap::default(), tables: Vec::new(), texts: Vec::new(), setters: FxHashMap::default() };
+        let mut b = Builder { decl: FxHashMap::default(), names: Vec::new(), ids: FxHashMap::default(), tables: Vec::new(), texts: Vec::new(), setters: FxHashMap::default(), errors: Vec::new() };
         for (name, schema) in BUILTIN {
             b.decl.insert(name.to_string(), (schema.to_string(), "the engine".into()));
         }
@@ -297,19 +300,22 @@ impl Builder {
             self.setters.insert((kind, entry, comp), mod_name.to_string());
         }
         let t = &mut self.tables[kind];
-        let w = (entry * t.words + comp / 64) as usize;
-        t.bits[w] |= 1 << (comp % 64);
         if !bytes.is_empty() {
             let (stride, data) = &mut t.cols[comp as usize];
             if *stride == 0 {
                 *stride = bytes.len() as u32;
                 data.resize(t.entries as usize * bytes.len(), 0);
             }
-            if bytes.len() == *stride as usize {
-                let at = (entry * *stride) as usize;
-                data[at..at + bytes.len()].copy_from_slice(&bytes);
+            if bytes.len() != *stride as usize {
+                // Marking it present with no value would read as zero.
+                self.errors.push(format!("{}: {} has a value of {} bytes, others have {}", label(), v.name, bytes.len(), stride));
+                return;
             }
+            let at = (entry * *stride) as usize;
+            data[at..at + bytes.len()].copy_from_slice(&bytes);
         }
+        let w = (entry * t.words + comp / 64) as usize;
+        t.bits[w] |= 1 << (comp % 64);
     }
 
     pub fn remove(&mut self, kind: usize, entry: u32, name: &str) {

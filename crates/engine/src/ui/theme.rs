@@ -25,23 +25,32 @@ impl Theme {
         files.sort_by_key(|(name, _)| !name.starts_with("core:"));
         for (_, path) in files {
             let Ok(src) = std::fs::read_to_string(&path) else { continue };
-            for line in src.lines() {
-                if line.trim_start().starts_with('#') {
-                    continue;
+            for (line, k, v) in crate::kv::pairs(&src) {
+                // Comments are whole lines only (colours start with `#`).
+                if v.contains(" #") {
+                    log::warn!("{}:{line}: {k} = '{v}': a comment after a value is part of it", path.display());
                 }
-                if let Some((k, v)) = line.split_once('=') {
-                    values.insert(k.trim().to_string(), v.trim().to_string());
-                }
+                values.insert(k.to_string(), v.to_string());
             }
         }
         Theme { values }
     }
 
     pub fn get(&self, class: &str, prop: &str) -> Option<&str> {
-        self.values
-            .get(&format!("{class}.{prop}"))
-            .or_else(|| self.values.get(&format!("default.{prop}")))
-            .map(String::as_str)
+        thread_local! {
+            /// The key being looked up, built in place (dozens of lookups per node and rebuild).
+            static KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+        }
+        KEY.with_borrow_mut(|k| {
+            let mut find = |class: &str| {
+                k.clear();
+                k.push_str(class);
+                k.push('.');
+                k.push_str(prop);
+                self.values.get(k.as_str()).map(String::as_str)
+            };
+            find(class).or_else(|| find("default"))
+        })
     }
 
     pub fn color(&self, class: &str, prop: &str, default: u32) -> u32 {

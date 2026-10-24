@@ -1,5 +1,5 @@
-//! Built-in screens. They use the same UI building blocks mods get; a mod can replace any of them
-//! by registering a screen with the same name.
+//! Built-in screens. They use the same UI building blocks mods get; a mod replaces one by
+//! registering a screen with its name (`named`).
 
 use std::rc::Rc;
 
@@ -45,6 +45,71 @@ pub trait Screen {
     }
     /// List selection forwarded from buttons.
     fn select(&mut self, _index: usize) {}
+    /// Shows the open server menu: its slots take clicks, closing the screen closes the menu.
+    fn shows_menu(&self) -> bool {
+        false
+    }
+    /// The chat line: Enter sends its `chat` input, the HUD leaves the messages to it.
+    fn shows_chat(&self) -> bool {
+        false
+    }
+    /// Gets the keys before Escape and the other global keys.
+    fn keys_first(&self) -> bool {
+        false
+    }
+    fn escape_closes(&self) -> bool {
+        true
+    }
+    fn closes_on_respawn(&self) -> bool {
+        false
+    }
+    /// Lists the installed languages (read when it opens).
+    fn needs_languages(&self) -> bool {
+        false
+    }
+}
+
+/// A screen by name (`core:` may be left out): a mod's of that name, else the engine's.
+pub fn named(name: &str) -> Option<Box<dyn Screen>> {
+    let name = if name.contains(':') { name.to_string() } else { format!("core:{name}") };
+    if let Some(s) = crate::content::try_content().and_then(|c| c.game.screens.iter().rev().find(|s| s.name == name)) {
+        return Some(Box::new(ModScreen(s.clone())));
+    }
+    Some(match name.as_str() {
+        "core:title" => Box::new(Title),
+        "core:pause" => Box::new(Pause),
+        "core:settings" => Box::new(SettingsScreen),
+        "core:language" => Box::new(LanguageScreen),
+        "core:controls" => Box::new(Controls { waiting: None }),
+        "core:mod_settings" => Box::new(ModSettings),
+        "core:worlds" => Box::new(crate::saves::WorldSelect::default()),
+        "core:create_world" => Box::new(crate::saves::CreateWorld),
+        "core:chat" => Box::new(crate::game_screens::Chat::new("")),
+        "core:death" => Box::new(crate::game_screens::Death),
+        _ => return None,
+    })
+}
+
+/// An engine screen; they always exist.
+pub fn engine(name: &str) -> Box<dyn Screen> {
+    named(name).unwrap_or_else(|| panic!("no screen {name}"))
+}
+
+/// A screen a mod built (`Registry::screen`).
+pub struct ModScreen(crate::registry::ScreenDef);
+
+impl Screen for ModScreen {
+    fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        let bg = if cx.in_game { "overlay" } else { "background" };
+        ui.root_style(Style::default().stretch());
+        ui.panel(bg, Style::default().grow().center(), |ui| {
+            crate::client::modui::build(ui, cx.lang, Some(cx.input), self.0.owner, self.0.cb, cx.client);
+        });
+    }
 }
 
 // ---------------------------------------------------------------- helpers
@@ -161,8 +226,7 @@ impl Screen for SettingsScreen {
                 let scale = if s.gui_scale == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale as i64) };
                 button(ui, cx, "settings.gui_scale", &[scale], 300.0, |c| {
                     // Auto, then every scale the window can actually show.
-                    let (w, h) = c.stats.window;
-                    let max = (w / 320).min(h / 240).max(1);
+                    let max = crate::settings::max_gui_scale(c.stats.window);
                     c.settings.gui_scale = if c.settings.gui_scale >= max { 0 } else { c.settings.gui_scale + 1 };
                     c.requests.push(Request::Rebuild);
                 });
@@ -360,6 +424,10 @@ fn slider(ui: &mut Ui, key: &str, min: f32, max: f32, step: f32, get: fn(&Settin
 pub struct LanguageScreen;
 
 impl Screen for LanguageScreen {
+    fn needs_languages(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         "core:language"
     }
@@ -484,7 +552,7 @@ impl Screen for Message {
             button(ui, cx, "menu.back", &[], 200.0, move |c| {
                 c.requests.push(Request::Close);
                 if !in_game {
-                    c.requests.push(Request::Open(Box::new(Title)));
+                    c.requests.push(Request::Open(engine("core:title")));
                 }
             });
         });

@@ -22,6 +22,8 @@ pub mod kind {
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
+/// `Handle::new()` before `.handle(...)` bound it.
+const UNBOUND: u32 = u32::MAX - 2;
 
 /// Handle to registered content, valid once the engine froze the registries. Either bound when
 /// registering (`static STONE: Block = Block::new();` + `r.block("stone").handle(&STONE)`) or
@@ -31,44 +33,63 @@ pub struct Handle<K: kind::Kind> {
     id: AtomicU32,
     count: AtomicU32,
     name: &'static str,
+    /// Where an unnamed handle was declared, for the error when it is never bound.
+    at: &'static std::panic::Location<'static>,
     _k: PhantomData<fn() -> K>,
 }
 
 impl<K: kind::Kind> Handle<K> {
+    #[track_caller]
     pub const fn new() -> Self {
-        Handle { id: AtomicU32::new(u32::MAX), count: AtomicU32::new(1), name: "", _k: PhantomData }
+        Handle { id: AtomicU32::new(UNBOUND), count: AtomicU32::new(1), name: "", at: std::panic::Location::caller(), _k: PhantomData }
     }
 
+    #[track_caller]
     pub const fn named(name: &'static str) -> Self {
-        Handle { id: AtomicU32::new(UNRESOLVED), count: AtomicU32::new(1), name, _k: PhantomData }
+        Handle { id: AtomicU32::new(UNRESOLVED), count: AtomicU32::new(1), name, at: std::panic::Location::caller(), _k: PhantomData }
     }
 
     /// For blocks, the first state. `u32::MAX` if unknown.
     #[inline]
     pub fn id(&self) -> u32 {
         let id = self.id.load(Ordering::Relaxed);
-        if id != UNRESOLVED { id } else { self.resolve() }
+        if id < UNBOUND { id } else { self.resolve(id) }
     }
 
     #[cold]
-    fn resolve(&self) -> u32 {
+    fn resolve(&self, id: u32) -> u32 {
+        let frozen = unsafe { !(host().components)().is_null() };
+        if id == u32::MAX || !frozen {
+            return u32::MAX;
+        }
+        if id == UNBOUND {
+            crate::error!("the handle declared at {}:{} was never bound with `.handle(...)`", self.at.file(), self.at.line());
+            self.id.store(u32::MAX, Ordering::Relaxed);
+            return u32::MAX;
+        }
         let mut count = 0;
         let id = unsafe { (host().find)(K::KIND, Str::new(self.name), &mut count) };
         if id != u32::MAX {
             self.count.store(count, Ordering::Relaxed);
             self.id.store(id, Ordering::Relaxed);
-        } else if unsafe { !(host().components)().is_null() } {
+        } else {
             // Frozen and still unknown: a typo or a missing mod. Say so once.
-            crate::error!("no {} named {}", ["block", "item", "entity", "biome", "dimension", "menu", "particle", "setting", "sound"].get(K::KIND as usize).unwrap_or(&"entry"), self.name);
+            crate::error!("no {} named {}", abi::entry_kind::NAMES.get(K::KIND as usize).unwrap_or(&"entry"), self.name);
             self.id.store(u32::MAX, Ordering::Relaxed);
         }
         id
     }
 
-    /// The `i`-th state of a block.
+    /// The `i`-th state of a block (`u32::MAX` if the block is unknown).
     #[inline]
     pub fn state(&self, i: u32) -> u32 {
-        self.id() + i
+        self.id().saturating_add(i)
+    }
+
+    /// How many states the block has (1 until it is known).
+    pub fn state_count(&self) -> u32 {
+        self.id();
+        self.count.load(Ordering::Relaxed)
     }
 
     /// True if `state` belongs to this block.
@@ -80,7 +101,7 @@ impl<K: kind::Kind> Handle<K> {
     /// State index inside the block for a state id of this block.
     #[inline]
     pub fn index(&self, state: u32) -> u32 {
-        state - self.id()
+        state.wrapping_sub(self.id())
     }
 
     pub(crate) fn cell(&self) -> *const AtomicU32 {
@@ -108,6 +129,39 @@ pub type Biome = Handle<kind::Biome>;
 pub type Dimension = Handle<kind::Dimension>;
 pub type Particle = Handle<kind::Particle>;
 pub type Sound = Handle<kind::Sound>;
+
+/// Builders of content carrying components (blocks, items, biomes, dimensions, liquids, entity
+/// kinds) tag and set values the same way.
+pub trait WithComponents: Sized {
+    #[doc(hidden)]
+    fn pending(&mut self) -> &mut Vec<Pending>;
+
+    fn tag(mut self, tag: &str) -> Self {
+        self.pending().push(Pending::tag(tag));
+        self
+    }
+    /// A component value (on every state of a block, and its item).
+    fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
+        self.pending().push(comp.raw_value(&v));
+        self
+    }
+    fn set_text(mut self, comp: &Component<c::Text>, text: &str) -> Self {
+        self.pending().push(Pending::text(comp.name(), text));
+        self
+    }
+}
+
+macro_rules! with_components {
+    ($($b:ident),*) => {
+        $(impl WithComponents for $b<'_> {
+            fn pending(&mut self) -> &mut Vec<Pending> {
+                &mut self.components
+            }
+        })*
+    };
+}
+
+with_components!(BlockBuilder, ItemBuilder, BiomeBuilder, DimensionBuilder, LiquidBuilder);
 
 /// A component value waiting to be sent with a descriptor. Text is kept as a `String` until then.
 #[derive(Clone)]
@@ -171,7 +225,7 @@ impl Registry {
     /// Registers a block and, unless `.no_item()` is called, an item that places it (and carries
     /// the block's components). Texture defaults to `block/<name>` for all faces.
     pub fn block<'a>(&'a mut self, name: &str) -> BlockBuilder<'a> {
-        let tex = qualify(self.ns, &format!("block/{name}"));
+        let tex = asset_path(self.ns, "block", name);
         let name = qualify(self.ns, name);
         BlockBuilder {
             reg: self,
@@ -186,6 +240,8 @@ impl Registry {
             item_texture: String::new(),
             callbacks: BlockCallbacks::default(),
             replace: false,
+            own_states: false,
+            retexture: Vec::new(),
         }
     }
 
@@ -195,7 +251,7 @@ impl Registry {
             _p: PhantomData,
             raw: self.raw,
             name: qualify(self.ns, name),
-            texture: qualify(self.ns, &format!("item/{name}")),
+            texture: asset_path(self.ns, "item", name),
             handle: None,
             block: String::new(),
             components: Vec::new(),
@@ -278,9 +334,9 @@ impl Registry {
     }
 
     /// A text component on entries of any mod, e.g. keyframes for the player:
-    /// `r.set_text_on(Target::Entity("core:player"), abi::comp::ANIMATIONS, "mymod:player")`.
-    pub fn set_text_on(&mut self, target: Target, comp: &str, text: &str) {
-        self.send_set(target, &Pending::text(comp, text), false);
+    /// `r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "mymod:player")`.
+    pub fn set_text_on(&mut self, target: Target, comp: &Component<c::Text>, text: &str) {
+        self.send_set(target, &Pending::text(comp.name(), text), false);
     }
 
     /// Takes a component or tag away from entries of any mod.
@@ -312,6 +368,7 @@ struct StateDef {
     opacity: u8,
     tint: u8,
     tint_faces: u8,
+    tint_name: String,
     layer: Layer,
     level: u8,
     model: Model,
@@ -337,6 +394,7 @@ impl StateDef {
             opacity: d.opacity,
             tint: d.tint,
             tint_faces: d.tint_faces,
+            tint_name: String::new(),
             layer: d.layer,
             level: d.level,
             model: d.model,
@@ -507,6 +565,11 @@ macro_rules! state_setters {
             self.each(|s, _| s.tint = 2);
             self
         }
+        /// Coloured by a tint kind registered with `Registry::tint_kind` (any mod's).
+        pub fn tint(mut self, kind: &str) -> Self {
+            self.each(|s, ns| s.tint_name = qualify(ns, kind));
+            self
+        }
         pub fn friction(mut self, f: f32) -> Self {
             self.each(|s, _| s.friction = f);
             self
@@ -584,7 +647,17 @@ macro_rules! state_setters {
 }
 
 fn block_tex(ns: &str, t: &str) -> String {
-    if t.contains(':') { t.to_string() } else { format!("{ns}:block/{t}") }
+    asset_path(ns, "block", t)
+}
+
+/// `name` as an asset under `folder`: `torch` -> `<ns>:block/torch`, `base:torch` ->
+/// `base:block/torch`, a full path (`base:block/torch`) stays as it is.
+pub(crate) fn asset_path(ns: &str, folder: &str, name: &str) -> String {
+    match name.split_once(':') {
+        Some((_, path)) if path.contains('/') => name.to_string(),
+        Some((owner, path)) => format!("{owner}:{folder}/{path}"),
+        None => format!("{ns}:{folder}/{name}"),
+    }
 }
 
 impl<'a> State<'a> {
@@ -617,6 +690,8 @@ pub struct BlockBuilder<'a> {
     item_texture: String,
     callbacks: BlockCallbacks,
     replace: bool,
+    own_states: bool,
+    retexture: Vec<(String, String)>,
 }
 
 impl<'a> BlockBuilder<'a> {
@@ -637,6 +712,7 @@ impl<'a> BlockBuilder<'a> {
 
     /// Makes `n` states copied from the current settings, then customises each one.
     pub fn states(mut self, n: u32, f: impl Fn(u32, State) -> State) -> Self {
+        self.own_states = true;
         let base = self.states[0].clone();
         self.states = (0..n).map(|_| base.clone()).collect();
         let ns = self.reg.ns;
@@ -652,33 +728,14 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Drops nothing unless mined with a fitting tool of at least this level (wood 0, stone 1,
-    /// iron 2, diamond 3), like vanilla's "requires correct tool". Levels above 0 are modern
-    /// vanilla's tags (`needs_stone_tool`, `needs_iron_tool`, `needs_diamond_tool`), so other mods
-    /// can add them with `r.tag` too; higher tiers use `harvest_level`.
+    /// Drops nothing unless mined with a fitting tool of at least this level (`abi::tool_tier`:
+    /// wood 0, stone 100, iron 200, diamond 300; any number between works), like vanilla's
+    /// "requires correct tool".
     pub fn needs_tool(mut self, level: u32) -> Self {
         self.components.push(Pending::tag(abi::comp::NEEDS_TOOL));
-        match level {
-            0 => {}
-            1..=3 => self.components.push(Pending::tag(["needs_stone_tool", "needs_iron_tool", "needs_diamond_tool"][level as usize - 1])),
-            _ => self.components.push(c::HARVEST_LEVEL.raw_value(&level)),
+        if level > 0 {
+            self.components.push(c::HARVEST_LEVEL.raw_value(&level));
         }
-        self
-    }
-
-    pub fn tag(mut self, tag: &str) -> Self {
-        self.components.push(Pending::tag(tag));
-        self
-    }
-
-    /// A component on every state of the block (and its item).
-    pub fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
-        self.components.push(comp.raw_value(&v));
-        self
-    }
-
-    pub fn set_text(mut self, comp: &Component<c::Text>, text: &str) -> Self {
-        self.components.push(Pending::text(comp.name(), text));
         self
     }
 
@@ -711,7 +768,7 @@ impl<'a> BlockBuilder<'a> {
     /// The block's item shows this flat texture (a block texture name, or `ns:path`) instead of
     /// the block model.
     pub fn item_texture(mut self, t: &str) -> Self {
-        self.item_texture = if t.contains(':') { t.to_string() } else { format!("{}:block/{t}", self.reg.ns) };
+        self.item_texture = block_tex(self.reg.ns, t);
         self
     }
 
@@ -721,9 +778,21 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Replaces the block with this name from a mod listed in `deps` (its item stays).
+    /// Replaces the block of this name registered by a mod this one depends on. Without
+    /// `.states(...)` it keeps that block's states (shapes, textures, support, placement and other
+    /// callbacks it does not set itself), taking only light, hardness, friction and drag from
+    /// this builder.
     pub fn replace(mut self) -> Self {
         self.replace = true;
         self.item = false;
+        self
+    }
+
+    /// On a replacement keeping the replaced block's states: texture `from` (its full name, like
+    /// `base:block/torch`) becomes `to` there and on the item.
+    pub fn retexture(mut self, from: &str, to: &str) -> Self {
+        let to = block_tex(self.reg.ns, to);
+        self.retexture.push((from.to_string(), to));
         self
     }
 
@@ -784,6 +853,22 @@ impl<'a> BlockBuilder<'a> {
 
     /// Picks the placed state from the default state index 0: returns the index to use. The
     /// state ids come from the block's first state the engine passes in.
+    /// One state per direction in `allowed` (`f` builds each), placed by `toward`: three allowed
+    /// directions are three states.
+    pub fn facing(self, allowed: crate::Facings, toward: crate::Toward, f: impl Fn(crate::Dir, State) -> State) -> Self {
+        self.facing_variants(allowed, toward, 1, move |d, _, s| f(d, s))
+    }
+
+    /// `facing` times `variants` (lit or not, ...): state `Facings::index(dir, variant)`;
+    /// placing gives variant 0.
+    pub fn facing_variants(self, allowed: crate::Facings, toward: crate::Toward, variants: u32, f: impl Fn(crate::Dir, u32, State) -> State) -> Self {
+        self.states(allowed.count() * variants.max(1), |i, s| {
+            let (d, v) = allowed.parse(i);
+            f(d, v, s)
+        })
+        .placement(move |p| allowed.index(toward.choose(allowed, p.face(), p.look()), 0))
+    }
+
     pub fn placement(mut self, f: impl Fn(&Place) -> u32 + Send + Sync + 'static) -> Self {
         self.callbacks.placement = Some(callback(move |a: &mut abi::PlaceArgs| {
             let first = a.state;
@@ -830,12 +915,14 @@ impl Drop for BlockBuilder<'_> {
                 support_side: s.support_side,
                 support: Str::new(&s.support),
                 support_near: Str::new(&s.support_near),
+                tint_name: Str::new(&s.tint_name),
                 components: Slice::new(v),
                 ..abi::StateDesc::DEFAULT
             })
             .collect();
         let mut scratch = Vec::new();
         let values = raw_values(&self.components, &mut scratch);
+        let retexture: Vec<Str> = self.retexture.iter().flat_map(|(a, b)| [Str::new(a), Str::new(b)]).collect();
         let cb = &self.callbacks;
         let desc = abi::BlockDesc {
             name: Str::new(&self.name),
@@ -855,6 +942,8 @@ impl Drop for BlockBuilder<'_> {
             grow_seconds: cb.grow.0,
             grow_light: cb.grow.1,
             on_grow: cb.on_grow.unwrap_or(abi::Callback::NONE),
+            own_states: (self.own_states || !self.replace) as u32,
+            retexture: Slice::new(&retexture),
             ..abi::BlockDesc::DEFAULT
         };
         if let Some(h) = self.handle {
@@ -910,7 +999,7 @@ impl ItemBuilder<'_> {
         self.set(&c::DURABILITY, d).set(&c::MAX_STACK, 1)
     }
     /// A tool of `class` (tag `tools/<class>`) mining blocks `mineable/<class>` at `speed`, good
-    /// for blocks needing up to `level`.
+    /// for blocks needing up to `level` (`abi::tool_tier`).
     pub fn tool(self, class: &str, level: u32, speed: f32) -> Self {
         let tag = format!("tools/{class}");
         self.tag(&tag).set(&c::TOOL_LEVEL, level).set(&c::MINING_SPEED, speed)
@@ -920,18 +1009,6 @@ impl ItemBuilder<'_> {
     }
     pub fn places(mut self, block: &str) -> Self {
         self.block = qualify(self.ns, block);
-        self
-    }
-    pub fn tag(mut self, tag: &str) -> Self {
-        self.components.push(Pending::tag(tag));
-        self
-    }
-    pub fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
-        self.components.push(comp.raw_value(&v));
-        self
-    }
-    pub fn set_text(mut self, comp: &Component<c::Text>, text: &str) -> Self {
-        self.components.push(Pending::text(comp.name(), text));
         self
     }
     /// Creative inventory tab, see `Registry::creative_tab`.
@@ -998,14 +1075,6 @@ impl BiomeBuilder<'_> {
         (self.desc.temperature, self.desc.rainfall) = (temperature, rainfall);
         self
     }
-    pub fn tag(mut self, tag: &str) -> Self {
-        self.components.push(Pending::tag(tag));
-        self
-    }
-    pub fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
-        self.components.push(comp.raw_value(&v));
-        self
-    }
 }
 
 impl Drop for BiomeBuilder<'_> {
@@ -1040,8 +1109,20 @@ impl DimensionBuilder<'_> {
         self.desc.generator = callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a)));
         self
     }
+    /// The block a player starts on top of in this dimension, for a seed.
     pub fn spawn(mut self, f: impl Fn(u64) -> [i32; 3] + Send + Sync + 'static) -> Self {
         self.desc.spawn = callback(move |a: &mut abi::SpawnArgs| a.pos = f(a.seed));
+        self
+    }
+    /// Players start here and respawn here. When several mods claim it, the one loaded last
+    /// wins; without any, the first dimension registered is used.
+    pub fn player_spawn(mut self) -> Self {
+        self.desc.flags |= abi::dim_flags::PLAYER_SPAWN;
+        self
+    }
+    /// Blocks never update here (no neighbour updates, block ticks or growth).
+    pub fn no_block_updates(mut self) -> Self {
+        self.desc.flags |= abi::dim_flags::NO_BLOCK_UPDATES;
         self
     }
     /// Surface height and biome id of column (x, z) for (seed, x, z), without generating it:
@@ -1086,14 +1167,6 @@ impl DimensionBuilder<'_> {
     }
     pub fn ambient(mut self, level: u32) -> Self {
         self.desc.ambient = level;
-        self
-    }
-    pub fn tag(mut self, tag: &str) -> Self {
-        self.components.push(Pending::tag(tag));
-        self
-    }
-    pub fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
-        self.components.push(comp.raw_value(&v));
         self
     }
 }
@@ -1257,8 +1330,8 @@ impl Gen {
     pub fn blocks(&mut self) -> &mut [u32; 4096] {
         unsafe { &mut *(self.args.blocks as *mut [u32; 4096]) }
     }
-    pub fn biomes(&mut self) -> &mut [u8; 256] {
-        unsafe { &mut *(self.args.biomes as *mut [u8; 256]) }
+    pub fn biomes(&mut self) -> &mut [u16; 256] {
+        unsafe { &mut *(self.args.biomes as *mut [u16; 256]) }
     }
     #[inline]
     pub fn set(&mut self, x: usize, y: usize, z: usize, state: u32) {
@@ -1402,7 +1475,7 @@ pub struct LiquidBuilder<'a> {
     drag: f32,
     components: Vec<Pending>,
     desc: abi::LiquidDesc,
-    bucket: Option<(String, String)>,
+    bucket: Option<(String, String, String)>,
 }
 
 impl LiquidBuilder<'_> {
@@ -1464,19 +1537,10 @@ impl LiquidBuilder<'_> {
         self.desc.temperature = t;
         self
     }
-    /// A tag on every state (`water`, `hot` for reactions).
-    pub fn tag(mut self, tag: &str) -> Self {
-        self.components.push(Pending::tag(tag));
-        self
-    }
-    pub fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
-        self.components.push(comp.raw_value(&v));
-        self
-    }
-    /// Also registers `item`: `empty` (a container item, any mod's) filled with this liquid. The
-    /// engine fills and pours it; no code needed.
-    pub fn bucket(mut self, item: &str, empty: &str) -> Self {
-        self.bucket = Some((item.to_string(), qualify(self.reg.ns, empty)));
+    /// Also registers `item`: `empty` (a container item, any mod's) filled with this liquid, in
+    /// creative tab `tab` (any mod's). The engine fills and pours it; no code needed.
+    pub fn bucket(mut self, item: &str, empty: &str, tab: &str) -> Self {
+        self.bucket = Some((item.to_string(), qualify(self.reg.ns, empty), tab.to_string()));
         self
     }
 }
@@ -1500,8 +1564,8 @@ impl Drop for LiquidBuilder<'_> {
         drop(b);
         let desc = abi::LiquidDesc { name: Str::new(&self.name), ..self.desc };
         unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
-        if let Some((item, empty)) = self.bucket.take() {
-            self.reg.item(&item).stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tab("tools");
+        if let Some((item, empty, tab)) = self.bucket.take() {
+            self.reg.item(&item).stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tab(&tab);
         }
     }
 }

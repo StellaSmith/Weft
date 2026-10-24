@@ -127,27 +127,38 @@ impl Resolve<'_> {
         })
     }
 
-    fn conds(&self, c: &[RawCond]) -> Vec<Cond> {
-        c.iter().map(|c| Cond { kind: c.kind, value: c.value, tag: if c.text.is_empty() { u32::MAX } else { self.components.id(&c.text).unwrap_or(u32::MAX) } }).collect()
+    /// A condition naming a tag nobody declares could never pass: an error, not a silent no.
+    fn conds(&self, c: &[RawCond], errors: &mut Vec<String>, table: &str) -> Vec<Cond> {
+        c.iter()
+            .map(|c| {
+                let tag = if c.text.is_empty() {
+                    u32::MAX
+                } else {
+                    self.components.id(&c.text).unwrap_or_else(|| {
+                        errors.push(format!("loot table {table}: a condition names unknown tag {}", c.text));
+                        u32::MAX
+                    })
+                };
+                Cond { kind: c.kind, value: c.value, tag }
+            })
+            .collect()
     }
 
     pub fn pool(&self, p: &RawPool, errors: &mut Vec<String>, table: &str) -> Pool {
-        Pool {
-            rolls: p.rolls,
-            conds: self.conds(&p.conds),
-            entries: p
-                .entries
-                .iter()
-                .map(|e| Entry {
-                    item: self.item(&e.item, errors, table),
-                    weight: e.weight,
-                    min: e.min,
-                    max: e.max,
-                    conds: self.conds(&e.conds),
-                    smelt: (!e.smelt.is_empty()).then(|| e.smelt.clone()),
-                })
-                .collect(),
-        }
+        let conds = self.conds(&p.conds, errors, table);
+        let entries = p
+            .entries
+            .iter()
+            .map(|e| Entry {
+                item: self.item(&e.item, errors, table),
+                weight: e.weight,
+                min: e.min,
+                max: e.max,
+                conds: self.conds(&e.conds, errors, table),
+                smelt: (!e.smelt.is_empty()).then(|| e.smelt.clone()),
+            })
+            .collect();
+        Pool { rolls: p.rolls, conds, entries }
     }
 }
 

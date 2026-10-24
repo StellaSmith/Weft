@@ -3,9 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+#[derive(Clone)]
 pub struct Assets {
     mods: FxHashMap<String, PathBuf>,
     /// Highest priority first.
@@ -55,6 +55,15 @@ impl Assets {
 
     pub fn read(&self, name: &str, kind: &str, ext: &str) -> Option<Vec<u8>> {
         std::fs::read(self.path(name, kind, ext)?).ok()
+    }
+
+    /// `<name><suffix>.<ext>` from the same pack or mod as `<name>.<ext>` itself: a mask drawn
+    /// for one texture must not land on a pack's different picture of it.
+    pub fn beside(&self, name: &str, kind: &str, ext: &str, suffix: &str) -> Option<PathBuf> {
+        let own = self.path(name, kind, ext)?;
+        let stem = own.file_stem()?.to_str()?;
+        let p = own.with_file_name(format!("{stem}{suffix}.{ext}"));
+        self.files.contains(&p).then_some(p)
     }
 
     /// Every file of a kind across mods (pack overrides win), keyed by `ns:relative/path`.
@@ -156,32 +165,29 @@ fn missing(size: u32) -> Vec<u8> {
     v
 }
 
-/// All frames of all textures as equal-size layers, plus animation info per named texture.
-pub struct TextureArray {
+/// One texture ready for the GPU: its frames (square, at the file's own size rounded up to a
+/// power of two, each with its mip chain), a glow mask per frame (full size only) if it has one
+/// (see `emission_mask`), and its animation over frame indices.
+pub struct LoadedTexture {
     pub size: u32,
-    pub layers: u32,
-    /// Mip levels, each holding all layers.
-    pub mips: Vec<Vec<u8>>,
-    /// Per input texture: (first layer, frame count).
-    pub entries: Vec<(u32, u32)>,
-    /// Per input texture: animation, if it has more than one frame.
-    pub anims: Vec<Option<Anim>>,
-    /// Glow per texel (one byte, every layer, full size only) when any texture has a mask, see
-    /// `emission_mask`; and per input texture whether it has one.
-    pub emission: Option<Vec<u8>>,
-    pub emissive: Vec<bool>,
+    pub frames: Vec<Vec<Vec<u8>>>,
+    pub glow: Vec<Option<Vec<u8>>>,
+    pub anim: Option<Anim>,
+    /// False for the stand-in of a missing file.
+    pub found: bool,
 }
 
 /// Emission like LabPBR, only that part of it: `<name>_s.png` (a LabPBR specular map) glows by
 /// its alpha, 0..254 from none to full and 255 for none; or our own `<name>_e.png`, glowing by
-/// its red channel times alpha. Same size and frames as the texture. One byte per texel.
+/// its red channel times alpha. Same size and frames as the texture, and from the same pack or
+/// mod. One byte per texel.
 pub fn emission_mask(assets: &Assets, name: &str) -> Option<Image> {
-    let read = |suffix: &str| assets.read(&format!("{name}_{suffix}"), "textures", "png").and_then(|b| decode_png(&b));
-    if let Some(mut img) = read("e") {
+    let read = |suffix: &str| assets.beside(name, "textures", "png", suffix).and_then(|p| std::fs::read(p).ok()).and_then(|b| decode_png(&b));
+    if let Some(mut img) = read("_e") {
         img.rgba = img.rgba.chunks_exact(4).map(|p| (p[0] as u32 * p[3] as u32 / 255) as u8).collect();
         return Some(img);
     }
-    let mut img = read("s")?;
+    let mut img = read("_s")?;
     img.rgba = img.rgba.chunks_exact(4).map(|p| if p[3] == 255 { 0 } else { (p[3] as u32 * 255 / 254) as u8 }).collect();
     Some(img)
 }
@@ -200,7 +206,7 @@ fn mask_frame(mask: &Image, frame: u32, to: u32) -> Vec<u8> {
     out
 }
 
-/// Frame sequence of an animated texture: (absolute layer, ticks shown).
+/// Frame sequence of an animated texture: (frame index, ticks shown).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Anim {
     pub frames: Vec<(u32, u32)>,
@@ -218,10 +224,8 @@ pub fn parse_anim(src: &str, frame_count: u32, first: u32) -> Anim {
     let mut frametime = 1u32;
     let mut interpolate = false;
     let mut order: Option<Vec<(u32, Option<u32>)>> = None;
-    for line in src.lines() {
-        let line = line.split('#').next().unwrap_or("");
-        let Some((k, v)) = line.split_once('=') else { continue };
-        match k.trim() {
+    for (_, k, v) in crate::kv::pairs(src) {
+        match k {
             "frametime" => frametime = v.trim().parse().unwrap_or(1).max(1),
             "interpolate" => interpolate = v.trim() == "true",
             "frames" => {
@@ -242,99 +246,126 @@ pub fn parse_anim(src: &str, frame_count: u32, first: u32) -> Anim {
     Anim { frames: order.into_iter().map(|(i, d)| (first + i, d.unwrap_or(frametime).max(1))).collect(), interpolate }
 }
 
-/// Animated textures are vertical strips of square frames. Each composite is one more texture
-/// made of the top-left, top-right, bottom-left and bottom-right quarters of the first frames of
-/// four textures given by index.
-pub fn build_array(assets: &Assets, names: &[String], composites: &[[u32; 4]]) -> TextureArray {
-    let images: Vec<Option<Image>> = names
-        .par_iter()
-        .map(|n| {
-            if n == "core:missing" {
-                return None;
-            }
-            let img = assets.read(n, "textures", "png").and_then(|b| decode_png(&b));
-            if img.is_none() {
-                log::warn!("missing texture {n}");
-            }
-            img
-        })
-        .collect();
-    let size = images.iter().flatten().map(|i| i.width).max().unwrap_or(16).max(1).next_power_of_two();
-    // Frames cut and scaled per texture in parallel, then laid out in name order.
-    let per_texture: Vec<(Vec<Vec<u8>>, u32, Option<String>)> = images
-        .par_iter()
-        .zip(names)
-        .map(|(img, name)| {
-            let meta = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
-            match img {
-                Some(img) if img.height >= img.width && img.height % img.width == 0 => {
-                    let frames = img.height / img.width;
-                    let frame_bytes = (img.width * img.width * 4) as usize;
-                    let layers = (0..frames as usize).map(|f| scale_nearest(&img.rgba[f * frame_bytes..(f + 1) * frame_bytes], img.width, size)).collect();
-                    (layers, frames, meta)
-                }
-                Some(img) => {
-                    log::warn!("texture {name} is {}x{}, not square or a vertical strip", img.width, img.height);
-                    (vec![missing(size)], 1, meta)
-                }
-                None => (vec![missing(size)], 1, meta),
-            }
-        })
-        .collect();
-    let masks: Vec<Option<Image>> = names.par_iter().map(|n| emission_mask(assets, n)).collect();
-    let mut layers: Vec<Vec<u8>> = Vec::new();
-    let mut entries = Vec::new();
-    let mut anims = Vec::new();
-    let mut glow: Vec<Option<Vec<u8>>> = Vec::new();
-    for ((frames, count, meta), mask) in per_texture.into_iter().zip(&masks) {
-        let first = layers.len() as u32;
-        anims.push(if count > 1 || meta.is_some() { Some(parse_anim(meta.as_deref().unwrap_or(""), count, first)) } else { None });
-        entries.push((first, count));
-        layers.extend(frames);
-        glow.extend((0..count).map(|f| mask.as_ref().filter(|m| m.width > 0).map(|m| mask_frame(m, f, size))));
-    }
-    let mut emissive: Vec<bool> = masks.iter().map(Option::is_some).collect();
-    emissive.resize(entries.len() + composites.len(), false);
-    let emission = masks.iter().any(Option::is_some).then(|| {
-        let mut all = Vec::with_capacity(((layers.len() + composites.len()) * (size * size) as usize).max(1));
-        for g in &glow {
-            match g {
-                Some(m) => all.extend_from_slice(m),
-                None => all.resize(all.len() + (size * size) as usize, 0),
-            }
+/// A texture by name: animated ones are vertical strips of square frames (`.anim` next to it
+/// says how they play). A missing or malformed file gives the magenta checker and a warning.
+pub fn load_texture(assets: &Assets, name: &str) -> LoadedTexture {
+    let img = (name != "core:missing").then(|| assets.read(name, "textures", "png").and_then(|b| decode_png(&b))).flatten();
+    let img = match img {
+        Some(img) if img.height >= img.width && img.width > 0 && img.height % img.width == 0 => img,
+        Some(img) => {
+            log::warn!("texture {name} is {}x{}, not square or a vertical strip", img.width, img.height);
+            return missing_texture();
         }
-        all.resize(all.len() + composites.len() * (size * size) as usize, 0);
-        all
-    });
+        None => {
+            if name != "core:missing" {
+                log::warn!("missing texture {name}");
+            }
+            return missing_texture();
+        }
+    };
+    let size = img.width.next_power_of_two();
+    let count = img.height / img.width;
+    let frame_bytes = (img.width * img.width * 4) as usize;
+    let frames: Vec<Vec<Vec<u8>>> = (0..count as usize).map(|f| mip_chain(scale_nearest(&img.rgba[f * frame_bytes..(f + 1) * frame_bytes], img.width, size), size)).collect();
+    let mask = emission_mask(assets, name).filter(|m| m.width > 0);
+    let glow = (0..count).map(|f| mask.as_ref().map(|m| mask_frame(m, f, size))).collect();
+    let meta = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
+    let anim = (count > 1 || meta.is_some()).then(|| parse_anim(meta.as_deref().unwrap_or(""), count, 0));
+    LoadedTexture { size, frames, glow, anim, found: true }
+}
+
+pub fn missing_texture() -> LoadedTexture {
+    LoadedTexture { size: 16, frames: vec![mip_chain(missing(16), 16)], glow: vec![None], anim: None, found: false }
+}
+
+/// A texture made of the top-left, top-right, bottom-left and bottom-right quarters of the first
+/// frames of four others (connected textures' compact form), at the largest of their sizes.
+pub fn composite_texture(parts: [&LoadedTexture; 4]) -> LoadedTexture {
+    let size = parts.iter().map(|p| p.size).max().unwrap_or(16);
     let half = (size / 2) as usize;
-    for parts in composites {
-        let mut out = vec![0u8; (size * size * 4) as usize];
-        for (q, &src) in parts.iter().enumerate() {
-            let Some(&(layer, _)) = entries.get(src as usize) else { continue };
-            let from = &layers[layer as usize];
-            let (qx, qy) = ((q % 2) * half, (q / 2) * half);
-            for y in qy..qy + half {
-                let row = (y * size as usize + qx) * 4;
-                out[row..row + half * 4].copy_from_slice(&from[row..row + half * 4]);
-            }
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    for (q, p) in parts.iter().enumerate() {
+        let from = scale_nearest(&p.frames[0][0], p.size, size);
+        let (qx, qy) = ((q % 2) * half, (q / 2) * half);
+        for y in qy..qy + half {
+            let row = (y * size as usize + qx) * 4;
+            out[row..row + half * 4].copy_from_slice(&from[row..row + half * 4]);
         }
-        entries.push((layers.len() as u32, 1));
-        anims.push(None);
-        layers.push(out);
     }
-    let mip_count = size.trailing_zeros() + 1;
-    let mut mips = Vec::with_capacity(mip_count as usize);
-    let mut current = layers;
+    LoadedTexture { size, frames: vec![mip_chain(out, size)], glow: vec![None], anim: None, found: true }
+}
+
+/// Fingerprint of the files a texture is made of (image, `.anim`, glow masks): changes when any of
+/// them is edited, added or removed, so a reload reads only what changed.
+pub fn texture_stamp(assets: &Assets, name: &str) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for (n, ext) in [(name.to_string(), "png"), (name.to_string(), "anim"), (format!("{name}_e"), "png"), (format!("{name}_s"), "png")] {
+        let meta = assets.path(&n, "textures", ext).and_then(|p| std::fs::metadata(p).ok());
+        let (len, time) = meta.map_or((u64::MAX, 0), |m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64)));
+        for v in [len, time] {
+            h = (h ^ v).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// Full size first, halved down to 1x1. Transparent texels take the colour of the opaque ones
+/// next to them first: filtering at cutout edges (tall grass, leaves, overlays) then blends
+/// towards the right colour instead of black, which drew dark seams.
+fn mip_chain(mut rgba: Vec<u8>, size: u32) -> Vec<Vec<u8>> {
+    let mut out = Vec::with_capacity(size.trailing_zeros() as usize + 1);
     let mut s = size;
     loop {
-        mips.push(current.concat());
-        if s == 1 {
+        bleed(&mut rgba, s);
+        let next = (s > 1).then(|| downsample(&rgba, s));
+        out.push(rgba);
+        match next {
+            Some(n) => (rgba, s) = (n, s / 2),
+            None => return out,
+        }
+    }
+}
+
+/// Gives fully transparent texels the average colour of their non-transparent neighbours, a few
+/// rings deep (alpha stays 0).
+fn bleed(rgba: &mut [u8], size: u32) {
+    let n = size as usize;
+    if !rgba.chunks_exact(4).any(|p| p[3] == 0) || !rgba.chunks_exact(4).any(|p| p[3] != 0) {
+        return;
+    }
+    let mut known: Vec<bool> = rgba.chunks_exact(4).map(|p| p[3] != 0).collect();
+    for _ in 0..4 {
+        let mut filled = Vec::new();
+        for y in 0..n {
+            for x in 0..n {
+                if known[y * n + x] {
+                    continue;
+                }
+                let (mut sum, mut k) = ([0u32; 3], 0);
+                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)] {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= n as i32 || ny >= n as i32 || !known[ny as usize * n + nx as usize] {
+                        continue;
+                    }
+                    let i = (ny as usize * n + nx as usize) * 4;
+                    for c in 0..3 {
+                        sum[c] += rgba[i + c] as u32;
+                    }
+                    k += 1;
+                }
+                if k > 0 {
+                    filled.push((y * n + x, sum.map(|v| (v / k) as u8)));
+                }
+            }
+        }
+        if filled.is_empty() {
             break;
         }
-        current = current.par_iter().map(|l| downsample(l, s)).collect();
-        s /= 2;
+        for (i, c) in filled {
+            rgba[i * 4..i * 4 + 3].copy_from_slice(&c);
+            known[i] = true;
+        }
     }
-    TextureArray { size, layers: entries.last().map_or(0, |e| e.0 + e.1), mips, entries, anims, emission, emissive }
 }
 
 fn scale_nearest(src: &[u8], from: u32, to: u32) -> Vec<u8> {

@@ -1,6 +1,7 @@
 //! Turns a laid-out `Ui` into quads. Rebuilt only when the tree is dirty; the GPU copy is reused
 //! across frames otherwise.
 
+use crate::gpu_layout::ui_mode;
 use rustc_hash::FxHashMap;
 use voxide_render::*;
 
@@ -116,11 +117,9 @@ fn parse_gui(src: &str, pixels: [f32; 2]) -> Slicing {
     let mut kind = "nine_slice";
     let mut border = [0.0f32; 4];
     let mut size = pixels;
-    for line in src.lines() {
-        let line = line.split('#').next().unwrap_or("");
-        let Some((k, v)) = line.split_once('=') else { continue };
+    for (_, k, v) in crate::kv::pairs(src) {
         let nums: Vec<f32> = v.split_whitespace().filter_map(|n| n.parse().ok()).collect();
-        match k.trim() {
+        match k {
             "scaling" => kind = if v.trim() == "tile" { "tile" } else if v.trim() == "stretch" { "stretch" } else { "nine_slice" },
             "border" if nums.len() == 1 => border = [nums[0]; 4],
             "border" if nums.len() == 4 => border = [nums[0], nums[1], nums[2], nums[3]],
@@ -181,10 +180,8 @@ pub const GUI: Hook = Hook {
 };
 
 fn load_shader(assets: &Assets) -> Result<(Shader, Slots, Slots), ShaderError> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/ui.wgsl");
-    let src = std::fs::read_to_string(path).unwrap_or_else(|_| include_str!("../../shaders/ui.wgsl").to_string());
     let (fx, gui) = (crate::shaders::snippets(assets, &FX), crate::shaders::snippets(assets, &GUI));
-    let (shader, mut slots) = crate::shaders::compose("ui.wgsl", &src, &[(&FX, &fx), (&GUI, &gui)])?;
+    let (shader, mut slots) = crate::packs::compose("ui.wgsl", include_str!("../../shaders/ui.wgsl"), &[(&FX, &fx), (&GUI, &gui)])?;
     let gui = slots.pop().unwrap_or_default();
     let fx = slots.pop().unwrap_or_default();
     Ok((shader, fx, gui))
@@ -219,10 +216,11 @@ impl UiRenderer {
 
     /// `core:fonts/default` (atlas and its `.font`) over `core:fonts/unifont`; packs can replace either.
     fn load_font(gpu: &mut dyn Backend, assets: &Assets) -> Option<(Font, TextureId, u32)> {
-        let builtin = |f: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts").join(f)).ok();
-        let hex = assets.read("core:fonts/unifont", "", "hex").or_else(|| builtin("unifont.hex"))?;
-        let desc = assets.read("core:fonts/default", "", "font").or_else(|| builtin("default.font"));
-        let img = assets.read("core:fonts/default", "", "png").or_else(|| builtin("default.png")).and_then(|b| crate::assets::decode_png(&b));
+        // Built in too: text must show even without the engine's asset folder.
+        let hex = assets.read("core:fonts/unifont", "", "hex").unwrap_or_else(|| include_bytes!("../../assets/fonts/unifont.hex").to_vec());
+        let desc = assets.read("core:fonts/default", "", "font").unwrap_or_else(|| include_bytes!("../../assets/fonts/default.font").to_vec());
+        let img = assets.read("core:fonts/default", "", "png").unwrap_or_else(|| include_bytes!("../../assets/fonts/default.png").to_vec());
+        let (desc, img) = (Some(desc), crate::assets::decode_png(&img));
         let desc = desc.map(|d| String::from_utf8_lossy(&d).into_owned());
         let font = Font::new(&String::from_utf8_lossy(&hex), desc.as_deref().zip(img.as_ref()));
         let tex = gpu.create_texture(
@@ -273,7 +271,7 @@ impl UiRenderer {
         if slot == 0 {
             return false;
         }
-        self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv: [0.0, 0.0, 1.0, 1.0], color, mode: 4, fx: slot, ..Default::default() });
+        self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv: [0.0, 0.0, 1.0, 1.0], color, mode: ui_mode::GUI, fx: slot, ..Default::default() });
         true
     }
 
@@ -328,7 +326,7 @@ impl UiRenderer {
         let read = |ext: &str| assets.read(name, "textures", ext).map(|b| String::from_utf8_lossy(&b).into_owned());
         let gui = read("gui");
         let outset = gui.as_deref().and_then(|src| {
-            src.lines().find_map(|l| l.split('#').next()?.split_once('=').filter(|(k, _)| k.trim() == "outset").and_then(|(_, v)| v.trim().parse().ok()))
+            crate::kv::pairs(src).find(|p| p.1 == "outset").and_then(|(line, k, v)| crate::kv::number(name, line, k, v))
         });
         self.outset.insert(name.to_string(), outset.unwrap_or(0.0));
         let s = gui.map(|src| parse_gui(&src, pixels)).or_else(|| read("png.mcmeta").and_then(|src| parse_mcmeta(&src)));
@@ -357,11 +355,11 @@ impl UiRenderer {
     }
 
     pub fn rect(&mut self, r: Rect, color: u32) {
-        self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv: [0.0; 4], color, mode: 0, ..Default::default() });
+        self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv: [0.0; 4], color, mode: ui_mode::SOLID, ..Default::default() });
     }
 
     pub fn image(&mut self, r: Rect, tex: u32, uv: [f32; 4], color: u32) {
-        self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv, color, tex, mode: 1, ..Default::default() });
+        self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv, color, tex, mode: ui_mode::TEXTURE, ..Default::default() });
     }
 
     /// 9-slice: corners keep their size (scaled), edges and centre stretch.
@@ -433,7 +431,7 @@ impl UiRenderer {
                             uv,
                             color: c,
                             tex: self.font_idx,
-                            mode: 3,
+                            mode: ui_mode::FONT,
                             fx,
                             index: index as f32,
                             ..Default::default()
@@ -453,33 +451,25 @@ impl UiRenderer {
             return;
         }
         if def.icon != u32::MAX {
-            let layer = tex.item_layers.get(def.icon as usize).map_or(0, |l| l.0);
             self.quads.push(Quad {
                 p0: [x, y],
                 u: [size, 0.0],
                 v: [0.0, size],
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: 0xFFFFFFFF,
-                tex: tex.item_index,
-                layer,
-                mode: 2,
+                tex: tex.item(def.icon),
+                mode: ui_mode::ICON,
                 ..Default::default()
             });
             return;
         }
         let Some(state) = def.block else { return };
         let s = &c.states[state as usize];
-        let layer = |name_idx: u32| tex.block_layers.get(name_idx as usize).map_or(0, |l| l.0);
         let tint = |face: usize| -> u32 {
             if s.tint == 0 || s.tint_faces & (1 << face) == 0 {
                 return 0xFFFFFFFF;
             }
-            let rgb = match s.tint {
-                1 => 0x8db360,
-                2 => 0x77ab2f,
-                _ => 0x3f76e4,
-            };
-            rgb << 8 | 0xFF
+            crate::content::item_tint(s.tint) << 8 | 0xFF
         };
         let shade = |c: u32, k: f32| {
             let ch = |s: u32| (((c >> s) & 255) as f32 * k) as u32;
@@ -492,9 +482,8 @@ impl UiRenderer {
                 v: [0.0, size],
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: tint(0),
-                tex: tex.block_index,
-                layer: layer(t),
-                mode: 2,
+                tex: tex.block(t),
+                mode: ui_mode::ICON,
                 ..Default::default()
             });
             return;
@@ -503,11 +492,7 @@ impl UiRenderer {
         let (h, q) = (size / 2.0, size / 4.0);
         let o = [x + h, y + size * 0.03 + h];
         let at = |p: [f32; 3]| [o[0] + (p[0] - p[2]) * h, o[1] + (p[0] + p[2]) * q - p[1] * h];
-        let grass = match s.tint {
-            1 => 0x8db360,
-            2 => 0x77ab2f,
-            _ => 0x3f76e4,
-        } << 8 | 0xFF;
+        let grass = crate::content::item_tint(s.tint) << 8 | 0xFF;
         let mut shape = s.item_shape();
         // Back to front.
         shape.sort_by(|a, b| (a.min[0] + a.min[1] + a.min[2]).total_cmp(&(b.min[0] + b.min[1] + b.min[2])));
@@ -522,11 +507,11 @@ impl UiRenderer {
                 (at([n[0], m[1], n[2]]), [dx * h, dx * q], [-dz * h, dz * q], 3, 1.0, [n[0], n[2], m[0], m[2]]),
             ];
             for (p0, u, v, face, k, uv) in faces {
-                self.quads.push(Quad { p0, u, v, uv, color: shade(tint(face), k), tex: tex.block_index, layer: layer(b.textures[face]), mode: 2, ..Default::default() });
+                self.quads.push(Quad { p0, u, v, uv, color: shade(tint(face), k), tex: tex.block(b.textures[face]), mode: ui_mode::ICON, ..Default::default() });
                 // Tinted overlay on top of its face.
                 if let Some(&ov) = tex.overlays.get(b.textures[face] as usize).filter(|&&ov| ov != 0) {
                     let color = shade(if s.tint == 0 { 0xFFFFFFFF } else { grass }, k);
-                    self.quads.push(Quad { p0, u, v, uv, color, tex: tex.block_index, layer: layer(ov - 1), mode: 2, ..Default::default() });
+                    self.quads.push(Quad { p0, u, v, uv, color, tex: tex.block(ov - 1), mode: ui_mode::ICON, ..Default::default() });
                 }
             }
         }
@@ -821,17 +806,7 @@ impl UiRenderer {
         if self.quads.is_empty() {
             return;
         }
-        let frames = gpu.frames_in_flight();
-        while self.buffers.len() < frames {
-            self.buffers.push((gpu.create_buffer(size_of::<Quad>() as u64 * 4096, usage::STORAGE | usage::HOST, "ui quads"), 4096));
-        }
-        let n = self.quads.len() as u32;
-        if self.buffers[frame.slot].1 < n {
-            gpu.destroy_buffer(self.buffers[frame.slot].0);
-            let cap = n.next_power_of_two();
-            self.buffers[frame.slot] = (gpu.create_buffer(size_of::<Quad>() as u64 * cap as u64, usage::STORAGE | usage::HOST, "ui quads"), cap);
-        }
-        let buf = self.buffers[frame.slot].0;
+        let buf = crate::gpu_layout::frame_buffer(gpu, &mut self.buffers, frame.slot, self.quads.len() as u32, size_of::<Quad>() as u64, usage::STORAGE, "ui quads");
         gpu.mapped(buf)[..self.quads.len() * size_of::<Quad>()].copy_from_slice(bytemuck::cast_slice(&self.quads));
         let sb = self.screen[frame.slot];
         let time = crate::shaders::time();
@@ -839,7 +814,7 @@ impl UiRenderer {
         list.pipeline(self.pipeline);
         list.bind(0, buf);
         list.bind(1, sb);
-        list.draw(n * 6, 1);
+        list.draw(self.quads.len() as u32 * 6, 1);
     }
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {

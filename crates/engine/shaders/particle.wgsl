@@ -15,7 +15,7 @@ struct View {
 struct Particle {
     // Centre relative to the camera, and edge length in blocks.
     pos_size: vec4<f32>,
-    // x colour 0xRRGGBBAA, y texture array | layer << 8 | shader slot << 24,
+    // x colour 0xRRGGBBAA, y texture (16 bits) | shader slot << 24,
     // z uv rectangle as four bytes (u0 v0 u1 v1, /255), w light: sky, red, green, blue bytes
     // (0..15), all ones = unlit
     data: vec4<u32>,
@@ -73,36 +73,15 @@ fn unpack_color(c: u32) -> vec4<f32> {
     return vec4(pow(v.rgb, vec3(2.2)), v.a);
 }
 
-fn brightness_curve(level: f32) -> f32 {
-    return level / (4.0 - 3.0 * level);
-}
-
-// The world shader's lightmap (vanilla 26.1's), for one sky + block light value.
-fn lightmap(light: vec4<f32>) -> vec3<f32> {
-    let day = clamp((view.params.z - 0.12) / 0.88, 0.0, 1.0);
-    let sky = brightness_curve(light.x) * mix(0.24, 1.0, day);
-    var c = max(vec3(0.04), vec3(brightness_curve(view.look.x))) + mix(vec3(0.478, 0.478, 1.0), vec3(1.0), day) * sky;
-    let block = light.yzw;
-    let p = (2.0 * block - 1.0) * (2.0 * block - 1.0);
-    let tint = mix(vec3(1.0, 0.847, 0.549), vec3(1.0), 0.9 * p);
-    c += tint * vec3(brightness_curve(block.x), brightness_curve(block.y), brightness_curve(block.z)) * 1.4;
-    c = clamp(c, vec3(0.0), vec3(1.0));
-    let m = max(max(c.x, c.y), c.z);
-    let bright = c * ((1.0 - pow(1.0 - m, 4.0)) / max(m, 1e-4));
-    return mix(c, bright, view.look.y);
-}
-
 fn shade(in: VOut) -> vec4<f32> {
-    let tex = in.data.y & 255u;
-    let layer = (in.data.y >> 8u) & 65535u;
-    let albedo = textureSampleLevel(texture_arrays[tex], nearest_clamp, in.uv, layer, 0.0);
+    let albedo = textureSampleLevel(textures[in.data.y & PARTICLE_TEX_MASK], nearest_clamp, in.uv, 0.0);
     var color = unpack_color(in.data.x);
-    color = particle_shade(in.data.y >> 24u, ParticleFrag(in.quad, albedo, color, in.life, view.params.w));
+    color = particle_shade(in.data.y >> PARTICLE_SLOT_SHIFT, ParticleFrag(in.quad, albedo, color, in.life, view.params.w));
     if in.data.w != 0xffffffffu {
-        let l = vec4<f32>(f32(in.data.w & 255u), f32((in.data.w >> 8u) & 255u), f32((in.data.w >> 16u) & 255u), f32(in.data.w >> 24u));
-        color = vec4(color.rgb * pow(lightmap(min(l, vec4(15.0)) / 15.0), vec3(2.2)), color.a);
+        let light = lightmap(unpack_light(in.data.w), view.params.z, view.look.x, view.look.y);
+        color = vec4(color.rgb * pow(light, vec3(2.2)), color.a);
     }
-    let fog = clamp((in.dist - view.params.x) / max(view.params.y - view.params.x, 1.0), 0.0, 1.0);
+    let fog = fog_amount(in.dist, view.params.x, view.params.y);
     return vec4(mix(color.rgb, view.fog_color.rgb, fog), color.a);
 }
 

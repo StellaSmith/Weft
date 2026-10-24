@@ -26,25 +26,31 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// This install's identity. Generated once, kept in the config directory.
-pub fn identity(run_dir: &Path) -> SecretKey {
+/// This install's identity. Generated once, kept in the config directory. Servers key player
+/// saves by it, so a key that cannot be read is never replaced and one that cannot be written is
+/// an error: a new identity every launch would be a new player everywhere.
+pub fn identity(run_dir: &Path) -> Result<SecretKey, String> {
     let path = run_dir.join("config").join("identity.key");
-    if let Ok(s) = std::fs::read_to_string(&path) {
-        if let Ok(k) = s.trim().parse::<SecretKey>() {
-            return k;
-        }
+    match std::fs::read_to_string(&path) {
+        Ok(s) => return s.trim().parse::<SecretKey>().map_err(|_| format!("{} is not a key; fix or delete it", path.display())),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("reading {}: {e}", path.display())),
+        Err(_) => {}
     }
     let key = SecretKey::generate();
     let hex: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
     if let Some(d) = path.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let _ = std::fs::write(&path, hex);
-    key
+    std::fs::write(&path, hex).map_err(|e| format!("saving the identity to {}: {e}", path.display()))?;
+    Ok(key)
 }
 
+/// The player's identity for servers, or empty (keyed by name) when there is none.
 pub fn player_key(run_dir: &Path) -> String {
-    identity(run_dir).public().to_string()
+    identity(run_dir).map(|k| k.public().to_string()).unwrap_or_else(|e| {
+        log::error!("{e}; this world keys the player by name");
+        String::new()
+    })
 }
 
 /// Hash over mods and every registered name: equal hash means equal runtime ids.
@@ -77,6 +83,16 @@ pub fn content_hash() -> u64 {
     for k in &c.game.components {
         eat(&k.name);
     }
+    // Everything else that crosses the wire by id.
+    for n in c.biomes.iter().map(|b| &b.name).chain(c.dims.iter().map(|d| &d.name)) {
+        eat(n);
+    }
+    for n in c.game.sounds.iter().map(|s| &s.name).chain(c.game.particles.iter().map(|p| &p.name)).chain(c.game.configs.iter().map(|k| &k.name)) {
+        eat(n);
+    }
+    for a in &c.game.attributes {
+        eat(&a.name);
+    }
     h
 }
 
@@ -90,7 +106,7 @@ fn relay_mode(settings: &Settings) -> RelayMode {
 }
 
 async fn endpoint(settings: &Settings, accept: bool) -> Result<Endpoint, String> {
-    let mut b = Endpoint::builder(presets::N0).secret_key(identity(&settings.run_dir)).relay_mode(relay_mode(settings));
+    let mut b = Endpoint::builder(presets::N0).secret_key(identity(&settings.run_dir)?).relay_mode(relay_mode(settings));
     if accept {
         b = b.alpns(vec![ALPN.to_vec()]);
     }
@@ -312,4 +328,20 @@ pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
         }
     });
     ready_rx.recv_timeout(Duration::from_secs(25)).map_err(|_| "timed out".to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn identity_is_kept_and_never_replaced() {
+        let dir = std::env::temp_dir().join(format!("voxide-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = super::identity(&dir).expect("a new identity");
+        assert_eq!(super::identity(&dir).expect("read again").public(), a.public());
+        let file = dir.join("config").join("identity.key");
+        std::fs::write(&file, "not a key").unwrap();
+        assert!(super::identity(&dir).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "not a key");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

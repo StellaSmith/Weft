@@ -31,9 +31,6 @@ impl ClientView {
     pub fn creative(&self) -> bool {
         unsafe { (host().client_creative)(self.raw) != 0 }
     }
-    pub fn menu_data(&self, i: u32) -> i64 {
-        unsafe { (host().client_menu_data)(self.raw, i) }
-    }
     /// Another entity's component the server shares with this client (`SYNC_WATCHERS`, or
     /// `SYNC_MENU` while its menu is open).
     pub fn component_of<T: Value>(&self, entity: u64, c: &Component<T>) -> Option<T> {
@@ -67,11 +64,11 @@ pub enum Arg<'a> {
 fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
     args.iter()
         .map(|a| match a {
-            Arg::Text(s) => abi::UiArg { kind: 0, text: Str::new(s), ..abi::UiArg::DEFAULT },
-            Arg::Key(s) => abi::UiArg { kind: 1, text: Str::new(s), ..abi::UiArg::DEFAULT },
-            Arg::Int(v) => abi::UiArg { kind: 2, num: *v as f64, ..abi::UiArg::DEFAULT },
-            Arg::Float(v) => abi::UiArg { kind: 3, num: *v, ..abi::UiArg::DEFAULT },
-            Arg::Item(v) => abi::UiArg { kind: 4, num: *v as f64, ..abi::UiArg::DEFAULT },
+            Arg::Text(s) => abi::UiArg { kind: abi::ui_arg::TEXT, text: Str::new(s), ..abi::UiArg::DEFAULT },
+            Arg::Key(s) => abi::UiArg { kind: abi::ui_arg::KEY, text: Str::new(s), ..abi::UiArg::DEFAULT },
+            Arg::Int(v) => abi::UiArg { kind: abi::ui_arg::INT, num: *v as f64, ..abi::UiArg::DEFAULT },
+            Arg::Float(v) => abi::UiArg { kind: abi::ui_arg::FLOAT, num: *v, ..abi::UiArg::DEFAULT },
+            Arg::Item(v) => abi::UiArg { kind: abi::ui_arg::ITEM, num: *v as f64, ..abi::UiArg::DEFAULT },
         })
         .collect()
 }
@@ -91,13 +88,13 @@ pub struct S {
 
 impl Default for S {
     fn default() -> Self {
-        S { width: None, height: None, grow: 0.0, gap: 0.0, pad: 0.0, row: false, align: 0, justify: 0 }
+        S { width: None, height: None, grow: 0.0, gap: 0.0, pad: 0.0, row: false, align: abi::ui_align::START, justify: abi::ui_justify::START }
     }
 }
 
 impl S {
     pub fn row() -> S {
-        S { row: true, align: 1, ..S::default() }
+        S { row: true, align: abi::ui_align::CENTER, ..S::default() }
     }
     pub fn col() -> S {
         S::default()
@@ -124,17 +121,17 @@ impl S {
         self
     }
     pub fn center(mut self) -> S {
-        self.align = 1;
-        self.justify = 1;
+        self.align = abi::ui_align::CENTER;
+        self.justify = abi::ui_justify::CENTER;
         self
     }
     /// Children fill the cross axis (rows as wide as the column), so `spacer()`s can centre.
     pub fn stretch(mut self) -> S {
-        self.align = 3;
+        self.align = abi::ui_align::STRETCH;
         self
     }
     pub fn end(mut self) -> S {
-        self.justify = 2;
+        self.justify = abi::ui_justify::END;
         self
     }
 }
@@ -252,6 +249,22 @@ impl Ui {
         self.leaf(n)
     }
 
+    /// The player's main inventory and hotbar (`MenuCtx::player_slots`) from menu slot `start`,
+    /// spaced like vanilla, under the title "Inventory" when `title`.
+    pub fn player_inventory(&mut self, start: u32, title: bool) {
+        let l = crate::player_layout();
+        let main = l.slots - l.hotbar - l.worn.len() as u32;
+        self.column(S::col().gap(2.0), |ui| {
+            if title {
+                ui.text("container.inventory");
+            }
+            ui.column(S::col().gap(4.0), |ui| {
+                ui.slots(start, main, l.hotbar.max(1));
+                ui.slots(start + main, l.hotbar, l.hotbar.max(1));
+            });
+        });
+    }
+
     /// `count` menu slots starting at `start`, `per_row` per line.
     pub fn slots(&mut self, start: u32, count: u32, per_row: u32) {
         self.column(S::col(), |ui| {
@@ -263,21 +276,6 @@ impl Ui {
                 });
             }
         });
-    }
-
-    /// Progress from menu data: `data[value] / data[max]`, filling to the right.
-    pub fn progress(&mut self, class: &str, s: S, value: u32, max: u32) {
-        self.progress_dir(class, s, value, max, abi::ui_dir::RIGHT)
-    }
-
-    /// Like `progress`, filling in direction `dir` (`abi::ui_dir`, e.g. a furnace flame goes `UP`).
-    pub fn progress_dir(&mut self, class: &str, s: S, value: u32, max: u32, dir: u32) {
-        let mut n = node(k::PROGRESS, s);
-        n.class = Str::new(class);
-        n.data = value;
-        n.data_max = max;
-        n.dir = dir;
-        self.leaf(n)
     }
 
     /// Progress from any value 0..1.

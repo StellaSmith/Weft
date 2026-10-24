@@ -3,7 +3,9 @@
 //! `[name:type]` optional parameters, alternatives separated by `|`, for example
 //! `<pos:pos> | <target:player>` or `<item:item> [count:int]`.
 //!
-//! Types: int, float, word (`word(a,b)`: any word, completing a and b), text (rest of the line), item, block, entity, dim, player, time
+//! Types: int, float, word (`word(a,b)`: any word, completing a and b; `word(#set)` completes
+//! from a word set mods add to, like `#core:rules`), text (rest of the line), item, block,
+//! entity, dim, player, time
 //! (`day`, `noon`, `night`, `midnight` or ticks), pos (three coordinates; `~` relative to the player,
 //! `^left ^up ^forward` relative to where they look) and targets (a player name or a selector:
 //! `@p` nearest player, `@a` all players, `@e` entities, `@s` yourself, `@r` a random player, with
@@ -389,24 +391,6 @@ impl CommandDef {
     }
 
     /// Adds completion words to every `word` parameter called `param`; false if there is none.
-    pub fn add_words(&mut self, param: &str, words: &[String]) -> bool {
-        let mut found = false;
-        for p in self.alts.iter_mut().flatten().filter(|p| p.name == param) {
-            if let Kind::Word(list) = &mut p.kind {
-                for w in words {
-                    if !list.contains(w) {
-                        list.push(w.clone());
-                    }
-                }
-                found = true;
-            }
-        }
-        if found {
-            self.usage = usage_text(&self.alts);
-        }
-        found
-    }
-
     /// Another mod's alternatives with its own handler.
     pub fn add_branch(&mut self, alts: Vec<Alt>, handler: (ModId, Callback)) {
         self.branches.push(handler);
@@ -453,8 +437,6 @@ pub fn usage_text(alts: &[Alt]) -> String {
         .join(" | ")
 }
 
-/// Engine commands that run on the client: (name, usage). `{gizmos}` becomes the gizmo groups
-/// the engine knows, so they complete while a mod's group is still accepted.
 
 /// Command values as mods receive them; `selected` holds resolved targets per slot. The values
 /// point into `args` and `selected`.
@@ -481,26 +463,6 @@ pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<voxide_abi::C
         })
         .collect()
 }
-
-/// Engine commands, handled by the server itself.
-pub const BUILTIN: &[(&str, &str)] = &[
-    ("help", "[command:word]"),
-    ("tp", "<pos:pos> | <to:targets> | <who:targets> <pos:pos> | <who:targets> <to:targets>"),
-    ("dim", "<dim:dim> [who:targets]"),
-    ("give", "<who:targets> <item:item> [count:int] | <item:item> [count:int]"),
-    ("time", "set <time:time> | add <ticks:int> | query"),
-    ("summon", "<entity:entity> [pos:pos] [count:int]"),
-    ("kill", "[who:targets]"),
-    ("setblock", "<pos:pos> <block:block>"),
-    ("insert", "<pos:pos> <item:item> [count:int]"),
-    ("block", "<pos:pos>"),
-    ("heal", "[who:targets]"),
-    ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]"),
-    ("regions", ""),
-    ("debugblocks", "[floor:block]"),
-
-    ("rule", "[name:word] [value:int]"),
-];
 
 /// `/log`: shows or changes the log filters of this process (see `crate::log`).
 pub fn log_command(spec: &str) -> String {
@@ -578,7 +540,10 @@ pub fn complete(c: &Content, line: &str, players: &[String]) -> Completion {
         };
         let list = match &p.kind {
             Kind::Literal(l) if l.starts_with(partial) => vec![l.clone()],
-            Kind::Word(options) => options.iter().filter(|o| o.starts_with(partial)).cloned().collect(),
+            Kind::Word(options) => {
+                let set = |o: &String| o.strip_prefix('#').map(|s| c.word_sets.get(s).cloned().unwrap_or_default()).unwrap_or_else(|| vec![o.clone()]);
+                names_from(options.iter().flat_map(set).collect::<Vec<_>>().iter().collect())
+            }
             Kind::Item => names_from(c.item_names.keys().collect()),
             Kind::Block => names_from(c.block_names.keys().collect()),
             Kind::Entity => names_from(c.game.entity_names.keys().collect()),

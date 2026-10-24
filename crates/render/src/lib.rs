@@ -18,8 +18,10 @@ pub struct TextureId(pub u32);
 pub struct PipelineId(pub u32);
 
 /// Global WGSL declarations every shader can use. Texture handles index into these arrays.
+/// The `mipped` samplers clamp too: textures are never tiled, and wrapping made the edge texels
+/// of a face blend with the opposite edge (seams between overlays and cutout blocks).
 pub const PRELUDE: &str = r#"enable wgpu_binding_array;
-@group(0) @binding(0) var textures: binding_array<texture_2d<f32>, 4096>;
+@group(0) @binding(0) var textures: binding_array<texture_2d<f32>, 65536>;
 @group(0) @binding(1) var texture_arrays: binding_array<texture_2d_array<f32>, 256>;
 @group(0) @binding(2) var nearest_clamp: sampler;
 @group(0) @binding(3) var linear_clamp: sampler;
@@ -27,7 +29,9 @@ pub const PRELUDE: &str = r#"enable wgpu_binding_array;
 @group(0) @binding(5) var linear_mipped: sampler;
 "#;
 
-pub const MAX_TEXTURES: u32 = 4096;
+/// Every texture of every kind is its own entry (blocks, items, particles, skins, GUI, each
+/// animation frame): big packs have thousands; face records keep 16-bit indices.
+pub const MAX_TEXTURES: u32 = 65536;
 pub const MAX_TEXTURE_ARRAYS: u32 = 256;
 
 pub mod usage {
@@ -179,6 +183,16 @@ impl CommandList {
     pub fn clear(&mut self) {
         self.cmds.clear();
         self.data.clear();
+    }
+
+    /// Moves `other`'s commands to the end of this list.
+    pub fn append(&mut self, other: &mut CommandList) {
+        let base = self.data.len() as u32;
+        self.cmds.extend(other.cmds.drain(..).map(|c| match c {
+            Cmd::PushConstants { start, len } => Cmd::PushConstants { start: start + base, len },
+            c => c,
+        }));
+        self.data.append(&mut other.data);
     }
 
     pub fn push(&mut self, cmd: Cmd) {

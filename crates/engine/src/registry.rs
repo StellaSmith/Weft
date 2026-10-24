@@ -14,6 +14,8 @@ pub const PLAYER: &str = "core:player";
 #[derive(Clone)]
 pub struct HudElement {
     pub name: String,
+    /// Translation key of its F3 panel title: the name with `.` for `:`.
+    pub title: String,
     pub anchor: String,
     pub order: i32,
     pub owner: ModId,
@@ -92,6 +94,8 @@ pub struct EntityKind {
     pub speed: f32,
     pub flags: u32,
     pub category: u32,
+    /// Set by the mod instead of `category`; resolved at freeze.
+    pub category_name: String,
     pub texture: String,
     pub texture_size: [u32; 2],
     pub parts: Vec<Part>,
@@ -102,6 +106,9 @@ pub struct EntityKind {
     pub on_interact: Vec<(ModId, Callback)>,
     /// Components attached at spawn.
     pub components: Vec<u32>,
+    /// Starting values of attached components for this kind, where they differ from the
+    /// component's default.
+    pub values: Vec<(u32, Box<[u8]>)>,
     /// Size of the inventory created with it (block entities), 0 = none.
     pub slots: u32,
     /// Sound events hurt, death, ambient, step (`u32::MAX` none), from its `sound` component.
@@ -131,7 +138,6 @@ pub struct MenuDef {
     pub name: String,
     pub owner: ModId,
     pub temp_slots: u32,
-    pub data_count: u32,
     pub setup: Option<Callback>,
     pub on_change: Option<Callback>,
     pub on_take: Option<Callback>,
@@ -176,8 +182,16 @@ pub struct Game {
     pub menus: Vec<MenuDef>,
     pub menu_names: FxHashMap<String, u32>,
     pub recipes: FxHashMap<String, Vec<Recipe>>,
+    pub recipe_kinds: rustc_hash::FxHashSet<String>,
+    /// Entity categories by `EntityKind::category`: the engine's three first.
+    pub categories: Vec<CategoryDef>,
+    /// Sound categories by `SoundDef::category`: the engine's six first.
+    pub sound_categories: Vec<SoundCategory>,
     pub huds: Vec<HudElement>,
     pub player_menu: Option<u32>,
+    pub player_layout: PlayerLayout,
+    /// Mods' screens; of two with one name the mod loaded last comes last.
+    pub screens: Vec<ScreenDef>,
     /// Block index -> (entity kind, inventory slots).
     pub block_entities: FxHashMap<u32, u32>,
     pub player_kind: u32,
@@ -206,6 +220,10 @@ pub struct Game {
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
     pub watched_comps: Vec<u32>,
     pub menu_comps: Vec<u32>,
+    /// Per component: synced to anyone at all (its changes are looked for every tick).
+    pub synced_comps: Vec<bool>,
+    /// Index of `core:mob_spawning` in `rules`.
+    pub mob_spawning_rule: usize,
     /// (owner, component, system) in mod order.
     pub systems: Vec<(ModId, u32, Callback)>,
     /// `{if:name}` conditions mods answer.
@@ -233,6 +251,8 @@ pub struct SoundDef {
     pub name: String,
     pub files: Vec<String>,
     pub category: u32,
+    /// Set by mods naming their own category; resolved at freeze.
+    pub category_name: String,
     pub volume: f32,
     pub pitch: [f32; 2],
     pub range: f32,
@@ -312,6 +332,9 @@ pub struct RawGame {
     /// (owner, kind, hook, callback); hook 0 is the tick.
     pub hooks: Vec<(ModId, String, u32, Callback)>,
     pub recipes: Vec<RawRecipe>,
+    pub recipe_kinds: Vec<String>,
+    pub categories: Vec<CategoryDef>,
+    pub sound_categories: Vec<SoundCategory>,
     pub menus: Vec<(usize, MenuDef)>,
     pub huds: Vec<HudElement>,
     /// (owner, name, usage, callback).
@@ -319,9 +342,16 @@ pub struct RawGame {
     /// Commands that run on the client: (owner, name, usage, callback).
     pub client_commands: Vec<(ModId, String, String, Callback)>,
     pub command_extensions: Vec<(ModId, CommandExtension)>,
-    pub player_menu: Option<String>,
+    /// (mod, menu): of several, the mod loaded last wins.
+    pub player_menu: Option<(ModId, String)>,
+    /// (mod, layout): likewise.
+    pub player_layout: Option<(ModId, PlayerLayout)>,
+    pub screens: Vec<ScreenDef>,
+    /// (set, words) for `word(#set)` command parameters.
+    pub words: Vec<(String, Vec<String>)>,
     pub block_entities: Vec<(String, String, u32)>,
-    pub attach: Vec<(String, String)>,
+    /// (kind, component, its starting value on that kind).
+    pub attach: Vec<(String, String, Option<Vec<u8>>)>,
     pub ores: Vec<RawOre>,
     pub structures: Vec<RawStructure>,
     /// (name, icon item) in registration order.
@@ -393,7 +423,6 @@ pub struct SpawnRule {
 
 /// A mod's addition to a command registered elsewhere.
 pub enum CommandExtension {
-    Words { command: String, param: String, words: Vec<String> },
     Branch { command: String, usage: String, cb: Callback },
 }
 
@@ -406,6 +435,63 @@ pub struct EventDef {
     pub handlers: Vec<(ModId, Callback)>,
 }
 
+/// A mod's screen.
+#[derive(Clone)]
+pub struct ScreenDef {
+    pub name: String,
+    pub owner: ModId,
+    pub cb: Callback,
+}
+
+/// Slots of every player's inventory.
+#[derive(Clone, Debug)]
+pub struct PlayerLayout {
+    pub slots: u32,
+    /// The first this many are the hotbar.
+    pub hotbar: u32,
+    /// Equipment: never filled by pickups, worn on the model.
+    pub worn: std::ops::Range<u32>,
+}
+
+impl Default for PlayerLayout {
+    fn default() -> Self {
+        PlayerLayout { slots: 36, hotbar: 9, worn: 36..36 }
+    }
+}
+
+impl PlayerLayout {
+    /// Main inventory slots: neither hotbar nor equipment.
+    pub fn main(&self) -> impl Iterator<Item = u32> + '_ {
+        (self.hotbar..self.slots).filter(|i| !self.worn.contains(i))
+    }
+}
+
+/// A sound category: its volume setting and whether caves and water change it.
+#[derive(Clone, Debug)]
+pub struct SoundCategory {
+    pub name: String,
+    /// `<ns>:volume_<name>`.
+    pub setting: String,
+    pub world: bool,
+}
+
+impl SoundCategory {
+    pub fn new(name: &str, world: bool) -> SoundCategory {
+        let (ns, short) = name.split_once(':').unwrap_or(("core", name));
+        SoundCategory { name: name.to_string(), setting: format!("{ns}:volume_{short}"), world }
+    }
+}
+
+/// What natural spawning and despawning know of entities by category.
+#[derive(Clone, Debug)]
+pub struct CategoryDef {
+    pub name: String,
+    /// At most this many spawn naturally within 64 blocks of a player.
+    pub cap: u32,
+    /// Further than this from every player they vanish (checked every 5 s); 0 = never.
+    pub despawn: f64,
+}
+
 pub struct AttrDef {
     pub name: String,
     pub default: f64,
@@ -413,6 +499,8 @@ pub struct AttrDef {
     pub max: f64,
     /// Stable key in saved modifiers.
     pub hash: u64,
+    /// The entity kind component of the same name holding a kind's own value.
+    pub comp: Option<u32>,
 }
 
 /// Events the engine emits, with the schemas of their `abi` structs.
@@ -483,6 +571,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 speed: d.speed,
                 flags: d.flags,
                 category: d.category,
+                category_name: d.category_name.as_str().to_string(),
                 texture: d.texture.as_str().to_string(),
                 texture_size: d.texture_size,
                 parts,
@@ -491,6 +580,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 on_death: one(d.on_death),
                 on_interact: one(d.on_interact),
                 components: Vec::new(),
+                values: Vec::new(),
                 slots: 0,
                 sounds: [u32::MAX; 4],
                 carry_height: d.carry_height,
@@ -507,7 +597,6 @@ pub(crate) unsafe fn copy_menu(owner: ModId, d: &abi::MenuDesc) -> (usize, MenuD
                 name: d.name.as_str().to_string(),
                 owner,
                 temp_slots: d.temp_slots,
-                data_count: d.data_count,
                 setup: opt(d.setup),
                 on_change: opt(d.on_change),
                 on_take: opt(d.on_take),
@@ -554,6 +643,7 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         speed: 4.3,
         flags,
         category: 0,
+        category_name: String::new(),
         texture: String::new(),
         texture_size: [64, 32],
         parts: Vec::new(),
@@ -562,6 +652,7 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         on_death: Vec::new(),
         on_interact: Vec::new(),
         components: Vec::new(),
+        values: Vec::new(),
         slots: 0,
         sounds: [u32::MAX; 4],
         carry_height: 0.0,
@@ -591,7 +682,7 @@ fn player_parts() -> Vec<Part> {
 }
 
 /// Tags the engine refers to by name, so they have ids even when no mod uses them.
-pub const ENGINE_TAGS: &[&str] = &["armor_head", "armor_chest", "armor_legs", "armor_feet"];
+pub const ENGINE_TAGS: &[&str] = &abi::comp::ARMOR;
 /// Entity component with attribute modifiers.
 pub const MODIFIERS: &str = "core:modifiers";
 
@@ -662,20 +753,27 @@ pub fn freeze(
     let mut recipes = Vec::new();
     let mut menus = Vec::new();
     let mut player_menu = None;
+    let mut player_layout: Option<(ModId, PlayerLayout)> = None;
     let mut block_entities = Vec::new();
-    let mut attach: Vec<(String, String)> = Vec::new();
+    let mut attach: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
     let mut packets: Vec<(ModId, String, u32, Callback)> = Vec::new();
     let mut event_handlers: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut systems: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
     let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
-    let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0)];
+    let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0), (abi::attribute::VISIBILITY.into(), 1.0, 0.0, 16.0)];
     let mut particles: Vec<RawParticle> = engine_particles();
     let mut configs: Vec<(usize, crate::config::ConfigDef)> = crate::config::engine_configs().into_iter().map(|d| (0, d)).collect();
     let mut stations: Vec<(String, String)> = Vec::new();
     let mut sounds: Vec<(usize, SoundDef)> = engine_sounds();
     let mut music: Vec<(String, MusicDef)> = Vec::new();
     let mut spawns: Vec<RawSpawn> = Vec::new();
+    let mut sound_categories: Vec<SoundCategory> = ["blocks", "creatures", "players", "ambient", "music", "ui"].map(|n| SoundCategory::new(&format!("core:{n}"), n != "music" && n != "ui")).to_vec();
+    let mut categories: Vec<CategoryDef> = vec![
+        CategoryDef { name: "core:misc".into(), cap: 6, despawn: 0.0 },
+        CategoryDef { name: "core:hostile".into(), cap: 8, despawn: 128.0 },
+        CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0 },
+    ];
     for r in raws {
         sounds.extend(r.sounds);
         music.extend(r.music);
@@ -700,10 +798,21 @@ pub fn freeze(
         components.extend(r.components);
         hooks.extend(r.hooks);
         recipes.extend(r.recipes);
+        g.recipe_kinds.extend(r.recipe_kinds);
+        categories.extend(r.categories);
+        sound_categories.extend(r.sound_categories);
         menus.extend(r.menus);
         g.huds.extend(r.huds);
-        if r.player_menu.is_some() {
-            player_menu = r.player_menu;
+        if let Some((owner, name)) = r.player_menu {
+            if player_menu.as_ref().is_none_or(|(o, _): &(ModId, String)| order(owner) >= order(*o)) {
+                player_menu = Some((owner, name));
+            }
+        }
+        g.screens.extend(r.screens);
+        if let Some((owner, l)) = r.player_layout {
+            if player_layout.as_ref().is_none_or(|(o, _)| order(owner) >= order(*o)) {
+                player_layout = Some((owner, l));
+            }
         }
         block_entities.extend(r.block_entities);
         attach.extend(r.attach);
@@ -716,8 +825,17 @@ pub fn freeze(
     g.virtual_kind = g.entity_names[VIRTUAL];
     g.client_hooks.sort_by_key(|h| h.0.0);
     freeze_particles(&mut g, particles, errors);
+    for k in sound_categories.iter().skip(6) {
+        configs.push((0, crate::config::ConfigDef { name: k.setting.clone(), kind: abi::config_kind::INT, default: 100.0, min: 0.0, max: 100.0, step: 1.0, choices: Vec::new(), flags: 0 }));
+    }
     sounds.sort_by(|a, b| a.1.name.cmp(&b.1.name));
-    for (cell, d) in sounds {
+    for (cell, mut d) in sounds {
+        if !d.category_name.is_empty() {
+            match sound_categories.iter().position(|k| k.name == d.category_name) {
+                Some(i) => d.category = i as u32,
+                None => errors.push(format!("sound {}: no category {}", d.name, d.category_name)),
+            }
+        }
         if g.sound_names.contains_key(&d.name) {
             errors.push(format!("sound {} registered twice", d.name));
             continue;
@@ -740,6 +858,9 @@ pub fn freeze(
         g.music.push(m);
     }
     for (kind, item) in stations {
+        if !g.recipe_kinds.contains(&kind) {
+            errors.push(format!("recipe station {item}: no recipe kind {kind}"));
+        }
         match item_names.get(&item) {
             Some(&i) => g.recipe_stations.entry(kind).or_default().push(i),
             None => errors.push(format!("recipe station {item} for {kind} is not an item")),
@@ -756,6 +877,23 @@ pub fn freeze(
         g.config_names.insert(d.name.clone(), id);
         g.configs.push(d);
     }
+    for d in &categories {
+        if categories.iter().filter(|o| o.name == d.name).count() > 1 && !errors.iter().any(|e| e.contains(&d.name)) {
+            errors.push(format!("entity category {} registered twice", d.name));
+        }
+    }
+    for k in g.entities.iter_mut().filter(|k| !k.category_name.is_empty()) {
+        match categories.iter().position(|d| d.name == k.category_name) {
+            Some(i) => k.category = i as u32,
+            None => errors.push(format!("entity {}: no category {}", k.name, k.category_name)),
+        }
+    }
+    for k in g.entities.iter_mut().filter(|k| k.category as usize >= categories.len()) {
+        errors.push(format!("entity {}: no category {}", k.name, k.category));
+        k.category = 0;
+    }
+    g.categories = categories;
+    g.sound_categories = sound_categories;
     for s in spawns {
         let Some(&entity) = g.entity_names.get(&s.entity) else {
             errors.push(format!("spawn rule for unknown entity {}", s.entity));
@@ -784,7 +922,11 @@ pub fn freeze(
     // Natural spawning (`spawns`) runs while this is on.
     g.rules.push(("core:mob_spawning".into(), 1));
     g.rules.sort_by(|a, b| a.0.cmp(&b.0));
+    for w in g.rules.windows(2).filter(|w| w[0].0 == w[1].0) {
+        errors.push(format!("rule {} is registered twice", w[0].0));
+    }
     g.rules.dedup_by(|a, b| a.0 == b.0);
+    g.mob_spawning_rule = g.rules.iter().position(|r| r.0 == "core:mob_spawning").unwrap_or(0);
 
     let mut events: Vec<EventDef> = ENGINE_EVENTS.iter().map(|(n, s, size)| EventDef { name: n.to_string(), schema: s.to_string(), size: (*size).into(), handlers: Vec::new() }).collect();
     event_handlers.sort_by_key(|h| order(h.0));
@@ -807,11 +949,16 @@ pub fn freeze(
         g.modifiers.entry(name).or_default().push((stage, owner, cb));
     }
     for (name, default, min, max) in attributes {
-        if g.attr_names.contains_key(&name) {
+        if let Some(&a) = g.attr_names.get(&name) {
+            // Declared again the same way is fine (mods sharing it); differently is not.
+            let d = &g.attributes[a as usize];
+            if (d.default, d.min, d.max) != (default, min.min(max), max) {
+                errors.push(format!("attribute {name} is declared twice with different values"));
+            }
             continue;
         }
         g.attr_names.insert(name.clone(), g.attributes.len() as u32);
-        g.attributes.push(AttrDef { hash: name_hash(&name), name, default, min: min.min(max), max });
+        g.attributes.push(AttrDef { hash: name_hash(&name), comp: c.id(&name), name, default, min: min.min(max), max });
     }
     packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
     for (owner, name, side, cb) in packets {
@@ -859,6 +1006,8 @@ pub fn freeze(
     let with_flag = |f: u32| g.components.iter().enumerate().filter(|(_, d)| d.runtime && d.flags & f != 0).map(|(i, _)| i as u32).collect::<Vec<u32>>();
     g.watched_comps = with_flag(abi::component_flags::SYNC_WATCHERS);
     g.menu_comps = with_flag(abi::component_flags::SYNC_MENU);
+    let any_sync = abi::component_flags::SYNC_OWNER | abi::component_flags::SYNC_WATCHERS | abi::component_flags::SYNC_MENU;
+    g.synced_comps = g.components.iter().map(|d| d.runtime && d.flags & any_sync != 0).collect();
     systems.sort_by_key(|s| order(s.0));
     for (owner, name, schema, cb) in systems {
         match g.component_names.get(&name) {
@@ -867,9 +1016,17 @@ pub fn freeze(
             None => errors.push(format!("system over {name}: no entity component of that name")),
         }
     }
-    for (kind, comp) in attach {
+    for (kind, comp, value) in attach {
         match (g.entity_names.get(&kind), g.component_names.get(&comp)) {
-            (Some(&k), Some(&cid)) => g.entities[k as usize].components.push(cid),
+            (Some(&k), Some(&cid)) => {
+                let size = g.components[cid as usize].size as usize;
+                match value {
+                    Some(v) if v.len() != size => errors.push(format!("attaching {comp} to {kind}: a value of {} bytes, the component has {size}", v.len())),
+                    Some(v) => g.entities[k as usize].values.push((cid, v.into_boxed_slice())),
+                    None => {}
+                }
+                g.entities[k as usize].components.push(cid);
+            }
             _ => errors.push(format!("cannot attach {comp} to {kind}: unknown entity or component")),
         }
     }
@@ -883,9 +1040,9 @@ pub fn freeze(
         };
         let k = &mut g.entities[e as usize];
         match hook {
-            0 => k.on_tick.push((owner, cb)),
-            1 => k.on_hurt.push((owner, cb)),
-            2 => k.on_death.push((owner, cb)),
+            abi::entity_hook::TICK => k.on_tick.push((owner, cb)),
+            abi::entity_hook::HURT => k.on_hurt.push((owner, cb)),
+            abi::entity_hook::DEATH => k.on_death.push((owner, cb)),
             _ => k.on_interact.push((owner, cb)),
         }
     }
@@ -896,7 +1053,14 @@ pub fn freeze(
         g.menu_names.insert(m.name.clone(), i as u32);
         g.menus.push(m);
     }
-    g.player_menu = player_menu.and_then(|n| {
+    g.screens.sort_by_key(|s| order(s.owner));
+    g.player_layout = player_layout.map(|l| l.1).unwrap_or_default();
+    let l = &g.player_layout;
+    if l.hotbar > l.slots || l.worn.end > l.slots || l.worn.start < l.hotbar {
+        errors.push(format!("player inventory: hotbar {} and worn {:?} must lie within {} slots, worn after the hotbar", l.hotbar, l.worn, l.slots));
+        g.player_layout = PlayerLayout::default();
+    }
+    g.player_menu = player_menu.and_then(|(_, n)| {
         let m = g.menu_names.get(&n).copied();
         if m.is_none() {
             errors.push(format!("player menu {n} is not registered"));
@@ -907,7 +1071,9 @@ pub fn freeze(
     for (block, entity, slots) in block_entities {
         match (block_names.get(&block), g.entity_names.get(&entity)) {
             (Some(&b), Some(&e)) => {
-                g.block_entities.insert(b, e);
+                if g.block_entities.insert(b, e).is_some_and(|old| old != e) {
+                    errors.push(format!("block {block} has two block entities"));
+                }
                 g.entities[e as usize].slots = slots;
             }
             _ => errors.push(format!("block entity {block} -> {entity}: unknown block or entity")),
@@ -945,6 +1111,10 @@ pub fn freeze(
         }
     };
     for r in recipes {
+        if !g.recipe_kinds.contains(&r.kind) {
+            errors.push(format!("recipe for {}: no recipe kind {}", r.output, r.kind));
+            continue;
+        }
         let output = match r.output.strip_prefix('#') {
             Some(t) => by_tag.get(t).and_then(|v| v.first()).copied(),
             None => item_names.get(&r.output).copied(),
@@ -1053,7 +1223,7 @@ impl Game {
 
 /// Sounds the engine plays itself (files in its own assets, packs may replace them).
 fn engine_sounds() -> Vec<(usize, SoundDef)> {
-    let one = |name: &str, file: &str, category: u32, volume: f32, pitch: [f32; 2]| (0, SoundDef { name: name.into(), files: vec![file.into()], category, volume, pitch, range: 16.0 });
+    let one = |name: &str, file: &str, category: u32, volume: f32, pitch: [f32; 2]| (0, SoundDef { name: name.into(), files: vec![file.into()], category, category_name: String::new(), volume, pitch, range: 16.0 });
     vec![
         one("core:ui.click", "core:ui/click", abi::sound_category::UI, 0.6, [1.0, 1.0]),
         one("core:item.pickup", "core:item/pickup", abi::sound_category::PLAYERS, 0.4, [1.4, 2.2]),

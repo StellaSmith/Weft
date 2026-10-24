@@ -24,10 +24,11 @@ pub async fn title_screens(t: T) -> R {
 pub async fn f3_overlay(t: T) -> R {
     t.world(5).await?;
     t.idle().await?;
-    t.press("core:debug");
+    t.debug(true).await?;
     t.frames(10).await?;
-    t.shot("f3").await?;
-    t.press("core:debug");
+    // Frame times and memory change from run to run.
+    t.shot_within("f3", 0.03).await?;
+    t.debug(false).await?;
     Ok(())
 }
 
@@ -39,13 +40,37 @@ pub async fn f3_russian_large(t: T) -> R {
     t.c().setting("language", "ru_ru");
     t.c().setting("gui_scale", "3");
     t.c().look(0.0, 0.0);
-    t.press("core:debug");
+    t.debug(true).await?;
     t.frames(10).await?;
-    t.shot("f3_ru_3").await?;
-    t.press("core:debug");
+    t.shot_within("f3_ru_3", 0.03).await?;
+    t.debug(false).await?;
     t.c().setting("language", "en_us");
     t.c().setting("gui_scale", "2");
     Ok(())
+}
+
+/// A mod's screen opens by name, here from its client command.
+pub async fn mod_screen(t: T) -> R {
+    t.flat().await?;
+    t.c().chat("/about");
+    t.screen("testmod:about").await?;
+    t.until("its text", Duration::from_secs(2), |t| t.c().ui_rect("text:opened by name").is_some()).await?;
+    t.shot("about").await?;
+    t.c().close_screen();
+    t.no_screen().await
+}
+
+/// A mod's own F3 panel shows with the overlay and hides with its group bit (F3+6).
+pub async fn f3_mod_panel(t: T) -> R {
+    t.world(5).await?;
+    t.idle().await?;
+    t.debug(true).await?;
+    t.until("testmod panel shown", Duration::from_secs(2), |t| t.c().ui_rect("text:fall").is_some()).await?;
+    t.c().setting("debug_groups", &(u32::MAX & !(1 << 5)).to_string());
+    t.until("testmod panel hidden", Duration::from_secs(2), |t| t.c().ui_rect("text:fall").is_none()).await?;
+    t.check(t.c().ui_rect("text:server").is_some(), "engine panels stay");
+    t.c().setting("debug_groups", &u32::MAX.to_string());
+    t.debug(false).await
 }
 
 fn id(name: &str) -> u32 {
@@ -114,12 +139,25 @@ pub async fn chat_completion(t: T) -> R {
     Ok(())
 }
 
-/// Commands the client handles itself (`/gizmo`, `/log`) complete like the others.
+/// `/` opens the chat with the command list already shown.
+pub async fn slash_opens_commands(t: T) -> R {
+    t.flat().await?;
+    t.press("core:command");
+    t.screen("core:chat").await?;
+    t.until("the command list", Duration::from_secs(2), |t| t.c().ui_rect("text:gamemode").is_some()).await?;
+    t.check_eq(t.c().input_text(), "/".to_string(), "the line");
+    t.c().close_screen();
+    t.no_screen().await
+}
+
+/// Commands the client handles itself (`/gizmo`, `/log`) complete like the others; word
+/// parameters complete from word sets (`/rule` from the registered rules, `/gizmo` from the
+/// groups mods registered).
 pub async fn client_command_completion(t: T) -> R {
     t.world(3).await?;
     t.press("core:chat");
     t.screen("core:chat").await?;
-    for (typed, want) in [("/giz", "/gizmo"), ("/gizmo cu", "/gizmo cubes"), ("/gizmo testm", "/gizmo testmod:energy"), ("/gizmo pro", "/gizmo probe"), ("/probe al", "/probe alpha")] {
+    for (typed, want) in [("/giz", "/gizmo"), ("/gizmo cu", "/gizmo cubes"), ("/gizmo testm", "/gizmo testmod:energy"), ("/gizmo pro", "/gizmo probe"), ("/probe al", "/probe alpha"), ("/rule mob", "/rule core:mob_spawning")] {
         t.c().type_text(typed);
         t.frames(2).await?;
         t.c().key("Tab", 0.0);
@@ -141,7 +179,7 @@ pub async fn client_command_completion(t: T) -> R {
     let reply = t.cmd("/gizmo probe 7").await?;
     t.check_eq(reply, "gizmo probe 7 from testkit".into(), "another mod's branch of /gizmo");
     let help = t.cmd("/help gizmo").await?;
-    t.check(help.contains("testmod:energy") && help.contains("probe"), format!("/help gizmo said '{help}'"));
+    t.check(help.contains("#core:gizmos") && help.contains("probe"), format!("/help gizmo said '{help}'"));
     let reply = t.cmd("/probe beta").await?;
     t.check_eq(reply, "probe beta on the client".into(), "mod client command");
     Ok(())

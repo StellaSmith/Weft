@@ -16,7 +16,7 @@ pub static COW: Entity = Entity::new();
 
 
 pub fn register(r: &mut Registry) {
-    r.entity_component(&BRAIN, Brain::default(), 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
+    r.entity_component(&BRAIN, Brain::default(), 0, &[]);
     r.entity("zombie").handle(&ZOMBIE)
         .sounds("zombie")
         .size(0.6, 1.95)
@@ -26,6 +26,7 @@ pub fn register(r: &mut Registry) {
         .flags(entity_flags::BURNS_IN_SUN)
         .texture("zombie", 64, 32)
         .model(biped(true))
+        .attach_with(&BRAIN, Brain::default())
         .goals(hostile(3.0, false));
     r.entity("spider").handle(&SPIDER)
         .sounds("spider")
@@ -35,6 +36,7 @@ pub fn register(r: &mut Registry) {
         .hostile()
         .texture("spider", 64, 32)
         .model(spider())
+        .attach_with(&BRAIN, Brain::default())
         .goals(hostile(2.0, true));
     r.entity("pig").handle(&PIG)
         .sounds("pig")
@@ -44,6 +46,7 @@ pub fn register(r: &mut Registry) {
         .passive()
         .texture("pig", 64, 64)
         .model(quadruped([10.0, 8.0, 16.0], 6.0, [8.0, 8.0, 8.0]))
+        .attach_with(&BRAIN, Brain::default())
         .goals(passive())
         .on_hurt(panic);
     r.entity("cow").handle(&COW)
@@ -54,13 +57,14 @@ pub fn register(r: &mut Registry) {
         .passive()
         .texture("cow", 64, 64)
         .model(quadruped([12.0, 10.0, 18.0], 12.0, [8.0, 8.0, 6.0]))
+        .attach_with(&BRAIN, Brain::default())
         .goals(passive())
         .on_hurt(panic);
     // Vanilla amounts; meat comes out cooked when the animal burns.
     r.loot("zombie").pool(Pool::new().items("rotten_flesh", 0, 2));
     r.loot("spider").pool(Pool::new().items("string", 0, 2));
-    r.loot("pig").pool(Pool::new().entry(Entry::item("porkchop").count(1, 3).smelted("base:smelting")));
-    r.loot("cow").pool(Pool::new().entry(Entry::item("beef").count(1, 3).smelted("base:smelting"))).pool(Pool::new().items("leather", 0, 2));
+    r.loot("pig").pool(Pool::new().entry(Entry::item("porkchop").count(1, 3).smelted(&crate::recipes::SMELTING)));
+    r.loot("cow").pool(Pool::new().entry(Entry::item("beef").count(1, 3).smelted(&crate::recipes::SMELTING))).pool(Pool::new().items("leather", 0, 2));
     // Natural spawning, as rules the engine runs: monsters in the dark (spiders more in deep
     // caves), animals in small herds on grass by day, rarely once the world is loaded.
     r.spawn("zombie").light(0, 6).weight(2);

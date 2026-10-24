@@ -225,7 +225,8 @@ impl Client {
         (b != u32::MAX).then_some(b)
     }
 
-    /// Own inventory slot (0..9 hotbar, 9..36 main, 36..40 armour).
+    /// Own inventory slot (`player_layout`: with the base game 0..9 hotbar, 9..36 main, 36..40
+    /// armour).
     pub fn inventory_slot(&self, slot: u32) -> ItemStack {
         unsafe { (host().client_slot)(self.raw, 0, slot) }
     }

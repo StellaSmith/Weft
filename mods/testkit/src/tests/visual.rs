@@ -94,6 +94,82 @@ pub async fn crouch_pose(t: T) -> R {
     Ok(())
 }
 
+/// What stands behind water and ice is seen through them: a pig in a pool is tinted by its
+/// water, water under ice shows through the ice, and the outline of a block under water is
+/// faint while under lava it is hidden.
+pub async fn liquid_layers(t: T) -> R {
+    t.flat().await?;
+    t.op("time 6000").await?;
+    let f = t.feet();
+    // A pool dug into the ground, half of it under ice, and a lava pit beside it.
+    t.fill(add(f, [-3, -3, -7]), add(f, [1, -1, -3]), "water").await?;
+    t.fill(add(f, [-3, -1, -7]), add(f, [-2, -1, -3]), "ice").await?;
+    t.fill(add(f, [3, -2, -6]), add(f, [4, -1, -4]), "lava").await?;
+    t.op(&format!("spawn pig {} {} {}", f[0], f[1] - 3, f[2] - 5)).await?;
+    t.c().look(0.0, -40.0);
+    t.frames(30).await?;
+    t.shot("pool").await?;
+    // The outline of the pool's floor under the water, then under the lava.
+    t.c().look(0.0, -70.0);
+    t.cmd(&format!("/tp {} {} {}", f[0] as f64 - 0.5, f[1], f[2] as f64 - 4.0)).await?;
+    t.frames(20).await?;
+    t.shot_within("outline_water", 0.03).await?;
+    // From the pit's edge, looking east into it (standing in it would burn).
+    t.cmd(&format!("/tp {} {} {}", f[0] as f64 + 2.5, f[1], f[2] as f64 - 4.5)).await?;
+    t.c().look(270.0, -55.0);
+    t.frames(20).await?;
+    t.shot("outline_lava").await?;
+    Ok(())
+}
+
+/// Cracks cover a block's model (a ladder's board, not its cube), and instant breaks show none:
+/// in creative the next block under a held button stays clean while the break waits.
+pub async fn break_overlay(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let wall = add(f, [0, 0, -2]);
+    t.fill(wall, add(wall, [0, 1, 0]), "cobblestone").await?;
+    let ladder = add(wall, [0, 0, 1]);
+    t.set(ladder, "ladder#3").await?;
+    t.look_at(ladder);
+    t.frames(3).await?;
+    t.hold("core:attack", 0.3);
+    t.secs(0.25).await?;
+    t.shot("ladder").await?;
+    t.secs(0.3).await?;
+    t.op("mode creative").await?;
+    t.set(ladder, "air").await?;
+    t.fill(add(f, [0, 0, -2]), add(f, [0, 1, -3]), "dirt").await?;
+    t.look_at(wall);
+    t.frames(3).await?;
+    t.hold("core:attack", 0.5);
+    t.until("the first block broken", Duration::from_secs(2), |t| t.c().block(wall) == Some(0)).await?;
+    t.shot("creative").await?;
+    Ok(())
+}
+
+/// Right click swings the arm only when it did something: on grass with an empty hand the
+/// picture stays as it was, placing a block swings.
+pub async fn use_swing(t: T) -> R {
+    t.flat().await?;
+    t.c().look(0.0, -45.0);
+    t.frames(10).await?;
+    let still = t.grab().await?;
+    t.press("core:use");
+    t.frames(4).await?;
+    let after = t.grab().await?;
+    t.check(T::differ(&still, &after) < 0.001, format!("the arm moved on a use that did nothing ({:.4})", T::differ(&still, &after)));
+    t.op("put me 0 dirt 4").await?;
+    t.c().select(0);
+    // Past the use cooldown of the first click.
+    t.secs(0.3).await?;
+    t.press("core:use");
+    t.until("placed", Duration::from_secs(3), |t| t.c().inventory_slot(0).count == 3).await?;
+    t.frames(2).await?;
+    t.shot_within("placed", 0.03).await?;
+    Ok(())
+}
+
 /// A ladder takes the facing of the wall it was put on.
 pub async fn ladder_placement(t: T) -> R {
     t.flat().await?;
@@ -107,8 +183,9 @@ pub async fn ladder_placement(t: T) -> R {
     t.press("core:use");
     let at = add(wall, [0, 0, 1]);
     t.until("ladder placed", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 7).await?;
-    // State order follows the wall: -Z, +X, +Z, -X; this one hangs on a wall to its north.
-    t.check_eq(t.block(at).await?, "base:ladder".into(), "ladder on the north wall");
+    // States face away from the wall, in face order (west, east, north, south): on a wall to
+    // its north it faces south.
+    t.check_eq(t.block(at).await?, "base:ladder#3".into(), "ladder on the north wall");
     Ok(())
 }
 
@@ -125,7 +202,8 @@ pub async fn wall_torch(t: T) -> R {
     t.press("core:use");
     let at = add(wall, [0, 0, 1]);
     t.until("torch placed", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 7).await?;
-    t.check_eq(t.block(at).await?, "base:torch#1".into(), "torch on the north wall");
+    // West, east, up (the floor), north, south: on a wall to its north it faces south.
+    t.check_eq(t.block(at).await?, "base:torch#4".into(), "torch on the north wall");
     t.frames(5).await?;
     t.shot("wall_torch").await?;
     t.set(wall, "air").await?;

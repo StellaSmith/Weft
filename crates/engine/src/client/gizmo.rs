@@ -80,10 +80,10 @@ impl Gizmos {
         let now = Instant::now();
         self.shapes.retain(|s| s.1 > now);
         for (s, _) in &self.shapes {
-            match s.kind {
-                0 => lines.push((s.a, s.b, s.color)),
-                1 => cuboid(&mut lines, s.a, s.b, s.color),
-                3 => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
+            match s.kind as u32 {
+                voxide_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
+                voxide_abi::gizmo_kind::BOX => cuboid(&mut lines, s.a, s.b, s.color),
+                voxide_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
                 _ => labels.push((s.a, s.text.clone(), s.color)),
             }
         }
@@ -104,11 +104,9 @@ impl Gizmos {
         }
         if self.on("hitboxes") {
             for e in client.entities.values().filter(|e| (e.pos - me).length_squared() < 64.0 * 64.0) {
-                let k = &c.game.entities[e.kind as usize];
-                let h = if e.crouched { crate::physics::CROUCH_HEIGHT } else { k.height as f64 };
-                let (hw, h) = if e.item.is_empty() { (k.width as f64 / 2.0, h) } else { (0.125, 0.25) };
+                let (hw, h, eye) = e.dims();
                 cuboid(&mut lines, e.pos - DVec3::new(hw, 0.0, hw), e.pos + DVec3::new(hw, h, hw), 0xFFFFFFFF);
-                let eye = e.pos + DVec3::Y * k.eye as f64;
+                let eye = e.pos + DVec3::Y * eye;
                 let (sy, cy) = (e.yaw as f64).sin_cos();
                 lines.push((eye, eye + DVec3::new(-sy, 0.0, -cy) * 1.5, 0x4060FFFF));
             }
@@ -131,6 +129,14 @@ impl Gizmos {
             }
         }
         if self.on("light") {
+            // Coloured by the hostile spawn rules of this dimension, as the server checks them
+            // (light = sky light times daylight, or block light, whichever is more): red where
+            // monsters may spawn now, yellow where they may at night, green where never.
+            let dim = client.world.dim;
+            let hostile = |s: &&crate::registry::SpawnRule| s.category == voxide_abi::entity_category::HOSTILE && s.dimension.is_none_or(|d| d == dim);
+            let rules: Vec<[u32; 2]> = c.game.spawns.iter().filter(hostile).map(|s| s.light).collect();
+            let day = client.daylight();
+            let spawns = |light: u32| rules.iter().any(|r| (r[0]..=r[1]).contains(&light));
             for dy in -4..=4 {
                 for dz in -6..=6 {
                     for dx in -6..=6 {
@@ -141,13 +147,14 @@ impl Gizmos {
                             continue;
                         }
                         let l = client.world.light(p);
-                        let (sky, block) = (l & 255, ((l >> 8) & 255).max((l >> 16) & 255).max((l >> 24) & 255));
-                        // Modern spawning: hostile mobs need block light 0, and sky light 7 or
-                        // less, which open ground only has at night.
-                        let color = match (block, sky) {
-                            (0, 0..=7) => 0xFF5040FF,
-                            (0, _) => 0xFFD040FF,
-                            _ => 0x60FF60FF,
+                        let block = voxide_abi::light::block(l).min(15);
+                        let now = voxide_abi::light::effective(l, day);
+                        let color = if spawns(now) {
+                            0xFF5040FF
+                        } else if spawns(block) {
+                            0xFFD040FF
+                        } else {
+                            0x60FF60FF
                         };
                         labels.push((p.as_dvec3() + DVec3::new(0.5, 0.05, 0.5), block.to_string(), color));
                     }

@@ -5,7 +5,11 @@ use glam::Vec2;
 use rustc_hash::{FxHashMap, FxHashSet};
 use winit::keyboard::KeyCode;
 
+/// The hotbar slot actions, first to ninth.
+pub const HOTBAR: [&str; 9] = ["core:hotbar1", "core:hotbar2", "core:hotbar3", "core:hotbar4", "core:hotbar5", "core:hotbar6", "core:hotbar7", "core:hotbar8", "core:hotbar9"];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+
 pub enum Key {
     Code(KeyCode),
     Mouse(u8),
@@ -70,15 +74,15 @@ impl Default for Input {
             ("core:attack", Key::Mouse(0)),
             ("core:use", Key::Mouse(1)),
             ("core:pick", Key::Mouse(2)),
-            ("core:hotbar1", Key::Code(Digit1)),
-            ("core:hotbar2", Key::Code(Digit2)),
-            ("core:hotbar3", Key::Code(Digit3)),
-            ("core:hotbar4", Key::Code(Digit4)),
-            ("core:hotbar5", Key::Code(Digit5)),
-            ("core:hotbar6", Key::Code(Digit6)),
-            ("core:hotbar7", Key::Code(Digit7)),
-            ("core:hotbar8", Key::Code(Digit8)),
-            ("core:hotbar9", Key::Code(Digit9)),
+            (HOTBAR[0], Key::Code(Digit1)),
+            (HOTBAR[1], Key::Code(Digit2)),
+            (HOTBAR[2], Key::Code(Digit3)),
+            (HOTBAR[3], Key::Code(Digit4)),
+            (HOTBAR[4], Key::Code(Digit5)),
+            (HOTBAR[5], Key::Code(Digit6)),
+            (HOTBAR[6], Key::Code(Digit7)),
+            (HOTBAR[7], Key::Code(Digit8)),
+            (HOTBAR[8], Key::Code(Digit9)),
         ] {
             i.register(name, key);
         }

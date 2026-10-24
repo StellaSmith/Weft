@@ -69,6 +69,8 @@ fn main() {
             "--seed" => opts.seed = value().parse().ok(),
             "--screen" => opts.screen = Some(value()),
             "--no-vsync" => opts.no_vsync = true,
+            // Engine shaders and assets live from the source tree in a release build too.
+            "--dev" => opts.dev = true,
             "--view" => opts.view = value().parse().ok(),
             "--pack-mod" => pack = Some(PathBuf::from(value())),
             "--dist" => dist = Some(PathBuf::from(value())),

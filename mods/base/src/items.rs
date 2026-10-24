@@ -27,9 +27,8 @@ pub static ARMOR: Component<Armor> = Component::new("armor");
 /// How readily fire takes it.
 pub static FLAMMABLE: Component<u32> = Component::new("flammable");
 /// Item left behind when this one is used up as fuel or ingredient (the bucket of a lava bucket).
-pub static REMAINDER: Component<Text> = Component::new("remainder");
 /// Slot tags; `<slot>/<material>` tags pick the recipe (see recipes.rs).
-pub const ARMOR_SLOTS: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
+pub const ARMOR_SLOTS: [&str; 4] = abi::comp::ARMOR;
 
 struct Material {
     name: &'static str,
@@ -40,11 +39,11 @@ struct Material {
 }
 
 const MATERIALS: [Material; 5] = [
-    Material { name: "wood", level: 0, speed: 2.0, durability: 59, damage: 0.0 },
-    Material { name: "stone", level: 1, speed: 4.0, durability: 131, damage: 1.0 },
-    Material { name: "iron", level: 2, speed: 6.0, durability: 250, damage: 2.0 },
-    Material { name: "diamond", level: 3, speed: 8.0, durability: 1561, damage: 3.0 },
-    Material { name: "gold", level: 0, speed: 12.0, durability: 32, damage: 0.0 },
+    Material { name: "wood", level: tool_tier::WOOD, speed: 2.0, durability: 59, damage: 0.0 },
+    Material { name: "stone", level: tool_tier::STONE, speed: 4.0, durability: 131, damage: 1.0 },
+    Material { name: "iron", level: tool_tier::IRON, speed: 6.0, durability: 250, damage: 2.0 },
+    Material { name: "diamond", level: tool_tier::DIAMOND, speed: 8.0, durability: 1561, damage: 3.0 },
+    Material { name: "gold", level: tool_tier::WOOD, speed: 12.0, durability: 32, damage: 0.0 },
 ];
 
 pub fn register(r: &mut Registry) {
@@ -89,6 +88,8 @@ pub fn register(r: &mut Registry) {
                 .attack(damage + m.damage)
                 .tag(&format!("tools/{kind}"))
                 .tag(&format!("{kind}s/{}", m.name))
+                // Vanilla: weapons wear by one per hit, tools (made for blocks) by two.
+                .set(&WEAR_PER_HIT, if kind == "sword" { 1 } else { 2 })
                 .tab(if kind == "sword" { "combat" } else { "tools" });
         };
         tool(r, "pickaxe", "pickaxe", 2.0);

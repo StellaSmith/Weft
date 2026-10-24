@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 voxide_sdk.workspace = true
+png.workspace = true
 
 # Development tool: left out of `voxide --dist`.
 [package.metadata.voxide]

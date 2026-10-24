@@ -25,9 +25,14 @@ use crate::world::Cube;
 const REGION: i32 = 8;
 const ENTRIES: usize = (REGION * REGION * REGION) as usize;
 
+/// Save layout version: worlds of another one are not opened (no conversions before release).
+pub const SAVE_FORMAT: u32 = 2;
+
 #[derive(Clone, Debug)]
 pub struct WorldMeta {
     pub dir: PathBuf,
+    /// `SAVE_FORMAT` of the build that wrote it (1: before versions were recorded).
+    pub format: u32,
     pub name: String,
     pub seed: u64,
     pub last_played: u64,
@@ -35,6 +40,8 @@ pub struct WorldMeta {
     pub next_entity: u64,
     /// World rules set by players (`/rule`).
     pub rules: Vec<(String, i64)>,
+    /// Mods (id, version) the world was last played with.
+    pub mods: Vec<(String, String)>,
 }
 
 pub fn now_secs() -> u64 {
@@ -44,12 +51,11 @@ pub fn now_secs() -> u64 {
 impl WorldMeta {
     pub fn load(dir: &Path) -> Option<WorldMeta> {
         let src = std::fs::read_to_string(dir.join("world.txt")).ok()?;
-        let mut m = WorldMeta { dir: dir.to_path_buf(), name: String::new(), seed: 0, last_played: 0, times: Vec::new(), next_entity: 1, rules: Vec::new() };
-        for line in src.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
-            let (k, v) = (k.trim(), v.trim());
+        let mut m = WorldMeta { dir: dir.to_path_buf(), format: 1, name: String::new(), seed: 0, last_played: 0, times: Vec::new(), next_entity: 1, rules: Vec::new(), mods: Vec::new() };
+        for (_, k, v) in crate::kv::pairs(&src) {
             match k {
                 "name" => m.name = v.to_string(),
+                "format" => m.format = v.parse().unwrap_or(1),
                 "seed" => m.seed = v.parse().unwrap_or(0),
                 "last_played" => m.last_played = v.parse().unwrap_or(0),
                 "next_entity" => m.next_entity = v.parse().unwrap_or(1),
@@ -58,6 +64,8 @@ impl WorldMeta {
                         m.times.push((d.to_string(), v.parse().unwrap_or(0)));
                     } else if let Some(r) = k.strip_prefix("rule.") {
                         m.rules.push((r.to_string(), v.parse().unwrap_or(0)));
+                    } else if let Some(id) = k.strip_prefix("mod.") {
+                        m.mods.push((id.to_string(), v.to_string()));
                     }
                 }
             }
@@ -67,8 +75,8 @@ impl WorldMeta {
 
     pub fn save(&self) {
         let mut s = format!(
-            "name = {}\nseed = {}\nlast_played = {}\nnext_entity = {}\n",
-            self.name, self.seed, self.last_played, self.next_entity
+            "format = {}\nname = {}\nseed = {}\nlast_played = {}\nnext_entity = {}\n",
+            self.format, self.name, self.seed, self.last_played, self.next_entity
         );
         for (d, t) in &self.times {
             s.push_str(&format!("time.{d} = {t}\n"));
@@ -76,10 +84,18 @@ impl WorldMeta {
         for (r, v) in &self.rules {
             s.push_str(&format!("rule.{r} = {v}\n"));
         }
+        for (id, v) in &self.mods {
+            s.push_str(&format!("mod.{id} = {v}\n"));
+        }
         let _ = std::fs::create_dir_all(&self.dir);
         if let Err(e) = std::fs::write(self.dir.join("world.txt"), s) {
             log::error!("saving world info: {e}");
         }
+    }
+
+    /// Mods the world was played with that are not loaded now, as "id version".
+    pub fn missing_mods(&self, c: &Content) -> Vec<String> {
+        self.mods.iter().filter(|(id, _)| !c.mods.iter().any(|m| &m.id == id)).map(|(id, v)| format!("{id} {v}")).collect()
     }
 }
 
@@ -103,7 +119,7 @@ pub fn create(saves: &Path, name: &str, seed: u64) -> WorldMeta {
         n += 1;
         dir = saves.join(format!("{base}_{n}"));
     }
-    let m = WorldMeta { dir, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), next_entity: 1, rules: Vec::new() };
+    let m = WorldMeta { dir, format: SAVE_FORMAT, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), next_entity: 1, rules: Vec::new(), mods: Vec::new() };
     m.save();
     m
 }
@@ -240,7 +256,8 @@ fn region_of(cube: IVec3) -> (IVec3, usize) {
 }
 
 impl Storage {
-    pub fn open(meta: WorldMeta, c: &Content) -> Storage {
+    pub fn open(mut meta: WorldMeta, c: &Content) -> Storage {
+        meta.mods = c.mods.iter().map(|m| (m.id.clone(), m.version.clone())).collect();
         let ids = IdTable::load(&meta.dir, c);
         let dim_dirs: Vec<PathBuf> = c.dims.iter().map(|d| meta.dir.join("dims").join(d.name.replace(':', "_"))).collect();
         let mut on_disk = FxHashSet::default();
@@ -298,6 +315,9 @@ impl Storage {
     }
 
     pub fn save(&mut self, c: &Content, dim: u32, pos: IVec3, cube: &Cube, entities: &[u8]) {
+        if !c.dims[dim as usize].saved {
+            return;
+        }
         let mut buf = Vec::new();
         let mut cube = cube.clone();
         cube.compact();
@@ -371,6 +391,35 @@ impl Screen for ConfirmDelete {
     }
 }
 
+/// Opening a world played with mods that are not loaded now: their blocks and items are lost and
+/// players in their dimensions start at the spawn, so the player decides.
+pub struct MissingMods {
+    pub world: WorldMeta,
+    pub missing: Vec<String>,
+}
+
+impl Screen for MissingMods {
+    fn name(&self) -> &str {
+        "core:missing_mods"
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        frame(ui, cx, "world.missing_mods.title", |ui| {
+            label(ui, cx, "world.missing_mods.question", &[Arg::Text(self.world.name.clone())], "default");
+            for m in &self.missing {
+                ui.text(text::plain(m), "button");
+            }
+            label(ui, cx, "world.missing_mods.note", &[], "dim");
+            ui.container(Style::row().gap(6.0), |ui| {
+                let world = self.world.clone();
+                let go = button(ui, cx, "world.missing_mods.continue", &[], 145.0, move |c| c.requests.push(Request::StartWorldAnyway(world.clone())));
+                ui.set_id(go, "continue");
+                button(ui, cx, "menu.cancel", &[], 145.0, |c| c.requests.push(Request::Close));
+            });
+        });
+    }
+}
+
 #[derive(Default)]
 pub struct WorldSelect {
     selected: Option<usize>,
@@ -403,6 +452,7 @@ impl Screen for WorldSelect {
                     if let Kind::Button { selected: s, .. } = &mut ui.nodes[b].kind {
                         *s = selected == Some(i);
                     }
+                    ui.set_id(b, &format!("world:{i}"));
                 }
             });
             ui.set_id(list, "worlds");
@@ -416,6 +466,7 @@ impl Screen for WorldSelect {
                 if let Kind::Button { enabled, .. } = &mut ui.nodes[play].kind {
                     *enabled = selected.is_some();
                 }
+                ui.set_id(play, "play");
                 button(ui, cx, "world.create", &[], 145.0, |c| c.requests.push(Request::Open(Box::new(CreateWorld))));
             });
             ui.container(Style::row().gap(6.0), |ui| {

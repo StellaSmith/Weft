@@ -115,10 +115,8 @@ pub fn load(run_dir: &Path) {
     namespaces.dedup();
     for ns in namespaces {
         let Ok(src) = std::fs::read_to_string(file(run_dir, ns)) else { continue };
-        for line in src.lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
-            let Some((k, v)) = line.split_once('=') else { continue };
-            let name = format!("{ns}:{}", k.trim());
+        for (_, k, v) in crate::kv::pairs(&src) {
+            let name = format!("{ns}:{k}");
             match by_name(&name).map(|id| (id, &c.game.configs[id as usize])) {
                 Some((id, d)) => match d.parse(v) {
                     Some(v) => put(id, v),

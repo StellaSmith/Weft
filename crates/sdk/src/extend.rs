@@ -240,8 +240,8 @@ impl Entry {
         self
     }
     /// A burning victim drops it cooked by this recipe type (`base:smelting`).
-    pub fn smelted(mut self, recipe_kind: &str) -> Entry {
-        self.smelt = recipe_kind.to_string();
+    pub fn smelted(mut self, recipe_kind: &crate::RecipeKind) -> Entry {
+        self.smelt = recipe_kind.0.to_string();
         self
     }
 }

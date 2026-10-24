@@ -61,7 +61,7 @@ pub async fn server_only_stack_data(t: T) -> R {
     t.check_eq(t.op("secret me 0").await?, "1234".into(), "server keeps the secret");
     t.frames(5).await?;
     let s = t.c().inventory_slot(0);
-    t.check_eq(s.item, find_item("base:iron_sword").unwrap_or(0), "client has the sword");
+    t.check_eq(s.item, find_item("base:iron_sword").unwrap_or(u32::MAX), "client has the sword");
     t.check_eq(SECRET.stack_only(&s), None, "client never sees the secret");
     let name = format!("test-{}", t.name());
     t.c().leave_world();

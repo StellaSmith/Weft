@@ -214,11 +214,8 @@ pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
             v
         }) {
             let mut kv: FxHashMap<&str, &str> = FxHashMap::default();
-            for line in section.lines() {
-                let line = line.split('#').next().unwrap_or("");
-                if let Some((k, v)) = line.split_once('=') {
-                    kv.insert(k.trim(), v.trim());
-                }
+            for (_, k, v) in crate::kv::pairs(&section) {
+                kv.insert(k, v);
             }
             if kv.is_empty() {
                 continue;

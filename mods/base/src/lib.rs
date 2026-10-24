@@ -42,6 +42,7 @@ fn init(r: &mut Registry) {
     r.dimension("overworld").handle(&OVERWORLD)
         .generator(worldgen::overworld)
         .spawn(worldgen::spawn)
+        .player_spawn()
         .column(|seed, x, z| {
             let c = worldgen::column(seed, x, z);
             (c.height, c.biome.id())

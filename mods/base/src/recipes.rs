@@ -3,12 +3,16 @@
 
 use voxide_sdk::*;
 
-const C: &str = "crafting";
-const S: &str = "smelting";
+pub static CRAFTING: RecipeKind = RecipeKind::named("base:crafting");
+pub static SMELTING: RecipeKind = RecipeKind::named("base:smelting");
+const C: &RecipeKind = &CRAFTING;
+const S: &RecipeKind = &SMELTING;
 
 pub fn register(r: &mut Registry) {
+    r.recipe_kind(C);
+    r.recipe_kind(S);
     r.recipe_station(C, "crafting_table");
-    r.recipe_station("smelting", "furnace");
+    r.recipe_station(S, "furnace");
     for wood in ["oak", "birch", "spruce"] {
         r.shapeless(C, &format!("{wood}_planks"), 4, &[&format!("{wood}_log")], 0);
     }

@@ -8,7 +8,7 @@ struct Instance {
     cuboids: u32,
     cuboid_count: u32,
     vertices: u32,
-    // Light colour (rgb) and hurt flash.
+    // Tint (rgb) and hurt flash.
     color: vec3<f32>,
     hurt: f32,
     tex: u32,
@@ -21,7 +21,8 @@ struct Instance {
     // none).
     shader: u32,
     glow: u32,
-    _pad: u32,
+    // Light as the world stores it, all ones: full light.
+    light: u32,
 }
 
 struct Cuboid {
@@ -58,6 +59,8 @@ struct View {
     fog_color: vec4<f32>,
     // x fog start, y fog end, w seconds
     fog: vec4<f32>,
+    // x daylight, y the dimension's ambient light, z the Brightness setting
+    light: vec4<f32>,
 }
 
 // What an entity shader (`fn shade(p: EntityPixel) -> vec4<f32>`) gets; it returns the lit
@@ -76,17 +79,6 @@ struct EntityPixel {
 @group(1) @binding(3) var<storage, read> corners: array<Corner>;
 @group(1) @binding(4) var<storage, read> bones: array<Bone>;
 
-var<private> CORNERS: array<vec3<f32>, 24> = array<vec3<f32>, 24>(
-    vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
-    vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0),
-    vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 1.0), vec3(0.0, 0.0, 1.0),
-    vec3(0.0, 1.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(1.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0),
-    vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(0.0, 1.0, 1.0),
-);
-var<private> UVS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0));
-var<private> TRI: array<u32, 6> = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
-var<private> SHADE: array<f32, 6> = array<f32, 6>(0.6, 0.6, 0.5, 1.0, 0.8, 0.8);
 
 struct VOut {
     @builtin(position) clip: vec4<f32>,
@@ -145,7 +137,11 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     out.clip = view.view_proj * vec4(world, 1.0);
     out.dist = length(world);
     out.tex = inst.tex;
-    out.color = pow(inst.color * shade * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), inst.hurt), vec3(2.2));
+    var lit = vec3(1.0);
+    if inst.light != 0xffffffffu {
+        lit = lightmap(unpack_light(inst.light), view.light.x, view.light.y, view.light.z);
+    }
+    out.color = pow(inst.color * lit * shade * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), inst.hurt), vec3(2.2));
     out.shader = inst.shader;
     out.glow = inst.glow;
     return out;
@@ -163,6 +159,6 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     if c.a < 0.5 {
         discard;
     }
-    let f = clamp((in.dist - view.fog.x) / max(view.fog.y - view.fog.x, 1.0), 0.0, 1.0);
+    let f = fog_amount(in.dist, view.fog.x, view.fog.y);
     return vec4(mix(c.rgb, view.fog_color.rgb, f), 1.0);
 }

@@ -206,6 +206,7 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.dim = cl.world.dim;
             s.player = cl.player_id;
             s.pos = p.pos.to_array();
+            s.shown = cl.smooth_pos().to_array();
             s.vel = p.vel.to_array();
             s.yaw = p.yaw;
             s.pitch = p.pitch;
@@ -284,7 +285,7 @@ pub unsafe extern "C" fn client_set_player(c: *mut abi::ClientCtx, control: *con
         if ctl.mask & m::FLY_SPEED != 0 {
             p.fly_speed = ctl.fly_speed.max(0.0);
         }
-        if ctl.mask & m::SELECTED != 0 && ctl.selected < 9 {
+        if ctl.mask & m::SELECTED != 0 && ctl.selected < crate::content::content().game.player_layout.hotbar {
             g.client.selected = ctl.selected as usize;
             g.client.send(crate::net::ToServer::Select(ctl.selected));
         }
@@ -335,32 +336,20 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
             op_::HOST => r.handle(vec![Request::Host]),
             op_::JOIN => r.handle(vec![Request::Join(text)]),
             op_::OPEN_SCREEN => {
-                use crate::screens;
-                let s: Box<dyn crate::screens::Screen> = match text.as_str() {
-                    "core:pause" => Box::new(screens::Pause),
-                    "core:settings" => Box::new(screens::SettingsScreen),
-                    "core:language" => Box::new(screens::LanguageScreen),
-                    "core:controls" => Box::new(screens::Controls { waiting: None }),
-                    "core:worlds" => Box::new(crate::saves::WorldSelect::default()),
-                    "core:create_world" => Box::new(crate::saves::CreateWorld),
-                    "core:title" => Box::new(screens::Title),
-                    "core:mod_settings" => Box::new(screens::ModSettings),
-                    "core:chat" => Box::new(crate::game_screens::Chat::new("")),
-                    "core:inventory" => {
-                        if let Some(g) = r.game.as_mut() {
-                            g.client.send(crate::net::ToServer::OpenInventory);
-                        }
-                        return 1;
+                if text == "core:inventory" {
+                    if let Some(g) = r.game.as_mut() {
+                        g.client.send(crate::net::ToServer::OpenInventory);
                     }
-                    other => {
-                        log::warn!("client_op::OPEN_SCREEN: no screen {other}");
-                        return 0;
-                    }
+                    return 1;
+                }
+                let Some(s) = crate::screens::named(&text) else {
+                    log::warn!("client_op::OPEN_SCREEN: no screen {text}");
+                    return 0;
                 };
                 r.open(s);
             }
             op_::CLOSE_SCREEN => {
-                if r.screens.last().is_some_and(|(s, _)| s.name() == "core:menu") {
+                if r.screens.last().is_some_and(|(s, _)| s.shows_menu()) {
                     if let Some(g) = r.game.as_mut() {
                         g.client.close_menu();
                     }
@@ -467,7 +456,7 @@ pub unsafe extern "C" fn client_entities(c: *mut abi::ClientCtx, out: *mut u64, 
 pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out: *mut [f32; 4]) -> u32 {
     unsafe {
         let Some(r) = run(c) else { return 0 };
-        let Some((_, ui)) = r.screens.last() else { return 0 };
+        let ui = r.screens.last().map_or(&r.hud.ui, |s| &s.1);
         let q = query.as_str();
         let found = if let Some(n) = q.strip_prefix("slot:").and_then(|n| n.parse::<u64>().ok()) {
             ui.nodes.iter().position(|node| matches!(node.kind, Kind::Custom { tag: crate::client::modui::TAG_SLOT, data } if data == n))

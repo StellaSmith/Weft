@@ -268,6 +268,13 @@ impl VulkanBackend {
             let props = instance.get_physical_device_properties(pdev);
             let device_name = props.device_name_as_c_str().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             log::info!("GPU: {device_name}");
+            let mut indexing = vk::PhysicalDeviceDescriptorIndexingProperties::default();
+            let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut indexing);
+            instance.get_physical_device_properties2(pdev, &mut props2);
+            let images = indexing.max_per_stage_descriptor_update_after_bind_sampled_images.min(indexing.max_descriptor_set_update_after_bind_sampled_images);
+            if images < MAX_TEXTURES + MAX_TEXTURE_ARRAYS {
+                return Err(Error(format!("{device_name} can bind {images} textures at once, the game needs {}", MAX_TEXTURES + MAX_TEXTURE_ARRAYS)));
+            }
 
             let features = vk::PhysicalDeviceFeatures::default()
                 .multi_draw_indirect(true)
@@ -434,8 +441,8 @@ impl VulkanBackend {
             let samplers = [
                 sampler(vk::Filter::NEAREST, vk::SamplerAddressMode::CLAMP_TO_EDGE, false).map_err(err("sampler"))?,
                 sampler(vk::Filter::LINEAR, vk::SamplerAddressMode::CLAMP_TO_EDGE, false).map_err(err("sampler"))?,
-                sampler(vk::Filter::NEAREST, vk::SamplerAddressMode::REPEAT, true).map_err(err("sampler"))?,
-                sampler(vk::Filter::LINEAR, vk::SamplerAddressMode::REPEAT, true).map_err(err("sampler"))?,
+                sampler(vk::Filter::NEAREST, vk::SamplerAddressMode::CLAMP_TO_EDGE, true).map_err(err("sampler"))?,
+                sampler(vk::Filter::LINEAR, vk::SamplerAddressMode::CLAMP_TO_EDGE, true).map_err(err("sampler"))?,
             ];
             let infos: Vec<[vk::DescriptorImageInfo; 1]> =
                 samplers.iter().map(|&s| [vk::DescriptorImageInfo::default().sampler(s)]).collect();
@@ -1084,6 +1091,7 @@ impl Backend for VulkanBackend {
                         self.next_tex - 1
                     })
                 };
+                assert!(index < if array { MAX_TEXTURE_ARRAYS } else { MAX_TEXTURES }, "more than {MAX_TEXTURES} textures");
                 let info = [vk::DescriptorImageInfo::default()
                     .image_view(view)
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
@@ -1349,9 +1357,8 @@ impl Backend for VulkanBackend {
                                 }
                             };
                             let old = if clear.is_some() { vk::ImageLayout::UNDEFINED } else { old };
-                            if old != vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL {
-                                self.barrier_image(cmd, image, color_range(1, 1), old, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-                            }
+                            // Also when the layout stays: a pass loading what the last one wrote.
+                            self.barrier_image(cmd, image, color_range(1, 1), old, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
                             color_att = Some(
                                 vk::RenderingAttachmentInfo::default()
                                     .image_view(view)

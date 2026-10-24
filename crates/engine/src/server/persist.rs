@@ -7,9 +7,6 @@ use voxide_abi::{ItemStack, component_flags as cf};
 use super::entity::Entity;
 use crate::content::Content;
 
-/// Stands where saves before stack components stored the damage taken.
-const STACK_DATA: u32 = u32::MAX;
-
 pub type Saved = (Entity, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
 
 struct W<'a>(&'a mut Vec<u8>);
@@ -44,8 +41,6 @@ impl W<'_> {
         }
         self.str(&c.items[s.item as usize].name);
         self.u32(s.count);
-        // Saves before stack components had the damage here.
-        self.u32(STACK_DATA);
         let data = crate::stack::to_names(crate::stack::for_save(s.data));
         self.u32(data.len() as u32);
         for (name, bytes) in &data {
@@ -95,22 +90,16 @@ impl R<'_> {
             return Some(ItemStack::EMPTY);
         }
         let count = self.u32()?;
-        let marker = self.u32()?;
-        let data = if marker == STACK_DATA {
-            let n = self.u32()?;
-            let mut list = Vec::new();
-            for _ in 0..n.min(64) {
-                let name = self.str()?;
-                let len = self.u32()? as usize;
-                list.push((name, self.take(len)?.to_vec()));
-            }
-            crate::stack::from_names(list)
-        } else {
-            0
-        };
+        let n = self.u32()?;
+        let mut list = Vec::new();
+        for _ in 0..n.min(64) {
+            let name = self.str()?;
+            let len = self.u32()? as usize;
+            list.push((name, self.take(len)?.to_vec()));
+        }
+        let data = crate::stack::from_names(list);
         // Items of removed mods are dropped rather than turned into something else.
-        let stack = c.item_names.get(&name).map_or(ItemStack::EMPTY, |&i| ItemStack { item: i, count, data });
-        Some(if marker != STACK_DATA && marker > 0 { crate::stack::with_damage(stack, marker) } else { stack })
+        Some(c.item_names.get(&name).map_or(ItemStack::EMPTY, |&i| ItemStack { item: i, count, data }))
     }
 }
 

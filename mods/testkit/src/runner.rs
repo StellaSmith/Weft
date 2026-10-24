@@ -263,6 +263,14 @@ impl T {
         }
     }
 
+    /// Shows or hides F3 and waits until it is so.
+    pub async fn debug(&self, on: bool) -> R {
+        if self.flag(cf::DEBUG) != on {
+            self.press("core:debug");
+        }
+        self.until("F3 toggled", Duration::from_secs(2), |t| t.flag(cf::DEBUG) == on).await
+    }
+
     pub fn hold(&self, action: &str, secs: f32) {
         if !self.c().press(action, secs) {
             self.fail(format!("no action {action}"));
@@ -283,6 +291,11 @@ impl T {
     /// Screenshot `name` into `run/test-shots/<test>/`, compared with `run/test-refs/<test>/` when
     /// a reference exists (a missing one is recorded from this run).
     pub async fn shot(&self, name: &str) -> R {
+        self.shot_within(name, 0.01).await
+    }
+
+    /// `shot` allowing a larger share of pixels to differ (live numbers on screen).
+    pub async fn shot_within(&self, name: &str, allowed: f64) -> R {
         let run = self.c().run_dir();
         let file = format!("{name}.png");
         let path = format!("{run}/test-shots/{}/{file}", self.name());
@@ -304,7 +317,7 @@ impl T {
                 } else {
                     let (diff, mask) = compare(shot, refpx);
                     let share = diff as f64 / (w * h) as f64;
-                    if share > 0.01 {
+                    if share > allowed {
                         let dpath = format!("{run}/test-shots/{}/{name}.diff.png", self.name());
                         client::image_save(&dpath, w, h, &mask);
                         self.fail(format!("screenshot {name} differs from the reference in {:.2}% of pixels (diff: {dpath})", share * 100.0));
@@ -332,6 +345,23 @@ impl T {
         let mut px = None;
         self.until("grab", Duration::from_secs(10), |_| {
             px = client::image(id).map(|p| p.2.to_vec());
+            px.is_some()
+        })
+        .await?;
+        client::image_free(id);
+        Ok(px.unwrap())
+    }
+
+    /// This frame's colour at (x, y), fractions of the window size.
+    pub async fn pixel(&self, x: f32, y: f32) -> Result<[u8; 3], String> {
+        let path = format!("{}/test-shots/{}/pixel.png", self.c().run_dir(), self.name());
+        let id = self.c().screenshot(&path);
+        let mut px = None;
+        self.until("pixel", Duration::from_secs(10), |_| {
+            px = client::image(id).map(|(w, h, p)| {
+                let i = (((y * h as f32) as u32).min(h - 1) * w + ((x * w as f32) as u32).min(w - 1)) as usize * 4;
+                [p[i], p[i + 1], p[i + 2]]
+            });
             px.is_some()
         })
         .await?;

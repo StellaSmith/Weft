@@ -4,8 +4,8 @@ use voxide_sdk::abi::slot_flags as sf;
 use voxide_sdk::*;
 
 use crate::blocks::{CHEST, FURNACE};
-use crate::items::{FUEL, REMAINDER};
-use crate::player::{CRAFTING, player_slots};
+use crate::items::FUEL;
+use crate::player::CRAFTING;
 
 value! {
     pub struct Smelting { pub burn: u32, pub burn_max: u32, pub cook: u32, pub cook_max: u32 }
@@ -33,65 +33,61 @@ pub fn register(r: &mut Registry) {
     // The furnace's state syncs to whoever has it open: the screen binds to it directly.
     r.machine("furnace", &FURNACE_MENU)
         .block(|b| {
+            // Front towards the player; unlit and lit.
             b.handle(&FURNACE).sounds("stone")
-                .states(8, |i, s| {
-                    let facing = i % 4;
-                    let lit = i >= 4;
-                    let front = if lit { "furnace_front_lit" } else { "furnace_front" };
+                .facing_variants(Facings::HORIZONTAL, Toward::Player, 2, |d, lit, s| {
                     let mut f = ["furnace_side"; 6];
                     f[2] = "furnace_top";
                     f[3] = "furnace_top";
-                    f[[4, 1, 5, 0][facing as usize]] = front;
+                    f[d.face() as usize] = if lit == 1 { "furnace_front_lit" } else { "furnace_front" };
                     let s = s.faces(f);
-                    if lit { s.light_rgb(13, 11, 8) } else { s }
+                    if lit == 1 { s.light_rgb(13, 11, 8) } else { s }
                 })
                 .hardness(3.5)
                 .mineable("pickaxe").needs_tool(0)
-                .placement(|p| (p.horizontal() + 2) % 4)
                 .tab("functional")
         })
-        .slots(&[0, 0, sf::OUTPUT])
+        .slots(&[0, 0, sf::OUTPUT]) // INPUT, FUEL_SLOT, OUTPUT
         .component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU)
         .on_tick(tick_furnaces)
-        .screen(|ui| {
+        .screen(|ui, player| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
                 ui.text("container.furnace");
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
-                        ui.slot(0);
+                        ui.slot(INPUT);
                         ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.burn, s.burn_max)));
-                        ui.slot(1);
+                        ui.slot(FUEL_SLOT);
                     });
                     ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
-                    ui.slot(2);
+                    ui.slot(OUTPUT);
                     ui.spacer();
                 });
-                player_slots(ui, 3, true);
+                ui.player_inventory(player, true);
             });
         });
 
     r.machine("chest", &CHEST_MENU)
         .block(|b| {
             b.handle(&CHEST).sounds("wood")
-                .states(4, |i, s| {
+                .facing(Facings::HORIZONTAL, Toward::Player, |d, s| {
                     let mut f = ["chest_side"; 6];
                     f[2] = "chest_top";
                     f[3] = "chest_top";
-                    f[[4, 1, 5, 0][i as usize]] = "chest_front";
+                    f[d.face() as usize] = "chest_front";
                     s.model_box_faces([1.0, 0.0, 1.0], [15.0, 14.0, 15.0], f)
                 })
                 .hardness(2.5)
                 .mineable("axe")
-                .placement(|p| (p.horizontal() + 2) % 4)
                 .tab("functional")
         })
         .slots(&[0; 27])
-        .screen(|ui| {
+        .screen(|ui, player| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
                 ui.text("container.chest");
-                ui.slots(0, 27, 9);
-                player_slots(ui, 27, true);
+                ui.slots(0, player, 9);
+                ui.player_inventory(player, true);
             });
         });
 }
@@ -117,7 +113,7 @@ fn tick_furnaces(t: &EntityTick) {
         if s.burn > 0 {
             s.burn -= 1;
         }
-        let recipe = (!input.is_empty()).then(|| recipe_process("base:smelting", input.item)).flatten();
+        let recipe = (!input.is_empty()).then(|| recipe_process(&crate::recipes::SMELTING, input.item)).flatten();
         let fits = recipe.is_some_and(|(out, _)| {
             output.is_empty() || (output.stacks_with(&out) && output.count + out.count <= max_stack(out.item))
         });
@@ -125,12 +121,7 @@ fn tick_furnaces(t: &EntityTick) {
             if let Some(ticks) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) {
                 s.burn = ticks;
                 s.burn_max = ticks;
-                // Lava buckets leave the bucket behind.
-                let rest = match REMAINDER.on_item(fuel.item).and_then(|r| find_item(r.as_str())) {
-                    Some(left) if fuel.count == 1 => ItemStack::new(left, 1),
-                    _ => fuel.shrink(1),
-                };
-                inv.set(FUEL_SLOT, rest);
+                inv.set(FUEL_SLOT, use_one(fuel));
             }
         }
         if s.burn > 0 && fits {
@@ -155,8 +146,8 @@ fn tick_furnaces(t: &EntityTick) {
         if lit != was_lit {
             let state = w.get(pos);
             if FURNACE.is(state) {
-                let facing = FURNACE.index(state) % 4;
-                w.set(pos, FURNACE.state(facing + if lit { 4 } else { 0 }));
+                let (d, _) = Facings::HORIZONTAL.parse(FURNACE.index(state));
+                w.set(pos, FURNACE.state(Facings::HORIZONTAL.index(d, lit as u32)));
             }
         }
     }

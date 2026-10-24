@@ -128,6 +128,9 @@ pub struct FrameParams {
     pub brightness: f32,
 }
 
+/// One indirect draw: kind (0 faces, 1 quads), layer, page, arguments, cube origin.
+type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4]);
+
 pub struct WorldRenderer {
     face_pipes: [PipelineId; 3],
     quad_pipes: [PipelineId; 3],
@@ -137,22 +140,27 @@ pub struct WorldRenderer {
     globals: Vec<BufferId>,
     origins: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
+    /// `draw`'s lists, kept between frames.
+    scratch: (Vec<(IVec3, f32)>, Vec<DrawRecord>, Vec<usize>),
+    /// Of the last `draw`: where its translucent draws start in `scratch.2`, and the buffers
+    /// they use (globals, origins, indirect).
+    translucent: usize,
+    buffers: Option<(BufferId, BufferId, BufferId)>,
     /// Biome table, then per block column of the loaded area its blended colours: tiles of
     /// 16x16 blocks addressed by column position modulo `tint_tiles`.
     biomes: BufferId,
-    biome_table: Vec<[u32; 4]>,
+    biome_table: Vec<u32>,
     tint_tiles: u32,
     tex_info: BufferId,
     anim: BufferId,
-    /// Start of the overlay table in `anim`, and of the bitset of textures with a glow mask.
+    /// Start of the overlay table in `anim`, and of the glow map (by bindless index).
     overlays: u32,
-    emissive: u32,
-    /// Glow mask array, `u32::MAX` for none.
-    glow: u32,
+    glows: u32,
+    /// `GameTextures::generation` the tables were built from.
+    tex_generation: u64,
     /// (0 1 2)(0 2 3) for as many quads as one draw can hold; every face and quad draw shares it
     /// so each corner is shaded once instead of once per triangle.
     quad_index: BufferId,
-    block_index: u32,
     pub drawn: u32,
     pub faces_drawn: u64,
 }
@@ -166,14 +174,15 @@ impl WorldRenderer {
         let shader = world_shader().map_err(|e| e.0)?;
         let (face_pipes, quad_pipes) = Self::pipelines(gpu, &shader)?;
 
-        let (tex_info, anim, overlays, emissive) = Self::texture_info(gpu, textures);
+        let (tex_info, anim, overlays, glows) = Self::texture_info(gpu, textures);
 
-        let biome_data: Vec<[u32; 4]> = if c.biomes.is_empty() {
-            vec![[0x7fb238, 0x48b518, 0x3f76e4, 0]]
+        // Tint kind colours per biome, then the blended columns (`set_tint_tiles`).
+        let biome_data: Vec<u32> = if c.biomes.is_empty() {
+            c.tint_kinds.iter().map(|k| k.1).collect()
         } else {
-            c.biomes.iter().map(|b| [b.grass, b.foliage, b.water, 0]).collect()
+            c.biomes.iter().flat_map(|b| b.tints.iter().copied()).collect()
         };
-        let biomes = gpu.create_buffer((biome_data.len() * 16) as u64, usage::STORAGE, "biomes");
+        let biomes = gpu.create_buffer((biome_data.len() * 4) as u64, usage::STORAGE, "biomes");
         gpu.write_buffer(biomes, 0, bytemuck::cast_slice(&biome_data));
 
         let indices: Vec<u32> = (0..MAX_QUADS_PER_DRAW).flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q * 4 + i)).collect();
@@ -191,60 +200,43 @@ impl WorldRenderer {
             globals,
             origins: Vec::new(),
             indirect: Vec::new(),
+            scratch: Default::default(),
+            translucent: 0,
+            buffers: None,
             biomes,
             biome_table: biome_data,
             tint_tiles: 0,
             tex_info,
             anim,
             overlays,
-            emissive,
-            glow: textures.glow_of(textures.block_index),
+            glows,
+            tex_generation: textures.generation(),
             quad_index,
-            block_index: textures.block_index,
             drawn: 0,
             faces_drawn: 0,
         })
     }
 
-    /// Two words per texture name: static -> (layer, 0); animated -> (offset into the frame list,
-    /// count | total ticks << 16 | interpolate << 31).
-    /// Also returns where the overlay table (per texture: overlay + 1 or 0) and the bitset of
-    /// textures with a glow mask start in the frame buffer.
+    /// The block texture tables (`GameTextures::world_tables`) on the GPU.
     fn texture_info(gpu: &mut dyn Backend, textures: &GameTextures) -> (BufferId, BufferId, u32, u32) {
-        let mut info: Vec<u32> = Vec::with_capacity(textures.block_layers.len() * 2);
-        let mut frames: Vec<u32> = vec![0];
-        for (i, &(first, _)) in textures.block_layers.iter().enumerate() {
-            match textures.block_anims.get(i).cloned().flatten() {
-                Some(a) if !a.frames.is_empty() => {
-                    let total: u32 = a.frames.iter().map(|f| f.1).sum::<u32>().min(0x7FFF);
-                    info.push(frames.len() as u32);
-                    info.push(a.frames.len() as u32 | total << 16 | (a.interpolate as u32) << 31);
-                    frames.extend(a.frames.iter().map(|&(layer, ticks)| layer | ticks.min(0xFFFF) << 16));
-                }
-                _ => {
-                    info.push(first);
-                    info.push(0);
-                }
-            }
-        }
-        let overlays = frames.len() as u32;
-        frames.extend((0..textures.block_layers.len()).map(|i| textures.overlays.get(i).copied().unwrap_or(0)));
-        let emissive = frames.len() as u32;
-        frames.extend((0..textures.block_layers.len().div_ceil(32)).map(|w| (0..32).filter(|b| textures.block_emissive.get(w * 32 + b).copied().unwrap_or(false)).fold(0u32, |m, b| m | 1 << b)));
-        let tex_info = gpu.create_buffer((info.len() * 4) as u64, usage::STORAGE, "texture info");
+        let (info, frames, overlays, glows) = textures.world_tables();
+        let tex_info = gpu.create_buffer((info.len().max(1) * 4) as u64, usage::STORAGE, "texture info");
         gpu.write_buffer(tex_info, 0, bytemuck::cast_slice(&info));
         let anim = gpu.create_buffer((frames.len() * 4) as u64, usage::STORAGE, "texture frames");
         gpu.write_buffer(anim, 0, bytemuck::cast_slice(&frames));
-        (tex_info, anim, overlays, emissive)
+        (tex_info, anim, overlays, glows)
     }
 
-    /// Switches to a rebuilt block texture array; meshes have to be redone by the caller.
+    /// Builds the texture tables again when textures were loaded since (cheap: a few words per
+    /// block texture).
     pub fn set_textures(&mut self, gpu: &mut dyn Backend, textures: &GameTextures) {
+        if self.tex_generation == textures.generation() {
+            return;
+        }
         gpu.destroy_buffer(self.tex_info);
         gpu.destroy_buffer(self.anim);
-        (self.tex_info, self.anim, self.overlays, self.emissive) = Self::texture_info(gpu, textures);
-        self.block_index = textures.block_index;
-        self.glow = textures.glow_of(textures.block_index);
+        (self.tex_info, self.anim, self.overlays, self.glows) = Self::texture_info(gpu, textures);
+        self.tex_generation = textures.generation();
     }
 
     fn pipelines(gpu: &mut dyn Backend, shader: &Shader) -> Result<([PipelineId; 3], [PipelineId; 3]), String> {
@@ -299,11 +291,11 @@ impl WorldRenderer {
             return false;
         }
         gpu.destroy_buffer(self.biomes);
-        let size = (self.biome_table.len() + (tiles * tiles) as usize * 256) * 16;
+        let size = (self.biome_table.len() + (tiles * tiles) as usize * 256 * crate::content::content().tint_kinds.len()) * 4;
         self.biomes = gpu.create_buffer(size as u64, usage::STORAGE, "biomes");
         gpu.write_buffer(self.biomes, 0, bytemuck::cast_slice(&self.biome_table));
         // Zero marks a block without blended colours yet.
-        gpu.write_buffer(self.biomes, self.biome_table.len() as u64 * 16, &vec![0u8; size - self.biome_table.len() * 16]);
+        gpu.write_buffer(self.biomes, self.biome_table.len() as u64 * 4, &vec![0u8; size - self.biome_table.len() * 4]);
         self.tint_tiles = tiles;
         true
     }
@@ -311,7 +303,7 @@ impl WorldRenderer {
     pub fn upload_tints(&mut self, gpu: &mut dyn Backend, col: glam::IVec2, tints: &super::world::ColumnTints) {
         let t = self.tint_tiles as i32;
         let slot = (col.x.rem_euclid(t) + col.y.rem_euclid(t) * t) as usize;
-        gpu.write_buffer(self.biomes, ((self.biome_table.len() + slot * 256) * 16) as u64, bytemuck::cast_slice(tints));
+        gpu.write_buffer(self.biomes, ((self.biome_table.len() + slot * tints.len()) * 4) as u64, bytemuck::cast_slice(tints));
     }
 
     pub fn remove(&mut self, pos: IVec3) {
@@ -348,11 +340,16 @@ impl WorldRenderer {
         }
     }
 
-    pub fn upload(&mut self, gpu: &mut dyn Backend, pos: IVec3, mesh: &Mesh) {
+    pub fn upload(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, pos: IVec3, mesh: &Mesh) {
         self.remove(pos);
         if mesh.is_empty() {
             return;
         }
+        // The textures it shows are loaded before it is drawn.
+        let mut used: Vec<u32> = mesh.faces.iter().flatten().map(|f| f[1] & 0xFFFF).chain(mesh.quads.iter().flatten().map(|q| q[4] & 0xFFFF)).collect();
+        used.sort_unstable();
+        used.dedup();
+        textures.ensure_blocks(gpu, used);
         let face_counts = mesh.faces.each_ref().map(|v| {
             let mut n = [0u32; 6];
             for f in v {
@@ -378,18 +375,6 @@ impl WorldRenderer {
         self.meshes.insert(pos, GpuMesh { faces, face_counts, quads, quad_counts });
     }
 
-    fn ensure_host(gpu: &mut dyn Backend, slot: &mut Vec<(BufferId, u32)>, frame: usize, frames: usize, needed: u32, stride: u32, usage_bits: u32, label: &str) -> BufferId {
-        while slot.len() < frames {
-            slot.push((gpu.create_buffer(stride as u64 * 1024, usage_bits | usage::HOST, label), 1024));
-        }
-        if slot[frame].1 < needed {
-            gpu.destroy_buffer(slot[frame].0);
-            let cap = needed.next_power_of_two();
-            slot[frame] = (gpu.create_buffer(stride as u64 * cap as u64, usage_bits | usage::HOST, label), cap);
-        }
-        slot[frame].0
-    }
-
     pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, cam: &Camera, p: &FrameParams) {
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
         let view_proj = cam.proj(aspect) * cam.view();
@@ -402,16 +387,19 @@ impl WorldRenderer {
             sky_color: p.sky_color.extend(1.0).to_array(),
             fog_color: p.fog_color.extend(1.0).to_array(),
             params: [p.daylight, p.fog_start, p.fog_end, p.time],
-            ids: [self.block_index, p.ambient, self.biome_table.len() as u32, self.tint_tiles],
+            ids: [0, p.ambient, (self.biome_table.len() / crate::content::content().tint_kinds.len()) as u32, self.tint_tiles],
             look: [p.brightness, 0.0, 0.0, 0.0],
             cam_cube: cam_cube.extend(0).to_array(),
-            extra: [self.overlays, self.emissive, self.glow, 0],
+            extra: [self.overlays, self.glows, crate::content::content().tint_kinds.len() as u32, 0],
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));
 
         let planes = frustum_planes(view_proj);
-        let mut visible: Vec<(IVec3, f32)> = Vec::new();
+        let (mut visible, mut draws, mut sorted) = std::mem::take(&mut self.scratch);
+        visible.clear();
+        draws.clear();
+        sorted.clear();
         for (&pos, _) in &self.meshes {
             let rel = (pos - cam_cube).as_vec3() * 16.0 - cam_frac;
             let center = rel + Vec3::splat(8.0);
@@ -421,8 +409,6 @@ impl WorldRenderer {
         }
         visible.sort_by(|a, b| a.1.total_cmp(&b.1));
 
-        // Draw records: (kind 0 faces / 1 quads, layer, page, args, origin)
-        let mut draws: Vec<(u8, u8, u32, DrawIndexedArgs, [i32; 4])> = Vec::new();
         let mut faces_drawn = 0u64;
         for &(pos, _) in &visible {
             let m = &self.meshes[&pos];
@@ -468,44 +454,66 @@ impl WorldRenderer {
                 }
             }
         }
-        // Opaque/cutout front to back (early depth rejection), translucent back to front.
-        let order = |d: &(u8, u8, u32, DrawIndexedArgs, [i32; 4])| (d.1 == 2, d.1, d.0, d.2);
-        let mut sorted: Vec<usize> = (0..draws.len()).collect();
+        // Opaque/cutout front to back (early depth rejection), translucent back to front across
+        // faces and quads (ice in front of water must come after it). In one cube, seen from
+        // above, the quads (liquid surfaces) go first, from below the faces.
+        let order = |d: &DrawRecord| (d.1 == 2, d.1, d.0, d.2);
+        sorted.extend(0..draws.len());
         sorted.sort_by_key(|&i| order(&draws[i]));
         let translucent_start = sorted.iter().position(|&i| draws[i].1 == 2).unwrap_or(sorted.len());
-        sorted[translucent_start..].reverse();
-        // Reversing flips kind/page grouping too; regroup translucent draws by (kind, page) while
-        // keeping their distance order within each group.
-        sorted[translucent_start..].sort_by_key(|&i| (draws[i].0, draws[i].2));
+        let center = |d: &DrawRecord| IVec3::new(d.4[0], d.4[1], d.4[2]).as_vec3() * 16.0 + Vec3::splat(8.0) - cam_frac;
+        sorted[translucent_start..].sort_by(|&a, &b| {
+            let (ca, cb) = (center(&draws[a]), center(&draws[b]));
+            let rank = |d: &DrawRecord, c: Vec3| if c.y < 0.0 { d.0 == 0 } else { d.0 == 1 };
+            cb.length_squared().total_cmp(&ca.length_squared()).then(rank(&draws[a], ca).cmp(&rank(&draws[b], cb)))
+        });
+        self.translucent = translucent_start;
 
         let n = draws.len() as u32;
         self.drawn = n;
         self.faces_drawn = faces_drawn;
         if n == 0 {
+            self.scratch = (visible, draws, sorted);
+            self.buffers = None;
             return;
         }
-        let frames = gpu.frames_in_flight();
-        let obuf = Self::ensure_host(gpu, &mut self.origins, frame.slot, frames, n, 16, usage::STORAGE, "origins");
-        let ibuf = Self::ensure_host(gpu, &mut self.indirect, frame.slot, frames, n, 20, usage::INDIRECT, "indirect");
-        {
-            let mut args: Vec<DrawIndexedArgs> = Vec::with_capacity(n as usize);
-            let mut origins: Vec<[i32; 4]> = Vec::with_capacity(n as usize);
-            for (k, &i) in sorted.iter().enumerate() {
-                let mut a = draws[i].3;
-                a.first_instance = k as u32;
-                args.push(a);
-                origins.push(draws[i].4);
-            }
-            gpu.mapped(obuf)[..origins.len() * 16].copy_from_slice(bytemuck::cast_slice(&origins));
-            gpu.mapped(ibuf)[..args.len() * 20].copy_from_slice(bytemuck::cast_slice(&args));
+        let obuf = crate::gpu_layout::frame_buffer(gpu, &mut self.origins, frame.slot, n, 16, usage::STORAGE, "origins");
+        let ibuf = crate::gpu_layout::frame_buffer(gpu, &mut self.indirect, frame.slot, n, 20, usage::INDIRECT, "indirect");
+        // Straight into the mapped buffers.
+        for (out, &i) in gpu.mapped(obuf)[..n as usize * 16].chunks_exact_mut(16).zip(&sorted) {
+            out.copy_from_slice(bytemuck::bytes_of(&draws[i].4));
+        }
+        for (k, (out, &i)) in gpu.mapped(ibuf)[..n as usize * 20].chunks_exact_mut(20).zip(&sorted).enumerate() {
+            let mut a = draws[i].3;
+            a.first_instance = k as u32;
+            out.copy_from_slice(bytemuck::bytes_of(&a));
         }
 
+        self.buffers = Some((gbuf, obuf, ibuf));
+        self.scratch = (visible, draws, sorted);
+        self.emit(list, 0..self.translucent);
+    }
+
+    /// The translucent part of the last `draw`, after everything that may stand behind it.
+    pub fn draw_translucent(&self, list: &mut CommandList) {
+        let n = self.scratch.2.len();
+        if self.buffers.is_some() && self.translucent < n {
+            self.emit(list, self.translucent..n);
+        }
+    }
+
+    fn emit(&self, list: &mut CommandList, range: std::ops::Range<usize>) {
+        let Some((gbuf, obuf, ibuf)) = self.buffers else { return };
+        let (_, draws, sorted) = &self.scratch;
+        if range.is_empty() {
+            return;
+        }
         list.push(Cmd::IndexBuffer(self.quad_index));
-        let mut k = 0usize;
-        while k < sorted.len() {
+        let mut k = range.start;
+        while k < range.end {
             let (kind, layer, page) = (draws[sorted[k]].0, draws[sorted[k]].1, draws[sorted[k]].2);
             let mut end = k + 1;
-            while end < sorted.len() {
+            while end < range.end {
                 let d = &draws[sorted[end]];
                 if (d.0, d.1, d.2) != (kind, layer, page) {
                     break;

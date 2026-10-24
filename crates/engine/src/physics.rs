@@ -8,8 +8,12 @@ use voxide_abi::{Model, block_flags as bf};
 use crate::content::Content;
 
 /// A crouching player's box and eyes (modern vanilla), on client and server alike.
-pub const CROUCH_HEIGHT: f64 = 1.5;
-pub const CROUCH_EYE: f64 = 1.27;
+/// Crouching lowers a box and its eyes like the player's 1.8 to 1.5 and 1.62 to 1.27
+/// (vanilla), whatever size it has.
+pub fn crouched(height: f64, eye: f64) -> (f64, f64) {
+    let r = |v: f64| (v * 1e6).round() / 1e6;
+    (r(height * 1.5 / 1.8), r(eye * 1.27 / 1.62))
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Aabb {
@@ -85,6 +89,24 @@ pub fn ride(pos: DVec3, half_width: f64, support: &mut Option<u64>, bodies: &[Bo
     }
 }
 
+/// The body under a box with feet at `pos`, its top at most `reach` below the feet: the frame
+/// a position put there belongs to.
+pub fn body_below(pos: DVec3, half_width: f64, bodies: &[Body], reach: f64) -> Option<u64> {
+    bodies
+        .iter()
+        .filter(|b| {
+            let gap = pos.y - b.aabb.max.y;
+            gap > -1e-3
+                && gap <= reach
+                && pos.x + half_width > b.aabb.min.x
+                && pos.x - half_width < b.aabb.max.x
+                && pos.z + half_width > b.aabb.min.z
+                && pos.z - half_width < b.aabb.max.z
+        })
+        .min_by(|a, b| (pos.y - a.aabb.max.y).total_cmp(&(pos.y - b.aabb.max.y)))
+        .map(|b| b.id)
+}
+
 /// The body whose top a box with feet at `pos` rests on.
 pub fn standing_on(pos: DVec3, half_width: f64, bodies: &[Body], skip: u64) -> Option<u64> {
     bodies
@@ -100,15 +122,16 @@ pub fn standing_on(pos: DVec3, half_width: f64, bodies: &[Body], skip: u64) -> O
         .map(|b| b.id)
 }
 
-/// How far bodies that ran into a box this step (they did not overlap it before their move)
-/// push it, along each body's main direction of travel, and whether a crushing one did. The
-/// body it rides and `skip` (itself) do not push.
+/// How far bodies that moved this step and overlap a box push it out of them, along each body's
+/// main direction of travel, and whether a crushing one did. A box already inside goes out too
+/// (like vanilla's shulker boxes): a body that showed up around a rider, or a rider put on a
+/// deck the client draws ahead of the server, must not stay stuck in it. The body it rides and
+/// `skip` (itself) do not push.
 pub fn push(pos: DVec3, half_width: f64, height: f64, bodies: &[Body], skip: u64, support: Option<u64>) -> (DVec3, bool) {
     let me = Aabb::around(pos, half_width, height);
     let (mut shift, mut crushes) = (DVec3::ZERO, false);
     for b in bodies.iter().filter(|b| b.id != skip && Some(b.id) != support && b.delta != DVec3::ZERO) {
-        let before = Aabb { min: b.aabb.min - b.delta, max: b.aabb.max - b.delta };
-        if !me.intersects(&b.aabb) || me.intersects(&before) {
+        if !me.intersects(&b.aabb) {
             continue;
         }
         let d = b.delta.abs();
@@ -119,10 +142,10 @@ pub fn push(pos: DVec3, half_width: f64, height: f64, bodies: &[Body], skip: u64
     (shift, crushes)
 }
 
-/// Solid collision boxes of the blocks around `area`; unloaded positions count as full blocks.
-fn solid_boxes(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, area: Aabb) -> Vec<Aabb> {
-    let mut buf = Vec::new();
-    let mut out = Vec::new();
+/// Calls `f` with the solid collision boxes of the blocks around `area` (unloaded positions count
+/// as full blocks) until it returns true; true if it did. Nothing is collected: thousands of mobs
+/// move every tick.
+fn each_solid(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, area: Aabb, mut f: impl FnMut(Aabb) -> bool) -> bool {
     // One extra layer below for collision boxes taller than a block (fences); everything else
     // stays inside its own block.
     let lo = area.min.floor().as_ivec3() - IVec3::Y;
@@ -132,23 +155,43 @@ fn solid_boxes(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, area: Aabb) -
             for x in lo.x..=hi.x {
                 let p = IVec3::new(x, y, z);
                 let b = p.as_dvec3();
-                match block(p) {
-                    None => out.push(Aabb { min: b, max: b + DVec3::ONE }),
-                    Some(s) => {
-                        buf.clear();
-                        boxes(c, s, &mut buf);
-                        out.extend(buf.iter().map(|bx| Aabb { min: b + DVec3::new(bx[0], bx[1], bx[2]), max: b + DVec3::new(bx[3], bx[4], bx[5]) }));
+                let full = Aabb { min: b, max: b + DVec3::ONE };
+                let Some(s) = block(p) else {
+                    if f(full) {
+                        return true;
+                    }
+                    continue;
+                };
+                let st = &c.states[s as usize];
+                if st.flags & bf::SOLID == 0 {
+                    continue;
+                }
+                if st.collision.is_empty() {
+                    if st.model != Model::Boxes && f(full) {
+                        return true;
+                    }
+                    continue;
+                }
+                for bx in &st.collision {
+                    let bx = bx.map(|v| v as f64);
+                    if f(Aabb { min: b + DVec3::new(bx[0], bx[1], bx[2]), max: b + DVec3::new(bx[3], bx[4], bx[5]) }) {
+                        return true;
                     }
                 }
             }
         }
     }
-    out
+    false
 }
 
 /// Whether `area` overlaps anything solid.
 pub fn collides(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, area: Aabb) -> bool {
-    solid_boxes(c, block, area).iter().any(|s| s.intersects(&area))
+    each_solid(c, block, area, |s| s.intersects(&area))
+}
+
+thread_local! {
+    /// `move_box_with`'s obstacles, kept between calls.
+    static SOLIDS: std::cell::RefCell<Vec<Aabb>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub struct MoveResult {
@@ -194,7 +237,12 @@ pub fn move_box_with(
         }
     }
     sweep.max.y += step_height;
-    let mut solids = solid_boxes(c, block, sweep);
+    let mut solids = SOLIDS.with_borrow_mut(std::mem::take);
+    solids.clear();
+    each_solid(c, block, sweep, |b| {
+        solids.push(b);
+        false
+    });
     solids.extend(bodies.iter().filter(|b| b.id != skip && b.aabb.intersects(&sweep)).map(|b| b.aabb));
 
     let try_move = |from: Aabb, delta: DVec3| -> (Aabb, [bool; 3], DVec3) {
@@ -241,7 +289,9 @@ pub fn move_box_with(
         }
     }
     let on_ground = hit[1] && delta.y < 0.0;
-    MoveResult { pos: DVec3::new(b.min.x + half_width, b.min.y, b.min.z + half_width), hit, on_ground }
+    let pos = DVec3::new(b.min.x + half_width, b.min.y, b.min.z + half_width);
+    SOLIDS.with_borrow_mut(|s| *s = solids);
+    MoveResult { pos, hit, on_ground }
 }
 
 #[derive(Clone, Copy, Debug)]

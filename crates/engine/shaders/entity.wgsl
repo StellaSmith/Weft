@@ -8,11 +8,13 @@ struct Box {
     dims: vec4<f32>,
     // Texel origin and texture size.
     uvo: vec4<f32>,
-    // Light colour (rgb) and hurt flash (a).
+    // Tint (rgb) and hurt flash (a).
     color: vec4<f32>,
-    // texture index, mode (0 skin, 1 block faces, 2 solid colour), face layers packed 16 bit.
+    // skin texture, mode (0 skin, 1 block faces, 2 solid colour, 3 flames, 4 one texel, 5 filled
+    // box), face textures packed 16 bit.
     ids: vec4<u32>,
-    // x: last face layers, y: glow mask array of the texture array (all ones: none)
+    // x: last face textures, y: light as the world stores it (all ones: full light); block
+    // faces: z the faces tinted by w (0xRRGGBB)
     ids2: vec4<u32>,
 }
 
@@ -21,22 +23,19 @@ struct View {
     fog_color: vec4<f32>,
     // x fog start, y fog end
     fog: vec4<f32>,
+    // x daylight, y the dimension's ambient light, z the Brightness setting
+    light: vec4<f32>,
 }
 
 @group(1) @binding(0) var<storage, read> boxes: array<Box>;
 @group(1) @binding(1) var<storage, read> view: View;
+// Glow mask texture per texture index (all ones: none), see `GameTextures::glow_buffer`.
+@group(1) @binding(2) var<storage, read> glow_map: array<u32>;
+// Item models in their own space, kept between frames (`EntityRenderer::item_model`). An item
+// instance is a box in `boxes` whose rows place the model, `ids.z` its first box, `color.a` the
+// hurt flash and `ids2.y` the light.
+@group(1) @binding(3) var<storage, read> item_boxes: array<Box>;
 
-var<private> CORNERS: array<vec3<f32>, 24> = array<vec3<f32>, 24>(
-    vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
-    vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0),
-    vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 1.0), vec3(0.0, 0.0, 1.0),
-    vec3(0.0, 1.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(1.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0),
-    vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(0.0, 1.0, 1.0),
-);
-var<private> UVS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0));
-var<private> TRI: array<u32, 6> = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
-var<private> SHADE: array<f32, 6> = array<f32, 6>(0.6, 0.6, 0.5, 1.0, 0.8, 0.8);
 
 struct VOut {
     @builtin(position) clip: vec4<f32>,
@@ -47,6 +46,8 @@ struct VOut {
     @location(4) @interpolate(flat) mode: u32,
     @location(5) dist: f32,
     @location(6) @interpolate(flat) glow: u32,
+    // Unlit, unshaded colour (linear) glowing texels take.
+    @location(7) @interpolate(flat) tint: vec3<f32>,
 }
 
 // Texel rectangle (x, y, w, h) of a face in the classic box unwrap.
@@ -66,13 +67,32 @@ fn face_rect(face: u32, d: vec3<f32>, o: vec2<f32>) -> vec4<f32> {
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32) -> VOut {
-    return vertex(vi);
+    return box_vertex(boxes[vi / 36u], vi % 36u);
 }
 
-fn vertex(vi: u32) -> VOut {
-    let b = boxes[vi / 36u];
-    let face = (vi % 36u) / 6u;
-    let c = TRI[vi % 6u];
+fn item_box(vi: u32, ii: u32) -> Box {
+    let inst = boxes[ii];
+    var b = item_boxes[inst.ids.z + vi / 36u];
+    let r0 = b.r0;
+    let r1 = b.r1;
+    let r2 = b.r2;
+    b.r0 = inst.r0.x * r0 + inst.r0.y * r1 + inst.r0.z * r2 + vec4(0.0, 0.0, 0.0, inst.r0.w);
+    b.r1 = inst.r1.x * r0 + inst.r1.y * r1 + inst.r1.z * r2 + vec4(0.0, 0.0, 0.0, inst.r1.w);
+    b.r2 = inst.r2.x * r0 + inst.r2.y * r1 + inst.r2.z * r2 + vec4(0.0, 0.0, 0.0, inst.r2.w);
+    b.color.a = inst.color.a;
+    b.ids2.y = inst.ids2.y;
+    return b;
+}
+
+@vertex
+fn vs_item(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+    return box_vertex(item_box(vi, ii), vi % 36u);
+}
+
+// `v`: the vertex within the box, 6 per face.
+fn box_vertex(b: Box, v: u32) -> VOut {
+    let face = v / 6u;
+    let c = TRI[v % 6u];
     let p = CORNERS[face * 4u + c];
     let local = vec4(p, 1.0);
     let world = vec3(dot(b.r0, local), dot(b.r1, local), dot(b.r2, local));
@@ -82,19 +102,22 @@ fn vertex(vi: u32) -> VOut {
     let uv = UVS[c];
     out.mode = b.ids.y;
     out.tex = b.ids.x;
-    out.glow = b.ids2.y;
-    if b.ids.y == 4u {
+    out.glow = 0xffffffffu;
+    if b.ids.y == BOX_MODE_TEXEL {
         // One texel for the whole box (pixels of held item sprites); `ids.w` = faces to skip.
         if (b.ids.w & (1u << face)) != 0u {
             out.clip = vec4(0.0, 0.0, 0.0, 1.0);
         }
         out.layer = b.ids.z;
+        if out.layer < arrayLength(&glow_map) {
+            out.glow = glow_map[out.layer];
+        }
         out.uv = b.uvo.xy;
-    } else if b.ids.y == 5u {
+    } else if b.ids.y == BOX_MODE_FILLED {
         // Filled gizmo box: its alpha rides along as bits.
         out.layer = b.ids.z;
         out.uv = uv;
-    } else if b.ids.y == 1u || b.ids.y == 3u {
+    } else if b.ids.y == BOX_MODE_FACES || b.ids.y == BOX_MODE_FLAMES {
         var packed = b.ids.z;
         if face >= 2u && face < 4u {
             packed = b.ids.w;
@@ -102,6 +125,9 @@ fn vertex(vi: u32) -> VOut {
             packed = b.ids2.x;
         }
         out.layer = (packed >> ((face & 1u) * 16u)) & 65535u;
+        if out.layer < arrayLength(&glow_map) {
+            out.glow = glow_map[out.layer];
+        }
         out.uv = uv;
         if b.dims.w > 0.5 {
             // A box inside a block (dims = min, uvo = max): the part of the texture the world
@@ -122,8 +148,17 @@ fn vertex(vi: u32) -> VOut {
         out.layer = 0u;
     }
     let hurt = b.color.a;
+    var tint = b.color.rgb;
+    if b.ids.y == BOX_MODE_FACES && ((b.ids2.z >> face) & 1u) != 0u {
+        tint *= vec3(f32((b.ids2.w >> 16u) & 255u), f32((b.ids2.w >> 8u) & 255u), f32(b.ids2.w & 255u)) / 255.0;
+    }
+    out.tint = pow(tint, vec3(2.2));
+    var lit = vec3(1.0);
+    if b.ids.y != BOX_MODE_SOLID && b.ids.y != BOX_MODE_FILLED && b.ids2.y != 0xffffffffu {
+        lit = lightmap(unpack_light(b.ids2.y), view.light.x, view.light.y, view.light.z);
+    }
     // Gamma-space shading applied in linear space, as in the world shader.
-    out.color = vec4(pow(b.color.rgb * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), hurt), vec3(2.2)), 1.0);
+    out.color = vec4(pow(tint * lit * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), hurt), vec3(2.2)), 1.0);
     return out;
 }
 
@@ -131,27 +166,34 @@ fn vertex(vi: u32) -> VOut {
 // player collides with comes closer than ~0.2 blocks, depth 0.3) but still sorted within itself.
 @vertex
 fn vs_hand(@builtin(vertex_index) vi: u32) -> VOut {
-    var out = vertex(vi);
+    var out = box_vertex(boxes[vi / 36u], vi % 36u);
+    out.clip.z = (0.5 + 0.5 * out.clip.z / out.clip.w) * out.clip.w;
+    return out;
+}
+
+@vertex
+fn vs_hand_item(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+    var out = box_vertex(item_box(vi, ii), vi % 36u);
     out.clip.z = (0.5 + 0.5 * out.clip.z / out.clip.w) * out.clip.w;
     return out;
 }
 
 fn fog(in: VOut, rgb: vec3<f32>) -> vec3<f32> {
-    let f = clamp((in.dist - view.fog.x) / max(view.fog.y - view.fog.x, 1.0), 0.0, 1.0);
+    let f = fog_amount(in.dist, view.fog.x, view.fog.y);
     return mix(rgb, view.fog_color.rgb, f);
 }
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     var albedo = vec4(1.0);
-    if in.mode == 0u {
+    if in.mode == BOX_MODE_SKIN {
         albedo = textureSample(textures[in.tex], nearest_clamp, in.uv);
-    } else if in.mode == 1u || in.mode == 3u {
-        albedo = textureSample(texture_arrays[in.tex], nearest_mipped, in.uv, in.layer);
-    } else if in.mode == 4u {
-        albedo = textureSampleLevel(texture_arrays[in.tex], nearest_mipped, in.uv, in.layer, 0.0);
+    } else if in.mode == BOX_MODE_FACES || in.mode == BOX_MODE_FLAMES {
+        albedo = textureSample(textures[in.layer], nearest_mipped, in.uv);
+    } else if in.mode == BOX_MODE_TEXEL {
+        albedo = textureSampleLevel(textures[in.layer], nearest_mipped, in.uv, 0.0);
     }
-    if in.mode == 3u {
+    if in.mode == BOX_MODE_FLAMES {
         // Flames give their own light.
         if albedo.a < 0.5 {
             discard;
@@ -162,9 +204,9 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         discard;
     }
     var light = in.color.rgb;
-    if (in.mode == 1u || in.mode == 4u) && in.glow != 0xffffffffu {
-        let e = textureSampleLevel(texture_arrays[in.glow], nearest_clamp, in.uv, in.layer, 0.0).r;
-        light = max(light, vec3(pow(e, 2.2)));
+    if (in.mode == BOX_MODE_FACES || in.mode == BOX_MODE_TEXEL) && in.glow != 0xffffffffu {
+        let e = textureSampleLevel(textures[in.glow], nearest_clamp, in.uv, 0.0).r;
+        light = max(light, in.tint * pow(e, 2.2));
     }
     return vec4(fog(in, albedo.rgb * light), 1.0);
 }
@@ -172,14 +214,14 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_overlay(in: VOut) -> @location(0) vec4<f32> {
     // Block faces mode: the breaking cracks, lit like the block.
-    if in.mode == 1u {
-        let t = textureSample(texture_arrays[in.tex], nearest_mipped, in.uv, in.layer);
+    if in.mode == BOX_MODE_FACES {
+        let t = textureSample(textures[in.layer], nearest_mipped, in.uv);
         if t.a < 0.1 {
             discard;
         }
         return vec4(t.rgb * in.color.rgb, t.a * view.fog.z);
     }
-    if in.mode == 5u {
+    if in.mode == BOX_MODE_FILLED {
         return vec4(in.color.rgb, bitcast<f32>(in.layer));
     }
     return vec4(in.color.rgb, view.fog.z);

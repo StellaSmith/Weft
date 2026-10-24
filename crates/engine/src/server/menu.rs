@@ -20,6 +20,8 @@ pub struct SlotRef {
     pub owner: Owner,
     pub index: u32,
     pub flags: u32,
+    /// Only items with this tag or component (`u32::MAX`: any).
+    pub accepts: u32,
 }
 
 pub struct OpenMenu {
@@ -28,10 +30,8 @@ pub struct OpenMenu {
     pub window: u32,
     pub slots: Vec<SlotRef>,
     pub temp: Vec<ItemStack>,
-    pub data: Vec<i64>,
     pub cursor: ItemStack,
     pub sent_slots: Vec<ItemStack>,
-    pub sent_data: Vec<i64>,
     pub sent_cursor: ItemStack,
     /// The owner's menu-synced components went out once.
     pub comps_sent: bool,
@@ -54,6 +54,10 @@ impl MenuCall {
     }
 
     pub fn add_slots(&mut self, owner: u64, start: u32, count: u32, flags: u32) {
+        self.add_slots_for(owner, start, count, flags, u32::MAX)
+    }
+
+    pub fn add_slots_for(&mut self, owner: u64, start: u32, count: u32, flags: u32, accepts: u32) {
         let owner = match owner {
             0 => Owner::Temp,
             u64::MAX => Owner::Player,
@@ -61,7 +65,7 @@ impl MenuCall {
         };
         let m = self.m();
         for i in 0..count {
-            m.slots.push(SlotRef { owner, index: start + i, flags });
+            m.slots.push(SlotRef { owner, index: start + i, flags, accepts });
         }
     }
 
@@ -73,11 +77,6 @@ impl MenuCall {
         set(self.m(), self.d(), self.player, slot, stack)
     }
 
-    pub fn set_data(&mut self, index: u32, value: i64) {
-        if let Some(d) = self.m().data.get_mut(index as usize) {
-            *d = value;
-        }
-    }
 }
 
 fn get(m: &OpenMenu, dim: &Dim, player: u64, slot: u32) -> ItemStack {
@@ -121,10 +120,8 @@ pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64, wind
         window,
         slots: Vec::new(),
         temp: vec![ItemStack::EMPTY; def.temp_slots as usize],
-        data: vec![0; def.data_count as usize],
         cursor: ItemStack::EMPTY,
         sent_slots: Vec::new(),
-        sent_data: Vec::new(),
         sent_cursor: ItemStack::EMPTY,
         comps_sent: false,
     };
@@ -154,15 +151,8 @@ pub fn close(m: OpenMenu, dim: &mut Dim, c: &Content, player: u64) {
     }
 }
 
-fn armor_ok(c: &Content, flags: u32, item: u32) -> bool {
-    let tag = match flags & (sf::ARMOR_HEAD | sf::ARMOR_CHEST | sf::ARMOR_LEGS | sf::ARMOR_FEET) {
-        0 => return true,
-        sf::ARMOR_HEAD => "armor_head",
-        sf::ARMOR_CHEST => "armor_chest",
-        sf::ARMOR_LEGS => "armor_legs",
-        _ => "armor_feet",
-    };
-    item == 0 || c.item_has_tag(item, tag)
+fn fits(c: &Content, s: &SlotRef, item: u32) -> bool {
+    s.accepts == u32::MAX || item == 0 || c.components.has(crate::components::ITEM, item, s.accepts)
 }
 
 /// `button` 2..=10 over a slot: number key 1..9, swaps it with that hotbar slot (vanilla).
@@ -175,6 +165,9 @@ pub const GATHER: u8 = 11;
 pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, slot: u32, button: u8, shift: bool) {
     if (HOTBAR_SWAP..HOTBAR_SWAP + 9).contains(&button) {
         let hot = (button - HOTBAR_SWAP) as u32;
+        if hot >= c.game.player_layout.hotbar {
+            return;
+        }
         let Some(h) = m.slots.iter().position(|s| s.owner == Owner::Player && s.index == hot).map(|i| i as u32) else { return };
         let (Some(a), Some(b)) = (m.slots.get(slot as usize).copied(), m.slots.get(h as usize).copied()) else { return };
         if h == slot || !m.cursor.is_empty() {
@@ -183,7 +176,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         let (sa, sb) = (get(m, dim, player, slot), get(m, dim, player, h));
         // Results only come out (into an empty hotbar slot), and fitted slots take what fits.
         let output = a.flags & sf::OUTPUT != 0;
-        if (output && !sb.is_empty()) || !armor_ok(c, a.flags, sb.item) || !armor_ok(c, b.flags, sa.item) {
+        if (output && !sb.is_empty()) || !fits(c, &a, sb.item) || !fits(c, &b, sa.item) {
             return;
         }
         set(m, dim, player, slot, sb);
@@ -226,8 +219,8 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
             if m.cursor.count == 0 {
                 m.cursor = ItemStack::EMPTY;
             }
-            if let Some(p) = dim.entities.get(player).map(|e| e.pos) {
-                dim.spawn_item(c, p + glam::DVec3::Y * 1.3, drop);
+            if let Some(p) = dim.entities.get(player).map(|e| e.drop_point(c)) {
+                dim.spawn_item(c, p, drop);
             }
         }
         return;
@@ -285,26 +278,26 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         let targets: Vec<u32> = (0..m.slots.len() as u32)
             .filter(|&i| {
                 let s = m.slots[i as usize];
-                i != slot && s.flags & sf::OUTPUT == 0 && (s.owner == Owner::Player) != from_player && armor_ok(c, s.flags, cur.item)
+                i != slot && s.flags & sf::OUTPUT == 0 && (s.owner == Owner::Player) != from_player && fits(c, &s, cur.item)
             })
             .collect();
         // Slots made for this item (armour) win over generic ones.
-        const FITTED: u32 = sf::ARMOR_HEAD | sf::ARMOR_CHEST | sf::ARMOR_LEGS | sf::ARMOR_FEET;
         let fitted: Vec<u32> = (0..m.slots.len() as u32)
             .filter(|&i| {
                 let s = m.slots[i as usize];
-                s.flags & FITTED != 0 && armor_ok(c, s.flags, cur.item) && get(m, dim, player, i).is_empty()
+                s.accepts != u32::MAX && fits(c, &s, cur.item) && get(m, dim, player, i).is_empty()
             })
             .collect();
-        let targets = if r.flags & FITTED == 0 && !fitted.is_empty() {
+        let layout = &c.game.player_layout;
+        let targets = if r.accepts == u32::MAX && !fitted.is_empty() {
             fitted
         } else if targets.is_empty() && from_player {
             // Inventory screen: hotbar <-> main.
-            let hotbar = r.index < 9;
+            let hotbar = r.index < layout.hotbar;
             (0..m.slots.len() as u32)
                 .filter(|&i| {
                     let s = m.slots[i as usize];
-                    s.owner == Owner::Player && s.index < 36 && (s.index < 9) != hotbar
+                    s.owner == Owner::Player && s.index < layout.slots && !layout.worn.contains(&s.index) && (s.index < layout.hotbar) != hotbar
                 })
                 .collect()
         } else {
@@ -332,7 +325,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         return;
     }
 
-    if !armor_ok(c, r.flags, m.cursor.item) {
+    if !fits(c, &r, m.cursor.item) {
         return;
     }
     let mut cursor = m.cursor;
@@ -395,7 +388,7 @@ pub fn drag(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, s
         .filter(|&s| {
             let Some(r) = m.slots.get(s as usize) else { return false };
             let t = get(m, dim, player, s);
-            r.flags & sf::OUTPUT == 0 && armor_ok(c, r.flags, cur.item) && (t.is_empty() || (t.item == cur.item && t.data == cur.data && t.count < max))
+            r.flags & sf::OUTPUT == 0 && fits(c, &r, cur.item) && (t.is_empty() || (t.item == cur.item && t.data == cur.data && t.count < max))
         })
         .take(cur.count as usize)
         .collect();
@@ -418,11 +411,10 @@ pub fn drag(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, s
     }
 }
 
-/// Slots, data and cursor that changed since the last call.
-pub fn changes(m: &mut OpenMenu, dim: &Dim, player: u64) -> (Vec<(u32, ItemStack)>, Vec<(u32, i64)>, Option<ItemStack>) {
+/// Slots and cursor that changed since the last call.
+pub fn changes(m: &mut OpenMenu, dim: &Dim, player: u64) -> (Vec<(u32, ItemStack)>, Option<ItemStack>) {
     let n = m.slots.len();
     m.sent_slots.resize(n, ItemStack { count: u32::MAX, ..ItemStack::EMPTY });
-    m.sent_data.resize(m.data.len(), i64::MIN);
     let mut slots = Vec::new();
     for i in 0..n as u32 {
         let s = get(m, dim, player, i);
@@ -431,16 +423,9 @@ pub fn changes(m: &mut OpenMenu, dim: &Dim, player: u64) -> (Vec<(u32, ItemStack
             slots.push((i, crate::stack::for_client(s)));
         }
     }
-    let mut data = Vec::new();
-    for (i, &v) in m.data.iter().enumerate() {
-        if m.sent_data[i] != v {
-            m.sent_data[i] = v;
-            data.push((i as u32, v));
-        }
-    }
     let cursor = (m.sent_cursor != m.cursor).then(|| {
         m.sent_cursor = m.cursor;
         crate::stack::for_client(m.cursor)
     });
-    (slots, data, cursor)
+    (slots, cursor)
 }

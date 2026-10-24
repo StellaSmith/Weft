@@ -4,7 +4,7 @@
 use voxide_sdk::abi::slot_flags as sf;
 use voxide_sdk::*;
 
-use crate::items::{ARMOR, FOOD, REMAINDER};
+use crate::items::{ARMOR, FOOD};
 
 value! {
     /// `armor`: points worn, kept here so the HUD can show them.
@@ -16,6 +16,9 @@ pub static INVENTORY: Menu = Menu::new();
 pub static CRAFTING: Menu = Menu::new();
 
 const MAX_AIR: f32 = 300.0;
+
+/// Armour, head to feet, after the hotbar (9) and the main inventory (27).
+const WORN_SLOTS: std::ops::Range<u32> = 36..40;
 
 pub fn register(r: &mut Registry) {
     r.entity_component(
@@ -33,7 +36,7 @@ pub fn register(r: &mut Registry) {
             return;
         }
         let inv = m.world().inventory(q.entity);
-        let points: u32 = (36..40).filter_map(|i| ARMOR.on_item(inv.get(i).item)).map(|a| a.points).sum();
+        let points: u32 = WORN_SLOTS.filter_map(|i| ARMOR.on_item(inv.get(i).item)).map(|a| a.points).sum();
         m.value *= 1.0 - points.min(20) as f64 * 0.04;
     });
     r.on(&ENTITY_HURT, |b| {
@@ -41,7 +44,7 @@ pub fn register(r: &mut Registry) {
         for h in b.iter().filter(|h| armor_applies(h.cause)) {
             let inv = w.inventory(h.entity);
             let wear = ((h.amount / 4.0) as u32).max(1);
-            for slot in 36..40 {
+            for slot in WORN_SLOTS {
                 let s = inv.get(slot);
                 if ARMOR.on_item(s.item).is_some() {
                     let durability = DURABILITY.on_item(s.item).unwrap_or(0);
@@ -75,25 +78,28 @@ pub fn register(r: &mut Registry) {
         ui.icons_rtl("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }))
     });
 
-    // Slots: 0-3 grid, 4 result, 5-8 armour, 9-35 main, 36-44 hotbar.
+    // Menu slots in the order `setup` adds them: grid, result, armour, inventory and hotbar.
+    const GRID: u32 = 0;
+    const RESULT: u32 = GRID + 4;
+    const WORN: u32 = RESULT + 1;
+    const INV: u32 = WORN + 4;
     r.menu("inventory").handle(&INVENTORY)
-        .temp_slots(5)
+        .temp_slots(RESULT + 1)
         .setup(|m| {
-            m.slots(TEMP, 0, 4, 0);
-            m.slots(TEMP, 4, 1, sf::OUTPUT);
-            for (i, f) in [sf::ARMOR_HEAD, sf::ARMOR_CHEST, sf::ARMOR_LEGS, sf::ARMOR_FEET].into_iter().enumerate() {
-                m.slots(PLAYER, 36 + i as u32, 1, f);
+            m.slots(TEMP, GRID, 4, 0);
+            m.slots(TEMP, RESULT, 1, sf::OUTPUT);
+            for (i, tag) in WORN_SLOTS.zip(abi::comp::ARMOR) {
+                m.slots_for(PLAYER, i, 1, 0, tag);
             }
-            m.slots(PLAYER, 9, 27, 0);
-            m.slots(PLAYER, 0, 9, 0);
+            m.player_slots();
         })
-        .on_change(|m| craft_result(m, 0, 2, 4))
-        .on_take(|m| consume_grid(m, 0, 4))
+        .on_change(|m| craft_result(m, GRID, 2, RESULT))
+        .on_take(|m| consume_grid(m, GRID, 4))
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(5.0), |ui| {
                 ui.row(S::row().gap(1.0), |ui| {
                     ui.column(S::col(), |ui| {
-                        for (i, piece) in (5..9).zip(["helmet", "chestplate", "leggings", "boots"]) {
+                        for (i, piece) in (WORN..WORN + 4).zip(["helmet", "chestplate", "leggings", "boots"]) {
                             ui.slot_icon(i, &format!("base:gui/slot_{piece}"));
                         }
                     });
@@ -102,25 +108,25 @@ pub fn register(r: &mut Registry) {
                     ui.column(S::col().gap(2.0), |ui| {
                         ui.text("container.crafting");
                         ui.row(S::row().gap(4.0), |ui| {
-                            ui.slots(0, 4, 2);
+                            ui.slots(GRID, 4, 2);
                             ui.image("base:gui/arrow_bg", 24.0, 16.0);
-                            ui.slot_big(4);
+                            ui.slot_big(RESULT);
                         });
                     });
                 });
-                player_slots(ui, 9, false);
+                ui.player_inventory(INV, false);
             });
         });
 
+    const TABLE_RESULT: u32 = 9;
     r.menu("crafting_table").handle(&CRAFTING)
-        .temp_slots(10)
+        .temp_slots(TABLE_RESULT + 1)
         .setup(|m| {
             m.slots(TEMP, 0, 9, 0);
-            m.slots(TEMP, 9, 1, sf::OUTPUT);
-            m.slots(PLAYER, 9, 27, 0);
-            m.slots(PLAYER, 0, 9, 0);
+            m.slots(TEMP, TABLE_RESULT, 1, sf::OUTPUT);
+            m.player_slots();
         })
-        .on_change(|m| craft_result(m, 0, 3, 9))
+        .on_change(|m| craft_result(m, 0, 3, TABLE_RESULT))
         .on_take(|m| consume_grid(m, 0, 9))
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
@@ -129,36 +135,23 @@ pub fn register(r: &mut Registry) {
                     ui.spacer();
                     ui.slots(0, 9, 3);
                     ui.image("base:gui/arrow_bg", 24.0, 16.0);
-                    ui.slot_big(9);
+                    ui.slot_big(TABLE_RESULT);
                     ui.spacer();
                 });
-                player_slots(ui, 10, true);
+                ui.player_inventory(TABLE_RESULT + 1, true);
             });
         });
+    r.player_inventory(40, 9, WORN_SLOTS);
     r.player_menu("inventory");
 }
 
 fn armor_applies(cause: u32) -> bool {
-    !matches!(cause, damage::FALL | damage::STARVE | damage::DROWN | damage::VOID)
-}
-
-/// Main inventory (27) and hotbar (9) starting at menu slot `start`, spaced like vanilla; the
-/// title is left out on the player's own inventory screen.
-pub fn player_slots(ui: &mut Ui, start: u32, title: bool) {
-    ui.column(S::col().gap(2.0), |ui| {
-        if title {
-            ui.text("container.inventory");
-        }
-        ui.column(S::col().gap(4.0), |ui| {
-            ui.slots(start, 27, 9);
-            ui.slots(start + 27, 9, 9);
-        });
-    });
+    cause & damage::BYPASSES_ARMOR == 0
 }
 
 fn craft_result(m: &MenuCtx, start: u32, size: u32, out: u32) {
     let grid: Vec<ItemStack> = (start..start + size * size).map(|i| m.get(i)).collect();
-    m.set(out, recipe_match("base:crafting", &grid, size, size));
+    m.set(out, recipe_match(&crate::recipes::CRAFTING, &grid, size, size));
 }
 
 /// Takes one of each ingredient; the last of a stack leaves its `remainder` (a bucket).
@@ -168,8 +161,7 @@ fn consume_grid(m: &MenuCtx, start: u32, count: u32) {
         if s.is_empty() {
             continue;
         }
-        let left = REMAINDER.on_item(s.item).and_then(|r| find_item(r.as_str())).filter(|_| s.count == 1);
-        m.set(i, left.map_or(s.shrink(1), |r| ItemStack::new(r, 1)));
+        m.set(i, use_one(s));
     }
 }
 
@@ -204,7 +196,7 @@ fn tick_players(t: &EntityTick) {
         let eye = [st.pos[0].floor() as i32, (st.pos[1] + 1.62).floor() as i32, st.pos[2].floor() as i32];
         let underwater = w.flags(eye) & abi::block_flags::LIQUID != 0;
         let inv = w.inventory(id);
-        let armor: u32 = (36..40).filter_map(|i| ARMOR.on_item(inv.get(i).item)).map(|a| a.points).sum();
+        let armor: u32 = WORN_SLOTS.filter_map(|i| ARMOR.on_item(inv.get(i).item)).map(|a| a.points).sum();
         let Some(h) = w.component_mut(id, &HUNGER) else { continue };
         h.armor = armor as f32;
         if underwater {

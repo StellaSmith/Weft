@@ -26,7 +26,7 @@ enum Light {
 pub struct Cube {
     blocks: Blocks,
     light: Light,
-    pub biomes: Option<Box<[u8; 256]>>,
+    pub biomes: Option<Box<[u16; 256]>>,
     /// World time it was simulated to when it was last unloaded (0: never), for growth to catch
     /// up on.
     pub ticked: u64,
@@ -215,7 +215,7 @@ impl Cube {
         }
     }
 
-    pub fn biome(&self, x: usize, z: usize) -> u8 {
+    pub fn biome(&self, x: usize, z: usize) -> u16 {
         self.biomes.as_ref().map_or(0, |b| b[z * 16 + x])
     }
 
@@ -256,7 +256,9 @@ impl Cube {
         // Bit 0: biomes follow, bit 1: the simulated time follows.
         out.push(self.biomes.is_some() as u8 | ((self.ticked != 0) as u8) << 1);
         if let Some(b) = &self.biomes {
-            out.extend_from_slice(&b[..]);
+            for v in b.iter() {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
         }
         if self.ticked != 0 {
             out.extend_from_slice(&self.ticked.to_le_bytes());
@@ -294,8 +296,10 @@ impl Cube {
         };
         let flags = take_bytes(data, 1)?[0];
         let biomes = if flags & 1 != 0 {
-            let mut b = Box::new([0u8; 256]);
-            b.copy_from_slice(take_bytes(data, 256)?);
+            let mut b = Box::new([0u16; 256]);
+            for (d, c) in b.iter_mut().zip(take_bytes(data, 512)?.chunks_exact(2)) {
+                *d = u16::from_le_bytes([c[0], c[1]]);
+            }
             Some(b)
         } else {
             None

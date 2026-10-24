@@ -110,8 +110,16 @@ impl DimSet {
         self.owner.get(&section_of_cube(pos)).is_some_and(|&r| self.regions[r].has(pos))
     }
 
-    pub fn edit_version(&self) -> u64 {
-        self.regions.iter().map(|r| r.edits).sum::<u64>() ^ (self.regions.len() as u64) << 52
+    /// Cubes settled since the last call.
+    pub fn take_settled(&mut self) -> Vec<IVec3> {
+        self.regions.iter_mut().flat_map(|r| r.newly_settled.drain(..)).collect()
+    }
+
+    /// Cubes with block changes since the last call.
+    pub fn take_edited(&mut self) -> Vec<IVec3> {
+        let mut out: Vec<IVec3> = self.regions.iter_mut().flat_map(|r| r.edited.drain()).collect();
+        out.sort_unstable_by_key(|p| (p.x, p.y, p.z));
+        out
     }
 
     /// Changes whenever a cube was loaded or became settled, or regions were reshaped.
@@ -151,13 +159,7 @@ impl DimSet {
             if d.entities.get(id).is_some() {
                 continue;
             }
-            d.entities.insert(c, e);
-            if let Some(inv) = inv {
-                d.entities.inventories.insert(id, inv);
-            }
-            for (k, v) in comps {
-                d.entities.comps.insert((id, k), v);
-            }
+            d.entities.insert_with(c, e, inv, comps);
         }
     }
 
@@ -225,7 +227,7 @@ impl DimSet {
 
     pub fn spawn_point(&self, c: &Content) -> DVec3 {
         let def = &c.dims[self.id as usize];
-        let mut pos = [0, 64, 0];
+        let mut pos = def.spawn_at;
         if let Some(cb) = def.spawn {
             let mut args = abi::SpawnArgs { seed: self.seed, pos };
             host::invoke(def.owner, cb, &mut args);
@@ -299,7 +301,7 @@ impl DimSet {
                 primary.iter().flatten().any(|p| !seen.insert(*p))
             };
         if !changed {
-            self.rebuild_owner();
+            self.owner = per_region.iter().enumerate().flat_map(|(i, secs)| secs.iter().map(move |&s| (s, i))).collect();
             return;
         }
 

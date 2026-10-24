@@ -37,8 +37,9 @@ pub struct AttrMod {
     pub id: String,
 }
 
-pub fn decode_mods(b: &[u8]) -> Vec<AttrMod> {
-    let mut out = Vec::new();
+/// Visits the encoded modifiers without decoding them into a list (attributes are read every
+/// tick by every walking mob).
+fn each_mod(b: &[u8], mut f: impl FnMut(u64, u8, f64, u64, &[u8])) {
     let mut i = 0;
     while i + 27 <= b.len() {
         let attr = u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
@@ -48,9 +49,14 @@ pub fn decode_mods(b: &[u8]) -> Vec<AttrMod> {
         let n = u16::from_le_bytes([b[i + 25], b[i + 26]]) as usize;
         i += 27;
         let Some(id) = b.get(i..i + n) else { break };
-        out.push(AttrMod { attr, op, amount, until, id: String::from_utf8_lossy(id).into_owned() });
+        f(attr, op, amount, until, id);
         i += n;
     }
+}
+
+pub fn decode_mods(b: &[u8]) -> Vec<AttrMod> {
+    let mut out = Vec::new();
+    each_mod(b, |attr, op, amount, until, id| out.push(AttrMod { attr, op, amount, until, id: String::from_utf8_lossy(id).into_owned() }));
     out
 }
 
@@ -160,13 +166,19 @@ impl Dim {
         }
         value
     }
+}
 
+/// The engine's attributes come first in the registry (`registry::freeze`).
+pub const MAX_HEALTH: u32 = 0;
+pub const MOVEMENT_SPEED: u32 = 1;
+pub const VISIBILITY: u32 = 2;
+
+impl Dim {
     fn base_attribute(&self, c: &Content, entity: u64, attr: u32) -> Option<f64> {
         let e = self.entities.get(entity)?;
         let def = &c.game.attributes[attr as usize];
-        let comp = c.components.id(&def.name);
-        let own = comp.and_then(|id| c.components.get::<f64>(crate::components::ENTITY, e.kind, id));
-        Some(own.unwrap_or_else(|| if def.name == abi::attribute::MAX_HEALTH { c.game.entities[e.kind as usize].max_health as f64 } else { def.default }))
+        let own = def.comp.and_then(|id| c.components.get::<f64>(crate::components::ENTITY, e.kind, id));
+        Some(own.unwrap_or_else(|| if attr == MAX_HEALTH { c.game.entities[e.kind as usize].max_health as f64 } else { def.default }))
     }
 
     fn modifiers_of(&self, c: &Content, entity: u64) -> Vec<AttrMod> {
@@ -177,6 +189,22 @@ impl Dim {
     pub fn attribute(&self, c: &Content, entity: u64, attr: u32, explain: bool) -> f64 {
         let def = &c.game.attributes[attr as usize];
         let Some(base) = self.base_attribute(c, entity, attr) else { return def.default };
+        if !explain {
+            let (mut add, mut mul_base, mut mul_total) = (0.0, 0.0, 1.0);
+            if let Some(b) = self.entities.comps.get(&(entity, c.game.modifiers_comp)) {
+                each_mod(b, |a, op, amount, until, _| {
+                    if a == def.hash && (until == 0 || until > self.time) {
+                        match op as u32 {
+                            abi::attr_op::ADD => add += amount,
+                            abi::attr_op::MUL_BASE => mul_base += amount,
+                            abi::attr_op::MUL_TOTAL => mul_total *= 1.0 + amount,
+                            _ => {}
+                        }
+                    }
+                });
+            }
+            return ((base + add) * (1.0 + mul_base) * mul_total).clamp(def.min, def.max);
+        }
         let mods: Vec<AttrMod> = self.modifiers_of(c, entity).into_iter().filter(|m| m.attr == def.hash && (m.until == 0 || m.until > self.time)).collect();
         let add: f64 = mods.iter().filter(|m| m.op as u32 == abi::attr_op::ADD).map(|m| m.amount).sum();
         let mul_base: f64 = mods.iter().filter(|m| m.op as u32 == abi::attr_op::MUL_BASE).map(|m| m.amount).sum();
@@ -223,6 +251,11 @@ impl Dim {
     }
 
     /// Attribute by name, the default for unknown entities, NaN for unknown names.
+    /// The only maximum health there is: the attribute (the kind's value plus modifiers).
+    pub fn max_health(&self, c: &Content, entity: u64) -> f32 {
+        self.attribute(c, entity, MAX_HEALTH, false) as f32
+    }
+
     pub fn attribute_named(&self, c: &Content, entity: u64, name: &str, explain: bool) -> f64 {
         match c.game.attr_names.get(name) {
             Some(&a) => self.attribute(c, entity, a, explain),

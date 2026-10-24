@@ -84,9 +84,8 @@ pub struct Look {
 }
 
 fn shader(assets: &crate::assets::Assets) -> Result<(Shader, Slots), String> {
-    let base = crate::packs::source("particle.wgsl", include_str!("../../shaders/particle.wgsl"));
     let snippets = crate::shaders::snippets(assets, &HOOK);
-    let (s, mut slots) = crate::shaders::compose("particle.wgsl", &base, &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
+    let (s, mut slots) = crate::packs::compose("particle.wgsl", include_str!("../../shaders/particle.wgsl"), &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
     Ok((s, slots.pop().unwrap_or_default()))
 }
 
@@ -149,8 +148,12 @@ impl Particles {
         if !pos.is_finite() {
             return;
         }
-        // Block dust shows the block's side texture.
-        let layer = if k.frames.is_empty() { c.states.get(b.block as usize).map_or(0, |s| s.textures[1]) } else { 0 };
+        // Block dust shows the block's side texture (a box model's first box's).
+        let side = |s: &crate::content::StateInfo| match s.boxes.first() {
+            Some(b) if s.model == voxide_abi::Model::Boxes => b.textures[1],
+            _ => s.textures[1],
+        };
+        let layer = if k.frames.is_empty() { c.states.get(b.block as usize).map_or(0, side) } else { 0 };
         let n = (b.count as usize).min(MAX.saturating_sub(self.list.len()));
         for _ in 0..n {
             let mut r3 = || Vec3::new(self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0);
@@ -227,7 +230,8 @@ impl Particles {
         self.list.retain(|p| p.age < p.life);
     }
 
-    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, cam: &Camera, textures: &GameTextures, look: &Look) {
+    /// Cutout particles into `list`, blended ones into `late` (after translucent blocks).
+    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, late: &mut CommandList, frame: &FrameInfo, cam: &Camera, textures: &GameTextures, look: &Look) {
         let Some(pipes) = self.pipes else { return };
         if self.list.is_empty() {
             return;
@@ -253,19 +257,18 @@ impl Particles {
                 }
                 let t = (p.age / p.life).clamp(0.0, 1.0);
                 let size = if k.flags & pf::SHRINK != 0 { p.size * (1.0 - t) } else { p.size };
-                let (array, layer, uv) = if k.frames.is_empty() {
-                    let l = textures.block_layers.get(p.layer as usize).map_or(0, |l| l.0);
+                let (tex, uv) = if k.frames.is_empty() {
                     let (u, v) = (p.piece[0] as u32 * 255 / 16, p.piece[1] as u32 * 255 / 16);
-                    (textures.block_index, l, u | v << 8 | (u + 64).min(255) << 16 | (v + 64).min(255) << 24)
+                    (textures.block(p.layer), u | v << 8 | (u + 64).min(255) << 16 | (v + 64).min(255) << 24)
                 } else {
                     let f = k.frames[((t * k.frames.len() as f32) as usize).min(k.frames.len() - 1)];
-                    (textures.particle_index, textures.particle_layers.get(f as usize).map_or(0, |l| l.0), 0xFFFF_0000)
+                    (textures.particle(f), 0xFFFF_0000)
                 };
                 let light = if k.flags & pf::FULLBRIGHT != 0 { u32::MAX } else { p.light };
                 let rel = (p.pos - cam.pos).as_vec3();
                 self.gpu.push(GpuParticle {
                     pos_size: [rel.x, rel.y, rel.z, size],
-                    data: [mix(k.color, k.color_end, t), array & 255 | layer << 8 | self.kind_slots.get(p.kind as usize).copied().unwrap_or(0) << 24, uv, light],
+                    data: [mix(k.color, k.color_end, t), tex & crate::gpu_layout::particle::TEX_MASK | self.kind_slots.get(p.kind as usize).copied().unwrap_or(0) << crate::gpu_layout::particle::SLOT_SHIFT, uv, light],
                     extra: [t, 0.0, 0.0, 0.0],
                 });
             }
@@ -273,16 +276,10 @@ impl Particles {
         let n = self.gpu.len() as u32;
         let frames = gpu.frames_in_flight();
         let stride = size_of::<GpuParticle>() as u64;
-        while self.instances.len() < frames {
-            self.instances.push((gpu.create_buffer(stride * 4096, usage::STORAGE | usage::HOST, "particles"), 4096));
+        while self.views.len() < frames {
             self.views.push(gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "particle view"));
         }
-        if self.instances[frame.slot].1 < n {
-            gpu.destroy_buffer(self.instances[frame.slot].0);
-            let cap = n.next_power_of_two();
-            self.instances[frame.slot] = (gpu.create_buffer(stride * cap as u64, usage::STORAGE | usage::HOST, "particles"), cap);
-        }
-        let buf = self.instances[frame.slot].0;
+        let buf = crate::gpu_layout::frame_buffer(gpu, &mut self.instances, frame.slot, n, stride, usage::STORAGE, "particles");
         gpu.mapped(buf)[..self.gpu.len() * stride as usize].copy_from_slice(bytemuck::cast_slice(&self.gpu));
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
         let view = cam.view();
@@ -297,7 +294,7 @@ impl Particles {
         };
         let vb = self.views[frame.slot];
         gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
-        for (pipe, first, count) in [(pipes[0], 0, blended_from as u32), (pipes[1], blended_from as u32, n - blended_from as u32)] {
+        for (pipe, first, count, list) in [(pipes[0], 0, blended_from as u32, &mut *list), (pipes[1], blended_from as u32, n - blended_from as u32, &mut *late)] {
             if count == 0 {
                 continue;
             }

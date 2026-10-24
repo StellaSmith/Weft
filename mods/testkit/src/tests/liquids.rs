@@ -130,7 +130,7 @@ pub async fn mod_liquid_bucket(t: T) -> R {
     t.look_at(add(pit, [0, -1, 0]));
     t.frames(3).await?;
     t.press("core:use");
-    t.until("oil poured", Duration::from_secs(5), |t| t.c().inventory_slot(0).item == find_item("base:bucket").unwrap_or(0)).await?;
+    t.until("oil poured", Duration::from_secs(5), |t| t.c().inventory_slot(0).item == find_item("base:bucket").unwrap_or(u32::MAX)).await?;
     t.check_eq(t.block(pit).await?, "testmod:oil".into(), "oil back in the pit");
     Ok(())
 }

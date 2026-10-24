@@ -1,8 +1,9 @@
 //! Player-chosen client packs. Resource packs (`resourcepacks/<id>/`) are laid out like mod assets
 //! per namespace (`<ns>/textures/...`, `<ns>/lang/...`, `.ctm`, themes) and stack in the order the
 //! player picks. A shader pack (`shaderpacks/<id>/`) replaces engine shaders file by file
-//! (`world.wgsl`, `entity.wgsl`, `model.wgsl`, `particle.wgsl`, `post.wgsl`) and has to keep
-//! their entry points and bindings; a file that fails to compile falls back to the built-in one.
+//! (`world.wgsl`, `entity.wgsl`, `model.wgsl`, `particle.wgsl`, `post.wgsl`, `ui.wgsl`) and has
+//! to keep their entry points and bindings; a file that fails to compile falls back to the
+//! built-in one.
 //! Snippets mods ship (`shaders/<kind>/`, see `shaders.rs`) are assets, overridden by resource
 //! packs like textures. Both may have a `pack.cfg` with
 //! `name = ...` and `description = ...`.
@@ -10,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use voxide_render::{Shader, ShaderError};
 
@@ -33,7 +35,7 @@ pub fn list(dir: &Path) -> Vec<PackInfo> {
         .map(|e| {
             let id = e.file_name().to_string_lossy().into_owned();
             let cfg = std::fs::read_to_string(e.path().join("pack.cfg")).unwrap_or_default();
-            let get = |key: &str| cfg.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_string()));
+            let get = |key: &str| crate::kv::get(&cfg, key).map(str::to_string);
             PackInfo { name: get("name").unwrap_or_else(|| id.clone()), description: get("description").unwrap_or_default(), id }
         })
         .collect();
@@ -55,36 +57,57 @@ pub fn enabled(run_dir: &Path, ids: &[String]) -> Vec<PathBuf> {
 }
 
 static SHADER_PACK: RwLock<Option<PathBuf>> = RwLock::new(None);
+static DEV: AtomicBool = AtomicBool::new(false);
 
 pub fn set_shader_pack(dir: Option<PathBuf>) {
     *SHADER_PACK.write().unwrap() = dir;
 }
 
-/// Source of engine shader `name`: the shader pack's if it has one, else the engine's (read from
-/// the source tree in development builds so it can be edited live).
-pub fn source(name: &str, builtin: &str) -> String {
-    let pack = SHADER_PACK.read().unwrap().as_ref().map(|d| d.join(name));
-    if let Some(src) = pack.and_then(|p| std::fs::read_to_string(p).ok()) {
-        return src;
-    }
-    builtin_source(name, builtin)
+/// Development runs (debug builds, `--dev`) read engine shaders from the source tree, so they can
+/// be edited while the game runs; others use the ones built in.
+pub fn set_dev(on: bool) {
+    DEV.store(on, Ordering::Relaxed);
+}
+
+fn pack_source(name: &str) -> Option<String> {
+    let path = SHADER_PACK.read().unwrap().as_ref().map(|d| d.join(name))?;
+    std::fs::read_to_string(path).ok()
 }
 
 fn builtin_source(name: &str, builtin: &str) -> String {
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders").join(name);
-    std::fs::read_to_string(dev).unwrap_or_else(|_| builtin.to_string())
+    if DEV.load(Ordering::Relaxed) {
+        if let Ok(src) = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders").join(name)) {
+            return src;
+        }
+    }
+    builtin.to_string()
+}
+
+/// What every engine shader starts with: the lightmap and the like, shared by all of them.
+fn with_common(src: &str) -> String {
+    format!("{}{}\n{src}", crate::gpu_layout::wgsl(), builtin_source("common.wgsl", include_str!("../shaders/common.wgsl")))
 }
 
 /// `name` from the shader pack if it has a valid one, else the engine's.
 pub fn shader(name: &str, builtin: &str) -> Result<Shader, ShaderError> {
-    let pack = SHADER_PACK.read().unwrap().as_ref().map(|d| d.join(name));
-    if let Some(src) = pack.and_then(|p| std::fs::read_to_string(p).ok()) {
-        match Shader::from_wgsl(name, &src) {
+    if let Some(src) = pack_source(name) {
+        match Shader::from_wgsl(name, &with_common(&src)) {
             Ok(s) => return Ok(s),
             Err(e) => log::error!("shader pack {name}: {}", e.0),
         }
     }
-    Shader::from_wgsl(name, &builtin_source(name, builtin))
+    Shader::from_wgsl(name, &with_common(&builtin_source(name, builtin)))
+}
+
+/// `shader` for engine shaders that take mod snippets (`shaders::compose`).
+pub fn compose(name: &str, builtin: &str, parts: &[(&crate::shaders::Hook, &[(String, String)])]) -> Result<(Shader, Vec<crate::shaders::Slots>), ShaderError> {
+    if let Some(src) = pack_source(name) {
+        match crate::shaders::compose(name, &with_common(&src), parts) {
+            Ok(made) => return Ok(made),
+            Err(e) => log::error!("shader pack {name}: {}", e.0),
+        }
+    }
+    crate::shaders::compose(name, &with_common(&builtin_source(name, builtin)), parts)
 }
 
 fn open_folder(dir: &Path) {

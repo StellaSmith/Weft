@@ -103,6 +103,10 @@ impl Screen for MenuScreen {
         "core:menu"
     }
 
+    fn shows_menu(&self) -> bool {
+        true
+    }
+
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let c = content();
         ui.root_style(Style::default().stretch());
@@ -127,6 +131,14 @@ pub struct Death;
 impl Screen for Death {
     fn name(&self) -> &str {
         "core:death"
+    }
+
+    fn escape_closes(&self) -> bool {
+        false
+    }
+
+    fn closes_on_respawn(&self) -> bool {
+        true
     }
 
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
@@ -162,8 +174,11 @@ struct ChatState {
 }
 
 impl Chat {
+    /// Opened with `/` the command list shows at once.
     pub fn new(text: &str) -> Chat {
-        Chat { state: Rc::new(RefCell::new(ChatState { text: text.to_string(), ..Default::default() })) }
+        let mut st = ChatState::default();
+        st.update(text, &[]);
+        Chat { state: Rc::new(RefCell::new(st)) }
     }
 }
 
@@ -183,6 +198,14 @@ impl ChatState {
 impl Screen for Chat {
     fn name(&self) -> &str {
         "core:chat"
+    }
+
+    fn shows_chat(&self) -> bool {
+        true
+    }
+
+    fn keys_first(&self) -> bool {
+        true
     }
 
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {

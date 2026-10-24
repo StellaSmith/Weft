@@ -39,6 +39,114 @@ pub async fn particles(t: T) -> R {
     Ok(())
 }
 
+/// Texture edges at a distance, where mip levels mix texels: snowy grass over dirt, grass sides
+/// (an overlay) and tall grass must not show lines along block edges. Also a 64x64 texture.
+pub async fn texture_seams(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    t.fill(add(f, [-8, 0, -12]), add(f, [8, 0, -12]), "dirt").await?;
+    t.fill(add(f, [-8, 1, -12]), add(f, [8, 1, -12]), "snowy_grass").await?;
+    t.fill(add(f, [-8, 2, -12]), add(f, [8, 2, -12]), "dirt").await?;
+    t.fill(add(f, [-8, 3, -12]), add(f, [8, 3, -12]), "grass").await?;
+    t.fill(add(f, [-8, 0, -9]), add(f, [8, 0, -9]), "tall_grass").await?;
+    // 64x64 next to 16x16 textures.
+    t.fill(add(f, [1, 0, -5]), add(f, [2, 1, -5]), "testmod:mosaic").await?;
+    t.c().look(35.0, 8.0);
+    t.settled().await?;
+    t.shot("seams").await?;
+    Ok(())
+}
+
+/// A 16x16 texture of one colour.
+fn write_png(path: &str, rgb: [u8; 3]) -> Result<(), String> {
+    let dir = std::path::Path::new(path).parent().ok_or("no folder")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), 16, 16);
+    enc.set_color(png::ColorType::Rgba);
+    let px: Vec<u8> = (0..256).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect();
+    enc.write_header().and_then(|mut w| w.write_image_data(&px)).map_err(|e| e.to_string())
+}
+
+/// A mod's tint kind takes the biome's colour where it sets one (plains: teal), else its
+/// default (violet; the flatlands are beach).
+pub async fn tint_kinds(t: T) -> R {
+    for (flat, teal) in [(true, false), (false, true)] {
+        if flat {
+            t.flat().await?;
+        } else {
+            t.world(5).await?;
+            t.idle().await?;
+        }
+        let f = t.feet();
+        t.fill(add(f, [-3, 0, -3]), add(f, [3, 3, -3]), "testmod:glow_moss").await?;
+        t.c().look(0.0, 0.0);
+        t.settled().await?;
+        let [r, g, b] = t.pixel(0.5, 0.45).await?;
+        let ok = if teal { g > r + 40 && b > r + 30 } else { r > g + 20 && b > r };
+        t.check(ok, format!("{} moss, got {r} {g} {b}", if teal { "teal" } else { "violet" }));
+    }
+    t.shot("plains").await
+}
+
+/// Reloading assets picks up a resource pack's texture and later changes to that file.
+pub async fn texture_reload(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    t.fill(add(f, [-3, 0, -3]), add(f, [3, 3, -3]), "dirt").await?;
+    t.c().look(0.0, 0.0);
+    t.settled().await?;
+    let plain = t.grab().await?;
+    let pack = format!("{}/resourcepacks/testkit_reload", t.c().run_dir());
+    let file = format!("{pack}/base/textures/block/dirt.png");
+    let reload = async |rgb: Option<[u8; 3]>| -> Result<Vec<u8>, String> {
+        match rgb {
+            Some(c) => write_png(&file, c)?,
+            None => drop(std::fs::remove_dir_all(&pack)),
+        }
+        t.c().reload_assets();
+        t.frames(5).await?;
+        t.settled().await?;
+        t.grab().await
+    };
+    t.c().setting("resource_packs", "testkit_reload");
+    let red = reload(Some([200, 40, 40])).await?;
+    let blue = reload(Some([40, 40, 200])).await?;
+    t.c().setting("resource_packs", "");
+    let back = reload(None).await?;
+    t.check(T::differ(&plain, &red) > 0.2, "the pack's dirt shows after a reload");
+    t.check(T::differ(&red, &blue) > 0.2, "a changed file shows after the next reload");
+    t.check(T::differ(&plain, &back) < 0.01, "without the pack the dirt is back");
+    Ok(())
+}
+
+/// A shader pack whose files do not compile changes nothing: every engine shader, the composed
+/// ones (models, particles, screen effects, UI) too, falls back to the built-in one.
+pub async fn broken_shader_pack(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    t.op(&format!("spawn testmod:idol {} {} {}", f[0], f[1], f[2] - 3)).await?;
+    t.c().look(0.0, 0.0);
+    t.settled().await?;
+    t.secs(0.5).await?;
+    let before = t.grab().await?;
+    let dir = format!("{}/shaderpacks/testkit_broken", t.c().run_dir());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for name in ["world.wgsl", "entity.wgsl", "model.wgsl", "particle.wgsl", "post.wgsl", "ui.wgsl"] {
+        std::fs::write(format!("{dir}/{name}"), "this is not wgsl").map_err(|e| e.to_string())?;
+    }
+    t.c().setting("shader_pack", "testkit_broken");
+    t.c().reload_assets();
+    t.frames(5).await?;
+    let after = t.grab().await?;
+    t.c().setting("shader_pack", "");
+    t.c().reload_assets();
+    let _ = std::fs::remove_dir_all(&dir);
+    t.frames(2).await?;
+    t.check(T::differ(&before, &after) < 0.02, format!("the picture stays ({:.1}% differ)", T::differ(&before, &after) * 100.0));
+    Ok(())
+}
+
 /// The test mod's looks in one picture: a glow crystal at night (veins glowing, no light),
 /// wisps drawn by an entity shader, sparks, the rune's reach box and the daydream screen effect.
 pub async fn shaders_and_glow(t: T) -> R {

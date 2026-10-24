@@ -4306,6 +4306,7 @@ dependencies = [
 name = "testkit"
 version = "0.1.0"
 dependencies = [
+ "png",
  "voxide_sdk",
 ]
 

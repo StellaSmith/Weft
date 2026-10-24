@@ -256,13 +256,59 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let list: Vec<String> = biomes.iter().map(|(n, k)| format!("{n}={k}")).collect();
             Ok(format!("{} | crystals {in_cave} {elsewhere}", list.join(" ")))
         }
+        "drops" => {
+            // `drops n`: n dropped stacks of a few kinds (blocks and sprites) in a grid north of
+            // the player, 1.1 apart so they do not merge.
+            let n: u32 = a.num()?;
+            let kinds: Vec<u32> = ["base:dirt", "base:coal", "base:iron_pickaxe", "base:dandelion", "base:stick", "base:torch"].iter().filter_map(|k| find_item(k)).collect();
+            let side = (n as f64).sqrt().ceil() as u32;
+            for i in 0..n {
+                let (x, z) = ((i % side) as f64 * 1.1 - side as f64 * 0.55, -3.0 - (i / side) as f64 * 1.1);
+                w.spawn_item([me[0] as f64 + x, me[1] as f64 + 0.5, me[2] as f64 + z], ItemStack::new(kinds[i as usize % kinds.len()], 1));
+            }
+            Ok(format!("{n} drops"))
+        }
+        "find" => {
+            // `find r name`: the first block of that name within `r` of the player.
+            let r: i32 = a.num()?;
+            let id = block_of(find_block(a.word()?).ok_or("no such block")?);
+            for y in me[1] - r..=me[1] + r {
+                for z in me[2] - r..=me[2] + r {
+                    for x in me[0] - r..=me[0] + r {
+                        if block_of(w.get([x, y, z])) == id {
+                            return Ok(format!("{x} {y} {z}"));
+                        }
+                    }
+                }
+            }
+            Err("not found".into())
+        }
+        "census" => {
+            // `census r a,b`: how many of each block lie within `r` of the player.
+            let r: i32 = a.num()?;
+            let names: Vec<&str> = a.word()?.split(',').collect();
+            let ids: Vec<u32> = names.iter().map(|n| find_block(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
+            let mut counts = vec![0u32; ids.len()];
+            for y in me[1] - r..=me[1] + r {
+                for z in me[2] - r..=me[2] + r {
+                    for x in me[0] - r..=me[0] + r {
+                        let b = block_of(w.get([x, y, z]));
+                        if let Some(i) = ids.iter().position(|&id| id == b) {
+                            counts[i] += 1;
+                        }
+                    }
+                }
+            }
+            Ok(names.iter().zip(&counts).map(|(n, k)| format!("{n}={k}")).collect::<Vec<_>>().join(" "))
+        }
         "onto" => {
-            // `onto #id h`: the player on top of an entity `h` high, in the same tick (moving
-            // platforms move on while a teleport by command makes its way).
+            // `onto #id h [#rider]`: the player (or the rider) on top of an entity `h` high, in
+            // the same tick (moving platforms move on while a teleport by command makes its way).
             let id = a.owner(w, player)?;
             let h: f64 = a.num()?;
+            let rider = a.owner(w, player).unwrap_or(player);
             let e = w.entity(id).ok_or("no such entity")?;
-            w.teleport(player, None, [e.pos[0], e.pos[1] + h + 0.05, e.pos[2]]);
+            w.teleport(rider, None, [e.pos[0], e.pos[1] + h + 0.05, e.pos[2]]);
             Ok(String::new())
         }
         "navigate" => {

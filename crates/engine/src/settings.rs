@@ -32,6 +32,11 @@ pub struct Settings {
     pub read_only: bool,
 }
 
+/// The largest GUI scale a window shows whole (vanilla's 320x240 per step); auto uses it.
+pub fn max_gui_scale(window: (u32, u32)) -> u32 {
+    (window.0 / 320).min(window.1 / 240).max(1)
+}
+
 impl Settings {
     pub fn load(run_dir: &Path) -> Settings {
         let path = run_dir.join("config").join("settings.txt");
@@ -45,7 +50,7 @@ impl Settings {
             fov: 70.0,
             sensitivity: 1.0,
             brightness: 0.5,
-            debug_groups: 0b11111,
+            debug_groups: u32::MAX,
             name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "Player".into()),
             binds: Vec::new(),
             relays: Vec::new(),
@@ -56,9 +61,7 @@ impl Settings {
             read_only: false,
         };
         let Ok(src) = std::fs::read_to_string(&path) else { return s };
-        for line in src.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
-            let (k, v) = (k.trim(), v.trim());
+        for (_, k, v) in crate::kv::pairs(&src) {
             if !s.set(k, v) {
                 if let Some(action) = k.strip_prefix("key.") {
                     s.binds.push((action.to_string(), v.to_string()));
@@ -78,10 +81,11 @@ impl Settings {
             "fov" => self.fov = v.parse().unwrap_or(70.0),
             "sensitivity" => self.sensitivity = v.parse().unwrap_or(1.0),
             "brightness" => self.brightness = v.parse().unwrap_or(0.5),
-            "debug_groups" => self.debug_groups = v.parse().unwrap_or(0b11111),
+            "debug_groups" => self.debug_groups = v.parse().unwrap_or(u32::MAX),
             "name" => self.name = v.to_string(),
             "relay" => self.relays.push(v.to_string()),
             "resource_pack" => self.resource_packs.push(v.to_string()),
+            "resource_packs" => self.resource_packs = v.split(',').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
             "shader_pack" => self.shader_pack = Some(v.to_string()).filter(|v| !v.is_empty()),
             _ => return false,
         }

@@ -17,13 +17,31 @@ pub struct Nav {
     pub speed: f32,
     pub path: Vec<IVec3>,
     pub next: usize,
-    /// Age at which the path is looked for again (targets move, blocks change).
+    /// Earliest age the path may be looked for again.
     pub repath: u64,
+    /// The target the path was found for; `None` looks again at `repath`.
+    pub found_for: Option<DVec3>,
     /// Ticks without getting anywhere.
     pub stuck: u32,
 }
 
+impl Nav {
+    /// Worth a new search: never searched, the target moved off, or the walk got stuck. A path
+    /// to a target that stays put is kept (searching every mob's path every second was most of a
+    /// tick with thousands of mobs).
+    pub fn stale(&self, age: u64) -> bool {
+        age >= self.repath && self.found_for.is_none_or(|f| (f - self.target).length_squared() > 4.0 || self.stuck > 10)
+    }
+}
+
 const MAX_NODES: usize = 600;
+
+type Scratch = (FxHashMap<IVec3, (IVec3, f32)>, BinaryHeap<Reverse<(u32, i32, i32, i32)>>);
+
+thread_local! {
+    /// The search's map and queue, kept between searches (thousands of mobs walk about).
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new((FxHashMap::default(), BinaryHeap::new()));
+}
 const MAX_DROP: i32 = 3;
 
 /// Cells a body `height` blocks tall can stand in, from the feet cell `from` towards `to`: the
@@ -42,8 +60,9 @@ pub fn find(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, from: IVec3, to:
     let wet = |p: IVec3| block(p).is_some_and(|s| c.states[s as usize].flags & bf::LIQUID != 0);
     let h = |p: IVec3| (p - to).as_vec3().length();
 
-    let mut came: FxHashMap<IVec3, (IVec3, f32)> = FxHashMap::default();
-    let mut queue = BinaryHeap::new();
+    let (mut came, mut queue) = SCRATCH.with_borrow_mut(std::mem::take);
+    came.clear();
+    queue.clear();
     came.insert(from, (from, 0.0));
     queue.push(Reverse(((h(from) * 1000.0) as u32, from.x, from.y, from.z)));
     let mut best = (h(from), from);
@@ -70,15 +89,15 @@ pub fn find(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, from: IVec3, to:
                 continue;
             }
             let base = if dx != 0 && dz != 0 { 1.414 } else { 1.0 };
-            let mut options = Vec::with_capacity(2);
             let q = p + side;
+            let mut next = None;
             if standable(q) {
-                options.push((q, base));
+                next = Some((q, base));
             } else if !room(q) {
                 // A step up: jump, with room above the head first.
                 let up = q + IVec3::Y;
                 if standable(up) && open(p + IVec3::Y * height) {
-                    options.push((up, base + 1.0));
+                    next = Some((up, base + 1.0));
                 }
             } else {
                 // Open but nothing to stand on: drop down to the first ground.
@@ -88,12 +107,12 @@ pub fn find(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, from: IVec3, to:
                         break;
                     }
                     if ground(down) {
-                        options.push((down, base + 0.5 * k as f32));
+                        next = Some((down, base + 0.5 * k as f32));
                         break;
                     }
                 }
             }
-            for (n, cost) in options {
+            if let Some((n, cost)) = next {
                 let g2 = g + cost + if wet(n) { 2.0 } else { 0.0 };
                 if came.get(&n).is_none_or(|&(_, old)| g2 < old) {
                     came.insert(n, (p, g2));
@@ -110,6 +129,7 @@ pub fn find(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, from: IVec3, to:
         path.push(prev);
     }
     path.reverse();
+    SCRATCH.with_borrow_mut(|s| *s = (came, queue));
     path
 }
 

@@ -116,6 +116,10 @@ pub async fn attributes(t: T) -> R {
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED)).await?;
     t.loaded().await?;
     t.check_eq(value(&t.op("attr me max_health").await?), 30.0, "max health modifier after reload");
+    // One maximum everywhere: /heal fills to it and the client hears the same.
+    t.cmd("/heal").await?;
+    t.check_eq(t.op("health").await?, "30".to_string(), "healed to the modified maximum");
+    t.until("the client has 30", Duration::from_secs(2), |t| t.state().health == 30.0).await?;
     t.op("attr_rm me max_health testkit:vigor").await?;
     t.check_eq(value(&t.op("attr me max_health").await?), 20.0, "removed");
     Ok(())
@@ -165,6 +169,44 @@ pub async fn tool_tiers(t: T) -> R {
     t.op(&format!("break {} stone_pickaxe", at(d))).await?;
     t.frames(5).await?;
     t.check_eq(t.count_near("core:item", 8.0).await?, 1, "stone pickaxe on diamond ore adds nothing");
+    // Tiers are numbers: the test mod's steel pickaxe (250) mines what iron (200) does, and its
+    // reinforced stone (250), which iron cannot; diamond ore (300) stays out of its reach.
+    let mut drops = 1;
+    for (block, tool, gets) in [("testmod:reinforced_stone", "iron_pickaxe", false), ("testmod:reinforced_stone", "testmod:steel_pickaxe", true), ("gold_ore", "testmod:steel_pickaxe", true), ("obsidian", "testmod:steel_pickaxe", false)] {
+        let p = add(f, [drops * 2 - 6, 0, -4]);
+        t.set(p, block).await?;
+        t.op(&format!("break {} {tool}", at(p))).await?;
+        t.frames(5).await?;
+        drops += gets as i32;
+        t.check_eq(t.count_near("core:item", 12.0).await?, drops as usize, &format!("{tool} on {block}: {}", if gets { "drops" } else { "nothing" }));
+    }
+    Ok(())
+}
+
+/// Blocks face only the directions they allow, one state each: the test mod's vent (up, north,
+/// east) has three, the furnace four times lit or not; placing picks the allowed one nearest
+/// the player's look.
+pub async fn facing_states(t: T) -> R {
+    static VENT: Block = Block::named("testmod:vent");
+    static FURNACE: Block = Block::named("base:furnace");
+    static TORCH: Block = Block::named("base:torch");
+    t.flat().await?;
+    t.check_eq(VENT.state_count(), 3, "the vent's states");
+    t.check_eq(FURNACE.state_count(), 8, "the furnace's states");
+    t.check_eq(TORCH.state_count(), 5, "the torch's states");
+    let f = t.feet();
+    t.op("mode creative").await?;
+    t.op("put me 0 testmod:vent 4").await?;
+    t.c().select(0);
+    // Against a wall two blocks south, looking at it: the front turns north, towards the player
+    // (looking steeply down it would face up).
+    let wall = add(f, [0, 0, 3]);
+    t.fill(wall, add(wall, [0, 1, 0]), "cobblestone").await?;
+    t.look_at(wall);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.secs(0.3).await?;
+    t.check_eq(t.block(add(wall, [0, 0, -1])).await?, "testmod:vent#2".to_string(), "the vent faces north (east, up, north in face order)");
     Ok(())
 }
 

@@ -61,13 +61,13 @@ pub fn wander(speed: f32, radius: f64) -> impl Goal {
     }
 }
 
-/// The nearest living player within `range` (and 8 blocks up or down): its id and state.
+/// The nearest living player within `range` times its `visibility` attribute (0 in creative)
+/// and 8 blocks up or down: its id and state.
 pub fn nearest_player(w: &World, st: &EntityState, range: f64) -> Option<(u64, EntityState)> {
     let d2 = |s: &EntityState| (s.pos[0] - st.pos[0]).powi(2) + (s.pos[2] - st.pos[2]).powi(2);
-    w.players()
-        .into_iter()
+    w.each_player()
         .filter_map(|p| w.entity(p).map(|s| (p, s)))
-        .filter(|(_, s)| s.health > 0.0 && d2(s) < range * range && (s.pos[1] - st.pos[1]).abs() < 8.0)
+        .filter(|(p, s)| s.health > 0.0 && (s.pos[1] - st.pos[1]).abs() < 8.0 && d2(s) < (range * w.attribute(*p, crate::abi::attribute::VISIBILITY)).powi(2))
         .min_by(|a, b| d2(&a.1).total_cmp(&d2(&b.1)))
 }
 

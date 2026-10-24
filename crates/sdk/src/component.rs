@@ -383,8 +383,22 @@ pub static CONDUCTOR: Tag = Tag::new(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::new(abi::comp::ENERGY);
 pub static WORN: Component<abi::Worn> = Component::new(abi::comp::WORN);
 pub static WORN_TEXTURE: Component<Text> = Component::new(abi::comp::WORN_TEXTURE);
+pub static WEAR_PER_HIT: Component<u32> = Component::new(abi::comp::WEAR_PER_HIT);
 pub static LIQUID: Component<Text> = Component::new(abi::comp::LIQUID);
 pub static REMAINDER: Component<Text> = Component::new(abi::comp::REMAINDER);
+pub static SHADER: Component<Text> = Component::new(abi::comp::SHADER);
+pub static MODEL: Component<Text> = Component::new(abi::comp::MODEL);
+pub static ANIMATIONS: Component<Text> = Component::new(abi::comp::ANIMATIONS);
+pub static SOUND: Component<Text> = Component::new(abi::comp::SOUND);
+
+/// The stack after one of it is used up (burnt as fuel, taken by a recipe): one less, and the
+/// last one leaves its `remainder` behind (a lava bucket its bucket).
+pub fn use_one(stack: ItemStack) -> ItemStack {
+    match REMAINDER.on_item(stack.item).and_then(|r| crate::find_item(r.as_str())) {
+        Some(left) if stack.count == 1 => ItemStack::new(left, 1),
+        _ => stack.shrink(1),
+    }
+}
 
 /// Stack size of an item (64 unless its `max_stack` says otherwise).
 pub fn max_stack(item: u32) -> u32 {

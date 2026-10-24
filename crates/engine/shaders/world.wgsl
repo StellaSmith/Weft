@@ -6,14 +6,14 @@ struct Globals {
     fog_color: vec4<f32>,
     // x daylight 0..1, y fog start, z fog end, w time in seconds
     params: vec4<f32>,
-    // x block texture array, y ambient light 0..15, z biome count, w blended colour tiles
+    // y ambient light 0..15, z biome count, w blended colour tiles
     ids: vec4<u32>,
     // x brightness setting 0 (moody) .. 1 (bright)
     look: vec4<f32>,
     // Origins are relative to this cube.
     cam_cube: vec4<i32>,
     // x: start of the overlay table in `frames` (per texture: overlay texture + 1, or 0),
-    // y: start of the bitset of textures with a glow mask, z: the glow mask array (all ones: none)
+    // y: start of the glow map (glow mask texture per texture index, all ones: none)
     extra: vec4<u32>,
 }
 
@@ -22,48 +22,40 @@ struct Globals {
 @group(1) @binding(2) var<storage, read> records: array<u32>;
 // Per biome: grass, foliage, water as 0xRRGGBB. Then the blended colours of loaded block
 // columns, 0xFFRRGGBB, in 16x16 tiles addressed by column position modulo g.ids.w.
-@group(1) @binding(3) var<storage, read> biomes: array<vec4<u32>>;
+// Per biome a colour per tint kind (`g.extra.z` kinds), then the blended columns.
+@group(1) @binding(3) var<storage, read> biomes: array<u32>;
 // Two words per texture name, see world_render.rs.
 @group(1) @binding(4) var<storage, read> tex_info: array<u32>;
-// Animated frames: layer | ticks << 16.
+// Animated frames: texture | ticks << 16; then the overlay table and the glow map.
 @group(1) @binding(5) var<storage, read> frames: array<u32>;
 
-var<private> CORNERS: array<vec3<f32>, 24> = array<vec3<f32>, 24>(
-    vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 1.0), vec3(0.0, 1.0, 0.0),
-    vec3(1.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0),
-    vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(1.0, 0.0, 1.0), vec3(0.0, 0.0, 1.0),
-    vec3(0.0, 1.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(1.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0),
-    vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 1.0), vec3(1.0, 1.0, 1.0), vec3(0.0, 1.0, 1.0),
-);
-var<private> UVS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0));
-var<private> TRI: array<u32, 6> = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
 var<private> TRI_FLIP: array<u32, 6> = array<u32, 6>(1u, 2u, 3u, 1u, 3u, 0u);
-var<private> SHADE: array<f32, 6> = array<f32, 6>(0.6, 0.6, 0.5, 1.0, 0.8, 0.8);
 var<private> AO: array<f32, 4> = array<f32, 4>(0.42, 0.62, 0.8, 1.0);
 
 struct VOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    // Textures (bindless indices) of this frame and the next.
     @location(1) @interpolate(flat) layer: u32,
     @location(2) color: vec3<f32>,
     @location(3) light: vec4<f32>,
     @location(4) dist: f32,
     @location(5) @interpolate(flat) layer2: u32,
     @location(6) @interpolate(flat) blend: f32,
-    // Overlay layer + 1 (0: none) and the tint it takes; without an overlay the tint is already
-    // in `color`.
+    // Overlay texture + 1 (0: none) and the tint it takes; without an overlay the tint is also
+    // in `color` (`tint` then only colours emission).
     @location(7) @interpolate(flat) overlay: u32,
     @location(8) tint: vec3<f32>,
-    // Has a glow mask (LabPBR emission).
-    @location(9) @interpolate(flat) glows: u32,
+    // Glow mask texture (LabPBR emission), all ones: none.
+    @location(9) @interpolate(flat) glow: u32,
 }
 
-fn glows(name: u32) -> u32 {
-    if g.extra.z == 0xffffffffu {
-        return 0u;
+fn glow_of(tex: u32) -> u32 {
+    let i = g.extra.y + tex;
+    if i >= arrayLength(&frames) {
+        return 0xffffffffu;
     }
-    return (frames[g.extra.y + name / 32u] >> (name % 32u)) & 1u;
+    return frames[i];
 }
 
 fn unpack_rgb(c: u32) -> vec3<f32> {
@@ -75,13 +67,12 @@ fn column_tint(x: i32, z: i32, tint: u32) -> u32 {
     let tx = ((x >> 4u) % t + t) % t;
     let tz = ((z >> 4u) % t + t) % t;
     let i = g.ids.z + u32(tz * t + tx) * 256u + u32((z & 15) * 16 + (x & 15));
-    return biomes[i][tint - 1u];
+    return biomes[i * g.extra.z + tint - 1u];
 }
 
 // Tint at a block corner: average of the four columns touching it, falling back to the face's
 // own biome where colours are not uploaded yet.
-fn tint_color(word: u32, x: i32, z: i32) -> vec3<f32> {
-    let tint = (word >> 24u) & 3u;
+fn tint_color(tint: u32, biome: u32, x: i32, z: i32) -> vec3<f32> {
     if tint == 0u {
         return vec3(1.0);
     }
@@ -97,7 +88,7 @@ fn tint_color(word: u32, x: i32, z: i32) -> vec3<f32> {
     if n > 0.0 {
         return sum / n;
     }
-    return unpack_rgb(biomes[(word >> 16u) & 255u][tint - 1u]);
+    return unpack_rgb(biomes[biome * g.extra.z + tint - 1u]);
 }
 
 struct Frame {
@@ -133,7 +124,8 @@ fn texture_frame(name: u32) -> Frame {
     return Frame(base, base, 0.0);
 }
 
-fn unpack_light(l: u32) -> vec4<f32> {
+// Corner light in a face word: four bits each.
+fn unpack_corner_light(l: u32) -> vec4<f32> {
     return vec4<f32>(f32(l & 15u), f32((l >> 4u) & 15u), f32((l >> 8u) & 15u), f32((l >> 12u) & 15u)) / 15.0;
 }
 
@@ -149,7 +141,7 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let w1 = records[f * 4u + 1u];
     let w2 = records[f * 4u + 2u];
     let w3 = records[f * 4u + 3u];
-    let ao = (w0 >> 16u) & 255u;
+    let ao = (w0 >> FACE_AO_SHIFT) & 255u;
     let a = vec4<u32>(ao & 3u, (ao >> 2u) & 3u, (ao >> 4u) & 3u, (ao >> 6u) & 3u);
     let flip = a.x + a.z < a.y + a.w;
     // Indexed as (0 1 2)(0 2 3); starting one corner later puts the diagonal on 1-3.
@@ -157,34 +149,34 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     if flip {
         c = (c + 1u) % 4u;
     }
-    let dir = (w0 >> 12u) & 7u;
+    let dir = (w0 >> FACE_DIR_SHIFT) & 7u;
     let local = vec3<f32>(f32(w0 & 15u), f32((w0 >> 4u) & 15u), f32((w0 >> 8u) & 15u)) + CORNERS[dir * 4u + c];
     let pos = finish(local, origins[ii]);
     var out: VOut;
     out.clip = g.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = UVS[c];
-    let fr = texture_frame(w1 & 65535u);
+    let fr = texture_frame(w1 & FACE_TEX_MASK);
     out.layer = fr.a;
     out.layer2 = fr.b;
     out.blend = fr.blend;
-    out.glows = glows(w1 & 65535u);
+    out.glow = glow_of(fr.a);
     var lw = w2;
     if c >= 2u {
         lw = w3;
     }
     let l = (lw >> ((c & 1u) * 16u)) & 65535u;
-    out.light = unpack_light(l);
+    out.light = unpack_corner_light(l);
     let o = origins[ii] + g.cam_cube;
-    let tint = tint_color(w1, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z));
-    let ov = frames[g.extra.x + (w1 & 65535u)];
+    let tint = tint_color((w0 >> FACE_TINT_SHIFT) & TINT_MASK, w1 >> FACE_BIOME_SHIFT, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z));
+    let ov = frames[g.extra.x + (w1 & FACE_TEX_MASK)];
     if ov != 0u {
         out.overlay = texture_frame(ov - 1u).a + 1u;
         out.tint = tint;
         out.color = vec3(SHADE[dir] * AO[a[c]]);
     } else {
         out.overlay = 0u;
-        out.tint = vec3(1.0);
+        out.tint = tint;
         out.color = tint * SHADE[dir] * AO[a[c]];
     }
     return out;
@@ -218,7 +210,7 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let n = normalize(cross(p1 - p0, p2 - p1));
     // Face shading blended by normal; plants opt out like vanilla's crossed squares.
     var shade = n.x * n.x * 0.6 + n.z * n.z * 0.8 + n.y * n.y * select(0.5, 1.0, n.y > 0.0);
-    if (w4 & (1u << 26u)) != 0u {
+    if ((uvw >> QUAD_TINT_SHIFT) & QUAD_FLAT) != 0u {
         shade = 1.0;
     }
     let pos = finish(local, origins[ii]);
@@ -226,59 +218,39 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.clip = g.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = uvs[c];
-    let fr = texture_frame(w4 & 65535u);
+    let fr = texture_frame(w4 & FACE_TEX_MASK);
     out.layer = fr.a;
     out.layer2 = fr.b;
     out.blend = fr.blend;
-    out.glows = glows(w4 & 65535u);
-    out.light = unpack_light(l);
+    out.glow = glow_of(fr.a);
+    out.light = unpack_corner_light(l);
     let o = origins[ii] + g.cam_cube;
-    out.color = tint_color(w4, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z))) * shade;
+    out.tint = tint_color((uvw >> QUAD_TINT_SHIFT) & TINT_MASK, w4 >> FACE_BIOME_SHIFT, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z)));
+    out.color = out.tint * shade;
     out.overlay = 0u;
-    out.tint = vec3(1.0);
     return out;
 }
 
-fn brightness_curve(level: f32) -> f32 {
-    return level / (4.0 - 3.0 * level);
-}
-
-// Vanilla 26.1's lightmap: dim ambient, sky light that turns blue and weaker at night, warm block
-// light that whitens towards both ends, then the Brightness setting bends it up keeping the hue.
-fn lightmap(light: vec4<f32>) -> vec3<f32> {
-    let day = clamp((g.params.x - 0.12) / 0.88, 0.0, 1.0);
-    let sky = brightness_curve(light.x) * mix(0.24, 1.0, day);
-    var c = max(vec3(0.04), vec3(brightness_curve(f32(g.ids.y) / 15.0))) + mix(vec3(0.478, 0.478, 1.0), vec3(1.0), day) * sky;
-    let block = light.yzw;
-    let p = (2.0 * block - 1.0) * (2.0 * block - 1.0);
-    let tint = mix(vec3(1.0, 0.847, 0.549), vec3(1.0), 0.9 * p);
-    c += tint * vec3(brightness_curve(block.x), brightness_curve(block.y), brightness_curve(block.z)) * 1.4;
-    c = clamp(c, vec3(0.0), vec3(1.0));
-    let m = max(max(c.x, c.y), c.z);
-    let bright = c * ((1.0 - pow(1.0 - m, 4.0)) / max(m, 1e-4));
-    return mix(c, bright, g.look.x);
-}
-
 fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
-    var light = in.color * lightmap(in.light);
+    var light = in.color * lightmap(in.light, g.params.x, f32(g.ids.y) / 15.0, g.look.x);
     // Glowing texels are lifted towards full brightness by their mask: lit = albedo * max(light,
-    // emission), so they stay their own colour in the dark.
-    if in.glows != 0u {
-        let e = textureSampleLevel(texture_arrays[g.extra.z], nearest_clamp, in.uv, in.layer, 0.0).r;
-        light = max(light, vec3(e));
+    // emission), so they stay their own (tinted, unshaded) colour in the dark.
+    if in.glow != 0xffffffffu {
+        let e = textureSampleLevel(textures[in.glow], nearest_clamp, in.uv, 0.0).r;
+        light = max(light, select(in.tint, vec3(1.0), in.overlay != 0u) * e);
     }
     // Shading factors are meant for gamma space like vanilla's; the target is sRGB, so apply them
     // as their linear equivalent or AO and shadows come out washed out.
     var rgb = albedo.rgb * pow(light, vec3(2.2));
-    let fog = clamp((in.dist - g.params.y) / max(g.params.z - g.params.y, 1.0), 0.0, 1.0);
+    let fog = fog_amount(in.dist, g.params.y, g.params.z);
     rgb = mix(rgb, g.fog_color.rgb, fog);
     return vec4(rgb, albedo.a);
 }
 
 // Nearest texels with antialiased borders (vanilla 26.1's sampleNearest): up close each texel
 // keeps its colour but its edge blends over one screen pixel, so blocks look clean, not jagged.
-fn nearest_uv(uv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec2<f32> {
-    let size = vec2<f32>(textureDimensions(texture_arrays[g.ids.x]).xy);
+fn nearest_uv(tex: u32, uv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec2<f32> {
+    let size = vec2<f32>(textureDimensions(textures[tex]).xy);
     let per_pixel = sqrt(du * du + dv * dv) * size;
     let t = uv * size;
     let center = round(t) - 0.5;
@@ -289,12 +261,11 @@ fn nearest_uv(uv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec2<f32> {
 fn sample(in: VOut) -> vec4<f32> {
     let du = dpdx(in.uv);
     let dv = dpdy(in.uv);
-    let uv = nearest_uv(in.uv, du, dv);
-    let a = textureSampleGrad(texture_arrays[g.ids.x], linear_mipped, uv, in.layer, du, dv);
+    let a = textureSampleGrad(textures[in.layer], linear_mipped, nearest_uv(in.layer, in.uv, du, dv), du, dv);
     if in.blend <= 0.0 {
         return a;
     }
-    let b = textureSampleGrad(texture_arrays[g.ids.x], linear_mipped, uv, in.layer2, du, dv);
+    let b = textureSampleGrad(textures[in.layer2], linear_mipped, nearest_uv(in.layer2, in.uv, du, dv), du, dv);
     return mix(a, b, in.blend);
 }
 
@@ -305,7 +276,7 @@ fn with_overlay(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
     }
     let du = dpdx(in.uv);
     let dv = dpdy(in.uv);
-    let ov = textureSampleGrad(texture_arrays[g.ids.x], linear_mipped, nearest_uv(in.uv, du, dv), in.overlay - 1u, du, dv);
+    let ov = textureSampleGrad(textures[in.overlay - 1u], linear_mipped, nearest_uv(in.overlay - 1u, in.uv, du, dv), du, dv);
     return vec4(mix(albedo.rgb, ov.rgb * pow(in.tint, vec3(2.2)), ov.a), albedo.a);
 }
 
@@ -318,15 +289,14 @@ fn fs_opaque(in: VOut) -> @location(0) vec4<f32> {
 // Mip level from the smaller screen derivative: a plant quad seen almost edge-on would otherwise
 // pick a tiny mip whose averaged texels cover the whole quad and draw it as a solid strip.
 fn sample_cutout(in: VOut) -> vec4<f32> {
-    let size = f32(textureDimensions(texture_arrays[g.ids.x]).x);
+    let size = f32(textureDimensions(textures[in.layer]).x);
     let t = in.uv * size;
     let lod = max(log2(max(min(length(dpdx(t)), length(dpdy(t))), 1e-6)), 0.0);
-    let uv = nearest_uv(in.uv, dpdx(in.uv), dpdy(in.uv));
-    let a = textureSampleLevel(texture_arrays[g.ids.x], linear_mipped, uv, in.layer, lod);
+    let a = textureSampleLevel(textures[in.layer], linear_mipped, nearest_uv(in.layer, in.uv, dpdx(in.uv), dpdy(in.uv)), lod);
     if in.blend <= 0.0 {
         return a;
     }
-    let b = textureSampleLevel(texture_arrays[g.ids.x], linear_mipped, uv, in.layer2, lod);
+    let b = textureSampleLevel(textures[in.layer2], linear_mipped, nearest_uv(in.layer2, in.uv, dpdx(in.uv), dpdy(in.uv)), lod);
     return mix(a, b, in.blend);
 }
 

@@ -531,7 +531,7 @@ impl Terrain {
             let deep = self.cave_biomes.iter().enumerate().find(|&(k, &(_, depth, size, threshold))| {
                 oy + 15 < c.height - depth && perlin3(seed ^ 0xCB10 ^ k as u64, x / size, mid / size, z / size) > threshold
             });
-            g.biomes()[i] = deep.map_or(c.biome, |(_, b)| b.0).id() as u8;
+            g.biomes()[i] = deep.map_or(c.biome, |(_, b)| b.0).id() as u16;
         }
         let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
         let sea = self.sea.map_or(i32::MIN, |s| s.0);
@@ -656,7 +656,7 @@ mod tests {
                 let mut air = std::collections::HashMap::new();
                 for cy in bottom..=top {
                     let mut blocks = vec![0u32; 4096];
-                    let mut biomes = vec![0u8; 256];
+                    let mut biomes = vec![0u16; 256];
                     let mut args = crate::abi::GenArgs { seed: 7, cube: [cx, cy, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
                     t.generate(Gen::wrap(&mut args));
                     for (i, &b) in blocks.iter().enumerate() {
@@ -693,7 +693,7 @@ mod tests {
                     let (x, z) = (cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32);
                     let h = t.column(3, x, z).height;
                     let mut blocks = vec![0u32; 4096];
-                    let mut biomes = vec![0u8; 256];
+                    let mut biomes = vec![0u16; 256];
                     let mut args = crate::abi::GenArgs { seed: 3, cube: [cx, h >> 4, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
                     t.generate(Gen::wrap(&mut args));
                     let air = blocks[((h & 15) as usize * 16 + i / 16) * 16 + i % 16] == 0;
@@ -718,7 +718,7 @@ mod tests {
                 let mut column: std::collections::HashMap<i32, Vec<u32>> = std::collections::HashMap::new();
                 for cy in -32..1 {
                     let mut blocks = vec![0u32; 4096];
-                    let mut biomes = vec![0u8; 256];
+                    let mut biomes = vec![0u16; 256];
                     let mut args = crate::abi::GenArgs { seed: 9, cube: [cx, cy, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
                     t.generate(Gen::wrap(&mut args));
                     column.insert(cy, blocks);

@@ -223,6 +223,7 @@ pub struct SoundBuilder<'a> {
     files: Vec<String>,
     handle: Option<&'static crate::Sound>,
     desc: abi::SoundDesc,
+    category_name: String,
     _p: PhantomData<&'a mut Registry>,
 }
 
@@ -239,6 +240,11 @@ impl SoundBuilder<'_> {
     /// `abi::sound_category`, for its volume setting.
     pub fn category(mut self, c: u32) -> Self {
         self.desc.category = c;
+        self
+    }
+    /// A category registered with `Registry::sound_category` (any mod's).
+    pub fn in_category(mut self, name: &str) -> Self {
+        self.category_name = qualify(self.ns, name);
         self
     }
     pub fn volume(mut self, v: f32) -> Self {
@@ -263,7 +269,7 @@ impl Drop for SoundBuilder<'_> {
             return;
         }
         let files: Vec<Str> = self.files.iter().map(|f| Str::new(f)).collect();
-        let desc = abi::SoundDesc { name: Str::new(&self.name), cell: self.handle.map_or(std::ptr::null(), |h| h.cell()), files: Slice::new(&files), ..self.desc };
+        let desc = abi::SoundDesc { name: Str::new(&self.name), cell: self.handle.map_or(std::ptr::null(), |h| h.cell()), files: Slice::new(&files), category_name: Str::new(&self.category_name), ..self.desc };
         unsafe { (host().reg_sound)(self.raw, &desc) }
     }
 }
@@ -309,7 +315,14 @@ impl Drop for MusicBuilder<'_> {
 impl Registry {
     /// A sound event, see `SoundBuilder`; blocks and entities name groups of them with `.sounds()`.
     pub fn sound<'a>(&'a mut self, name: &str) -> SoundBuilder<'a> {
-        SoundBuilder { raw: self.raw, ns: self.ns, name: qualify(self.ns, name), files: Vec::new(), handle: None, desc: abi::SoundDesc::DEFAULT, _p: PhantomData }
+        SoundBuilder { raw: self.raw, ns: self.ns, name: qualify(self.ns, name), files: Vec::new(), handle: None, desc: abi::SoundDesc::DEFAULT, category_name: String::new(), _p: PhantomData }
+    }
+
+    /// A sound category with its own volume setting (`<ns>:volume_<name>`, in the mod's
+    /// settings); `world`: heard through caves and water like block sounds.
+    pub fn sound_category(&mut self, name: &str, world: bool) {
+        let name = qualify(self.ns, name);
+        unsafe { (host().reg_sound_category)(self.raw, Str::new(&name), world as u32) }
     }
 
     /// Background music, see `MusicBuilder`.

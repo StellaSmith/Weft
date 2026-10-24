@@ -81,7 +81,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     var p = q.p0 + q.u * c.x + q.v * c.y;
     var out: VOut;
     out.color = unpack(q.color);
-    if q.mode == 3u && (q.fx & 0x7fffffffu) != 0u {
+    if q.mode == UI_MODE_FONT && (q.fx & 0x7fffffffu) != 0u {
         let g = apply_fx(q.fx & 0x7fffffffu, Glyph(vec2(0.0), out.color, screen.size.z, q.index, c, screen.size.w, (q.fx >> 31u) == 1u));
         p += g.offset;
         out.color = g.color;
@@ -102,21 +102,21 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     if in.rect.z > in.rect.x && (in.clip.x < in.rect.x || in.clip.x > in.rect.z || in.clip.y < in.rect.y || in.clip.y > in.rect.w) {
         discard;
     }
-    if in.mode == 0u {
+    if in.mode == UI_MODE_SOLID {
         return in.color;
     }
-    if in.mode == 4u {
+    if in.mode == UI_MODE_GUI {
         return gui_fill(in.fx, GuiPixel(in.uv, in.size, in.color, screen.size.z));
     }
-    if in.mode == 2u {
-        let t = textureSampleLevel(texture_arrays[in.tex], nearest_clamp, in.uv, in.layer, 0.0);
+    if in.mode == UI_MODE_ICON {
+        let t = textureSampleLevel(textures[in.tex], nearest_clamp, in.uv, 0.0);
         if t.a < 0.1 {
             discard;
         }
         return t * in.color;
     }
     let t = textureSampleLevel(textures[in.tex], nearest_clamp, in.uv, 0.0);
-    if in.mode == 3u {
+    if in.mode == UI_MODE_FONT {
         return vec4(in.color.rgb, in.color.a * t.r);
     }
     return t * in.color;

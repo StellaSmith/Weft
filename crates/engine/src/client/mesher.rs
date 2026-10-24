@@ -3,6 +3,7 @@
 //! Full block faces: 4 words (pos/dir/ao, texture/biome/tint, light for 4 corners).
 //! Everything else (plants, boxes, liquids): 8-word quads with explicit corners.
 
+use crate::gpu_layout::{face, quad};
 use voxide_abi::{Layer, Model, block_flags as bf};
 
 use crate::content::Content;
@@ -20,7 +21,7 @@ pub struct Neighborhood {
     pub states: Box<[u32; PAD_VOLUME]>,
     pub light: Box<[u32; PAD_VOLUME]>,
     /// Biome id per column of the centre cube.
-    pub biomes: [u8; 256],
+    pub biomes: [u16; 256],
     /// World position of the cube's first block.
     pub origin: [i32; 3],
 }
@@ -92,10 +93,10 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                                 continue;
                             }
                             let (ao, light) = corner_data(n, &opaque, x, y, z, dir);
-                            let w0 = x as u32 | (y as u32) << 4 | (z as u32) << 8 | (dir as u32) << 12 | ao << 16;
-                            let tex = ctm.resolve(c, n, x, y, z, dir, info.textures[dir] & 0xFFFF);
+                            let tex = ctm.resolve(c, n, x, y, z, dir, info.textures[dir] & face::TEX_MASK);
                             let tint = if info.tint_faces & (1 << dir) != 0 || ctm.has_overlay(tex) { info.tint as u32 } else { 0 };
-                            let w1 = tex | biome << 16 | tint << 24;
+                            let w0 = x as u32 | (y as u32) << 4 | (z as u32) << 8 | (dir as u32) << face::DIR_SHIFT | ao << face::AO_SHIFT | tint << face::TINT_SHIFT;
+                            let w1 = tex | biome << face::BIOME_SHIFT;
                             mesh.faces[info.layer as usize].push([w0, w1, light[0] | light[1] << 16, light[2] | light[3] << 16]);
                         }
                     }
@@ -219,8 +220,7 @@ fn corner_data(n: &Neighborhood, opaque: &impl Fn(usize) -> bool, x: i32, y: i32
     (ao_bits, lights)
 }
 
-/// Added to a quad's tint: no directional shading (plants).
-const FLAT: u8 = 4;
+const FLAT: u8 = quad::FLAT as u8;
 
 fn quad(corners: [[f32; 3]; 4], uv: [u32; 4], texture: u32, biome: u32, tint: u8, light: [u32; 4]) -> [u32; 8] {
     let enc = |p: [f32; 3]| {
@@ -232,8 +232,8 @@ fn quad(corners: [[f32; 3]; 4], uv: [u32; 4], texture: u32, biome: u32, tint: u8
         enc(corners[1]),
         enc(corners[2]),
         enc(corners[3]),
-        texture & 0xFFFF | biome << 16 | (tint as u32) << 24,
-        uv[0] | uv[1] << 5 | uv[2] << 10 | uv[3] << 15,
+        texture & face::TEX_MASK | biome << face::BIOME_SHIFT,
+        uv[0] | uv[1] << 5 | uv[2] << 10 | uv[3] << 15 | (tint as u32) << quad::TINT_SHIFT,
         light[0] | light[1] << 16,
         light[2] | light[3] << 16,
     ]

@@ -66,10 +66,11 @@ fn axis_placement(p: &Place) -> u32 {
     }
 }
 
-fn log(r: &mut Registry, name: &str, handle: &'static Block, wood: &str) {
+fn log(r: &mut Registry, name: &str, handle: &'static Block, wood: &str, tree: &str) {
     let side = format!("log_{wood}");
     let top = format!("log_{wood}_top");
     r.block(name).handle(handle)
+        .set_text(&crate::worldgen::TREE, tree)
         .sounds("wood")
         .hardness(2.0)
         .mineable("axe")
@@ -137,15 +138,15 @@ pub fn register(r: &mut Registry) {
     r.block("sandstone").handle(&SANDSTONE).sounds("stone").textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).mineable("pickaxe").needs_tool(0).tab("building");
     r.block("snow").handle(&SNOW).sounds("sand").hardness(0.2).mineable("shovel").tab("natural");
     r.block("ice").handle(&ICE).sounds("glass").hardness(0.5).translucent().opacity(2).friction(0.98).mineable("pickaxe").drops_nothing().tab("natural");
-    r.block("obsidian").handle(&OBSIDIAN).sounds("stone").hardness(50.0).mineable("pickaxe").needs_tool(3).tab("natural");
+    r.block("obsidian").handle(&OBSIDIAN).sounds("stone").hardness(50.0).mineable("pickaxe").needs_tool(tool_tier::DIAMOND).tab("natural");
     r.block("coal_ore").handle(&COAL_ORE).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(0).drops("coal", 1).tag("ores").tag("ores/coal").tab("natural");
-    r.block("iron_ore").handle(&IRON_ORE).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(1).drops("raw_iron", 1).tag("ores").tag("ores/iron").tab("natural");
-    r.block("gold_ore").handle(&GOLD_ORE).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(2).drops("raw_gold", 1).tag("ores").tag("ores/gold").tab("natural");
-    r.block("diamond_ore").handle(&DIAMOND_ORE).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(2).drops("diamond", 1).tag("ores").tag("ores/diamond").tab("natural");
+    r.block("iron_ore").handle(&IRON_ORE).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::STONE).drops("raw_iron", 1).tag("ores").tag("ores/iron").tab("natural");
+    r.block("gold_ore").handle(&GOLD_ORE).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).drops("raw_gold", 1).tag("ores").tag("ores/gold").tab("natural");
+    r.block("diamond_ore").handle(&DIAMOND_ORE).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).drops("diamond", 1).tag("ores").tag("ores/diamond").tab("natural");
 
-    log(r, "oak_log", &OAK_LOG, "oak");
-    log(r, "birch_log", &BIRCH_LOG, "birch");
-    log(r, "spruce_log", &SPRUCE_LOG, "spruce");
+    log(r, "oak_log", &OAK_LOG, "oak", "round base:oak_leaves");
+    log(r, "birch_log", &BIRCH_LOG, "birch", "round base:birch_leaves");
+    log(r, "spruce_log", &SPRUCE_LOG, "spruce", "cone base:spruce_leaves");
     for (name, h, tex) in [("oak_planks", &OAK_PLANKS, "planks_oak"), ("birch_planks", &BIRCH_PLANKS, "planks_birch"), ("spruce_planks", &SPRUCE_PLANKS, "planks_spruce")] {
         r.block(name).handle(h).sounds("wood").texture(tex).hardness(2.0).mineable("axe").tag("planks").tag("materials/wood").set(&FLAMMABLE, 5).set(&FUEL, 300).tab("building");
     }
@@ -154,8 +155,8 @@ pub fn register(r: &mut Registry) {
     leaves(r, "spruce_leaves", &SPRUCE_LEAVES, "leaves_spruce");
 
     // Vanilla numbers: water steps every 5 ticks and reaches 7 blocks, lava every 30 and 3.
-    r.liquid("water").handle(&WATER).texture("water_still").tint_water().tag("water").bucket("water_bucket", "bucket");
-    r.liquid("lava").handle(&LAVA).texture("lava_still").light(15).drag(0.3).delay(30).drop_off(2).slope_find(2).infinite(0).temperature(1300).tag("lava").tag("hot").bucket("lava_bucket", "bucket");
+    r.liquid("water").handle(&WATER).texture("water_still").tint_water().tag("water").bucket("water_bucket", "bucket", "tools");
+    r.liquid("lava").handle(&LAVA).texture("lava_still").light(15).drag(0.3).delay(30).drop_off(2).slope_find(2).infinite(0).temperature(1300).tag("lava").tag("hot").bucket("lava_bucket", "bucket", "tools");
     r.liquid_reaction("#hot", "#water").source("obsidian").flowing("cobblestone").falls_into("stone");
 
     r.block("tall_grass").handle(&TALL_GRASS).sounds("grass").texture("tallgrass").plant().needs_below("plant_soil").tint_grass().no_item();
@@ -200,26 +201,22 @@ pub fn register(r: &mut Registry) {
         .set(&FUEL, 300)
         .on_use(crate::machines::open_crafting).tab("functional");
     r.block("torch").handle(&TORCH).sounds("wood")
-        .states(5, |i, s| torch_state(i, s, "torch"))
-        .placement(torch_placement)
+        .facing(TORCH_FACINGS, Toward::Face, |d, s| torch_state(d, s, "torch"))
         .item_texture("torch")
         .not_solid()
         .light_rgb(15, 13, 10)
         .hardness(0.0)
         .tab("functional");
-    // State = the wall it hangs on, in `Place::horizontal` order (-Z, +X, +Z, -X).
+    // Facing away from the solid wall it hangs on.
     r.block("ladder").handle(&LADDER).sounds("wood")
-        .states(4, |i, s| {
-            let (min, max) = [([0.0, 0.0, 0.0], [16.0, 16.0, 1.0]), ([15.0, 0.0, 0.0], [16.0, 16.0, 16.0]), ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]), ([0.0, 0.0, 0.0], [1.0, 16.0, 16.0])][i as usize];
-            // Hangs on a solid wall: -Z, +X, +Z, -X faces.
-            s.model_box(min, max, "ladder").needs([4, 1, 5, 0][i as usize], "")
-        })
-        .placement(|p| match p.face() {
-            0 => 1,
-            1 => 3,
-            4 => 2,
-            5 => 0,
-            _ => p.horizontal(),
+        .facing(Facings::HORIZONTAL, Toward::Face, |d, s| {
+            let (min, max) = match d {
+                Dir::South => ([0.0, 0.0, 0.0], [16.0, 16.0, 1.0]),
+                Dir::North => ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]),
+                Dir::East => ([0.0, 0.0, 0.0], [1.0, 16.0, 16.0]),
+                _ => ([15.0, 0.0, 0.0], [16.0, 16.0, 16.0]),
+            };
+            s.model_box(min, max, "ladder").needs(d.opposite().face(), "")
         })
         .climbable()
         .not_solid()
@@ -228,9 +225,9 @@ pub fn register(r: &mut Registry) {
     r.block("glowstone").handle(&GLOWSTONE).sounds("glass").light(15).hardness(0.3).tab("natural");
     r.block("bricks").handle(&BRICKS).sounds("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tab("building");
     r.block("stone_bricks").handle(&STONE_BRICKS).sounds("stone").texture("stonebrick").hardness(1.5).mineable("pickaxe").needs_tool(0).tab("building");
-    r.block("iron_block").handle(&IRON_BLOCK).sounds("stone").hardness(5.0).mineable("pickaxe").needs_tool(1).tag("ore_blocks/iron").tab("building");
-    r.block("gold_block").handle(&GOLD_BLOCK).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(2).tag("ore_blocks/gold").tab("building");
-    r.block("diamond_block").handle(&DIAMOND_BLOCK).sounds("stone").hardness(5.0).mineable("pickaxe").needs_tool(2).tag("ore_blocks/diamond").tab("building");
+    r.block("iron_block").handle(&IRON_BLOCK).sounds("stone").hardness(5.0).mineable("pickaxe").needs_tool(tool_tier::STONE).tag("ore_blocks/iron").tab("building");
+    r.block("gold_block").handle(&GOLD_BLOCK).sounds("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).tag("ore_blocks/gold").tab("building");
+    r.block("diamond_block").handle(&DIAMOND_BLOCK).sounds("stone").hardness(5.0).mineable("pickaxe").needs_tool(tool_tier::IRON).tag("ore_blocks/diamond").tab("building");
     r.block("coal_block").handle(&COAL_BLOCK).sounds("stone").hardness(5.0).mineable("pickaxe").needs_tool(0).tag("ore_blocks/coal").set(&FUEL, 16000).tab("building");
     r.block("wool").handle(&WOOL).sounds("cloth").texture("wool_white").hardness(0.8).set(&FLAMMABLE, 30).tab("colored");
 
@@ -262,29 +259,20 @@ fn grass_tick(e: &mut BlockEvent) {
     }
 }
 
-/// Torch states: 0 on the floor, 1..4 on a wall (-Z, +X, +Z, -X like ladders), raised and
-/// against it.
-// ponytail: wall torches stand straight; vanilla's lean needs rotated block boxes.
-pub fn torch_state<'a>(i: u32, s: State<'a>, texture: &str) -> State<'a> {
-    let (min, max) = [
-        ([7.0, 0.0, 7.0], [9.0, 10.0, 9.0]),
-        ([7.0, 3.0, 0.0], [9.0, 13.0, 2.0]),
-        ([14.0, 3.0, 7.0], [16.0, 13.0, 9.0]),
-        ([7.0, 3.0, 14.0], [9.0, 13.0, 16.0]),
-        ([0.0, 3.0, 7.0], [2.0, 13.0, 9.0]),
-    ][i as usize];
-    s.model_box(min, max, texture).needs([2, 4, 1, 5, 0][i as usize], "")
-}
+/// Torches stand on the floor or hang on a wall, facing away from it.
+pub const TORCH_FACINGS: Facings = Facings::only(&[Dir::Up, Dir::North, Dir::East, Dir::South, Dir::West]);
 
-/// On top of a block: the floor state; on a block's side: hanging on that block.
-pub fn torch_placement(p: &Place) -> u32 {
-    match p.face() {
-        0 => 2,
-        1 => 4,
-        4 => 3,
-        5 => 1,
-        _ => 0,
-    }
+/// A torch facing `d`: on the floor (`Up`) or raised against the wall behind it.
+// ponytail: wall torches stand straight; vanilla's lean needs rotated block boxes.
+pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
+    let (min, max) = match d {
+        Dir::South => ([7.0, 3.0, 0.0], [9.0, 13.0, 2.0]),
+        Dir::West => ([14.0, 3.0, 7.0], [16.0, 13.0, 9.0]),
+        Dir::North => ([7.0, 3.0, 14.0], [9.0, 13.0, 16.0]),
+        Dir::East => ([0.0, 3.0, 7.0], [2.0, 13.0, 9.0]),
+        _ => ([7.0, 0.0, 7.0], [9.0, 10.0, 9.0]),
+    };
+    s.model_box(min, max, texture).needs(d.opposite().face(), "")
 }
 
 /// Sugar cane and cacti grow a block on top, up to three high.

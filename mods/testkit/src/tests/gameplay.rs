@@ -150,6 +150,32 @@ pub async fn armor(t: T) -> R {
     Ok(())
 }
 
+/// A slot taking only some items: the test mod's generator burns fuel, so shift-clicked dirt
+/// stays with the player and coal goes in.
+pub async fn slot_accepts(t: T) -> R {
+    t.flat().await?;
+    let p = add(t.feet(), [0, 0, -2]);
+    t.set(p, "testmod:generator").await?;
+    t.op("put me 0 dirt 16").await?;
+    t.op("put me 1 coal 8").await?;
+    t.op(&format!("menu testmod:generator {} {} {}", p[0], p[1], p[2])).await?;
+    t.screen("core:menu").await?;
+    // Menu slots: 0 the generator's, 1-27 main inventory, 28-36 hotbar.
+    for slot in [28, 29] {
+        t.c().key("ShiftLeft", 0.3);
+        t.frames(1).await?;
+        t.click_ui(&format!("slot:{slot}"), 0);
+        t.frames(4).await?;
+    }
+    let at = format!("{} {} {}", p[0], p[1], p[2]);
+    // It starts burning one at once.
+    t.until("coal in the generator", Duration::from_secs(5), |t| t.c().menu_slot(0).count >= 7).await?;
+    t.check_eq(t.slot(&at, 0).await?.0, "base:coal".to_string(), "the generator's slot");
+    t.check_eq(t.slot("me", 9).await?, ("base:dirt".into(), 16, 0), "dirt moved to the main inventory");
+    t.c().close_screen();
+    t.no_screen().await
+}
+
 /// Pouring and scooping water.
 pub async fn bucket(t: T) -> R {
     t.flat().await?;
@@ -253,7 +279,22 @@ pub async fn energy(t: T) -> R {
     t.op(&format!("insert {} iron_ore 2", at(e))).await?;
     let out = t.wait_slot(&at(e), 1, 20.0).await?;
     t.check_eq(out.0, "base:iron_ingot".into(), "electric furnace output");
-    Ok(())
+    // A battery has no tick: only the grid changes its energy, and its open menu still sees it.
+    // The furnace is cut off first, it would take everything the generator makes.
+    t.set(add(g, [-1, 0, 0]), "air").await?;
+    t.set(add(g, [1, 0, 0]), "testmod:cable").await?;
+    let b = add(g, [2, 0, 0]);
+    t.set(b, "testmod:battery").await?;
+    t.look_at(b);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.screen("core:menu").await?;
+    let stored = |t: &T| t.c().view().menu_component(&ENERGY).map_or(0, |e| e.stored);
+    let first = stored(&t);
+    t.until("the battery's bar moves", Duration::from_secs(5), |t| stored(t) > first).await?;
+    t.check(t.c().view().menu_component(&ENERGY).is_some_and(|e| e.capacity == 100_000), "the battery starts with its own capacity");
+    t.c().close_screen();
+    t.no_screen().await
 }
 
 pub async fn eating(t: T) -> R {
@@ -278,8 +319,19 @@ pub async fn drop_and_pickup(t: T) -> R {
     t.until("one dropped", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 9).await?;
     t.check(t.count_near("core:item", 8.0).await? == 1, "no item entity after dropping");
     t.secs(2.2).await?;
+    let item = t.c().entities().first().copied();
     t.hold("core:forward", 1.0);
-    t.until("picked up again", Duration::from_secs(6), |t| t.c().inventory_slot(0).count == 10).await?;
+    // The client lets the taken item fly to the player for three ticks before it goes.
+    let mut flying = false;
+    t.until("picked up again", Duration::from_secs(6), |t| {
+        let got = t.c().inventory_slot(0).count == 10;
+        flying |= got && item.is_some_and(|id| t.c().entity(id).is_some());
+        got
+    })
+    .await?;
+    t.check(flying, "the taken item was still on its way when it reached the inventory");
+    t.secs(0.3).await?;
+    t.check(item.is_none_or(|id| t.c().entity(id).is_none()), "the taken item is gone");
     Ok(())
 }
 

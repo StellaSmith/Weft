@@ -4,7 +4,7 @@
 use voxide_sdk::abi::slot_flags as sf;
 use voxide_sdk::*;
 
-use crate::items::{ARMOR, FOOD};
+use crate::items::{ARMOR, FOOD, REMAINDER};
 
 value! {
     /// `armor`: points worn, kept here so the HUD can show them.
@@ -151,12 +151,15 @@ fn craft_result(m: &MenuCtx, start: u32, size: u32, out: u32) {
     m.set(out, recipe_match("base:crafting", &grid, size, size));
 }
 
+/// Takes one of each ingredient; the last of a stack leaves its `remainder` (a bucket).
 fn consume_grid(m: &MenuCtx, start: u32, count: u32) {
     for i in start..start + count {
         let s = m.get(i);
-        if !s.is_empty() {
-            m.set(i, s.shrink(1));
+        if s.is_empty() {
+            continue;
         }
+        let left = REMAINDER.on_item(s.item).and_then(|r| find_item(r.as_str())).filter(|_| s.count == 1);
+        m.set(i, left.map_or(s.shrink(1), |r| ItemStack::new(r, 1)));
     }
 }
 

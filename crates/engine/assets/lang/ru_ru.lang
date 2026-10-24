@@ -109,6 +109,7 @@ hud.debug.entities = Сущностей: {0}
 hud.debug.load = Загрузка: {0} генерируется или ждёт, {1} не отправлено
 hud.debug.gpu_name = ГП: {0}
 hud.debug.cpu_name = ЦП: {0} ({1} потоков)
+hud.debug.memory = Память: занято {0} из {1}
 hud.debug.window = Окно: {0}x{1}, масштаб интерфейса {2}
 hud.debug.toggle = [F3+{0}] {1}: {2}
 hud.debug.gamemode = [F3+F4] Следующий режим игры

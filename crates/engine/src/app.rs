@@ -106,6 +106,8 @@ pub struct Stats {
     pub load: (u64, u64),
     pub gpu_name: String,
     pub cpu_name: String,
+    /// Physical memory of the machine, bytes.
+    pub memory_total: u64,
     pub threads: usize,
     pub window: (u32, u32),
     pub gui_scale: f32,
@@ -287,7 +289,8 @@ impl App {
             client_hash: 0,
             stats: Stats {
                 gpu_name: gpu_name.clone(),
-                cpu_name: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default(),
+                cpu_name: crate::diag::cpu_name(),
+                memory_total: crate::diag::total_memory(),
                 threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
                 ..Default::default()
             },

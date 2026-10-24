@@ -109,6 +109,7 @@ hud.debug.entities = Entities: {0}
 hud.debug.load = Loading: {0} generating or waiting, {1} unsent
 hud.debug.gpu_name = GPU: {0}
 hud.debug.cpu_name = CPU: {0} ({1} threads)
+hud.debug.memory = Memory: {0} used of {1}
 hud.debug.window = Window: {0}x{1}, GUI scale {2}
 hud.debug.toggle = [F3+{0}] {1}: {2}
 hud.debug.gamemode = [F3+F4] Next game mode

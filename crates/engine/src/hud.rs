@@ -242,6 +242,7 @@ const MODS: &[DebugLine] = &[("core.raw", |_| vec![Arg::Text(mod_profile())])];
 const SYSTEM: &[DebugLine] = &[
     ("hud.debug.gpu_name", |c| vec![Arg::Text(c.stats.gpu_name.clone())]),
     ("hud.debug.cpu_name", |c| vec![Arg::Text(c.stats.cpu_name.clone()), Arg::Int(c.stats.threads as i64)]),
+    ("hud.debug.memory", |c| vec![Arg::Text(crate::diag::size(crate::diag::memory())), Arg::Text(crate::diag::size(c.stats.memory_total))]),
     ("hud.debug.window", |c| vec![Arg::Int(c.stats.window.0 as i64), Arg::Int(c.stats.window.1 as i64), Arg::Float(c.stats.gui_scale as f64, 1)]),
 ];
 

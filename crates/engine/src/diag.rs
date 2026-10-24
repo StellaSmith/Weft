@@ -125,6 +125,67 @@ pub fn memory() -> u64 {
     0
 }
 
+/// Physical memory of the machine in bytes, 0 where unknown.
+#[cfg(windows)]
+pub fn total_memory() -> u64 {
+    #[repr(C)]
+    struct Status {
+        length: u32,
+        load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page: u64,
+        avail_page: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended: u64,
+    }
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut Status) -> i32;
+    }
+    let mut s = Status { length: size_of::<Status>() as u32, load: 0, total_phys: 0, avail_phys: 0, total_page: 0, avail_page: 0, total_virtual: 0, avail_virtual: 0, avail_extended: 0 };
+    if unsafe { GlobalMemoryStatusEx(&mut s) } != 0 { s.total_phys } else { 0 }
+}
+
+#[cfg(not(windows))]
+pub fn total_memory() -> u64 {
+    0
+}
+
+/// The processor's marketing name ("AMD Ryzen 9 5900X") from CPUID, without the trademark and
+/// core count noise; the OS identifier string where CPUID has no name.
+pub fn cpu_name() -> String {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::__cpuid;
+        if __cpuid(0x8000_0000).eax >= 0x8000_0004 {
+            let mut bytes = Vec::with_capacity(48);
+            for leaf in 0x8000_0002u32..=0x8000_0004 {
+                let r = __cpuid(leaf);
+                for v in [r.eax, r.ebx, r.ecx, r.edx] {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            let raw = String::from_utf8_lossy(&bytes).trim_matches(|c: char| c == '\0' || c.is_whitespace()).to_string();
+            let name = tidy_cpu_name(&raw);
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default()
+}
+
+fn tidy_cpu_name(raw: &str) -> String {
+    let mut s = raw.replace("(R)", "").replace("(TM)", "").replace("(tm)", "");
+    // Intel: "... CPU @ 3.60GHz"; AMD: "... 12-Core Processor".
+    if let Some(i) = s.find(" @ ") {
+        s.truncate(i);
+    }
+    let words: Vec<&str> = s.split_whitespace().filter(|w| !w.ends_with("-Core") && *w != "Processor" && *w != "CPU").collect();
+    words.join(" ")
+}
+
 // ---------------------------------------------------------------- per-mod time
 
 /// Mod callback time and calls between two looks, without resetting what other readers see.
@@ -298,6 +359,15 @@ impl Reporter {
             size(memory()),
             if mods.is_empty() { "-".to_string() } else { mods.join(", ") }
         );
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    #[test]
+    fn cpu_names_lose_the_noise() {
+        assert_eq!(super::tidy_cpu_name("AMD Ryzen 9 5900X 12-Core Processor"), "AMD Ryzen 9 5900X");
+        assert_eq!(super::tidy_cpu_name("Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz"), "Intel Core i7-8700K");
     }
 }
 

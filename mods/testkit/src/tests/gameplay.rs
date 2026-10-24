@@ -31,6 +31,7 @@ pub async fn furnace(t: T) -> R {
     let b = add(f, [-2, 0, -2]);
     t.set(a, "furnace").await?;
     t.set(b, "furnace").await?;
+    t.op("events reset").await?;
     t.op(&format!("insert {} raw_iron 1", at(a))).await?;
     t.op(&format!("insert {} coal 1", at(a))).await?;
     t.op(&format!("insert {} sand 1", at(b))).await?;
@@ -41,6 +42,8 @@ pub async fn furnace(t: T) -> R {
     t.check_eq(t.wait_slot(&at(a), 2, 20.0).await?, ("base:iron_ingot".into(), 1, 0), "furnace output");
     t.check_eq(t.wait_slot(&at(b), 2, 5.0).await?.0, "base:glass".into(), "sand smelted with lava");
     t.check_eq(t.slot(&at(b), 1).await?.0, "base:bucket".into(), "lava bucket leaves the bucket");
+    let events = t.op("events").await?;
+    t.check(events.contains("smelted=2"), format!("smelted events: {events}"));
     t.look_at(a);
     t.frames(2).await?;
     t.press("core:use");

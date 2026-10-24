@@ -109,13 +109,11 @@ impl Dim {
             }
             return;
         }
+        self.set(c, p, state);
         if old != AIR {
             // Plants and torches wash away with their drops, like vanilla.
-            if let Some(item) = c.block_of(old).drop {
-                self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), ItemStack::new(item, c.block_of(old).drop_count.max(1)));
-            }
+            self.drop_block_loot(c, p, old, ItemStack::EMPTY);
         }
-        self.set(c, p, state);
     }
 
     fn slope_distance(&self, c: &Content, p: IVec3, depth: u32, from: IVec3, l: u16, down: IVec3) -> u32 {

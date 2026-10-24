@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use glam::{DVec3, IVec3};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use voxide_abi::{self as abi, ItemStack, block_flags as bf, damage, entity_flags as ef};
+use voxide_abi::{self as abi, ItemStack, Versioned, block_flags as bf, damage, entity_flags as ef};
 
 use super::entity::{Entities, Entity, step};
 use crate::components as comps;
@@ -68,6 +68,8 @@ pub struct Dim {
     pub gizmo_groups: Arc<[String]>,
     /// World rule values by rule id (`Game::rules`), set by the server before each tick.
     pub rules: Arc<[i64]>,
+    /// Event values waiting for delivery, by event id (ordered, so delivery is deterministic).
+    pub event_queue: std::collections::BTreeMap<u32, Vec<u8>>,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -199,6 +201,7 @@ impl Dim {
             gizmos: Vec::new(),
             gizmo_groups: Arc::from([]),
             rules: Arc::from([]),
+            event_queue: Default::default(),
         }
     }
 
@@ -410,9 +413,15 @@ impl Dim {
             let a = self.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: id, other: source, amount, cause, handled: 0 });
             amount = a.amount;
         }
+        let q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
+        amount = self.compute(c, abi::chain::DAMAGE, amount as f64, &q, crate::log::on(crate::log::Channel::Modifiers, log::Level::Debug)) as f32;
+        if crate::log::on(crate::log::Channel::Modifiers, log::Level::Debug) {
+            log::debug!(target: "modifiers", "{}", super::extend::explanation());
+        }
         if amount <= 0.0 {
             return false;
         }
+        self.emit_engine(c, abi::event::ENTITY_HURT, &abi::Hurt { entity: id, source, amount, cause });
         let knock = self.entities.get(source).map(|s| s.pos);
         let Some(e) = self.entities.get_mut(id) else { return false };
         e.health -= amount;
@@ -423,7 +432,7 @@ impl Dim {
             e.vel += d * 6.0 + DVec3::Y * 5.0;
             knocked = e.player.then(|| [(from.x - e.pos.x) as f32, (from.z - e.pos.z) as f32]);
         }
-        let (health, player) = (e.health, e.player);
+        let (health, player, pos, kind, on_fire) = (e.health, e.player, e.pos, e.kind, e.fire > 0);
         if let Some(dir) = knocked {
             self.entities.knocked.push((id, dir));
         }
@@ -431,6 +440,15 @@ impl Dim {
         if health <= 0.0 {
             for &(owner, cb) in &k.on_death {
                 self.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: id, other: source, amount, cause, handled: 0 });
+            }
+            self.emit_engine(c, abi::event::ENTITY_DIED, &abi::Death { entity: id, killer: source, kind, cause, pos: pos.to_array() });
+            if !player {
+                let by_player = self.entities.get(source).is_some_and(|s| s.player);
+                let tool = self.entities.get(source).filter(|s| s.player).and_then(|s| self.entities.inventories.get(&source).and_then(|i| i.get(s.selected as usize)).copied()).unwrap_or_default();
+                let ctx = crate::loot::Ctx { tool, by_player, on_fire: on_fire || cause == damage::FIRE || cause == damage::LAVA };
+                for s in self.roll_loot(c, &k.name, &ctx) {
+                    self.spawn_item(c, pos + DVec3::Y * 0.5, s);
+                }
             }
             if player {
                 if let Some(items) = self.entities.inventories.get(&id).cloned() {
@@ -509,7 +527,7 @@ impl Dim {
         self.grid.tick(&mut self.entities, c);
         self.flush_neighbors(c);
         self.entities.compact();
-        self.finish_tick();
+        self.finish_tick(c);
     }
 
     fn tick_entities(&mut self, c: &'static Content) {
@@ -624,7 +642,15 @@ impl Dim {
             }
             let stack = e.item;
             if let Some(&(pid, _)) = players.iter().find(|(_, pp)| (*pp + DVec3::Y * 0.5 - pos).length_squared() < 2.25) {
+                let mut q = abi::Query { entity: pid, other: id, item: stack.item, amount: stack.count as f64, ..abi::Query::DEFAULT };
+                if !self.ask(c, abi::question::PICKUP_ITEM, &mut q) {
+                    continue;
+                }
                 let rest = self.entities.insert_item(c, pid, stack);
+                let taken = stack.count - rest.count;
+                if taken > 0 {
+                    self.emit_engine(c, abi::event::ITEM_PICKED_UP, &abi::Pickup { player: pid, stack: ItemStack { count: taken, ..stack } });
+                }
                 if let Some(e) = self.entities.get_mut(id) {
                     if rest.is_empty() {
                         e.removed = true;
@@ -685,13 +711,12 @@ impl Dim {
     /// Breaks a block that lost its support, dropping what it drops.
     fn break_off(&mut self, c: &'static Content, p: IVec3, state: u32) {
         self.set(c, p, AIR);
-        if let Some(item) = c.block_of(state).drop {
-            self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), ItemStack::new(item, c.block_of(state).drop_count.max(1)));
-        }
+        self.drop_block_loot(c, p, state, ItemStack::EMPTY);
         self.call_block(c, state, |b| b.on_broken, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
     }
 
-    pub fn finish_tick(&mut self) {
+    pub fn finish_tick(&mut self, c: &'static Content) {
+        self.deliver_events(c);
         for cp in std::mem::take(&mut self.light_dirty) {
             if let Some(cube) = self.cubes.get(&cp) {
                 self.resend.push((cp, cube.clone()));
@@ -704,27 +729,36 @@ impl Dim {
     }
 
     /// The player finished breaking a block holding `tool`.
-    pub fn player_break(&mut self, c: &'static Content, p: IVec3, player: u64, tool: u32) -> bool {
+    pub fn player_break(&mut self, c: &'static Content, p: IVec3, player: u64, tool: ItemStack) -> bool {
+        let creative = self.entities.get(player).is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+        let done = self.break_block(c, p, tool, player, !creative);
+        self.flush_neighbors(c);
+        self.finish_tick(c);
+        done
+    }
+
+    /// Breaks a block as if mined with `tool`: asks interceptors, drops its loot if the tool may
+    /// harvest it (and `drops`), tells the block and fires `block_broken`.
+    pub fn break_block(&mut self, c: &'static Content, p: IVec3, tool: ItemStack, player: u64, drops: bool) -> bool {
         let Some(state) = self.get(p) else { return false };
         if state == AIR || c.states[state as usize].hardness < 0.0 {
             return false;
         }
-        let (_, harvest) = break_time(c, state, tool);
-        let harvest = harvest && !self.entities.get(player).is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+        let mut q = abi::Query { entity: player, pos: p.to_array(), state, item: tool.item, ..abi::Query::DEFAULT };
+        if !self.ask(c, abi::question::BREAK_BLOCK, &mut q) {
+            return false;
+        }
+        let (_, harvest) = break_time(c, state, tool.item);
         self.set(c, p, AIR);
-        let block = c.block_of(state);
-        if harvest {
-            if let Some(item) = block.drop {
-                self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), ItemStack::new(item, block.drop_count.max(1)));
-            }
+        if harvest && drops {
+            self.drop_block_loot(c, p, state, tool);
         }
         self.call_block(c, state, |b| b.on_broken, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: player });
-        self.flush_neighbors(c);
-        self.finish_tick();
+        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
         true
     }
 
-    pub fn place(&mut self, c: &'static Content, p: IVec3, face: u8, state: u32, look: [f32; 3], player: u64) -> bool {
+    pub fn place(&mut self, c: &'static Content, p: IVec3, face: u8, state: u32, look: [f32; 3], player: u64, item: u32) -> bool {
         let Some(cur) = self.get(p) else { return false };
         if c.states[cur as usize].flags & bf::REPLACEABLE == 0 {
             return false;
@@ -741,19 +775,31 @@ impl Dim {
         if !self.supported(c, p, chosen) {
             return false;
         }
+        let mut q = abi::Query { entity: player, pos: p.to_array(), state: chosen, item, ..abi::Query::DEFAULT };
+        if !self.ask(c, abi::question::PLACE_BLOCK, &mut q) {
+            return false;
+        }
         self.set(c, p, chosen);
         self.call_block(c, chosen, |b| b.on_placed, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state: chosen, other: [0; 3], entity: player });
+        self.emit_engine(c, abi::event::BLOCK_PLACED, &abi::BlockChange { player, pos: p.to_array(), state: chosen, item });
         self.flush_neighbors(c);
-        self.finish_tick();
+        self.finish_tick(c);
         true
     }
 
     /// True if the block consumed the click.
     pub fn player_use(&mut self, c: &'static Content, p: IVec3, face: u8, player: u64) -> bool {
         let Some(state) = self.get(p) else { return false };
+        if c.block_of(state).cb.on_use.is_some() {
+            let mut q = abi::Query { entity: player, pos: p.to_array(), state, ..abi::Query::DEFAULT };
+            if !self.ask(c, abi::question::USE_BLOCK, &mut q) {
+                // Refused uses are consumed: no item use or placement behind them.
+                return true;
+            }
+        }
         let r = self.call_block(c, state, |b| b.on_use, |w| abi::UseArgs { world: w, pos: p.to_array(), state, face: face as u32, player, handled: 0 });
         self.flush_neighbors(c);
-        self.finish_tick();
+        self.finish_tick(c);
         r.is_some_and(|a| a.handled != 0)
     }
 
@@ -764,6 +810,19 @@ impl Dim {
 
     pub fn random(&mut self) -> u64 {
         self.rng.next()
+    }
+
+    /// Uniform in 0..1 from the same stream.
+    pub fn random_unit(&mut self) -> f32 {
+        (self.rng.next() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    /// Spawns what a block's loot table gives for `tool`.
+    pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack) {
+        let name = &c.block_of(state).name;
+        for s in self.roll_loot(c, name, &crate::loot::Ctx { tool, ..Default::default() }) {
+            self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), s);
+        }
     }
 }
 

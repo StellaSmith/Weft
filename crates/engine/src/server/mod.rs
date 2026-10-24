@@ -4,7 +4,9 @@
 mod dim;
 pub mod energy;
 pub mod entity;
+mod extend;
 mod liquid;
+pub use extend::explanation;
 pub mod menu;
 pub mod persist;
 pub mod regions;
@@ -19,7 +21,7 @@ use glam::{DVec3, IVec3};
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use voxide_abi::{self as abi, ItemStack, component_flags as cf, damage};
+use voxide_abi::{self as abi, ItemStack, Versioned, component_flags as cf, damage};
 
 pub use dim::{Dim, DimEvent, break_time};
 
@@ -73,6 +75,8 @@ pub struct Player {
     teleported: Option<DVec3>,
     /// Gizmo groups the client shows.
     gizmos: Vec<String>,
+    /// Health and maximum as last sent.
+    sent_health: (f32, f32),
 }
 
 pub struct Generated {
@@ -361,6 +365,7 @@ impl Server {
                 vis: None,
                 teleported: None,
                 gizmos: Vec::new(),
+                sent_health: (-1.0, -1.0),
             });
         }
     }
@@ -678,7 +683,7 @@ impl Server {
                 let sel = e.selected;
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 let free = c.states.get(r.get(pos).unwrap_or(0) as usize).is_some_and(|s| s.hardness <= 0.0);
-                if r.player_break(c, pos, entity, held.item) && !free {
+                if r.player_break(c, pos, entity, held) && !free {
                     wear(c, r, entity, sel, 1);
                 }
             }
@@ -705,7 +710,7 @@ impl Server {
                         let player_box = crate::physics::Aabb::around(epos, 0.3, 1.8);
                         let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
                         let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
-                        if (!solid || !player_box.intersects(&block_box)) && r.place(c, target, face, state, look, entity) {
+                        if (!solid || !player_box.intersects(&block_box)) && r.place(c, target, face, state, look, entity, held.item) {
                             if !r.entities.get(entity).is_some_and(|e| e.mode == GameMode::Creative) {
                                 r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
                             }
@@ -742,7 +747,7 @@ impl Server {
                     }
                 }
                 r.flush_neighbors(c);
-                r.finish_tick();
+                r.finish_tick(c);
             }
             ToServer::Pick { item } => {
                 let Some((r, entity)) = self.region(pi) else { return };
@@ -776,7 +781,12 @@ impl Server {
                 }
                 let sel = me.selected;
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
-                let dmg = c.items.get(held.item as usize).filter(|_| held.item != 0).map_or(1.0, |i| i.attack);
+                let mut q = abi::Query { entity, other: target, item: held.item, ..abi::Query::DEFAULT };
+                if !r.ask(c, abi::question::ATTACK, &mut q) {
+                    return;
+                }
+                let base = c.items.get(held.item as usize).filter(|_| held.item != 0).map_or(1.0, |i| i.attack);
+                let dmg = r.compute(c, abi::chain::ATTACK_DAMAGE, base as f64, &q, false) as f32;
                 if r.damage(c, target, dmg, entity, damage::ATTACK) {
                     // Like vanilla, weapons wear by one per hit and tools (made for blocks) by two.
                     let weapon = c.item_has_tag(held.item, "tools/sword");
@@ -895,7 +905,7 @@ impl Server {
                 let slice = abi::Slice::new(&data);
                 r.call(owner, cb, |w| abi::PacketArgs { world: w, player, data: slice });
                 r.flush_neighbors(c);
-                r.finish_tick();
+                r.finish_tick(c);
                 self.dim_events(c);
             }
             ToServer::Gizmos(mut names) => {
@@ -957,6 +967,7 @@ impl Server {
             e.worn = worn;
         }
         let health = r.entities.get(id).map_or(kind.max_health, |e| e.health);
+        r.emit_engine(c, abi::event::PLAYER_JOINED, &abi::PlayerEvent { player: id });
         let p = &mut self.players[pi];
         p.name = name;
         p.key = key;
@@ -1080,7 +1091,7 @@ impl Server {
                 let reply_ptr = &mut reply as *mut String as *mut core::ffi::c_void;
                 r.call(owner, cb, |w| abi::CommandArgs { world: w, player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr });
                 r.flush_neighbors(c);
-                r.finish_tick();
+                r.finish_tick(c);
                 reply
             }
         }
@@ -1149,8 +1160,16 @@ impl Server {
         self.players.iter().position(|p| p.joined && p.entity == entity)
     }
 
-    /// Moves any entity; players go through `change_dim` so their client follows.
+    /// Moves any entity; players go through `change_dim` so their client follows. Changing
+    /// dimension asks `enter_dimension` first.
     fn teleport(&mut self, c: &'static Content, dim: u32, id: u64, to_dim: u32, pos: DVec3) {
+        if dim != to_dim {
+            let Some(r) = self.dims[dim as usize].entity_region(id) else { return };
+            let mut q = abi::Query { entity: id, dim: to_dim, ..abi::Query::DEFAULT };
+            if !r.ask(c, abi::question::ENTER_DIMENSION, &mut q) {
+                return;
+            }
+        }
         if let Some(pi) = self.player_index(id) {
             self.change_dim(c, pi, to_dim, pos);
             return;
@@ -1260,7 +1279,7 @@ impl Server {
                     Some(r) => {
                         r.set(c, p, state);
                         r.flush_neighbors(c);
-                        r.finish_tick();
+                        r.finish_tick(c);
                         format!("set {}", a.text("block").unwrap_or_default())
                     }
                     None => "not loaded".into(),
@@ -1326,7 +1345,7 @@ impl Server {
                 }
                 for r in &mut d.regions {
                     r.flush_neighbors(c);
-                    r.finish_tick();
+                    r.finish_tick(c);
                 }
                 format!("placed {placed} of {n} states in a {side}x{side} grid")
             }
@@ -1619,10 +1638,12 @@ impl Server {
             }
 
             if let Some(reg) = dim.entity_region(p.entity) {
-                if let Some(&(_, hp)) = reg.entities.hurt.iter().rev().find(|h| h.0 == p.entity) {
-                    if !p.dead {
-                        p.conn.send(ToClient::Health { health: hp, max: c.game.entities[c.game.player_kind as usize].max_health });
-                    }
+                // Any change counts (regeneration, mods healing), not only hits.
+                let hp = reg.entities.get(p.entity).map_or(p.sent_health.0, |e| e.health);
+                let max = reg.attribute_named(c, p.entity, abi::attribute::MAX_HEALTH, false) as f32;
+                if !p.dead && (hp, max) != p.sent_health {
+                    p.sent_health = (hp, max);
+                    p.conn.send(ToClient::Health { health: hp, max });
                 }
                 if let Some(&(_, dir)) = reg.entities.knocked.iter().rev().find(|h| h.0 == p.entity) {
                     p.conn.send(ToClient::Knockback(dir));
@@ -1946,7 +1967,10 @@ fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerData> {
                 if let Some(name) = k.strip_prefix("comp.") {
                     if let Some(id) = c.game.component(name) {
                         let mut b = persist::unhex(v);
-                        b.resize(c.game.components[id as usize].size as usize, 0);
+                        let size = c.game.components[id as usize].size as usize;
+                        if size > 0 {
+                            b.resize(size, 0);
+                        }
                         comps.push((id, b.into_boxed_slice()));
                     }
                 }

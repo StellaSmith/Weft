@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use glam::{DVec3, IVec3};
-use voxide_abi::{self as abi, Callback, Host, ItemStack, ModId, Str};
+use voxide_abi::{self as abi, Callback, Host, ItemStack, ModId, Str, Versioned};
 
 use crate::content::{self, RawRegistrar, content, try_content};
 use crate::registry;
@@ -124,6 +124,24 @@ pub static HOST: Host = Host {
     use_container,
     reg_rule,
     rule,
+    reg_event_handler,
+    find_event,
+    emit,
+    reg_interceptor,
+    ask,
+    reg_modifier,
+    compute,
+    explanation,
+    reg_attribute,
+    attribute,
+    attribute_modifier,
+    attribute_remove,
+    attribute_explain,
+    reg_loot,
+    reg_loot_modifier,
+    roll_loot,
+    break_block,
+    reg_stack_component,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -237,9 +255,13 @@ unsafe extern "C" fn entity_remove(w: *mut abi::WorldCtx, id: u64) {
 
 unsafe extern "C" fn entity_get(w: *mut abi::WorldCtx, id: u64, out: *mut abi::EntityState) -> u32 {
     unsafe {
-        match dim(w).entities.get(id) {
+        let d = dim(w);
+        let c = content();
+        match d.entities.get(id) {
             Some(e) => {
-                abi::write_sized(out, &e.state(content()));
+                let mut s = e.state(c);
+                s.max_health = d.attribute_named(c, id, abi::attribute::MAX_HEALTH, false) as f32;
+                abi::write_sized(out, &s);
                 1
             }
             None => 0,
@@ -268,8 +290,10 @@ unsafe extern "C" fn entity_set(w: *mut abi::WorldCtx, id: u64, s: *const abi::E
 
 unsafe extern "C" fn entity_walk(w: *mut abi::WorldCtx, id: u64, dir: *const [f32; 2], speed: f32, jump: u32) {
     unsafe {
-        if let Some(e) = dim(w).entities.get_mut(id) {
-            e.walk = Some((*dir, speed, jump != 0));
+        let d = dim(w);
+        let mul = d.attribute_named(content(), id, abi::attribute::MOVEMENT_SPEED, false) as f32;
+        if let Some(e) = d.entities.get_mut(id) {
+            e.walk = Some((*dir, speed * mul, jump != 0));
         }
     }
 }
@@ -863,6 +887,143 @@ unsafe extern "C" fn use_container(w: *mut abi::WorldCtx, player: u64, stack: It
         }
         r.unwrap_or(stack)
     }
+}
+
+unsafe extern "C" fn reg_event_handler(r: *mut abi::Registrar, name: Str, schema: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.event_handlers.push((owner, name.as_str().to_string(), schema.as_str().to_string(), cb));
+    }
+}
+
+unsafe extern "C" fn find_event(name: Str, schema: Str) -> u32 {
+    let (name, schema) = unsafe { (name.as_str(), schema.as_str()) };
+    let Some(c) = try_content() else { return u32::MAX };
+    let Some(&id) = c.game.event_names.get(name) else { return u32::MAX };
+    let def = &c.game.events[id as usize];
+    if !schema.is_empty() && def.schema != schema {
+        log::error!("event {name} is '{}' but a mod emits '{schema}'", def.schema);
+        return u32::MAX;
+    }
+    if def.handlers.is_empty() { u32::MAX } else { id }
+}
+
+unsafe extern "C" fn emit(w: *mut abi::WorldCtx, event: u32, value: abi::Slice<u8>) {
+    unsafe { dim(w).emit(content(), event, value.as_slice()) }
+}
+
+unsafe extern "C" fn reg_interceptor(r: *mut abi::Registrar, name: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.interceptors.push((owner, name.as_str().to_string(), cb));
+    }
+}
+
+unsafe extern "C" fn ask(w: *mut abi::WorldCtx, name: Str, query: *mut abi::Query) -> u32 {
+    unsafe {
+        let mut q = abi::read_sized(query);
+        let ok = dim(w).ask(content(), name.as_str(), &mut q);
+        abi::write_sized(query, &q);
+        ok as u32
+    }
+}
+
+unsafe extern "C" fn reg_modifier(r: *mut abi::Registrar, name: Str, stage: u32, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.modifiers.push((owner, name.as_str().to_string(), stage, cb));
+    }
+}
+
+unsafe extern "C" fn compute(w: *mut abi::WorldCtx, name: Str, base: f64, ctx: *const abi::Query, explain: u32) -> f64 {
+    unsafe {
+        let q = if ctx.is_null() { abi::Query::DEFAULT } else { abi::read_sized(ctx) };
+        dim(w).compute(content(), name.as_str(), base, &q, explain != 0)
+    }
+}
+
+unsafe extern "C" fn explanation() -> Str {
+    thread_local! {
+        static TEXT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    TEXT.with(|t| {
+        let mut t = t.borrow_mut();
+        *t = crate::server::explanation();
+        Str { ptr: t.as_ptr(), len: t.len() }
+    })
+}
+
+unsafe extern "C" fn reg_attribute(r: *mut abi::Registrar, name: Str, default: f64, min: f64, max: f64) {
+    unsafe { reg(r).game.attributes.push((name.as_str().to_string(), default, min, max)) }
+}
+
+unsafe extern "C" fn attribute(w: *mut abi::WorldCtx, entity: u64, name: Str) -> f64 {
+    unsafe { dim(w).attribute_named(content(), entity, name.as_str(), false) }
+}
+
+unsafe extern "C" fn attribute_explain(w: *mut abi::WorldCtx, entity: u64, name: Str) -> f64 {
+    unsafe { dim(w).attribute_named(content(), entity, name.as_str(), true) }
+}
+
+unsafe extern "C" fn attribute_modifier(w: *mut abi::WorldCtx, entity: u64, name: Str, id: Str, op: u32, amount: f64, ticks: u64) {
+    unsafe {
+        let c = content();
+        match c.game.attr_names.get(name.as_str()) {
+            Some(&a) => dim(w).set_attr_modifier(c, entity, a, id.as_str(), op, amount, ticks),
+            None => log::error!("no attribute {}", name.as_str()),
+        }
+    }
+}
+
+unsafe extern "C" fn attribute_remove(w: *mut abi::WorldCtx, entity: u64, name: Str, id: Str) {
+    unsafe {
+        let c = content();
+        if let Some(&a) = c.game.attr_names.get(name.as_str()) {
+            dim(w).remove_attr_modifier(c, entity, a, id.as_str());
+        }
+    }
+}
+
+unsafe extern "C" fn reg_loot(r: *mut abi::Registrar, d: *const abi::LootDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        let r = reg(r);
+        let mut pools = Vec::new();
+        abi::each_sized(d.pools, |p| pools.push(crate::loot::copy_pool(&p)));
+        r.game.loot.push(crate::loot::RawLoot { owner: r.owner, name: d.name.as_str().to_string(), pools });
+    }
+}
+
+unsafe extern "C" fn reg_loot_modifier(r: *mut abi::Registrar, d: *const abi::LootModDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        let r = reg(r);
+        let pool = crate::loot::copy_pool(&abi::read_sized(&d.pool));
+        r.game.loot_mods.push(crate::loot::RawLootMod { owner: r.owner, table: d.table.as_str().to_string(), op: d.op, pool, from: d.from.as_str().to_string(), to: d.to.as_str().to_string() });
+    }
+}
+
+unsafe extern "C" fn roll_loot(w: *mut abi::WorldCtx, name: Str, ctx: *const abi::LootCtx, out: *mut ItemStack, max: usize) -> usize {
+    unsafe {
+        let x = if ctx.is_null() { abi::LootCtx::DEFAULT } else { abi::read_sized(ctx) };
+        let ctx = crate::loot::Ctx { tool: x.tool, by_player: x.by_player != 0, on_fire: x.on_fire != 0 };
+        let stacks = dim(w).roll_loot(content(), name.as_str(), &ctx);
+        for (i, s) in stacks.iter().take(max).enumerate() {
+            *out.add(i) = *s;
+        }
+        stacks.len()
+    }
+}
+
+unsafe extern "C" fn break_block(w: *mut abi::WorldCtx, pos: *const [i32; 3], tool: ItemStack, player: u64, drops: u32) -> u32 {
+    unsafe { dim(w).break_block(content(), ip(pos), tool, player, drops != 0) as u32 }
+}
+
+unsafe extern "C" fn reg_stack_component(r: *mut abi::Registrar, name: Str, schema: Str, flags: u32) {
+    unsafe { reg(r).game.stack_components.push((name.as_str().to_string(), schema.as_str().to_string(), flags)) }
 }
 
 unsafe extern "C" fn reg_rule(r: *mut abi::Registrar, name: Str, default: i64) {

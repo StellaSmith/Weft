@@ -801,6 +801,11 @@ pub mod component_flags {
     pub const SAVE: u32 = 1;
     /// Sent to the player that owns it (HUD values like hunger).
     pub const SYNC_OWNER: u32 = 2;
+    /// Sent to every player that sees the entity, when it changes.
+    pub const SYNC_WATCHERS: u32 = 4;
+    /// Sent to players with a menu open on the entity (machine progress), when it changes; read
+    /// on the client with `ClientView::menu_component`.
+    pub const SYNC_MENU: u32 = 8;
 }
 
 /// Per-entity data storage (hunger, machine state): created with `default` on spawn of the kinds
@@ -1281,6 +1286,308 @@ pub struct Host {
     pub reg_rule: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: i64),
     /// Current value of a rule in this world, 0 for unknown names.
     pub rule: unsafe extern "C" fn(world: *mut WorldCtx, name: Str) -> i64,
+
+    // ------------------------------------------------ events, interceptors, modifiers, loot (stage 3)
+    /// Subscribes to event `name` carrying values of `schema` (checked against every other use);
+    /// `cb` gets `EventArgs` once per tick and region with every value queued since.
+    pub reg_event_handler: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, cb: Callback),
+    /// Event id, `u32::MAX` when nobody listens (then there is nothing to emit).
+    pub find_event: unsafe extern "C" fn(name: Str, schema: Str) -> u32,
+    /// Queues one value of event `event` (its schema's size) for the end of the tick.
+    pub emit: unsafe extern "C" fn(world: *mut WorldCtx, event: u32, value: Slice<u8>),
+    /// "May it happen" handler for question `name` (`question::*` or a mod's own): gets
+    /// `InterceptArgs` and sets `Query::verdict`. Any deny wins.
+    pub reg_interceptor: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cb: Callback),
+    /// Asks the interceptors of `name`; 1 if allowed.
+    pub ask: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, query: *mut Query) -> u32,
+    /// Modifier on value chain `name`, run in order of `stage` (`stage::*`), then mod load order;
+    /// gets `ModifyArgs`.
+    pub reg_modifier: unsafe extern "C" fn(reg: *mut Registrar, name: Str, stage: u32, cb: Callback),
+    /// Runs chain `name` from `base`. With `explain` non-zero the steps are kept for
+    /// `explanation`.
+    pub compute: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, base: f64, ctx: *const Query, explain: u32) -> f64,
+    /// Steps of the last explained `compute` or `attribute_explain` on this thread.
+    pub explanation: unsafe extern "C" fn() -> Str,
+    /// An attribute of living entities (`attribute::*` are the engine's).
+    pub reg_attribute: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: f64, min: f64, max: f64),
+    /// Its current value for an entity: base (the kind's component of the same name, else the
+    /// default), then modifiers by `attr_op`, clamped.
+    pub attribute: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
+    /// Adds (or replaces, same `id`) a modifier for `ticks` (0 = until removed). Saved.
+    pub attribute_modifier: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str, id: Str, op: u32, amount: f64, ticks: u64),
+    pub attribute_remove: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str, id: Str),
+    /// Fills `explanation` with how the value came about; returns the value.
+    pub attribute_explain: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
+    pub reg_loot: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LootDesc),
+    pub reg_loot_modifier: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LootModDesc),
+    /// Rolls table `name`; writes at most `max` stacks to `out` and returns how many it made.
+    pub roll_loot: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, ctx: *const LootCtx, out: *mut ItemStack, max: usize) -> usize,
+    /// Breaks a block as if mined with `tool` (by `player`, 0 for none): asks `break_block`,
+    /// drops its loot when the tool may harvest it and `drops` is non-zero, fires `block_broken`.
+    /// 0 if nothing was broken.
+    pub break_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], tool: ItemStack, player: u64, drops: u32) -> u32,
+    /// Declares a stack component's flags (`stack_flags`).
+    pub reg_stack_component: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, flags: u32),
+}
+
+/// Engine events (`Host::reg_event_handler`); values are the structs named in each line.
+pub mod event {
+    /// `BlockChange`: a player or `break_block` broke a block (`item` = tool).
+    pub const BLOCK_BROKEN: &str = "block_broken";
+    /// `BlockChange`: a player placed a block (`item` = the item used).
+    pub const BLOCK_PLACED: &str = "block_placed";
+    /// `Death`.
+    pub const ENTITY_DIED: &str = "entity_died";
+    /// `PlayerEvent`.
+    pub const PLAYER_JOINED: &str = "player_joined";
+    /// `Pickup`.
+    pub const ITEM_PICKED_UP: &str = "item_picked_up";
+    /// `Hurt`: damage was applied (after armour and every modifier).
+    pub const ENTITY_HURT: &str = "entity_hurt";
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hurt {
+    pub entity: u64,
+    pub source: u64,
+    pub amount: f32,
+    pub cause: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockChange {
+    pub player: u64,
+    pub pos: [i32; 3],
+    pub state: u32,
+    pub item: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Death {
+    pub entity: u64,
+    pub killer: u64,
+    pub kind: u32,
+    pub cause: u32,
+    pub pos: [f64; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerEvent {
+    pub player: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pickup {
+    pub player: u64,
+    pub stack: ItemStack,
+}
+
+#[repr(C)]
+pub struct EventArgs {
+    pub world: *mut WorldCtx,
+    pub event: u32,
+    pub data: *const u8,
+    pub count: u32,
+    /// Bytes per value.
+    pub stride: u32,
+}
+
+/// Questions the engine asks before doing things (`Host::reg_interceptor`).
+pub mod question {
+    /// `entity` the player (0 for `break_block` without one), `pos`, `state`, `item` the tool.
+    pub const BREAK_BLOCK: &str = "break_block";
+    /// `entity`, `pos`, `state` to be placed, `item` used.
+    pub const PLACE_BLOCK: &str = "place_block";
+    /// Right click on a block: `entity`, `pos`, `state`.
+    pub const USE_BLOCK: &str = "use_block";
+    /// `entity` about to change dimension to `dim`.
+    pub const ENTER_DIMENSION: &str = "enter_dimension";
+    /// `entity` (a player) picking up `item` (count in `amount`), `other` the item entity.
+    pub const PICKUP_ITEM: &str = "pickup_item";
+    /// `entity` attacking `other` with `item`.
+    pub const ATTACK: &str = "attack";
+}
+
+pub mod verdict {
+    pub const ABSTAIN: u32 = 0;
+    pub const ALLOW: u32 = 1;
+    pub const DENY: u32 = 2;
+}
+
+/// What a question or a value chain is about; fields one does not use are 0.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Query {
+    pub size: u32,
+    pub verdict: u32,
+    pub entity: u64,
+    pub other: u64,
+    pub pos: [i32; 3],
+    pub state: u32,
+    pub item: u32,
+    pub dim: u32,
+    pub cause: u32,
+    pub amount: f64,
+}
+versioned!(Query { verdict: 0, entity: 0, other: 0, pos: [0; 3], state: 0, item: 0, dim: 0, cause: 0, amount: 0.0 });
+
+#[repr(C)]
+pub struct InterceptArgs {
+    pub world: *mut WorldCtx,
+    pub question: Str,
+    pub query: *mut Query,
+}
+
+/// Stage of a modifier; steps of one stage run in mod load order.
+pub mod stage {
+    pub const ADD: u32 = 100;
+    pub const MULTIPLY: u32 = 200;
+    pub const FINAL: u32 = 300;
+}
+
+/// Value chains the engine runs.
+pub mod chain {
+    /// Damage an entity takes (`entity` hurt by `other`, `cause`), after `on_hurt` hooks.
+    pub const DAMAGE: &str = "damage";
+    /// Melee damage of `entity` hitting `other` holding `item`, from the item's
+    /// `attack_damage`.
+    pub const ATTACK_DAMAGE: &str = "attack_damage";
+}
+
+#[repr(C)]
+pub struct ModifyArgs {
+    pub world: *mut WorldCtx,
+    pub chain: Str,
+    pub ctx: *const Query,
+    pub base: f64,
+    /// In/out.
+    pub value: f64,
+}
+
+/// Attributes the engine reads.
+pub mod attribute {
+    pub const MAX_HEALTH: &str = "max_health";
+    /// Multiplier on walking speed (1 = the kind's speed).
+    pub const MOVEMENT_SPEED: &str = "movement_speed";
+}
+
+/// How an attribute modifier applies, like vanilla: ADD amounts sum onto the base, then times
+/// (1 + the sum of MUL_BASE), then times (1 + each MUL_TOTAL).
+pub mod attr_op {
+    pub const ADD: u32 = 0;
+    pub const MUL_BASE: u32 = 1;
+    pub const MUL_TOTAL: u32 = 2;
+}
+
+pub mod loot_cond {
+    /// Passes with probability `value`.
+    pub const CHANCE: u32 = 0;
+    /// The tool has tag `text`.
+    pub const TOOL_TAG: u32 = 1;
+    /// The tool lacks tag `text`.
+    pub const NOT_TOOL_TAG: u32 = 2;
+    /// The tool's `tool_level` is at least `value`.
+    pub const TOOL_LEVEL: u32 = 3;
+    pub const KILLED_BY_PLAYER: u32 = 4;
+    pub const ON_FIRE: u32 = 5;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LootCond {
+    pub size: u32,
+    pub kind: u32,
+    pub value: f32,
+    pub text: Str,
+}
+versioned!(LootCond { kind: 0, value: 1.0, text: Str::EMPTY });
+
+/// One weighted choice of a pool: `item` (name, or `#tag` for the tag's first item; empty = no
+/// item), `min..=max` of it. A burning victim drops it cooked by recipe type `smelt` if set.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LootEntry {
+    pub size: u32,
+    pub item: Str,
+    pub weight: u32,
+    pub min: u32,
+    pub max: u32,
+    pub conditions: Slice<LootCond>,
+    pub smelt: Str,
+}
+versioned!(LootEntry { item: Str::EMPTY, weight: 1, min: 1, max: 1, conditions: Slice::EMPTY, smelt: Str::EMPTY });
+
+/// Rolls `rolls_min..=rolls_max` times if its conditions pass; each roll picks one entry by
+/// weight among those whose conditions pass.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LootPool {
+    pub size: u32,
+    pub rolls_min: u32,
+    pub rolls_max: u32,
+    pub conditions: Slice<LootCond>,
+    pub entries: Slice<LootEntry>,
+}
+versioned!(LootPool { rolls_min: 1, rolls_max: 1, conditions: Slice::EMPTY, entries: Slice::EMPTY });
+
+/// A loot table. Blocks and entities use the table named like them; mods may name any others
+/// (chests).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LootDesc {
+    pub size: u32,
+    pub name: Str,
+    pub pools: Slice<LootPool>,
+}
+versioned!(LootDesc { name: Str::EMPTY, pools: Slice::EMPTY });
+
+pub mod loot_op {
+    /// Adds `pool`.
+    pub const ADD_POOL: u32 = 0;
+    /// Every entry of item `from` gives `to` instead.
+    pub const REPLACE_ITEM: u32 = 1;
+    /// Drops entries of item `from`.
+    pub const REMOVE_ITEM: u32 = 2;
+    /// Empties the table (add pools after it).
+    pub const CLEAR: u32 = 3;
+}
+
+/// A change to tables any mod made, applied after all tables in mod load order. `table` may end
+/// in `*`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LootModDesc {
+    pub size: u32,
+    pub table: Str,
+    pub op: u32,
+    pub pool: LootPool,
+    pub from: Str,
+    pub to: Str,
+}
+versioned!(LootModDesc { table: Str::EMPTY, op: 0, pool: LootPool::DEFAULT, from: Str::EMPTY, to: Str::EMPTY });
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LootCtx {
+    pub size: u32,
+    pub tool: ItemStack,
+    pub killer: u64,
+    pub by_player: u32,
+    pub on_fire: u32,
+}
+versioned!(LootCtx { tool: ItemStack::EMPTY, killer: 0, by_player: 0, on_fire: 0 });
+
+/// Flags of stack components (`Host::reg_stack_component`).
+pub mod stack_flags {
+    /// Kept on the server: clients get the stack without it.
+    pub const SERVER_ONLY: u32 = 1;
+    /// Not written to saves.
+    pub const NO_SAVE: u32 = 2;
 }
 
 /// Flow rules of a liquid. Its block (registered by the same mod under the same name) has 16

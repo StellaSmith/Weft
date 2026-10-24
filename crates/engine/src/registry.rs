@@ -146,6 +146,15 @@ pub struct Game {
     pub keys: Vec<(String, String)>,
     /// World rules (name, default), sorted by name; values live in the server.
     pub rules: Vec<(String, i64)>,
+    pub events: Vec<EventDef>,
+    pub event_names: FxHashMap<String, u32>,
+    pub interceptors: FxHashMap<String, Vec<(ModId, Callback)>>,
+    /// Steps per chain in run order: (stage, owner, modifier).
+    pub modifiers: FxHashMap<String, Vec<(u32, ModId, Callback)>>,
+    pub attributes: Vec<AttrDef>,
+    pub attr_names: FxHashMap<String, u32>,
+    /// The engine component holding entities' attribute modifiers.
+    pub modifiers_comp: u32,
 }
 
 #[derive(Default)]
@@ -211,6 +220,50 @@ pub struct RawGame {
     pub rules: Vec<(String, i64)>,
     /// liquid, touching, source result, flowing result, falls-into result.
     pub reactions: Vec<[String; 5]>,
+    /// (owner, event, schema, handler).
+    pub event_handlers: Vec<(ModId, String, String, Callback)>,
+    pub interceptors: Vec<(ModId, String, Callback)>,
+    /// (owner, chain, stage, modifier).
+    pub modifiers: Vec<(ModId, String, u32, Callback)>,
+    /// (name, default, min, max).
+    pub attributes: Vec<(String, f64, f64, f64)>,
+    pub loot: Vec<crate::loot::RawLoot>,
+    pub loot_mods: Vec<crate::loot::RawLootMod>,
+    /// (component, schema, `stack_flags`).
+    pub stack_components: Vec<(String, String, u32)>,
+}
+
+/// An event mods can subscribe to; `size` is learned from the first value emitted when the
+/// engine does not know it.
+pub struct EventDef {
+    pub name: String,
+    pub schema: String,
+    pub size: std::sync::atomic::AtomicU32,
+    pub handlers: Vec<(ModId, Callback)>,
+}
+
+pub struct AttrDef {
+    pub name: String,
+    pub default: f64,
+    pub min: f64,
+    pub max: f64,
+    /// Stable key in saved modifiers.
+    pub hash: u64,
+}
+
+/// Events the engine emits, with the schemas of their `abi` structs.
+pub const ENGINE_EVENTS: &[(&str, &str, u32)] = &[
+    (abi::event::BLOCK_BROKEN, "{player:u64,pos:[i32;3],state:u32,item:u32}", size_of::<abi::BlockChange>() as u32),
+    (abi::event::BLOCK_PLACED, "{player:u64,pos:[i32;3],state:u32,item:u32}", size_of::<abi::BlockChange>() as u32),
+    (abi::event::ENTITY_DIED, "{entity:u64,killer:u64,kind:u32,cause:u32,pos:[f64;3]}", size_of::<abi::Death>() as u32),
+    (abi::event::PLAYER_JOINED, "{player:u64}", size_of::<abi::PlayerEvent>() as u32),
+    (abi::event::ITEM_PICKED_UP, "{player:u64,stack:{item:u32,count:u32,data:u32}}", size_of::<abi::Pickup>() as u32),
+    (abi::event::ENTITY_HURT, "{entity:u64,source:u64,amount:f32,cause:u32}", size_of::<abi::Hurt>() as u32),
+];
+
+/// FNV-1a, for names stored in saves.
+pub fn name_hash(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3))
 }
 
 pub struct RawOre {
@@ -347,6 +400,8 @@ fn player_parts() -> Vec<Part> {
 
 /// Tags the engine refers to by name, so they have ids even when no mod uses them.
 pub const ENGINE_TAGS: &[&str] = &["armor_head", "armor_chest", "armor_legs", "armor_feet"];
+/// Entity component with attribute modifiers.
+pub const MODIFIERS: &str = "core:modifiers";
 
 /// Entity kinds, frozen before components (which attach to them).
 pub struct Entities {
@@ -404,6 +459,7 @@ pub fn freeze(
     item_names: &FxHashMap<String, u32>,
     items: &[crate::content::ItemDef],
     c: &Components,
+    order: &dyn Fn(ModId) -> u32,
     errors: &mut Vec<String>,
 ) -> Game {
     let mut g = Game::default();
@@ -415,11 +471,19 @@ pub fn freeze(
     let mut block_entities = Vec::new();
     let mut attach: Vec<(String, String)> = Vec::new();
     let mut packets: Vec<(ModId, String, u32, Callback)> = Vec::new();
+    let mut event_handlers: Vec<(ModId, String, String, Callback)> = Vec::new();
+    let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
+    let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
+    let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0)];
     for r in raws {
         g.client_hooks.extend(r.client_hooks);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
         g.rules.extend(r.rules);
+        event_handlers.extend(r.event_handlers);
+        interceptors.extend(r.interceptors);
+        modifiers.extend(r.modifiers);
+        attributes.extend(r.attributes);
         components.extend(r.components);
         hooks.extend(r.hooks);
         recipes.extend(r.recipes);
@@ -439,6 +503,34 @@ pub fn freeze(
     g.client_hooks.sort_by_key(|h| h.0.0);
     g.rules.sort_by(|a, b| a.0.cmp(&b.0));
     g.rules.dedup_by(|a, b| a.0 == b.0);
+
+    let mut events: Vec<EventDef> = ENGINE_EVENTS.iter().map(|(n, s, size)| EventDef { name: n.to_string(), schema: s.to_string(), size: (*size).into(), handlers: Vec::new() }).collect();
+    event_handlers.sort_by_key(|h| order(h.0));
+    for (owner, name, schema, cb) in event_handlers {
+        match events.iter_mut().find(|e| e.name == name) {
+            Some(e) if e.schema != schema => errors.push(format!("event {name} is '{}' but a handler takes '{schema}'", e.schema)),
+            Some(e) => e.handlers.push((owner, cb)),
+            None => events.push(EventDef { name, schema, size: 0.into(), handlers: vec![(owner, cb)] }),
+        }
+    }
+    events.sort_by(|a, b| a.name.cmp(&b.name));
+    g.event_names = events.iter().enumerate().map(|(i, e)| (e.name.clone(), i as u32)).collect();
+    g.events = events;
+    interceptors.sort_by_key(|h| order(h.0));
+    for (owner, name, cb) in interceptors {
+        g.interceptors.entry(name).or_default().push((owner, cb));
+    }
+    modifiers.sort_by_key(|m| (m.2, order(m.0)));
+    for (owner, name, stage, cb) in modifiers {
+        g.modifiers.entry(name).or_default().push((stage, owner, cb));
+    }
+    for (name, default, min, max) in attributes {
+        if g.attr_names.contains_key(&name) {
+            continue;
+        }
+        g.attr_names.insert(name.clone(), g.attributes.len() as u32);
+        g.attributes.push(AttrDef { hash: name_hash(&name), name, default, min: min.min(max), max });
+    }
     packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
     for (owner, name, side, cb) in packets {
         let id = *g.packet_names.entry(name.clone()).or_insert_with(|| {
@@ -458,7 +550,14 @@ pub fn freeze(
     let energy = size_of::<voxide_abi::Energy>() as u32;
     components.push(RawComponent {
         owner: ENGINE,
-        def: ComponentDef { name: abi::comp::ENERGY.into(), size: energy, flags: voxide_abi::component_flags::SAVE, default: vec![0; energy as usize], runtime: true },
+        def: ComponentDef { name: abi::comp::ENERGY.into(), size: energy, flags: voxide_abi::component_flags::SAVE | voxide_abi::component_flags::SYNC_MENU, default: vec![0; energy as usize], runtime: true },
+        schema: String::new(),
+        attach_to: Vec::new(),
+    });
+    // Variable length (size 0): attribute modifiers, added on demand.
+    components.push(RawComponent {
+        owner: ENGINE,
+        def: ComponentDef { name: MODIFIERS.into(), size: 0, flags: voxide_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
         schema: String::new(),
         attach_to: Vec::new(),
     });
@@ -474,6 +573,7 @@ pub fn freeze(
     }
     g.component_names = g.components.iter().enumerate().filter(|(_, d)| d.runtime).map(|(i, d)| (d.name.clone(), i as u32)).collect();
     g.energy = g.component_names[abi::comp::ENERGY];
+    g.modifiers_comp = g.component_names[MODIFIERS];
     for (kind, comp) in attach {
         match (g.entity_names.get(&kind), g.component_names.get(&comp)) {
             (Some(&k), Some(&cid)) => g.entities[k as usize].components.push(cid),

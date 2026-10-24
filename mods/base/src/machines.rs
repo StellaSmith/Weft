@@ -12,6 +12,16 @@ value! {
 }
 
 pub static SMELTING: Component<Smelting> = Component::new("base:smelting");
+
+value! {
+    /// Fired when a furnace finishes one item.
+    pub struct Smelted { pub furnace: u64, pub input: u32, pub output: ItemStack }
+}
+
+pub static SMELTED: Event<Smelted> = Event::new("smelted");
+/// Value chain for a furnace's cooking time: base is the recipe's time, `entity` the furnace,
+/// `item` the input.
+pub const SMELT_TIME: &str = "base:smelt_time";
 pub static FURNACE_ENTITY: Entity = Entity::new();
 pub static CHEST_ENTITY: Entity = Entity::new();
 pub static FURNACE_MENU: Menu = Menu::new();
@@ -125,20 +135,24 @@ fn tick_furnaces(t: &EntityTick) {
                 inv.set(FUEL_SLOT, rest);
             }
         }
-        let Some(s) = w.component_mut(id, &SMELTING) else { continue };
         if s.burn > 0 && fits {
             let (out, time) = recipe.unwrap();
-            s.cook_max = time.max(1);
+            let q = abi::Query { entity: id, item: input.item, ..query() };
+            let time = w.compute(SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
+            let Some(s) = w.component_mut(id, &SMELTING) else { continue };
+            s.cook_max = time;
             s.cook += 1;
             if s.cook >= s.cook_max {
                 s.cook = 0;
                 inv.set(INPUT, input.shrink(1));
                 let merged = if output.is_empty() { out } else { output.grow(out.count) };
                 inv.set(OUTPUT, merged);
+                w.emit(&SMELTED, Smelted { furnace: id, input: input.item, output: out });
             }
-        } else if s.cook > 0 {
+        } else if let Some(s) = w.component_mut(id, &SMELTING).filter(|s| s.cook > 0) {
             s.cook = s.cook.saturating_sub(2);
         }
+        let Some(s) = w.component(id, &SMELTING) else { continue };
         let lit = s.burn > 0;
         if lit != was_lit {
             let state = w.get(pos);

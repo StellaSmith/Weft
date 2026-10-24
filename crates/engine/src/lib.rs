@@ -13,6 +13,7 @@ pub mod host;
 pub mod hud;
 pub mod input;
 pub mod log;
+pub mod loot;
 pub mod modloader;
 pub mod net;
 pub mod packs;

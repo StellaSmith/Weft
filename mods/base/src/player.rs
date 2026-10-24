@@ -25,25 +25,31 @@ pub fn register(r: &mut Registry) {
         &["core:player"],
     );
     r.hook_tick("core:player", tick_players);
-    r.hook("core:player", Hook::Hurt, |e| {
-        let cause = e.cause();
-        if cause == damage::FALL || cause == damage::STARVE || cause == damage::DROWN || cause == damage::VOID {
+    // Armour is a step of the damage chain (4% per point, like 1.7.10), and wears when the hit
+    // actually lands, a quarter of the damage per piece (at least 1) like vanilla.
+    r.modify(chain::DAMAGE, stage::MULTIPLY, |m| {
+        let q = *m.query();
+        if !armor_applies(q.cause) {
             return;
         }
-        let w = e.world();
-        let inv = w.inventory(e.entity());
-        let mut points = 0;
-        for slot in 36..40 {
-            let s = inv.get(slot);
-            if let Some(a) = ARMOR.on_item(s.item) {
-                points += a.points;
-                let durability = DURABILITY.on_item(s.item).unwrap_or(0);
-                let damage = s.damage() + 1;
-                inv.set(slot, if durability > 0 && damage >= durability { ItemStack::EMPTY } else { s.with_damage(damage) });
+        let inv = m.world().inventory(q.entity);
+        let points: u32 = (36..40).filter_map(|i| ARMOR.on_item(inv.get(i).item)).map(|a| a.points).sum();
+        m.value *= 1.0 - points.min(20) as f64 * 0.04;
+    });
+    r.on(&ENTITY_HURT, |b| {
+        let w = b.world();
+        for h in b.iter().filter(|h| armor_applies(h.cause)) {
+            let inv = w.inventory(h.entity);
+            let wear = ((h.amount / 4.0) as u32).max(1);
+            for slot in 36..40 {
+                let s = inv.get(slot);
+                if ARMOR.on_item(s.item).is_some() {
+                    let durability = DURABILITY.on_item(s.item).unwrap_or(0);
+                    let damage = s.damage() + wear;
+                    inv.set(slot, if durability > 0 && damage >= durability { ItemStack::EMPTY } else { s.with_damage(damage) });
+                }
             }
         }
-        let reduced = e.amount() * (1.0 - points.min(20) as f32 * 0.04);
-        e.set_amount(reduced);
     });
 
     r.command("feed", "[food:int]", |cmd| {
@@ -132,6 +138,10 @@ pub fn register(r: &mut Registry) {
     r.player_menu("inventory");
 }
 
+fn armor_applies(cause: u32) -> bool {
+    !matches!(cause, damage::FALL | damage::STARVE | damage::DROWN | damage::VOID)
+}
+
 /// Main inventory (27) and hotbar (9) starting at menu slot `start`, spaced like vanilla; the
 /// title is left out on the player's own inventory screen.
 pub fn player_slots(ui: &mut Ui, start: u32, title: bool) {
@@ -209,6 +219,13 @@ fn tick_players(t: &EntityTick) {
     }
 }
 
+value! {
+    /// Fired after a player ate: other mods add effects without touching eating.
+    pub struct Eaten { pub player: u64, pub stack: ItemStack, pub hunger: u32, pub saturation: f32 }
+}
+
+pub static EATEN: Event<Eaten> = Event::new("eaten");
+
 /// Eating: instant, consumes one item.
 pub fn eat(u: &mut ItemUse) -> bool {
     let stack = u.stack();
@@ -221,5 +238,6 @@ pub fn eat(u: &mut ItemUse) -> bool {
     h.food = (h.food + food.hunger as f32).min(20.0);
     h.saturation = (h.saturation + food.saturation).min(h.food);
     u.set_stack(stack.shrink(1));
+    w.emit(&EATEN, Eaten { player: u.player(), stack: ItemStack { count: 1, ..stack }, hunger: food.hunger, saturation: food.saturation });
     true
 }

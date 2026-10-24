@@ -92,9 +92,13 @@ fn leaves(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
         .opacity(1)
         .tint_foliage()
         .tag("leaves")
-        .drops("sapling", 1)
         .mineable("shears")
         .tab("natural");
+    // Vanilla: a sapling one time in 20, oak leaves an apple one time in 200.
+    let table = r.loot(name).pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
+    if name == "oak_leaves" {
+        table.pool(Pool::new().when(Cond::Chance(0.005)).item("apple"));
+    }
 }
 
 fn plant(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
@@ -155,7 +159,8 @@ pub fn register(r: &mut Registry) {
     r.liquid("lava").handle(&LAVA).texture("lava_still").light(15).drag(0.3).delay(30).drop_off(2).slope_find(2).infinite(0).temperature(1300).tag("lava").tag("hot").bucket("lava_bucket", "bucket");
     r.liquid_reaction("#hot", "#water").source("obsidian").flowing("cobblestone").falls_into("stone");
 
-    r.block("tall_grass").handle(&TALL_GRASS).texture("tallgrass").plant().needs_below("plant_soil").tint_grass().drops("wheat_seeds", 1).no_item();
+    r.block("tall_grass").handle(&TALL_GRASS).texture("tallgrass").plant().needs_below("plant_soil").tint_grass().no_item();
+    r.loot("tall_grass").pool(Pool::new().when(Cond::Chance(0.125)).item("wheat_seeds"));
     plant(r, "dandelion", &DANDELION, "flower_dandelion");
     plant(r, "rose", &ROSE, "flower_rose");
     r.block("sapling").handle(&SAPLING).texture("sapling_oak").plant().needs_below("plant_soil").random_ticks(|e| grow_sapling(e.world(), e.pos())).tab("natural");

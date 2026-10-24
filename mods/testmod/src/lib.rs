@@ -7,7 +7,9 @@
 //! - replaces a base game block (torches burn blue),
 //! - adds its own dimensions, one of them a planet built only from terrain presets,
 //! - adds an ore to the base game's overworld,
-//! - adds a liquid (oil) whose bucket is the base game's bucket filled, without bucket code.
+//! - adds a liquid (oil) whose bucket is the base game's bucket filled, without bucket code,
+//! - makes cooked meat heal: its own component on the base game's items plus the base game's
+//!   `eaten` event, and lets zombies drop tin through a loot modifier.
 
 use std::sync::LazyLock;
 
@@ -51,6 +53,13 @@ value! {
 static MACHINE: Component<Machine> = Component::new("testmod:machine");
 /// The common fuel value; the base game sets it, this mod only reads it.
 static FUEL: Component<u32> = Component::new("fuel");
+static FOOD_HEAL: Component<f32> = Component::new("testmod:food_heal");
+
+value! {
+    /// The base game's `eaten` event, declared here the same way (no code dependency).
+    struct Eaten { player: u64, stack: ItemStack, hunger: u32, saturation: f32 }
+}
+static EATEN: Event<Eaten> = Event::new("eaten");
 
 const PER_TICK: i64 = 40;
 const FURNACE_USE: i64 = 20;
@@ -141,6 +150,19 @@ fn init(r: &mut Registry) {
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
     r.liquid("oil").texture("oil_still").opacity(4).drag(0.4).delay(15).drop_off(2).slope_find(3).infinite(0).tag("oil").bucket("oil_bucket", "base:bucket");
+
+    // Healing food without touching the base game's eating code.
+    r.set_tagged("cooked_meat/*", &FOOD_HEAL, 2.0);
+    r.on(&EATEN, |b| {
+        let w = b.world();
+        for e in b.iter() {
+            if let (Some(heal), Some(mut st)) = (FOOD_HEAL.on_stack(&e.stack), w.entity(e.player)) {
+                st.health = (st.health + heal).min(st.max_health);
+                w.set_entity(e.player, &st);
+            }
+        }
+    });
+    r.loot_modify("base:zombie").add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);
 

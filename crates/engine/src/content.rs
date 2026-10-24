@@ -251,6 +251,9 @@ pub struct Content {
     pub item_liquid: FxHashMap<u32, (u16, u32)>,
     /// (empty container, liquid) -> filled item.
     pub containers: FxHashMap<(u32, u16), u32>,
+    pub loot: FxHashMap<String, crate::loot::Table>,
+    /// `abi::stack_flags` of stack components by component id.
+    pub stack_flags: FxHashMap<u32, u32>,
 }
 
 static CONTENT: OnceLock<Content> = OnceLock::new();
@@ -923,6 +926,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     for t in crate::registry::ENGINE_TAGS {
         cb.declare(t, "", None, &|| "the engine".into(), &mut errors);
     }
+    cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), &mut errors);
+    for g in &games {
+        for (name, schema, _) in &g.stack_components {
+            cb.declare(name, schema, None, &|| format!("stack component {name}"), &mut errors);
+        }
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -1125,7 +1134,29 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &components, &mut errors);
-    let game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &components, &mut errors);
+    let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
+    ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
+    let first_tagged = |t: &str| components.id(t).and_then(|t| ordered_items.iter().copied().find(|&i| components.has(comps::ITEM, i, t)));
+    let mut defaults: FxHashMap<String, crate::loot::Table> = FxHashMap::default();
+    for b in &block_defs[1..] {
+        if let Some(item) = b.drop {
+            defaults.insert(b.name.clone(), crate::loot::single(item, b.drop_count.max(1)));
+        }
+    }
+    let raw_loot: Vec<crate::loot::RawLoot> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.loot)).collect();
+    let raw_mods: Vec<crate::loot::RawLootMod> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.loot_mods)).collect();
+    let resolve = crate::loot::Resolve { items: &item_names, by_tag: &first_tagged, components: &components };
+    let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
+    let loot = crate::loot::freeze(raw_loot, raw_mods, &order_of, &resolve, defaults, &mut errors);
+    let mut stack_flags: FxHashMap<u32, u32> = FxHashMap::default();
+    for g in &games {
+        for (name, _, flags) in &g.stack_components {
+            if let Some(id) = components.id(name) {
+                *stack_flags.entry(id).or_default() |= flags;
+            }
+        }
+    }
+    let game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &components, &order_of, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -1154,6 +1185,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         reactions,
         item_liquid,
         containers,
+        loot,
+        stack_flags,
     })
 }
 

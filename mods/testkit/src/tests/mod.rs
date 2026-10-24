@@ -1,5 +1,6 @@
 //! The test list. Each test is an `async fn(T) -> R`; failed checks are collected, `?` stops it.
 
+mod extend;
 mod gameplay;
 mod liquids;
 mod ui;
@@ -41,6 +42,13 @@ pub fn all() -> Vec<TestDef> {
         gameplay::energy,
         gameplay::eating,
         gameplay::drop_and_pickup,
+        extend::events_batched,
+        extend::interceptor_protects,
+        extend::damage_chain,
+        extend::attributes,
+        extend::loot_tables,
+        extend::tool_tiers,
+        extend::healing_food,
         visual::held_items,
         visual::tooltips,
         visual::night_light,

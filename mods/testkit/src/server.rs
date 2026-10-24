@@ -2,10 +2,47 @@
 //! `testkit:reply`. Text keeps both sides trivial and the log readable; this is not a hot path.
 //! Positions may be written relative to the player's block as `~dx`.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use voxide_sdk::abi::entry_kind as ek;
 use voxide_sdk::*;
 
+/// How many of each event arrived since `events reset`, in `EVENT_NAMES` order.
+static COUNTS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+const EVENT_NAMES: [&str; 8] = ["block_broken", "block_placed", "item_picked_up", "entity_died", "entity_hurt", "player_joined", "eaten", "smelted"];
+
+value! {
+    struct Eaten { player: u64, stack: ItemStack, hunger: u32, saturation: f32 }
+}
+value! {
+    struct Smelted { furnace: u64, input: u32, output: ItemStack }
+}
+static EATEN: Event<Eaten> = Event::new("eaten");
+static SMELTED: Event<Smelted> = Event::new("smelted");
+static GOLD: Block = Block::named("base:gold_block");
+
+fn count(i: usize, n: usize) {
+    COUNTS[i].fetch_add(n as u32, Ordering::Relaxed);
+}
+
 pub fn register(r: &mut Registry) {
+    // Switches for the tests of the extension mechanisms, off unless a test turns them on.
+    r.rule("protect_gold", 0);
+    r.rule("half_damage", 0);
+    r.intercept(question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && q.world().rule("testkit:protect_gold") != 0 { Verdict::Deny } else { Verdict::Abstain });
+    r.modify(chain::DAMAGE, stage::FINAL, |m| {
+        if m.world().rule("testkit:half_damage") != 0 {
+            m.value *= 0.5;
+        }
+    });
+    r.on(&BLOCK_BROKEN, |b| count(0, b.len()));
+    r.on(&BLOCK_PLACED, |b| count(1, b.len()));
+    r.on(&ITEM_PICKED_UP, |b| count(2, b.len()));
+    r.on(&ENTITY_DIED, |b| count(3, b.len()));
+    r.on(&ENTITY_HURT, |b| count(4, b.len()));
+    r.on(&PLAYER_JOINED, |b| count(5, b.len()));
+    r.on(&EATEN, |b| count(6, b.len()));
+    r.on(&SMELTED, |b| count(7, b.len()));
     r.packet("op", |p| {
         let data = p.data();
         if data.len() < 4 {
@@ -218,6 +255,65 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let id: u64 = a.word()?.trim_start_matches('#').parse().map_err(|_| "bad id".to_string())?;
             w.remove(id);
             Ok(String::new())
+        }
+        "events" => {
+            if a.word() == Ok("reset") {
+                COUNTS.iter().for_each(|c| c.store(0, Ordering::Relaxed));
+            }
+            Ok(EVENT_NAMES.iter().zip(&COUNTS).map(|(n, c)| format!("{n}={}", c.load(Ordering::Relaxed))).collect::<Vec<_>>().join(" "))
+        }
+        "attr" => {
+            let owner = a.owner(w, player)?;
+            let name = a.word()?;
+            let (v, text) = w.explain_attribute(owner, name);
+            Ok(format!("{v} | {text}"))
+        }
+        "attr_mod" => {
+            let owner = a.owner(w, player)?;
+            let (name, id, op) = (a.word()?, a.word()?, a.num::<u32>()?);
+            let (amount, ticks) = (a.num::<f64>()?, a.num::<u64>()?);
+            w.add_modifier(owner, name, id, op, amount, ticks);
+            Ok(String::new())
+        }
+        "attr_rm" => {
+            let owner = a.owner(w, player)?;
+            let (name, id) = (a.word()?, a.word()?);
+            w.remove_modifier(owner, name, id);
+            Ok(String::new())
+        }
+        "loot" => {
+            let table = a.word()?.to_string();
+            let n: u32 = a.num()?;
+            let mut ctx = LootCtx::default();
+            while let Ok(word) = a.word() {
+                match word {
+                    "fire" => ctx.on_fire = true,
+                    "player" => ctx.by_player = true,
+                    tool => ctx.tool = ItemStack::new(item(tool)?, 1),
+                }
+            }
+            let mut totals: std::collections::BTreeMap<String, u32> = Default::default();
+            for _ in 0..n {
+                for s in w.roll_loot(&table, &ctx) {
+                    *totals.entry(item_name(s.item).to_string()).or_default() += s.count;
+                }
+            }
+            Ok(totals.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" "))
+        }
+        "break" => {
+            let p = a.pos()?;
+            let tool = match a.word() {
+                Ok(t) => ItemStack::new(item(t)?, 1),
+                Err(_) => ItemStack::EMPTY,
+            };
+            Ok((w.break_block(p, tool, player, true) as u32).to_string())
+        }
+        "damage" => {
+            let amount: f64 = a.num()?;
+            let cause: u32 = a.num().unwrap_or(abi::damage::GENERIC);
+            let q = abi::Query { entity: player, cause, amount, ..query() };
+            let (v, text) = w.explain(chain::DAMAGE, amount, &q);
+            Ok(format!("{v} | {text}"))
         }
         "snapshot" => {
             let (p, q) = (a.pos()?, a.pos()?);

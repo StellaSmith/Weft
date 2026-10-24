@@ -14,7 +14,6 @@ pub static SPIDER: Entity = Entity::new();
 pub static PIG: Entity = Entity::new();
 pub static COW: Entity = Entity::new();
 
-struct Drop(&'static str, u32, u32);
 
 pub fn register(r: &mut Registry) {
     r.entity_component(&BRAIN, Brain::default(), 0, &["base:zombie", "base:spider", "base:pig", "base:cow"]);
@@ -26,8 +25,7 @@ pub fn register(r: &mut Registry) {
         .flags(entity_flags::BURNS_IN_SUN)
         .texture("zombie", 64, 32)
         .model(biped(true))
-        .on_tick(|t| hostile_ai(t, 3.0, false))
-        .on_death(|e| drops(e, &[Drop("rotten_flesh", 0, 2)]));
+        .on_tick(|t| hostile_ai(t, 3.0, false));
     r.entity("spider").handle(&SPIDER)
         .size(1.3, 0.9)
         .health(16.0)
@@ -35,8 +33,7 @@ pub fn register(r: &mut Registry) {
         .hostile()
         .texture("spider", 64, 32)
         .model(spider())
-        .on_tick(|t| hostile_ai(t, 2.0, true))
-        .on_death(|e| drops(e, &[Drop("string", 0, 2)]));
+        .on_tick(|t| hostile_ai(t, 2.0, true));
     r.entity("pig").handle(&PIG)
         .size(0.9, 0.9)
         .health(10.0)
@@ -45,8 +42,7 @@ pub fn register(r: &mut Registry) {
         .texture("pig", 64, 64)
         .model(quadruped([10.0, 8.0, 16.0], 6.0, [8.0, 8.0, 8.0]))
         .on_tick(passive_ai)
-        .on_hurt(panic)
-        .on_death(|e| drops(e, &[Drop("porkchop", 1, 3)]));
+        .on_hurt(panic);
     r.entity("cow").handle(&COW)
         .size(0.9, 1.3)
         .health(10.0)
@@ -55,22 +51,16 @@ pub fn register(r: &mut Registry) {
         .texture("cow", 64, 64)
         .model(quadruped([12.0, 10.0, 18.0], 12.0, [8.0, 8.0, 6.0]))
         .on_tick(passive_ai)
-        .on_hurt(panic)
-        .on_death(|e| drops(e, &[Drop("beef", 1, 3), Drop("leather", 0, 2)]));
+        .on_hurt(panic);
+    // Vanilla amounts; meat comes out cooked when the animal burns.
+    r.loot("zombie").pool(Pool::new().items("rotten_flesh", 0, 2));
+    r.loot("spider").pool(Pool::new().items("string", 0, 2));
+    r.loot("pig").pool(Pool::new().entry(Entry::item("porkchop").count(1, 3).smelted("base:smelting")));
+    r.loot("cow").pool(Pool::new().entry(Entry::item("beef").count(1, 3).smelted("base:smelting"))).pool(Pool::new().items("leather", 0, 2));
     r.rule("mob_spawning", 1);
     r.hook_tick("core:player", spawn_around_players);
 }
 
-fn drops(e: &mut EntityEvent, list: &[Drop]) {
-    let w = e.world();
-    let Some(st) = w.entity(e.entity()) else { return };
-    for d in list {
-        let n = d.1 + w.random_below(d.2 - d.1 + 1);
-        if let (Some(item), true) = (find_item(&format!("base:{}", d.0)), n > 0) {
-            w.spawn_item([st.pos[0], st.pos[1] + 0.5, st.pos[2]], ItemStack::new(item, n));
-        }
-    }
-}
 
 fn panic(e: &mut EntityEvent) {
     if let Some(b) = e.world().component_mut(e.entity(), &BRAIN) {

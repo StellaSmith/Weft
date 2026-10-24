@@ -204,7 +204,11 @@ fn read_one(c: &Content, r: &mut R) -> Option<Option<Saved>> {
         let bytes = r.take(len)?.to_vec();
         if let Some(id) = c.game.component(&name) {
             let mut b = bytes;
-            b.resize(c.game.components[id as usize].size as usize, 0);
+            // Size 0: variable length (attribute modifiers).
+            let size = c.game.components[id as usize].size as usize;
+            if size > 0 {
+                b.resize(size, 0);
+            }
             comps.push((id, b.into_boxed_slice()));
         }
     }

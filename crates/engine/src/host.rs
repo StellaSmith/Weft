@@ -87,6 +87,10 @@ pub static HOST: Host = Host {
     reg_ore,
     reg_creative_tab,
     reg_tag,
+    log_at,
+    log_enabled,
+    gizmo_on,
+    gizmo,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -106,12 +110,20 @@ pub fn stats(m: ModId) -> &'static ModStats {
     &STATS[(m.0 as usize).min(MAX_MODS - 1)]
 }
 
+/// Callback nanoseconds and calls of a mod since start; readers diff two looks.
+pub fn mod_totals(m: ModId) -> (u64, u64) {
+    let s = stats(m);
+    (s.nanos.load(Ordering::Relaxed), s.calls.load(Ordering::Relaxed))
+}
+
 /// Calls a mod callback. Time is charged to `owner`; a failing callback is logged with the mod's
 /// name and the engine carries on.
 pub fn invoke<A>(owner: ModId, cb: Callback, args: &mut A) -> bool {
     let Some(f) = cb.func else { return true };
     let start = Instant::now();
+    let prev = crate::diag::enter_mod(owner);
     let r = unsafe { f(cb.data, args as *mut A as *mut c_void) };
+    crate::diag::leave_mod(prev);
     let s = stats(owner);
     s.nanos.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     s.calls.fetch_add(1, Ordering::Relaxed);
@@ -334,6 +346,29 @@ unsafe extern "C" fn energy_extract(w: *mut abi::WorldCtx, id: u64, amount: i64,
     unsafe { crate::server::energy::extract(&mut dim(w).entities, content(), id, amount, simulate != 0) }
 }
 
+unsafe extern "C" fn gizmo_on(w: *mut abi::WorldCtx, group: Str) -> u32 {
+    unsafe { dim(w).gizmo_groups.iter().any(|g| g == group.as_str()) as u32 }
+}
+
+unsafe extern "C" fn gizmo(w: *mut abi::WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, text: Str) {
+    unsafe {
+        let d = dim(w);
+        let group = group.as_str();
+        if !d.gizmo_groups.iter().any(|g| g == group) {
+            return;
+        }
+        d.gizmos.push(crate::net::GizmoShape {
+            group: group.to_string(),
+            kind: kind.min(2) as u8,
+            a: DVec3::from_array(*a),
+            b: DVec3::from_array(*b),
+            color,
+            ticks: ticks.max(1),
+            text: text.as_str().to_string(),
+        });
+    }
+}
+
 // ---------------------------------------------------------------- menus
 
 unsafe fn menu<'a>(m: *mut abi::MenuCtx) -> &'a mut MenuCall {
@@ -439,17 +474,36 @@ unsafe extern "C" fn state_flags(state: u32) -> u32 {
 
 // ---------------------------------------------------------------- registration
 
-unsafe extern "C" fn host_log(me: ModId, level: u32, msg: Str) {
-    let msg = unsafe { msg.as_str() };
-    let name = crate::modloader::mod_id_name(me);
-    let target = format!("mod:{name}");
-    let lvl = match level {
+fn level(level: u32) -> log::Level {
+    match level {
         abi::level::ERROR => log::Level::Error,
         abi::level::WARN => log::Level::Warn,
         abi::level::DEBUG => log::Level::Debug,
+        abi::level::TRACE => log::Level::Trace,
         _ => log::Level::Info,
-    };
-    log::log!(target: &target, lvl, "{msg}");
+    }
+}
+
+fn mod_target(me: ModId, sub: &str) -> String {
+    let name = crate::modloader::mod_id_name(me);
+    if sub.is_empty() { format!("mod:{name}") } else { format!("mod:{name}::{sub}") }
+}
+
+unsafe extern "C" fn host_log(me: ModId, lvl: u32, msg: Str) {
+    unsafe { log_at(me, lvl, Str::EMPTY, msg) }
+}
+
+unsafe extern "C" fn log_at(me: ModId, lvl: u32, target: Str, msg: Str) {
+    let (target, msg) = unsafe { (mod_target(me, target.as_str()), msg.as_str()) };
+    log::log!(target: &target, level(lvl), "{msg}");
+}
+
+unsafe extern "C" fn log_enabled(me: ModId, lvl: u32, target: Str) -> u32 {
+    let lvl = level(lvl);
+    if lvl > log::max_level() {
+        return 0;
+    }
+    crate::log::enabled(&mod_target(me, unsafe { target.as_str() }), lvl) as u32
 }
 
 unsafe fn reg<'a>(r: *mut abi::Registrar) -> &'a mut RawRegistrar {

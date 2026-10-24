@@ -234,6 +234,7 @@ const WORLD: &[DebugLine] = &[
         vec![Arg::Int(cl.render.drawn as i64), Arg::Int((cl.render.faces_drawn / 1000) as i64)]
     }),
     ("hud.debug.entities", |c| vec![Arg::Int(c.client.as_ref().map_or(0, |cl| cl.entities.len()) as i64)]),
+    ("hud.debug.load", |c| vec![Arg::Int(c.stats.load.0 as i64), Arg::Int(c.stats.load.1 as i64)]),
 ];
 
 const MODS: &[DebugLine] = &[("core.raw", |_| vec![Arg::Text(mod_profile())])];
@@ -247,29 +248,19 @@ const SYSTEM: &[DebugLine] = &[
 /// Milliseconds per server tick and calls per tick for each mod, averaged over the last second.
 fn mod_profile() -> String {
     use std::sync::Mutex;
-    static LAST: Mutex<Option<(std::time::Instant, String)>> = Mutex::new(None);
+    static LAST: Mutex<Option<(std::time::Instant, String, crate::diag::ModWindow)>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap();
-    if let Some((at, text)) = last.as_ref() {
-        if at.elapsed().as_secs_f32() < 1.0 {
-            return text.clone();
-        }
+    let (at, text, window) = last.get_or_insert_with(|| (std::time::Instant::now() - std::time::Duration::from_secs(2), String::new(), Default::default()));
+    if at.elapsed().as_secs_f32() < 1.0 {
+        return text.clone();
     }
-    let ticks = last.as_ref().map_or(1.0, |(at, _)| at.elapsed().as_secs_f64() * 20.0);
-    let c = content();
-    let lines: Vec<String> = c
-        .mods
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let s = crate::host::stats(voxide_abi::ModId(i as u32));
-            let ns = s.nanos.swap(0, std::sync::atomic::Ordering::Relaxed);
-            let calls = s.calls.swap(0, std::sync::atomic::Ordering::Relaxed);
-            format!("{}: {:.2} ms, {:.0} calls", m.id, ns as f64 / 1e6 / ticks, calls as f64 / ticks)
-        })
-        .collect();
-    let text = lines.join("\n");
-    *last = Some((std::time::Instant::now(), text.clone()));
-    text
+    let (mods, secs) = window.take();
+    let ticks = (secs * 20.0).max(1.0);
+    let lines: Vec<String> = mods.iter().map(|(id, ns, calls)| format!("{id}: {:.2} ms, {:.0} calls", *ns as f64 / 1e6 / ticks, *calls as f64 / ticks)).collect();
+    *text = lines.join("
+");
+    *at = std::time::Instant::now();
+    text.clone()
 }
 
 /// Engine-drawn nodes: crosshair, hotbar slots, menu slots.
@@ -472,9 +463,11 @@ fn debug_groups(ui: &mut Ui, groups: u32, right: bool) {
                     t.wrap = false;
                 }
             }
-            let n = ui.text_bound("debug", Box::new(|_: &Ctx| ("hud.debug.gamemode".into(), vec![])));
-            if let Some(t) = ui.text_mut(n) {
-                t.wrap = false;
+            for key in ["hud.debug.gamemode", "hud.debug.cubes", "hud.debug.hitboxes"] {
+                let n = ui.text_bound("debug", Box::new(move |_: &Ctx| (key.into(), vec![])));
+                if let Some(t) = ui.text_mut(n) {
+                    t.wrap = false;
+                }
             }
         });
     }

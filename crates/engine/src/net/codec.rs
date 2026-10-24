@@ -280,6 +280,19 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.str(n);
             }
         }
+        ToClient::Gizmos(list) => {
+            w.u8(26);
+            w.len(list.len());
+            for g in list {
+                w.str(&g.group);
+                w.u8(g.kind);
+                w.dvec(g.a);
+                w.dvec(g.b);
+                w.u32(g.color);
+                w.u32(g.ticks);
+                w.str(&g.text);
+            }
+        }
         ToClient::Worn(list) => {
             w.u8(21);
             w.len(list.len());
@@ -426,6 +439,14 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             ToClient::Burning(ids)
         }
         25 => ToClient::Knockback([r.f32()?, r.f32()?]),
+        26 => {
+            let n = r.len()?;
+            let mut list = Vec::with_capacity(n.min(4096));
+            for _ in 0..n {
+                list.push(crate::net::GizmoShape { group: r.str()?, kind: r.u8()?, a: r.dvec()?, b: r.dvec()?, color: r.u32()?, ticks: r.u32()?, text: r.str()? });
+            }
+            ToClient::Gizmos(list)
+        }
         _ => return None,
     })
 }
@@ -508,6 +529,13 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.u32(*item);
             w.u8(*button);
         }
+        ToServer::Gizmos(names) => {
+            w.u8(18);
+            w.len(names.len());
+            for n in names {
+                w.str(n);
+            }
+        }
         ToServer::Drag { slots, button } => {
             w.u8(15);
             w.u8(*button);
@@ -554,6 +582,14 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
         }
         16 => ToServer::CreativeTake { item: r.u32()?, button: r.u8()? },
         17 => ToServer::Pick { item: r.u32()? },
+        18 => {
+            let n = r.len()?;
+            let mut names = Vec::with_capacity(n.min(256));
+            for _ in 0..n {
+                names.push(r.str()?);
+            }
+            ToServer::Gizmos(names)
+        }
         _ => return None,
     })
 }
@@ -570,10 +606,18 @@ mod tests {
             ToServer::Click { slot: 7, button: 1, shift: true },
             ToServer::Drag { slots: vec![3, 4, 9], button: 0 },
             ToServer::Chat("/give stone 5".into()),
+            ToServer::Gizmos(vec!["regions".into(), "mymod:pipes".into()]),
         ];
         for m in msgs {
             let back = decode_server(&encode_server(&m)).unwrap();
             assert_eq!(encode_server(&back), encode_server(&m));
         }
+    }
+
+    #[test]
+    fn gizmos_roundtrip() {
+        let g = crate::net::GizmoShape { group: "regions".into(), kind: 1, a: DVec3::new(1.0, 2.0, 3.0), b: DVec3::splat(-4.5), color: 0xFF8000FF, ticks: 21, text: "r0".into() };
+        let Some(ToClient::Gizmos(back)) = decode_client(&encode_client(&ToClient::Gizmos(vec![g.clone()]))) else { panic!("not decoded") };
+        assert_eq!(back, vec![g]);
     }
 }

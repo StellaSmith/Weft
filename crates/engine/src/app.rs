@@ -99,6 +99,8 @@ pub struct Stats {
     pub server_ms: f32,
     pub phases: [f32; 6],
     pub regions: u32,
+    /// Cubes generating or waiting for insertion, and cubes not yet sent to a player.
+    pub load: (u64, u64),
     pub gpu_name: String,
     pub cpu_name: String,
     pub threads: usize,
@@ -147,6 +149,7 @@ struct Running {
     /// CPU milliseconds of the last frame, see `bench::CPU_PARTS`.
     prof: [f32; 5],
     bench: Option<crate::bench::Bench>,
+    diag: crate::diag::Reporter,
     /// UI quads as of the last rebuild; per-frame parts are added on top.
     ui_cached: Vec<crate::ui::render::Quad>,
     /// Where UI asked for the player model, physical pixels.
@@ -267,6 +270,7 @@ impl App {
             reload_requested: false,
             prof: [0.0; 5],
             bench: None,
+            diag: Default::default(),
             ui_cached: Vec::new(),
             previews: Vec::new(),
             preview_tex: None,
@@ -539,7 +543,13 @@ impl Running {
                 }
                 Request::SendChat(text) => {
                     if let Some(g) = &mut self.game {
-                        if !text.trim().is_empty() {
+                        // Logging is per process, so `/log` is handled by whoever types it.
+                        if let Some(spec) = text.trim().strip_prefix("/log").filter(|r| r.is_empty() || r.starts_with(' ')) {
+                            g.client.chat_line(crate::commands::log_command(spec.trim()));
+                        } else if let Some(group) = text.trim().strip_prefix("/gizmo").filter(|r| r.is_empty() || r.starts_with(' ')) {
+                            let reply = g.client.gizmo_command(group.trim());
+                            g.client.chat_line(reply);
+                        } else if !text.trim().is_empty() {
                             g.client.send(net::ToServer::Chat(text));
                         }
                     }
@@ -740,6 +750,7 @@ impl Running {
         st.gpu.clear();
         st.gpu.extend_from_slice(self.gpu.gpu_times());
         (st.server_ms, st.regions, st.phases) = server.map_or((0.0, 0, [0.0; 6]), |s| (s.tick_ms(), s.regions(), s.phases()));
+        st.load = server.map_or((0, 0), |s| (s.shared.pending.load(std::sync::atomic::Ordering::Relaxed), s.shared.unsent.load(std::sync::atomic::Ordering::Relaxed)));
         st.window = self.gpu.surface_size();
         st.gui_scale = gui_scale;
         let ctx = Ctx {
@@ -926,11 +937,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                     g.client.player.pitch = pitch.to_radians();
                 }
             }
-            crate::autopilot::Action::Chat(t) => {
-                if let Some(g) = &mut r.game {
-                    g.client.send(net::ToServer::Chat(t));
-                }
-            }
+            crate::autopilot::Action::Chat(t) => r.handle(vec![Request::SendChat(t)]),
             crate::autopilot::Action::Shot(name) => {
                 let dir = opts.shot.clone().unwrap_or_else(|| r.settings.run_dir.join("screenshots"));
                 r.shot_path = Some(if dir.extension().is_some() { dir.with_file_name(name) } else { dir.join(name) });
@@ -954,7 +961,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 }
             }
             crate::autopilot::Action::Quit => {
-                if let Some(b) = r.bench.take() {
+                if let Some(mut b) = r.bench.take() {
                     log::info!("{}", b.report(""));
                 }
                 return true;
@@ -1037,6 +1044,14 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 g.client.send(net::ToServer::Chat(format!("/gamemode {}", next.name())));
             }
             r.f3_combo = Some(true);
+        }
+        for (key, group) in [(KeyCode::KeyG, "cubes"), (KeyCode::KeyB, "hitboxes")] {
+            if r.input.pressed_key(Key::Code(key)) {
+                if let Some(g) = &mut r.game {
+                    g.client.toggle_gizmo(group);
+                }
+                r.f3_combo = Some(true);
+            }
         }
         for (i, k) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5].into_iter().enumerate() {
             if r.input.pressed_key(Key::Code(k)) {
@@ -1262,6 +1277,19 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     // The stack held by the mouse follows it every frame, outside the cached quads.
     r.ui.quads.clear();
     r.ui.quads.extend_from_slice(&r.ui_cached);
+    if let Some(g) = &mut r.game {
+        g.client.collect_gizmos();
+        let cam = g.client.render_camera();
+        let view_proj = cam.proj(info.width as f32 / info.height.max(1) as f32) * cam.view();
+        for (pos, text, color) in &g.client.gizmo_labels {
+            let clip = view_proj * (*pos - cam.pos).as_vec3().extend(1.0);
+            if clip.w < 0.1 || (*pos - cam.pos).length_squared() > 24.0 * 24.0 {
+                continue;
+            }
+            let (x, y) = ((clip.x / clip.w * 0.5 + 0.5) * info.width as f32, (0.5 - clip.y / clip.w * 0.5) * info.height as f32);
+            r.ui.label_colored(text, x, y - 4.0 * scale, scale, *color);
+        }
+    }
     if let Some((_, ui)) = r.screens.last() {
         let game = r.game.as_ref().map(|_| (content(), &r.textures));
         r.ui.tooltip(&mut *r.gpu, &r.assets, ui, &r.theme, scale, r.input.cursor, game);
@@ -1322,6 +1350,17 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.prof[3] = t3.duration_since(t2).as_secs_f32() * 1000.0;
     r.gpu.end_frame(&r.list);
     r.prof[4] = t3.elapsed().as_secs_f32() * 1000.0;
+    if let Some(g) = &r.game {
+        r.diag.frame(&crate::diag::FrameSample {
+            frame_ms: dt as f32 * 1000.0,
+            cpu: &r.prof,
+            gpu: r.gpu.gpu_times(),
+            client_cubes: g.client.world.cubes.len(),
+            client_entities: g.client.entities.len(),
+            pending_meshes: if crate::log::on(crate::log::Channel::Mesh, log::Level::Debug) { g.client.world.pending_meshes() } else { 0 },
+            server: g.server.as_ref().map(|s| &*s.shared),
+        });
+    }
     if let Some(b) = &mut r.bench {
         let server = r.game.as_ref().and_then(|g| g.server.as_ref());
         let (server_ms, phases) = server.map_or((0.0, [0.0; 6]), |s| (s.tick_ms(), s.phases()));

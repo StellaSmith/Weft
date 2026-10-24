@@ -143,6 +143,27 @@ impl World {
     pub fn open_menu(&self, player: u64, menu: &Menu, owner: u64) {
         unsafe { (host().open_menu)(self.raw(), player, menu.id(), owner) }
     }
+
+    /// Whether a player here shows the gizmo group `group` (`/gizmo mymod:pipes`; the mod's
+    /// namespace is added to bare names). Check before computing what to draw.
+    pub fn gizmo_on(&self, group: &str) -> bool {
+        let g = qualify(crate::mod_id(), group);
+        unsafe { (host().gizmo_on)(self.raw(), Str::new(&g)) != 0 }
+    }
+    /// A line seen by players showing `group`, colour `0xRRGGBBAA`, for `ticks`.
+    pub fn gizmo_line(&self, group: &str, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32) {
+        self.gizmo(group, 0, a, b, color, ticks, "");
+    }
+    pub fn gizmo_box(&self, group: &str, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
+        self.gizmo(group, 1, min, max, color, ticks, "");
+    }
+    pub fn gizmo_text(&self, group: &str, pos: [f64; 3], text: &str, color: u32, ticks: u32) {
+        self.gizmo(group, 2, pos, pos, color, ticks, text);
+    }
+    fn gizmo(&self, group: &str, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32, text: &str) {
+        let g = qualify(crate::mod_id(), group);
+        unsafe { (host().gizmo)(self.raw(), Str::new(&g), kind, &a, &b, color, ticks, Str::new(text)) }
+    }
 }
 
 #[derive(Clone, Copy)]

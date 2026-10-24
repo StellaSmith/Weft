@@ -711,6 +711,7 @@ pub mod level {
     pub const WARN: u32 = 2;
     pub const INFO: u32 = 3;
     pub const DEBUG: u32 = 4;
+    pub const TRACE: u32 = 5;
 }
 
 #[repr(C)]
@@ -838,6 +839,17 @@ pub struct Host {
     pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
     /// Adds `tag` to an item (or block item) any mod registered, like Forge's ore dictionary.
     pub reg_tag: unsafe extern "C" fn(reg: *mut Registrar, tag: Str, item: Str),
+    /// Like `log` under a sub-target of the mod's own: `mod:<id>::<target>` (`mod:<id>` if empty),
+    /// so players can filter it with `--log`/`/log`.
+    pub log_at: unsafe extern "C" fn(me: ModId, level: u32, target: Str, msg: Str),
+    /// Non-zero when a record at `level` for that target would be written; check before building
+    /// costly diagnostics.
+    pub log_enabled: unsafe extern "C" fn(me: ModId, level: u32, target: Str) -> u32,
+    /// Non-zero when a player in this world shows gizmo group `group` (`/gizmo <group>`).
+    pub gizmo_on: unsafe extern "C" fn(world: *mut WorldCtx, group: Str) -> u32,
+    /// Debug shape for players showing `group`: `kind` 0 line from `a` to `b`, 1 box between
+    /// corners `a` and `b`, 2 `text` at `a`; `color` is 0xRRGGBBAA, kept for `ticks`.
+    pub gizmo: unsafe extern "C" fn(world: *mut WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, text: Str),
 }
 
 /// Ore veins a mod adds to any dimension, its own or another mod's. The engine scatters them after

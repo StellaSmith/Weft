@@ -242,13 +242,15 @@ fn read_u64(r: &mut codec::R) -> Result<u64, String> {
 
 /// Forwards a crossbeam channel into a stream. The channel is read on a blocking thread because
 /// the engine side is synchronous.
-async fn pump_out<T: Send + 'static>(rx: crossbeam_channel::Receiver<T>, mut send: iroh::endpoint::SendStream, encode: fn(&T) -> Vec<u8>) {
+async fn pump_out<T: Send + crate::net::Message + 'static>(rx: crossbeam_channel::Receiver<T>, mut send: iroh::endpoint::SendStream, encode: fn(&T) -> Vec<u8>) {
     let (tx, mut arx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     std::thread::Builder::new()
         .name("net-out".into())
         .spawn(move || {
             while let Ok(m) = rx.recv() {
-                if tx.send(encode(&m)).is_err() {
+                let bytes = encode(&m);
+                crate::diag::net_message(T::TO_SERVER, m.kind(), 0, bytes.len());
+                if tx.send(bytes).is_err() {
                     break;
                 }
             }

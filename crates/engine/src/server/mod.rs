@@ -70,6 +70,8 @@ pub struct Player {
     /// Set by teleports: moves sent before the client saw the teleport are stale and would read
     /// as a long fall, so they are ignored until one arrives near this point.
     teleported: Option<DVec3>,
+    /// Gizmo groups the client shows.
+    gizmos: Vec<String>,
 }
 
 pub struct Generated {
@@ -102,6 +104,11 @@ pub struct Shared {
     pub insert_ns: AtomicU64,
     /// Last tick split into `PHASES`, microseconds.
     pub phase_us: [AtomicU64; 6],
+    /// Longest tick since a reader last swapped it out.
+    pub tick_max_us: AtomicU64,
+    /// Loaded cubes and live entities over all dimensions, refreshed every 10 ticks.
+    pub cubes: AtomicU64,
+    pub entities: AtomicU64,
 }
 
 pub const PHASES: [&str; 6] = ["insert", "messages", "regions", "request", "sync", "rest"];
@@ -127,6 +134,8 @@ pub struct Server {
     next_id: Arc<AtomicU64>,
     /// Names last sent to clients as the online list.
     online: Vec<String>,
+    /// Generated and inserted totals at the last `load` report.
+    load_seen: (u64, u64),
 }
 
 /// Handle the client side uses to reach a running server thread.
@@ -265,6 +274,7 @@ impl Server {
             shared,
             next_id,
             online: Vec::new(),
+            load_seen: (0, 0),
         }
     }
 
@@ -340,6 +350,7 @@ impl Server {
                 sync_done: None,
                 vis: None,
                 teleported: None,
+                gizmos: Vec::new(),
             });
         }
     }
@@ -362,9 +373,14 @@ impl Server {
 
         // Every region of every dimension is independent: tick them all in parallel.
         for d in &mut self.dims {
+            let mut groups: Vec<String> = self.players.iter().filter(|p| p.dim == d.id).flat_map(|p| p.gizmos.iter().cloned()).collect();
+            groups.sort();
+            groups.dedup();
+            let groups: Arc<[String]> = groups.into();
             let t = d.time;
             for r in &mut d.regions {
                 r.time = t;
+                r.gizmo_groups = groups.clone();
             }
             d.time += 1;
         }
@@ -399,13 +415,64 @@ impl Server {
             }
             let n: usize = self.dims.iter().map(|d| d.regions.len()).sum();
             self.shared.regions.store(n as u64, Ordering::Relaxed);
+            let regions = || self.dims.iter().flat_map(|d| d.regions.iter());
+            self.shared.cubes.store(regions().map(|r| r.cubes.len() as u64).sum(), Ordering::Relaxed);
+            self.shared.entities.store(regions().map(|r| r.entities.list.iter().filter(|e| !e.removed).count() as u64).sum(), Ordering::Relaxed);
+        }
+        if self.tick % TPS as u64 == 0 && crate::log::on(crate::log::Channel::Load, log::Level::Debug) {
+            self.report_load();
         }
         self.tick += 1;
         if self.tick % AUTOSAVE_TICKS == 0 {
             self.save_all(false);
         }
         lap(5, &self.shared);
-        self.shared.tick_us.store(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        let us = start.elapsed().as_micros() as u64;
+        self.shared.tick_us.store(us, Ordering::Relaxed);
+        self.shared.tick_max_us.fetch_max(us, Ordering::Relaxed);
+    }
+
+    /// `load` channel: where the pipeline stands; at trace level also why waiting cubes wait.
+    fn report_load(&mut self) {
+        let sh = &self.shared;
+        let (made, put) = (sh.generated.load(Ordering::Relaxed), sh.inserted.load(Ordering::Relaxed));
+        let (made_before, put_before) = std::mem::replace(&mut self.load_seen, (made, put));
+        let generating: usize = self.dims.iter().map(|d| d.generating.len()).sum();
+        log::debug!(
+            target: "load",
+            "generating {generating}, waiting to insert {}, wanted {}, unsent {} | last second: {} generated, {} inserted",
+            self.backlog.len(),
+            self.wanted.len(),
+            sh.unsent.load(Ordering::Relaxed),
+            made - made_before,
+            put - put_before,
+        );
+        if !crate::log::on(crate::log::Channel::Load, log::Level::Trace) || self.backlog.is_empty() {
+            return;
+        }
+        // Same rule as `receive_generated`: a cube waits for the one above it.
+        let queued: FxHashSet<(u32, IVec3)> = self.backlog.iter().map(|g| (g.dim, g.pos)).collect();
+        let (mut above_queued, mut above_generating, mut above_unrequested, mut ready) = (0, 0, 0, 0);
+        let mut stuck = Vec::new();
+        for g in &self.backlog {
+            let above = (g.dim, g.pos + IVec3::Y);
+            if queued.contains(&above) {
+                above_queued += 1;
+            } else if self.dims[g.dim as usize].generating.contains(&above.1) {
+                above_generating += 1;
+            } else if self.wanted.contains(&above) {
+                above_unrequested += 1;
+                if stuck.len() < 5 {
+                    stuck.push(format!("{} {}", g.dim, g.pos));
+                }
+            } else {
+                ready += 1;
+            }
+        }
+        log::trace!(
+            target: "load",
+            "waiting: {above_queued} for a queued cube above, {above_generating} for one generating, {above_unrequested} for one not requested yet {stuck:?}, {ready} ready (out of time)"
+        );
     }
 
     fn dim_events(&mut self, c: &'static Content) {
@@ -785,6 +852,11 @@ impl Server {
                         p.conn.send(ToClient::Chat(format!("<{name}> {text}")));
                     }
                 }
+            }
+            ToServer::Gizmos(mut names) => {
+                names.retain(|n| n.len() <= 64);
+                names.truncate(64);
+                self.players[pi].gizmos = names;
             }
             ToServer::Leave => {
                 if !self.players[pi].joined {
@@ -1225,6 +1297,8 @@ impl Server {
                     .collect();
                 format!("regions {}", parts.join(", "))
             }
+            // Clients handle it themselves: logging is per process.
+            "log" => crate::commands::log_command(a.text("filters").unwrap_or("")),
             _ => format!("unknown command /{name}"),
         }
     }
@@ -1530,6 +1604,13 @@ impl Server {
                 }
             }
 
+            if !p.gizmos.is_empty() {
+                let shapes = gizmos_for(p, dim, *tick, me);
+                if !shapes.is_empty() {
+                    p.conn.send(ToClient::Gizmos(shapes));
+                }
+            }
+
             let key = (p.dim, center, r, h + down * 1000, dim.settled_version());
             if p.sync_done == Some(key) {
                 continue;
@@ -1594,6 +1675,7 @@ impl Server {
                 r.entities.hurt.clear();
                 r.entities.knocked.clear();
                 r.entities.dirty_comp.clear();
+                r.gizmos.clear();
                 // Block entity inventory changes must reach the save.
                 let anchored: Vec<IVec3> = r
                     .entities
@@ -1653,6 +1735,44 @@ impl Server {
 }
 
 /// Items in a player's equipment slots that show on the model.
+/// Gizmo shapes for one player: what mods drew in the groups it shows, and every second the
+/// engine's server-side groups.
+fn gizmos_for(p: &Player, dim: &DimSet, tick: u64, me: DVec3) -> Vec<crate::net::GizmoShape> {
+    use crate::net::GizmoShape;
+    let mut out: Vec<GizmoShape> = Vec::new();
+    for r in &dim.regions {
+        out.extend(r.gizmos.iter().filter(|g| p.gizmos.contains(&g.group)).cloned());
+    }
+    if tick % TPS as u64 != 0 {
+        return out;
+    }
+    let on = |g: &str| p.gizmos.iter().any(|x| x == g);
+    let shape = |group: &str, kind: u8, a: DVec3, b: DVec3, color: u32, text: String| GizmoShape { group: group.into(), kind, a, b, color, ticks: TPS + 2, text };
+    if on("regions") {
+        const COLORS: [u32; 6] = [0xFF4040FF, 0x40FF40FF, 0x4080FFFF, 0xFFFF40FF, 0xFF40FFFF, 0x40FFFFFF];
+        for (i, r) in dim.regions.iter().enumerate() {
+            let (Some(lo), Some(hi)) = (r.cubes.keys().copied().reduce(IVec3::min), r.cubes.keys().copied().reduce(IVec3::max)) else { continue };
+            let (a, b) = ((lo * 16).as_dvec3() + 0.05, ((hi + 1) * 16).as_dvec3() - 0.05);
+            out.push(shape("regions", 1, a, b, COLORS[i % COLORS.len()], String::new()));
+        }
+    }
+    if let Some(v) = p.vis.as_ref().filter(|_| on("visibility")) {
+        let here: IVec3 = me.floor().as_ivec3() >> 4;
+        for &c in &v.seen {
+            let d = c - here;
+            if d.x.abs() > 8 || d.z.abs() > 8 || d.y.abs() > 4 {
+                continue;
+            }
+            let color = if dim.has(c) { 0x40FF60FF } else { 0xFFA030FF };
+            let m = (c * 16).as_dvec3() + 8.0;
+            for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+                out.push(shape("visibility", 0, m - axis, m + axis, color, String::new()));
+            }
+        }
+    }
+    out
+}
+
 fn worn_of(c: &Content, ents: &entity::Entities, id: u64) -> Vec<u32> {
     let Some(inv) = ents.inventories.get(&id).filter(|i| i.len() == entity::PLAYER_SLOTS as usize) else { return Vec::new() };
     inv[entity::PLAYER_WORN].iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()

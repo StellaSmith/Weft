@@ -196,7 +196,22 @@ fn sync(m: &MenuCtx) {
     }
 }
 
+/// `/gizmo testmod:energy`: stored energy above every machine, the mod-side use of gizmos.
+fn energy_gizmos(t: &EntityTick) {
+    let w = t.world();
+    if w.time() % 10 != 0 || !w.gizmo_on("energy") {
+        return;
+    }
+    for &id in t.ids() {
+        if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
+            let text = format!("{} / {} EU", e.stored, e.capacity);
+            w.gizmo_text("energy", [st.pos[0], st.pos[1] + 1.3, st.pos[2]], &text, 0x60FF60FF, 11);
+        }
+    }
+}
+
 fn tick_generators(t: &EntityTick) {
+    energy_gizmos(t);
     let w = t.world();
     for &id in t.ids() {
         let Some(e) = w.energy(id) else { continue };
@@ -226,6 +241,7 @@ fn tick_generators(t: &EntityTick) {
 }
 
 fn tick_furnaces(t: &EntityTick) {
+    energy_gizmos(t);
     let w = t.world();
     for &id in t.ids() {
         let Some(e) = w.energy(id) else { continue };

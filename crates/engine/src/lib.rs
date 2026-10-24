@@ -7,6 +7,7 @@ pub mod commands;
 pub mod game_screens;
 pub mod clipboard;
 pub mod content;
+pub mod diag;
 pub mod host;
 pub mod hud;
 pub mod input;

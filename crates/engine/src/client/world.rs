@@ -311,8 +311,11 @@ impl ClientWorld {
             let filler = self.filler;
             let ctm = super::ctm::current();
             rayon::spawn(move || {
+                let t = std::time::Instant::now();
                 let n = neighborhood(&around, hidden, filler, pos);
                 let mesh = mesher::build(content(), &n, &ctm);
+                crate::diag::MESHED.add(1);
+                crate::diag::MESH_NS.add(t.elapsed().as_nanos() as u64);
                 let _ = tx.send(MeshResult { pos, version, mesh });
             });
         }

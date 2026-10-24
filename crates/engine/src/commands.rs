@@ -373,7 +373,22 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]"),
     ("regions", ""),
     ("debugblocks", "[floor:block]"),
+    ("log", "[filters:text]"),
 ];
+
+/// `/log`: shows or changes the log filters of this process (see `crate::log`).
+pub fn log_command(spec: &str) -> String {
+    if spec.is_empty() {
+        let channels: Vec<&str> = crate::log::CHANNELS.iter().map(|c| c.0).collect();
+        return format!("log filters: {}
+channels: {}
+example: /log load=debug,server=debug (reset to undo)", crate::log::describe(), channels.join(", "));
+    }
+    match crate::log::set(spec) {
+        Ok(now) => format!("log filters: {now}"),
+        Err(e) => e,
+    }
+}
 
 /// What the chat input can complete to: suggestions for the word being typed, the byte offset
 /// where that word starts, and the usage of what is left to type.

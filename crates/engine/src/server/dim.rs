@@ -56,6 +56,10 @@ pub struct Dim {
     pub edits: u64,
     /// Face connectivity of loaded cubes (see `Cube::connectivity`); missing = recompute.
     pub conn: FxHashMap<IVec3, u16>,
+    /// Gizmo shapes mods drew this tick, and the groups some player here shows (set before the
+    /// tick, so mods can skip drawing nobody sees).
+    pub gizmos: Vec<crate::net::GizmoShape>,
+    pub gizmo_groups: Arc<[String]>,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -182,6 +186,8 @@ impl Dim {
             settled_gen: 0,
             edits: 0,
             conn: FxHashMap::default(),
+            gizmos: Vec::new(),
+            gizmo_groups: Arc::from([]),
         }
     }
 

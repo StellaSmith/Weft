@@ -43,6 +43,19 @@ pub struct EntityView {
     pub worn: Vec<u32>,
 }
 
+/// A debug shape for a gizmo group (`client::gizmo`): `kind` 0 is a line from `a` to `b`, 1 a box
+/// between corners `a` and `b`, 2 `text` at `a`. Shown for `ticks` server ticks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GizmoShape {
+    pub group: String,
+    pub kind: u8,
+    pub a: DVec3,
+    pub b: DVec3,
+    pub color: u32,
+    pub ticks: u32,
+    pub text: String,
+}
+
 #[derive(Clone)]
 pub enum ToClient {
     Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },
@@ -79,6 +92,7 @@ pub enum ToClient {
     Died,
     Chat(String),
     Disconnect(String),
+    Gizmos(Vec<GizmoShape>),
 }
 
 #[derive(Clone)]
@@ -109,6 +123,87 @@ pub enum ToServer {
     Respawn,
     Chat(String),
     Leave,
+    /// Gizmo groups this player shows; the server only sends shapes of these.
+    Gizmos(Vec<String>),
+}
+
+/// Message kinds by name, for traffic counters (`net` log channel).
+pub trait Message {
+    const TO_SERVER: bool;
+    const KINDS: &'static [&'static str];
+    fn kind(&self) -> usize;
+}
+
+impl Message for ToClient {
+    const TO_SERVER: bool = false;
+    const KINDS: &'static [&'static str] = &[
+        "Welcome", "Cube", "Unload", "Blocks", "Time", "Teleport", "Spawn", "Moves", "Despawn", "Hurt", "Burning", "Worn", "GameMode", "Players", "Inventory",
+        "Components", "Health", "Knockback", "OpenMenu", "MenuSlots", "MenuData", "Cursor", "CloseMenu", "Died", "Chat", "Disconnect", "Gizmos",
+    ];
+    fn kind(&self) -> usize {
+        use ToClient::*;
+        match self {
+            Welcome { .. } => 0,
+            Cube { .. } => 1,
+            Unload { .. } => 2,
+            Blocks { .. } => 3,
+            Time { .. } => 4,
+            Teleport { .. } => 5,
+            Spawn(_) => 6,
+            Moves(_) => 7,
+            Despawn(_) => 8,
+            Hurt(_) => 9,
+            Burning(_) => 10,
+            Worn(_) => 11,
+            GameMode(_) => 12,
+            Players(_) => 13,
+            Inventory(_) => 14,
+            Components(_) => 15,
+            Health { .. } => 16,
+            Knockback(_) => 17,
+            OpenMenu { .. } => 18,
+            MenuSlots(_) => 19,
+            MenuData(_) => 20,
+            Cursor(_) => 21,
+            CloseMenu => 22,
+            Died => 23,
+            Chat(_) => 24,
+            Disconnect(_) => 25,
+            Gizmos(_) => 26,
+        }
+    }
+}
+
+impl Message for ToServer {
+    const TO_SERVER: bool = true;
+    const KINDS: &'static [&'static str] = &[
+        "Join", "Move", "Break", "Use", "UseItem", "Select", "Attack", "Interact", "OpenInventory", "Click", "CreativeTake", "Pick", "Drag", "CloseMenu", "Drop",
+        "Respawn", "Chat", "Leave", "Gizmos",
+    ];
+    fn kind(&self) -> usize {
+        use ToServer::*;
+        match self {
+            Join { .. } => 0,
+            Move { .. } => 1,
+            Break { .. } => 2,
+            Use { .. } => 3,
+            UseItem { .. } => 4,
+            Select(_) => 5,
+            Attack(_) => 6,
+            Interact(_) => 7,
+            OpenInventory => 8,
+            Click { .. } => 9,
+            CreativeTake { .. } => 10,
+            Pick { .. } => 11,
+            Drag { .. } => 12,
+            CloseMenu => 13,
+            Drop { .. } => 14,
+            Respawn => 15,
+            Chat(_) => 16,
+            Leave => 17,
+            Gizmos(_) => 18,
+        }
+    }
 }
 
 pub struct Conn<S, R> {
@@ -117,12 +212,13 @@ pub struct Conn<S, R> {
     closed: bool,
 }
 
-impl<S, R> Conn<S, R> {
+impl<S: Message, R> Conn<S, R> {
     pub fn new(tx: Sender<S>, rx: Receiver<R>) -> Self {
         Conn { tx, rx, closed: false }
     }
 
     pub fn send(&mut self, m: S) {
+        crate::diag::net_message(S::TO_SERVER, m.kind(), 1, 0);
         if self.tx.send(m).is_err() {
             self.closed = true;
         }

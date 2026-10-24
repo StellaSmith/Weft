@@ -1,5 +1,6 @@
 pub mod ctm;
 pub mod entity_render;
+pub mod gizmo;
 pub mod mesher;
 pub mod modui;
 pub mod textures;
@@ -157,6 +158,10 @@ pub struct Client {
     pub menu: Option<ClientMenu>,
     pub events: Vec<ClientEvent>,
     pub chat: Vec<(String, Instant)>,
+    pub gizmos: gizmo::Gizmos,
+    /// This frame's gizmo shapes, from `collect_gizmos`.
+    pub gizmo_lines: Vec<gizmo::Line>,
+    pub gizmo_labels: Vec<gizmo::Label>,
     /// Block being broken and progress 0..1.
     pub breaking: Option<(IVec3, f32)>,
     /// Hotbar contents last frame, so the HUD knows when to redraw.
@@ -164,6 +169,51 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn toggle_gizmo(&mut self, group: &str) -> bool {
+        let on = self.gizmos.toggle(group);
+        self.send(ToServer::Gizmos(self.gizmos.enabled.clone()));
+        on
+    }
+
+    /// `/gizmo [group]`: lists groups or switches one; mods' groups are `modid:name`.
+    pub fn gizmo_command(&mut self, group: &str) -> String {
+        if group.is_empty() {
+            let list: Vec<String> = gizmo::BUILTIN.iter().map(|(g, what)| format!("{g}: {what}")).collect();
+            let on = if self.gizmos.enabled.is_empty() { "none".to_string() } else { self.gizmos.enabled.join(", ") };
+            return format!("gizmo groups (mods add modid:name ones):
+{}
+on: {on}", list.join("
+"));
+        }
+        let on = self.toggle_gizmo(group);
+        format!("gizmo {group} {}", if on { "on" } else { "off" })
+    }
+
+    /// Builds the gizmo lines and labels for this frame; labels behind opaque blocks are left out.
+    pub fn collect_gizmos(&mut self) {
+        let mut g = std::mem::take(&mut self.gizmos);
+        let (lines, mut labels) = g.collect(self);
+        self.gizmos = g;
+        let c = content();
+        let eye = self.render_camera().pos;
+        let opaque = |p: IVec3| self.world.block_or_air(p).map(|s| if c.states[s as usize].flags & bf::OPAQUE != 0 { s } else { crate::content::AIR });
+        labels.retain(|(pos, ..)| {
+            let d = *pos - eye;
+            let len = d.length();
+            len < 24.0 && (len < 0.2 || physics::raycast(c, &opaque, eye, d / len, len - 0.1, false).is_none())
+        });
+        (self.gizmo_lines, self.gizmo_labels) = (lines, labels);
+    }
+
+    /// Shows text in the chat as if the server had sent it.
+    pub fn chat_line(&mut self, text: String) {
+        for line in text.lines() {
+            self.chat.push((line.to_string(), Instant::now()));
+        }
+        let extra = self.chat.len().saturating_sub(50);
+        self.chat.drain(..extra);
+    }
+
     pub fn new(gpu: &mut dyn Backend, textures: &GameTextures, mut conn: ClientConn, name: &str, key: &str, view_radius: i32) -> Result<Client, String> {
         let c = content();
         let render = WorldRenderer::new(gpu, c, textures)?;
@@ -228,6 +278,9 @@ impl Client {
             menu: None,
             events: Vec::new(),
             chat: Vec::new(),
+            gizmos: Default::default(),
+            gizmo_lines: Vec::new(),
+            gizmo_labels: Vec::new(),
             breaking: None,
             hotbar: vec![0; 9],
         })
@@ -429,14 +482,10 @@ impl Client {
                 }
                 ToClient::Chat(text) => {
                     log::info!("[chat] {text}");
-                    for line in text.lines() {
-                        self.chat.push((line.to_string(), Instant::now()));
-                    }
-                    if self.chat.len() > 50 {
-                        self.chat.remove(0);
-                    }
+                    self.chat_line(text);
                 }
                 ToClient::Disconnect(reason) => self.disconnected = Some(reason),
+                ToClient::Gizmos(shapes) => self.gizmos.receive(shapes),
                 _ => {}
             }
         }
@@ -556,6 +605,16 @@ impl Client {
                     step_player(&mut self.player, input, &air_if_missing, gravity);
                 } else {
                     step_player(&mut self.player, input, &block, gravity);
+                }
+                if crate::log::on(crate::log::Channel::Physics, log::Level::Trace) {
+                    let p = &self.player;
+                    let feet = p.pos.floor().as_ivec3() - glam::IVec3::Y;
+                    log::trace!(
+                        target: "physics",
+                        "pos {:.4} {:.4} {:.4} vel {:.4} {:.4} {:.4} ground {} liquid {} crouch {} fly {} below {}",
+                        p.pos.x, p.pos.y, p.pos.z, p.vel.x, p.vel.y, p.vel.z, p.on_ground, p.in_liquid, p.crouched, p.flying,
+                        block(feet).map_or("unloaded".to_string(), |s| c.state_name(s))
+                    );
                 }
             }
         }
@@ -842,7 +901,7 @@ impl Client {
         });
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
-        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, &self.puffs, textures, &light, day, self.target, self.breaking);
+        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, &self.puffs, textures, &light, day, self.target, self.breaking, &self.gizmo_lines);
         list.push(voxide_render::Cmd::Mark);
     }
 

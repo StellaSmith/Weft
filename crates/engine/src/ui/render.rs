@@ -479,6 +479,14 @@ impl UiRenderer {
     }
 
     /// One line of text centred on `cx` with its top at `y` (physical pixels); `alpha` fades it.
+    /// Plain text centred on `cx` in one colour (`0xRRGGBBAA`) with a shadow.
+    pub fn label_colored(&mut self, text: &str, cx: f32, y: f32, px: f32, color: u32) {
+        let layout = super::text::layout(&super::text::plain(text), &self.font, None);
+        let mut icons = Vec::new();
+        let x = (cx - layout.width * px / 2.0).round();
+        self.glyph_run(&layout.items, x, y.round(), px, color, Some(0x00000000 | (color & 0xFF) / 2), &mut icons);
+    }
+
     pub fn label(&mut self, spans: &[super::text::Span], cx: f32, y: f32, px: f32, alpha: u32) {
         let layout = super::text::layout(spans, &self.font, None);
         let mut icons = Vec::new();

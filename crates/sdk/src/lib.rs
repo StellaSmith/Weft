@@ -44,19 +44,36 @@ fn me() -> ModId {
 }
 
 #[doc(hidden)]
-pub fn __log(level: u32, args: std::fmt::Arguments) {
+pub fn __log(level: u32, target: &str, args: std::fmt::Arguments) {
     let msg = std::fmt::format(args);
-    unsafe { (host().log)(me(), level, Str::new(&msg)) }
+    unsafe { (host().log_at)(me(), level, Str::new(target), Str::new(&msg)) }
 }
 
+/// Whether a record at `level` (`abi::level::*`) under this mod's `target` (`""` for the mod
+/// itself) would be written: players switch these with `--log mod:<id>::<target>=debug`.
+pub fn log_enabled(level: u32, target: &str) -> bool {
+    unsafe { (host().log_enabled)(me(), level, Str::new(target)) != 0 }
+}
+
+/// `info!("..")` logs as `mod:<id>`, `info!(target: "pipes", "..")` as `mod:<id>::pipes`; the
+/// message is only formatted when that target is enabled at that level.
 #[macro_export]
-macro_rules! info { ($($t:tt)*) => { $crate::__log($crate::abi::level::INFO, format_args!($($t)*)) } }
+macro_rules! __log_macro {
+    ($lvl:expr, target: $t:expr, $($a:tt)*) => {
+        if $lvl <= $crate::abi::level::INFO || $crate::log_enabled($lvl, $t) { $crate::__log($lvl, $t, format_args!($($a)*)) }
+    };
+    ($lvl:expr, $($a:tt)*) => { $crate::__log_macro!($lvl, target: "", $($a)*) };
+}
 #[macro_export]
-macro_rules! warn { ($($t:tt)*) => { $crate::__log($crate::abi::level::WARN, format_args!($($t)*)) } }
+macro_rules! error { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::ERROR, $($t)*) } }
 #[macro_export]
-macro_rules! error { ($($t:tt)*) => { $crate::__log($crate::abi::level::ERROR, format_args!($($t)*)) } }
+macro_rules! warn { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::WARN, $($t)*) } }
 #[macro_export]
-macro_rules! debug { ($($t:tt)*) => { $crate::__log($crate::abi::level::DEBUG, format_args!($($t)*)) } }
+macro_rules! info { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::INFO, $($t)*) } }
+#[macro_export]
+macro_rules! debug { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::DEBUG, $($t)*) } }
+#[macro_export]
+macro_rules! trace { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::TRACE, $($t)*) } }
 
 /// Declares the mod entry point.
 ///
@@ -116,7 +133,7 @@ fn install_panic_hook() {
                 .map(|s| s.to_string())
                 .or_else(|| info.payload().downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "panic".into());
-            __log(abi::level::ERROR, format_args!("panicked{loc}: {msg}"));
+            __log(abi::level::ERROR, "", format_args!("panicked{loc}: {msg}"));
         }));
     });
 }

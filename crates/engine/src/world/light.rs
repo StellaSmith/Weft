@@ -119,6 +119,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
     }
 
     fn propagate(&mut self, c: usize) {
+        let mut steps = self.add.len() as u64;
         while let Some((p, v)) = self.add.pop_front() {
             // Stale entry, a brighter value was written after it was queued.
             if self.get(p, c) != Some(v) {
@@ -135,9 +136,11 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                 if nv > ch(light, c) {
                     self.put(n, c, nv);
                     self.add.push_back((n, nv));
+                    steps += 1;
                 }
             }
         }
+        crate::diag::LIGHT_STEPS.add(steps);
     }
 
     fn unpropagate(&mut self, c: usize) {
@@ -171,6 +174,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
     /// Lights a freshly inserted cube and spreads its light into loaded neighbours.
     /// `open_above`: the cube above is unloaded but known to be open sky.
     pub fn light_new(&mut self, cp: IVec3, open_above: bool) {
+        crate::diag::LIGHT_CUBES.add(1);
         let base = cp * 16;
         let Some(cube) = self.map.cube(cp) else { return };
         let states = &self.c.states;
@@ -271,6 +275,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
     /// light in from loaded neighbours and pushes its own out to them. The caller checked that
     /// the cube above gives full sky (or is open), so the inside light needs no redo.
     pub fn light_prelit(&mut self, cp: IVec3) {
+        crate::diag::LIGHT_CUBES.add(1);
         self.cache.set((IVec3::MAX, std::ptr::null()));
         self.changed.insert(cp);
         let base = cp * 16;

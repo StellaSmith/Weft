@@ -17,28 +17,15 @@ pub struct Bench {
     server: Vec<f32>,
     phases: [f64; 6],
     start: Instant,
-}
-
-/// Mod callback time and call count since the last call, per mod.
-fn take_mod_stats() -> Vec<(String, u64, u64)> {
-    let c = crate::content::content();
-    c.mods
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let s = crate::host::stats(voxide_abi::ModId(i as u32));
-            let ns = s.nanos.swap(0, std::sync::atomic::Ordering::Relaxed);
-            (m.id.clone(), ns, s.calls.swap(0, std::sync::atomic::Ordering::Relaxed))
-        })
-        .collect()
+    mods: crate::diag::ModWindow,
 }
 
 impl Bench {
     pub fn new(label: &str, secs: f32) -> Bench {
-        if crate::content::try_content().is_some() {
-            take_mod_stats();
-        }
+        let mut mods = crate::diag::ModWindow::default();
+        mods.take();
         Bench {
+            mods,
             start: Instant::now(),
             label: label.to_string(),
             until: Instant::now() + Duration::from_secs_f32(secs),
@@ -72,7 +59,7 @@ impl Bench {
         Instant::now() >= self.until
     }
 
-    pub fn report(&self, extra: &str) -> String {
+    pub fn report(&mut self, extra: &str) -> String {
         let n = self.frames.len().max(1) as f64;
         let mut sorted = self.frames.clone();
         sorted.sort_by(f32::total_cmp);
@@ -85,11 +72,7 @@ impl Bench {
         let srv_avg = self.server.iter().map(|&s| s as f64).sum::<f64>() / self.server.len().max(1) as f64;
         let srv_max = self.server.iter().copied().fold(0.0f32, f32::max);
         let ticks = self.start.elapsed().as_secs_f64() * crate::server::TPS as f64;
-        let mods: Vec<String> = if crate::content::try_content().is_some() {
-            take_mod_stats().into_iter().map(|(id, ns, calls)| format!("{id} {:.2} ms/{:.0} calls", ns as f64 / 1e6 / ticks, calls as f64 / ticks)).collect()
-        } else {
-            Vec::new()
-        };
+        let mods: Vec<String> = self.mods.take().0.into_iter().map(|(id, ns, calls)| format!("{id} {:.2} ms/{:.0} calls", ns as f64 / 1e6 / ticks, calls as f64 / ticks)).collect();
         let phases: Vec<String> =
             crate::server::PHASES.iter().zip(self.phases).map(|(k, v)| format!("{k} {:.2}", v / self.server.len().max(1) as f64)).collect();
         format!(

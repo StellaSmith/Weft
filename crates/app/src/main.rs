@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use voxide_engine::Options;
 use voxide_render::{Backend, BackendDesc, Error};
 
+#[global_allocator]
+static ALLOC: voxide_engine::diag::CountingAlloc = voxide_engine::diag::CountingAlloc;
+
 fn vulkan(desc: &BackendDesc) -> Result<Box<dyn Backend>, Error> {
     Ok(Box::new(voxide_vulkan::VulkanBackend::new(desc)?))
 }
@@ -40,6 +43,7 @@ fn main() {
         view: None,
     };
     let mut verbose = false;
+    let mut log_spec = String::new();
     let mut pack: Option<PathBuf> = None;
     let mut dist: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
@@ -50,6 +54,7 @@ fn main() {
             "--mods" => opts.mod_dirs.push(PathBuf::from(value())),
             "--gpu-debug" => opts.gpu_debug = true,
             "--verbose" => verbose = true,
+            "--log" => log_spec = value(),
             "--shot" => opts.shot = Some(PathBuf::from(value())),
             "--shot-delay" => opts.shot_delay = value().parse().unwrap_or(0.0),
             "--camera" => {
@@ -90,7 +95,8 @@ fn main() {
         }
         return;
     }
-    voxide_engine::log::init(Some(&opts.run_dir.join("logs").join("latest.log")), verbose);
+    voxide_engine::log::init(Some(&opts.run_dir.join("logs").join("latest.log")), verbose, &log_spec);
+    voxide_engine::diag::install_crash_handler(&opts.run_dir);
     // Release builds load the game's own mods the way players get them: each packed into one
     // file in `run/mods` (again only when it changed).
     if !cfg!(debug_assertions) && root.join("mods").is_dir() {

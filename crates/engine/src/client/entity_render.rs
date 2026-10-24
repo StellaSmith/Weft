@@ -496,6 +496,7 @@ impl EntityRenderer {
         day: f32,
         target: Option<Hit>,
         breaking: Option<(IVec3, f32)>,
+        gizmo_lines: &[super::gizmo::Line],
     ) {
         let c = content();
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
@@ -626,6 +627,20 @@ impl EntityRenderer {
                     boxes.push(GpuBox { rows: rows(m), color: [0.02, 0.02, 0.02, 0.0], ids: [0, 2, 0, 0], ..Default::default() });
                 }
             }
+        }
+        // Gizmo lines: thin boxes like the outline, a little thicker so they read from afar.
+        for &(a, b, color) in gizmo_lines {
+            let (a, b) = (rel(a), rel(b));
+            let d = b - a;
+            let len = d.length();
+            if len < 1e-4 || a.length_squared().min(b.length_squared()) > 160.0 * 160.0 {
+                continue;
+            }
+            let t = 0.012 + 0.0012 * a.length().min(b.length());
+            let rot = Quat::from_rotation_arc(Vec3::X, d / len);
+            let m = Mat4::from_rotation_translation(rot, a) * Mat4::from_translation(Vec3::new(0.0, -t / 2.0, -t / 2.0)) * Mat4::from_scale(Vec3::new(len, t, t));
+            let rgb = |s: u32| ((color >> s) & 255) as f32 / 255.0;
+            boxes.push(GpuBox { rows: rows(m), color: [rgb(24), rgb(16), rgb(8), 0.0], ids: [0, 2, 0, 0], ..Default::default() });
         }
         for p in puffs {
             let s = p.size * (1.0 - p.age / p.life);

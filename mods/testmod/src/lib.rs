@@ -6,7 +6,8 @@
 //!   declares the common `fuel` component itself and the engine checks both agree on its type,
 //! - replaces a base game block (torches burn blue),
 //! - adds its own dimensions, one of them a planet built only from terrain presets,
-//! - adds an ore to the base game's overworld.
+//! - adds an ore to the base game's overworld,
+//! - adds a liquid (oil) whose bucket is the base game's bucket filled, without bucket code.
 
 use std::sync::LazyLock;
 
@@ -135,6 +136,9 @@ fn init(r: &mut Registry) {
         .gravity(12.0)
         .fixed_time(5000)
         .sky(0xd8a080, 0xe0b090);
+
+    // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
+    r.liquid("oil").texture("oil_still").opacity(4).drag(0.4).delay(15).drop_off(2).slope_find(3).infinite(0).tag("oil").bucket("oil_bucket", "base:bucket");
 
     r.command("tagbench", "[millions:int]", tag_bench);
 

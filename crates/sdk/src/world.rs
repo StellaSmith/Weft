@@ -93,3 +93,19 @@ pub fn find_dimension(name: &str) -> Option<u32> {
     let id = unsafe { (host().find)(abi::entry_kind::DIMENSION, Str::new(name), std::ptr::null_mut()) };
     (id != u32::MAX).then_some(id)
 }
+
+impl World {
+    /// Current value of a world rule (`Registry::rule`), by full name.
+    pub fn rule(&self, name: &str) -> i64 {
+        unsafe { (host().rule)(self.raw, Str::new(name)) }
+    }
+}
+
+impl crate::Registry {
+    /// A world rule players change with `/rule <name> <value>` (saved with the world), like
+    /// vanilla's game rules: `r.rule("mob_spawning", 1)`, read with `w.rule("base:mob_spawning")`.
+    pub fn rule(&mut self, name: &str, default: i64) {
+        let name = crate::qualify(self.ns, name);
+        unsafe { (host().reg_rule)(self.raw, Str::new(&name), default) }
+    }
+}

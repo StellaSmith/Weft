@@ -66,6 +66,8 @@ pub struct Dim {
     /// tick, so mods can skip drawing nobody sees).
     pub gizmos: Vec<crate::net::GizmoShape>,
     pub gizmo_groups: Arc<[String]>,
+    /// World rule values by rule id (`Game::rules`), set by the server before each tick.
+    pub rules: Arc<[i64]>,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -196,6 +198,7 @@ impl Dim {
             conn: FxHashMap::default(),
             gizmos: Vec::new(),
             gizmo_groups: Arc::from([]),
+            rules: Arc::from([]),
         }
     }
 
@@ -461,7 +464,11 @@ impl Dim {
             }
             let p = IVec3::new(x, y, z);
             if let Some(state) = self.get(p) {
-                self.call_block(c, state, |b| b.on_scheduled, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
+                if c.states[state as usize].liquid.is_some() {
+                    self.liquid_tick(c, p, state);
+                } else {
+                    self.call_block(c, state, |b| b.on_scheduled, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
+                }
             }
         }
 
@@ -531,7 +538,7 @@ impl Dim {
         let block = |p: IVec3| cubes.get(&cube_of(p)).map(|cb| cb.get(local_index(p)));
         // Physics only reads blocks and writes its own entity, so entities move in parallel;
         // damage is applied afterwards in list order to stay deterministic.
-        let hits: Vec<(u64, Option<f32>, bool)> = self
+        let hits: Vec<(u64, Option<f32>, bool, bool)> = self
             .entities
             .list
             .par_iter_mut()
@@ -542,15 +549,27 @@ impl Dim {
                 }
                 e.age += 1;
                 e.hurt_cooldown = e.hurt_cooldown.saturating_sub(1);
-                if e.player {
+                if e.player && (e.health <= 0.0 || e.mode == crate::world::GameMode::Spectator) {
                     return None;
                 }
                 let k = &c.game.entities[e.kind as usize];
                 let mut land = None;
-                if let Some(fall) = step(c, e, gravity, &block) {
-                    if k.is(ef::FALL_DAMAGE) && fall > 3.0 {
-                        land = Some(fall - 3.0);
+                // Players move on their client; the rest here.
+                if !e.player {
+                    if let Some(fall) = step(c, e, gravity, &block) {
+                        if k.is(ef::FALL_DAMAGE) && fall > 3.0 {
+                            land = Some(fall - 3.0);
+                        }
                     }
+                }
+                // Liquid temperatures where the entity is now (`in_liquid` is from before the move).
+                let temps = [e.pos, e.pos + DVec3::Y * (k.height as f64 * 0.5)]
+                    .map(|p| block(p.floor().as_ivec3()).and_then(|s| c.states[s as usize].liquid).map(|l| c.liquids[l as usize].temperature));
+                // Like vanilla lava: 15 seconds of fire and 4 damage while inside.
+                let hot = temps.iter().any(|t| t.is_some_and(|t| t >= super::liquid::BURNING));
+                let wet = temps.iter().any(|t| t.is_some_and(|t| t < super::liquid::BURNING));
+                if hot {
+                    e.fire = e.fire.max(300);
                 }
                 // Sunlight sets them on fire for 8 seconds; burning hurts once a second, water puts it out.
                 if k.is(ef::BURNS_IN_SUN) && day > 0.5 && e.age % 20 == 0 && !e.in_liquid {
@@ -560,11 +579,11 @@ impl Dim {
                         e.fire = e.fire.max(160);
                     }
                 }
-                if e.in_liquid {
+                if wet && !hot {
                     e.fire = 0;
                 }
                 e.fire = e.fire.saturating_sub(1);
-                let burn = e.fire > 0 && e.fire % 20 == 0;
+                let burn = e.fire > 0 && e.fire % 20 == 0 && !hot;
                 if k.category == 1 && e.age % 100 == 0 {
                     let near = players.iter().any(|p| (*p - e.pos).length_squared() < 128.0 * 128.0);
                     if !near {
@@ -577,16 +596,18 @@ impl Dim {
                         e.removed = true;
                     }
                 }
-                (land.is_some() || burn).then_some((e.id, land, burn))
+                (land.is_some() || burn || hot).then_some((e.id, land, burn, hot))
             })
             .collect();
-        let landings: Vec<(u64, f32)> = hits.iter().filter_map(|h| Some((h.0, h.1?))).collect();
-        let burns: Vec<u64> = hits.iter().filter(|h| h.2).map(|h| h.0).collect();
-        for (id, amount) in landings {
-            self.damage(c, id, amount, 0, damage::FALL);
-        }
-        for id in burns {
-            self.damage(c, id, 1.0, 0, damage::FIRE);
+        for &(id, land, burn, hot) in &hits {
+            if let Some(amount) = land {
+                self.damage(c, id, amount, 0, damage::FALL);
+            }
+            if hot {
+                self.damage(c, id, 4.0, 0, damage::LAVA);
+            } else if burn {
+                self.damage(c, id, 1.0, 0, damage::FIRE);
+            }
         }
         self.items(c);
     }
@@ -645,6 +666,10 @@ impl Dim {
             let Some(state) = self.get(p) else { continue };
             if !self.supported(c, p, state) {
                 self.break_off(c, p, state);
+                continue;
+            }
+            if c.states[state as usize].liquid.is_some() {
+                self.liquid_neighbor(c, p, state);
                 continue;
             }
             self.call_block(c, state, |b| b.on_neighbor, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: from.to_array(), entity: 0 });

@@ -1,6 +1,7 @@
 //! The test list. Each test is an `async fn(T) -> R`; failed checks are collected, `?` stops it.
 
 mod gameplay;
+mod liquids;
 mod ui;
 mod visual;
 mod world;
@@ -26,6 +27,12 @@ pub fn all() -> Vec<TestDef> {
         gameplay::mining_and_wear,
         gameplay::armor,
         gameplay::bucket,
+        liquids::water_flow,
+        liquids::water_finds_hole,
+        liquids::infinite_water,
+        liquids::lava_and_water,
+        liquids::lava_burns,
+        liquids::mod_liquid_bucket,
         gameplay::fall_damage,
         gameplay::sneak_edge,
         gameplay::commands,

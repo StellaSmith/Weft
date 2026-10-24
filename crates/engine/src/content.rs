@@ -41,6 +41,8 @@ pub struct StateInfo {
     pub drag: f32,
     /// Has the `conductor` tag (part of energy networks).
     pub conductor: bool,
+    /// Liquid id (`Content::liquids`) for liquid blocks.
+    pub liquid: Option<u16>,
     /// Face whose neighbour must hold it up, and the tag that neighbour needs (`None`: solid).
     pub support: Option<(u8, Option<u32>)>,
 }
@@ -111,6 +113,34 @@ pub struct ItemDef {
 
 /// A creative inventory tab: translated as `tab.<ns>.<name>`, or the mod's name for the tab a mod
 /// gets automatically for items it put in no tab.
+/// A liquid the engine flows (`abi::LiquidDesc`); its block has 16 states.
+pub struct LiquidDef {
+    pub name: String,
+    pub first_state: u32,
+    pub delay: u32,
+    pub drop_off: u32,
+    pub slope_find: u32,
+    pub infinite: u32,
+    /// Lighter than air: flows up.
+    pub rises: bool,
+    pub temperature: u32,
+}
+
+/// A block or any block with a tag.
+#[derive(Clone, Copy, Debug)]
+pub enum Match {
+    Block(u32),
+    Tag(u32),
+}
+
+pub struct ReactionDef {
+    pub liquid: Match,
+    pub touching: Match,
+    pub source: Option<u32>,
+    pub flowing: Option<u32>,
+    pub falls_into: Option<u32>,
+}
+
 pub struct CreativeTab {
     pub name: String,
     pub icon: u32,
@@ -213,6 +243,12 @@ pub struct Content {
     pub biome_names: FxHashMap<String, u32>,
     pub creative_tabs: Vec<CreativeTab>,
     pub game: crate::registry::Game,
+    pub liquids: Vec<LiquidDef>,
+    pub reactions: Vec<ReactionDef>,
+    /// Item -> (liquid it holds, the empty container left after pouring).
+    pub item_liquid: FxHashMap<u32, (u16, u32)>,
+    /// (empty container, liquid) -> filled item.
+    pub containers: FxHashMap<(u32, u16), u32>,
 }
 
 static CONTENT: OnceLock<Content> = OnceLock::new();
@@ -291,6 +327,13 @@ impl Content {
     pub fn worn(&self, item: u32) -> Option<(abi::Worn, &str)> {
         let w = self.item_value::<abi::Worn>(item, self.ids.worn)?;
         Some((w, self.components.text(comps::ITEM, item, self.ids.worn_texture?)?))
+    }
+
+    pub fn matches(&self, m: Match, state: u32) -> bool {
+        match m {
+            Match::Block(b) => self.states[state as usize].block == b,
+            Match::Tag(t) => self.components.has(comps::BLOCK, state, t),
+        }
     }
 
     pub fn max_stack(&self, item: u32) -> u32 {
@@ -640,6 +683,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         friction: 0.6,
         drag: 1.0,
         conductor: false,
+        liquid: None,
         support: None,
     }];
     let mut block_defs = vec![BlockDef {
@@ -708,6 +752,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 friction: s.friction,
                 drag: s.drag,
                 conductor: false,
+                liquid: None,
                 // The tag id is filled in once components are frozen.
                 support: (s.support_side < 6).then_some((s.support_side, None)),
             });
@@ -1048,6 +1093,22 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             Err(e) => errors.push(format!("{}: command /{name}: {e}", mod_name(owner))),
         }
     }
+    let (liquids, reactions) = freeze_liquids(&mut games, &mut states, &block_defs, &block_names, &components, &mut errors);
+    let (mut item_liquid, mut containers) = (FxHashMap::default(), FxHashMap::default());
+    if let (Some(lc), Some(rc)) = (components.id(abi::comp::LIQUID), components.id(abi::comp::REMAINDER)) {
+        for i in 1..item_defs.len() as u32 {
+            let Some(liquid) = components.text(comps::ITEM, i, lc) else { continue };
+            let Some(l) = liquids.iter().position(|d| d.name == liquid) else {
+                errors.push(format!("item {} holds unknown liquid {liquid}", item_defs[i as usize].name));
+                continue;
+            };
+            let empty = components.text(comps::ITEM, i, rc).and_then(|n| item_names.get(n).copied()).unwrap_or(0);
+            item_liquid.insert(i, (l as u16, empty));
+            if empty != 0 {
+                containers.insert((empty, l as u16), i);
+            }
+        }
+    }
     let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &components, &mut errors);
     let game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &components, &mut errors);
     if !errors.is_empty() {
@@ -1074,7 +1135,87 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         dim_names,
         biome_names,
         game,
+        liquids,
+        reactions,
+        item_liquid,
+        containers,
     })
+}
+
+fn freeze_liquids(
+    games: &mut [crate::registry::RawGame],
+    states: &mut [StateInfo],
+    blocks: &[BlockDef],
+    block_names: &FxHashMap<String, u32>,
+    components: &Components,
+    errors: &mut Vec<String>,
+) -> (Vec<LiquidDef>, Vec<ReactionDef>) {
+    let mut raw: Vec<abi::LiquidDesc> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for g in games.iter_mut() {
+        for (name, d) in std::mem::take(&mut g.liquids) {
+            names.push(name);
+            raw.push(d);
+        }
+    }
+    let mut order: Vec<usize> = (0..raw.len()).collect();
+    order.sort_by(|&a, &b| names[a].cmp(&names[b]));
+    let mut liquids = Vec::new();
+    for i in order {
+        let (name, d) = (&names[i], &raw[i]);
+        let Some(&b) = block_names.get(name) else {
+            errors.push(format!("liquid {name} has no block of that name"));
+            continue;
+        };
+        let def = &blocks[b as usize];
+        if def.states != 16 {
+            errors.push(format!("liquid {name}: its block needs 16 states, has {}", def.states));
+            continue;
+        }
+        let id = liquids.len() as u16;
+        for s in 0..16 {
+            states[(def.first_state + s) as usize].liquid = Some(id);
+        }
+        liquids.push(LiquidDef {
+            name: name.clone(),
+            first_state: def.first_state,
+            delay: d.delay.max(1),
+            drop_off: d.drop_off.clamp(1, 7),
+            slope_find: d.slope_find.min(8),
+            infinite: d.infinite,
+            rises: d.density < 0,
+            temperature: d.temperature,
+        });
+    }
+    let matcher = |s: &str, errors: &mut Vec<String>| -> Option<Match> {
+        if let Some(t) = s.strip_prefix('#') {
+            // A tag nothing has matches nothing.
+            return Some(Match::Tag(components.id(t).unwrap_or(u32::MAX)));
+        }
+        let m = block_names.get(s).map(|&b| Match::Block(b));
+        if m.is_none() {
+            errors.push(format!("liquid reaction names unknown block {s}"));
+        }
+        m
+    };
+    let result = |s: &str, errors: &mut Vec<String>| -> Option<u32> {
+        if s.is_empty() {
+            return None;
+        }
+        let b = block_names.get(s).map(|&b| blocks[b as usize].first_state);
+        if b.is_none() {
+            errors.push(format!("liquid reaction makes unknown block {s}"));
+        }
+        b
+    };
+    let mut reactions = Vec::new();
+    for g in games.iter_mut() {
+        for r in std::mem::take(&mut g.reactions) {
+            let (Some(liquid), Some(touching)) = (matcher(&r[0], errors), matcher(&r[1], errors)) else { continue };
+            reactions.push(ReactionDef { liquid, touching, source: result(&r[2], errors), flowing: result(&r[3], errors), falls_into: result(&r[4], errors) });
+        }
+    }
+    (liquids, reactions)
 }
 
 #[cfg(test)]

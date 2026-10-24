@@ -8,8 +8,6 @@ pub static DIAMOND: Item = Item::new();
 pub static WHEAT_SEEDS: Item = Item::new();
 pub static WHEAT: Item = Item::new();
 pub static BUCKET: Item = Item::new();
-pub static WATER_BUCKET: Item = Item::new();
-pub static LAVA_BUCKET: Item = Item::new();
 
 value! {
     /// Read by the hunger system; other mods set it on their own food.
@@ -60,9 +58,9 @@ pub fn register(r: &mut Registry) {
     r.item("diamond").handle(&DIAMOND).tag("gems/diamond").tag("materials/diamond").tab("ingredients");
     r.item("wheat_seeds").handle(&WHEAT_SEEDS).places("wheat").tab("natural");
     r.item("wheat").handle(&WHEAT).tab("ingredients");
-    r.item("bucket").handle(&BUCKET).stack(16).on_use(fill_bucket).tab("tools");
-    r.item("water_bucket").handle(&WATER_BUCKET).stack(1).on_use(|u| pour_bucket(u, &crate::blocks::WATER)).tab("tools");
-    r.item("lava_bucket").handle(&LAVA_BUCKET).stack(1).set(&FUEL, 20000).set_text(&REMAINDER, "base:bucket").on_use(|u| pour_bucket(u, &crate::blocks::LAVA)).tab("tools");
+    // Filled buckets come with their liquids (blocks.rs); the engine fills and pours them.
+    r.item("bucket").handle(&BUCKET).stack(16).tab("tools");
+    r.set("lava_bucket", &FUEL, 20000);
 
     for (name, hunger, saturation, tag) in [
         ("apple", 4, 2.4, ""),
@@ -114,55 +112,4 @@ pub fn register(r: &mut Registry) {
                 .tab("combat");
         }
     }
-}
-
-/// Scoops up the liquid source looked at.
-fn fill_bucket(u: &mut ItemUse) -> bool {
-    use crate::blocks::{LAVA, WATER};
-    let (w, player, stack) = (u.world(), u.player(), u.stack());
-    let Some((pos, _, state)) = w.look_at(player, 5.0, true) else { return false };
-    let full = match () {
-        _ if WATER.is(state) && WATER.index(state) == 0 => &WATER_BUCKET,
-        _ if LAVA.is(state) && LAVA.index(state) == 0 => &LAVA_BUCKET,
-        _ => return false,
-    };
-    w.set(pos, 0);
-    if w.creative(player) {
-        return true;
-    }
-    let filled = ItemStack::new(full.id(), 1);
-    if stack.count == 1 {
-        u.set_stack(filled);
-    } else {
-        u.set_stack(ItemStack { count: stack.count - 1, ..stack });
-        let rest = w.inventory(player).insert(filled);
-        if !rest.is_empty() {
-            if let Some(e) = w.entity(player) {
-                w.spawn_item(e.pos, rest);
-            }
-        }
-    }
-    true
-}
-
-/// Pours a source block into the block looked at, or next to it on the face looked at.
-fn pour_bucket(u: &mut ItemUse, liquid: &Block) -> bool {
-    const DIRS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
-    let (w, player) = (u.world(), u.player());
-    let Some((pos, face, state)) = w.look_at(player, 5.0, false) else { return false };
-    let replaceable = |s: u32| state_flags(s) & abi::block_flags::REPLACEABLE != 0;
-    let target = if replaceable(state) {
-        pos
-    } else {
-        let d = DIRS[face as usize % 6];
-        [pos[0] + d[0], pos[1] + d[1], pos[2] + d[2]]
-    };
-    if !replaceable(w.get(target)) {
-        return false;
-    }
-    w.set(target, liquid.state(0));
-    if !w.creative(player) {
-        u.set_stack(ItemStack::new(BUCKET.id(), 1));
-    }
-    true
 }

@@ -144,6 +144,8 @@ pub struct Game {
     pub packet_names: FxHashMap<String, u32>,
     /// Mod key bindings: (action, default key).
     pub keys: Vec<(String, String)>,
+    /// World rules (name, default), sorted by name; values live in the server.
+    pub rules: Vec<(String, i64)>,
 }
 
 #[derive(Default)]
@@ -203,6 +205,12 @@ pub struct RawGame {
     /// (owner, name, side, callback).
     pub packets: Vec<(ModId, String, u32, Callback)>,
     pub keys: Vec<(String, String)>,
+    /// (block name, flow rules).
+    pub liquids: Vec<(String, voxide_abi::LiquidDesc)>,
+    /// World rules: (name, default).
+    pub rules: Vec<(String, i64)>,
+    /// liquid, touching, source result, flowing result, falls-into result.
+    pub reactions: Vec<[String; 5]>,
 }
 
 pub struct RawOre {
@@ -411,6 +419,7 @@ pub fn freeze(
         g.client_hooks.extend(r.client_hooks);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
+        g.rules.extend(r.rules);
         components.extend(r.components);
         hooks.extend(r.hooks);
         recipes.extend(r.recipes);
@@ -428,6 +437,8 @@ pub fn freeze(
     g.item_kind = g.entity_names[ITEM];
     g.virtual_kind = g.entity_names[VIRTUAL];
     g.client_hooks.sort_by_key(|h| h.0.0);
+    g.rules.sort_by(|a, b| a.0.cmp(&b.0));
+    g.rules.dedup_by(|a, b| a.0 == b.0);
     packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
     for (owner, name, side, cb) in packets {
         let id = *g.packet_names.entry(name.clone()).or_insert_with(|| {

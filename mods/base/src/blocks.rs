@@ -57,12 +57,6 @@ pub static DIAMOND_BLOCK: Block = Block::new();
 pub static COAL_BLOCK: Block = Block::new();
 pub static WOOL: Block = Block::new();
 
-const HORIZONTAL: [[i32; 3]; 4] = [[0, 0, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0]];
-
-fn add(p: [i32; 3], d: [i32; 3]) -> [i32; 3] {
-    [p[0] + d[0], p[1] + d[1], p[2] + d[2]]
-}
-
 /// Log axis from the clicked face: 0 = Y, 1 = X, 2 = Z.
 fn axis_placement(p: &Place) -> u32 {
     match p.face() {
@@ -101,118 +95,6 @@ fn leaves(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
         .drops("sapling", 1)
         .mineable("shears")
         .tab("natural");
-}
-
-/// Liquid states: level 0..7 (0 = source) plus 8 for "falling".
-fn liquid_tick(w: World, p: [i32; 3], me: &'static Block, step: u32, infinite: bool) {
-    let state = w.get(p);
-    if !me.is(state) {
-        return;
-    }
-    let idx = me.index(state);
-    let (level, _falling) = (idx & 7, idx & 8 != 0);
-
-    if me.id() == LAVA.id() || me.id() == WATER.id() {
-        let other = if me.id() == LAVA.id() { &WATER } else { &LAVA };
-        for d in [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]] {
-            if other.is(w.get(add(p, d))) {
-                if me.id() == LAVA.id() {
-                    w.set(p, if level == 0 { OBSIDIAN.id() } else { COBBLESTONE.id() });
-                    return;
-                }
-            }
-        }
-    }
-
-    if level != 0 || idx & 8 != 0 {
-        let above = w.get(add(p, [0, 1, 0]));
-        let expected = if me.is(above) {
-            Some(8)
-        } else {
-            let mut best: Option<u32> = None;
-            let mut sources = 0;
-            for d in HORIZONTAL {
-                let n = w.get(add(p, d));
-                if me.is(n) {
-                    let ni = me.index(n);
-                    if ni == 0 {
-                        sources += 1;
-                    }
-                    let nl = if ni & 8 != 0 { 0 } else { ni & 7 };
-                    let cand = nl + step;
-                    best = Some(best.map_or(cand, |b: u32| b.min(cand)));
-                }
-            }
-            let below = w.get(add(p, [0, -1, 0]));
-            if infinite && sources >= 2 && (state_flags(below) & bf::SOLID != 0 || me.is(below) && me.index(below) == 0) {
-                Some(0)
-            } else {
-                best.filter(|&b| b <= 7)
-            }
-        };
-        match expected {
-            None => {
-                w.set(p, 0);
-                return;
-            }
-            Some(e) if e != idx => {
-                w.set(p, me.state(e));
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    let below = add(p, [0, -1, 0]);
-    let bs = w.get(below);
-    let can_fall = state_flags(bs) & bf::REPLACEABLE != 0 && !me.is(bs);
-    if can_fall {
-        w.set(below, me.state(8));
-        if level != 0 {
-            return;
-        }
-    }
-    let next = if idx & 8 != 0 { step } else { level + step };
-    if next > 7 {
-        return;
-    }
-    if !can_fall || level == 0 {
-        // Flowing liquid sitting on its own kind does not spread sideways.
-        if me.is(bs) && level != 0 && idx & 8 == 0 {
-            return;
-        }
-        for d in HORIZONTAL {
-            let n = add(p, d);
-            let ns = w.get(n);
-            if me.is(ns) {
-                let ni = me.index(ns);
-                if ni & 8 == 0 && (ni & 7) > next {
-                    w.set(n, me.state(next));
-                }
-            } else if state_flags(ns) & bf::REPLACEABLE != 0 && state_flags(ns) & bf::LIQUID == 0 {
-                w.set(n, me.state(next));
-            }
-        }
-    }
-}
-
-fn liquid(r: &mut Registry, name: &str, handle: &'static Block, still: &str, flow_delay: u32, step: u32, infinite: bool, light: u8) {
-    let b = r
-        .block(name)
-        .handle(handle)
-        .texture(still)
-        .states(16, |i, s| s.liquid(if i >= 8 { 0 } else { i as u8 }))
-        .light(light)
-        .no_item()
-        .drops_nothing()
-        .on_neighbor(move |e| e.world().schedule(e.pos(), flow_delay))
-        .on_placed(move |e| e.world().schedule(e.pos(), flow_delay))
-        .on_scheduled(move |e| liquid_tick(e.world(), e.pos(), handle, step, infinite));
-    if name == "water" {
-        b.tint_water().opacity(2);
-    } else {
-        b.drag(0.3);
-    }
 }
 
 fn plant(r: &mut Registry, name: &str, handle: &'static Block, tex: &str) {
@@ -267,8 +149,10 @@ pub fn register(r: &mut Registry) {
     leaves(r, "birch_leaves", &BIRCH_LEAVES, "leaves_birch");
     leaves(r, "spruce_leaves", &SPRUCE_LEAVES, "leaves_spruce");
 
-    liquid(r, "water", &WATER, "water_still", 5, 1, true, 0);
-    liquid(r, "lava", &LAVA, "lava_still", 30, 2, false, 15);
+    // Vanilla numbers: water steps every 5 ticks and reaches 7 blocks, lava every 30 and 3.
+    r.liquid("water").handle(&WATER).texture("water_still").tint_water().tag("water").bucket("water_bucket", "bucket");
+    r.liquid("lava").handle(&LAVA).texture("lava_still").light(15).drag(0.3).delay(30).drop_off(2).slope_find(2).infinite(0).temperature(1300).tag("lava").tag("hot").bucket("lava_bucket", "bucket");
+    r.liquid_reaction("#hot", "#water").source("obsidian").flowing("cobblestone").falls_into("stone");
 
     r.block("tall_grass").handle(&TALL_GRASS).texture("tallgrass").plant().needs_below("plant_soil").tint_grass().drops("wheat_seeds", 1).no_item();
     plant(r, "dandelion", &DANDELION, "flower_dandelion");

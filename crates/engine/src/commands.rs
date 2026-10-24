@@ -374,6 +374,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("regions", ""),
     ("debugblocks", "[floor:block]"),
     ("log", "[filters:text]"),
+    ("rule", "[name:word] [value:int]"),
 ];
 
 /// `/log`: shows or changes the log filters of this process (see `crate::log`).

@@ -167,6 +167,8 @@ impl T {
         let name = format!("test-{}", self.name());
         self.c().new_world(&name, seed);
         self.until("joined", Duration::from_secs(60), |t| t.flag(cf::JOINED)).await?;
+        // Mobs only where a test puts them, so pictures repeat.
+        self.cmd("/rule base:mob_spawning 0").await?;
         self.loaded().await
     }
 

@@ -383,6 +383,8 @@ pub static CONDUCTOR: Tag = Tag::new(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::new(abi::comp::ENERGY);
 pub static WORN: Component<abi::Worn> = Component::new(abi::comp::WORN);
 pub static WORN_TEXTURE: Component<Text> = Component::new(abi::comp::WORN_TEXTURE);
+pub static LIQUID: Component<Text> = Component::new(abi::comp::LIQUID);
+pub static REMAINDER: Component<Text> = Component::new(abi::comp::REMAINDER);
 
 /// Stack size of an item (64 unless its `max_stack` says otherwise).
 pub fn max_stack(item: u32) -> u32 {

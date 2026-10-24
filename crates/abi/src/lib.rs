@@ -284,6 +284,11 @@ pub mod comp {
     /// Item shown on the wearer's model: `Worn`, plus `worn_texture: str` in the wearer's skin layout.
     pub const WORN: &str = "worn";
     pub const WORN_TEXTURE: &str = "worn_texture";
+    /// Item: the liquid (block name, `str`) it holds; with `remainder` (the empty container's
+    /// name) the engine fills and empties it like a bucket.
+    pub const LIQUID: &str = "liquid";
+    /// Item left behind when this one is used up (fuel, crafting, pouring): an item name, `str`.
+    pub const REMAINDER: &str = "remainder";
 }
 
 // ---------------------------------------------------------------- content descriptors
@@ -746,6 +751,8 @@ pub mod damage {
     pub const STARVE: u32 = 4;
     pub const DROWN: u32 = 5;
     pub const VOID: u32 = 6;
+    /// Inside a burning hot liquid.
+    pub const LAVA: u32 = 7;
 }
 
 #[repr(C)]
@@ -1257,7 +1264,64 @@ pub struct Host {
     /// Full name of a frozen id (`find` backwards); a block state gives `ns:block` or
     /// `ns:block#i` for its `i`-th state. Empty if unknown. Valid for the whole session.
     pub name_of: unsafe extern "C" fn(kind: u32, id: u32) -> Str,
+
+    // ------------------------------------------------ liquids (stage 2)
+    /// Makes a registered block (16 liquid states, see `LiquidDesc`) a liquid the engine flows.
+    pub reg_liquid: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LiquidDesc),
+    pub reg_liquid_reaction: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ReactionDesc),
+    /// Liquid id of a block state, `u32::MAX` for none.
+    pub liquid_of: unsafe extern "C" fn(state: u32) -> u32,
+    /// Places or takes a liquid like a bucket would for `player` holding `stack` (what the engine
+    /// does for items with a `liquid` component or empty containers of one). Returns the stack
+    /// the player holds afterwards; `handled` is set non-zero if anything happened.
+    pub use_container: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, stack: ItemStack, handled: *mut u32) -> ItemStack,
+
+    /// A world rule (like vanilla's game rules) with its default; players change it with
+    /// `/rule <name> <value>`, worlds save it.
+    pub reg_rule: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: i64),
+    /// Current value of a rule in this world, 0 for unknown names.
+    pub rule: unsafe extern "C" fn(world: *mut WorldCtx, name: Str) -> i64,
 }
+
+/// Flow rules of a liquid. Its block (registered by the same mod under the same name) has 16
+/// states: 0 the source, 1..7 flowing with less and less liquid, 8 falling.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LiquidDesc {
+    pub size: u32,
+    /// The block's full name.
+    pub name: Str,
+    /// Ticks between flow steps (vanilla water 5, lava 30).
+    pub delay: u32,
+    /// Level lost per block of spread: water 1 (7 blocks), lava 2 (3 blocks).
+    pub drop_off: u32,
+    /// How far flowing liquid looks for a way down before choosing directions (water 4, lava 2).
+    pub slope_find: u32,
+    /// Sources on two sides over solid ground (or a source) make a new source when this is 2;
+    /// 0 never.
+    pub infinite: u32,
+    /// Positive: falls; negative: rises (lighter than air).
+    pub density: i32,
+    /// Roughly Kelvin: water 300, lava 1300. From 1000 up it burns what touches it.
+    pub temperature: u32,
+}
+versioned!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, infinite: 2, density: 1000, temperature: 300 });
+
+/// What happens where two liquids meet. `liquid` and `touching` are block names or `#tags` of
+/// liquid blocks. When `liquid` has `touching` beside or above it, it turns into `source` (if
+/// it was a source) or `flowing`; when it flows down into `touching`, that block becomes
+/// `falls_into`. Empty results leave things as they are.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ReactionDesc {
+    pub size: u32,
+    pub liquid: Str,
+    pub touching: Str,
+    pub source: Str,
+    pub flowing: Str,
+    pub falls_into: Str,
+}
+versioned!(ReactionDesc { liquid: Str::EMPTY, touching: Str::EMPTY, source: Str::EMPTY, flowing: Str::EMPTY, falls_into: Str::EMPTY });
 
 // ---------------------------------------------------------------- client side
 

@@ -118,6 +118,12 @@ pub static HOST: Host = Host {
     image_save: crate::app::api::image_save,
     image_free: crate::app::api::image_free,
     name_of,
+    reg_liquid,
+    reg_liquid_reaction,
+    liquid_of,
+    use_container,
+    reg_rule,
+    rule,
 };
 
 // ---------------------------------------------------------------- profiling per mod
@@ -823,6 +829,49 @@ unsafe extern "C" fn set_player_menu(r: *mut abi::Registrar, menu: Str) {
 
 unsafe extern "C" fn reg_attach(r: *mut abi::Registrar, kind: Str, component: Str) {
     unsafe { reg(r).game.attach.push((kind.as_str().to_string(), component.as_str().to_string())) }
+}
+
+unsafe extern "C" fn reg_liquid(r: *mut abi::Registrar, d: *const abi::LiquidDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        reg(r).game.liquids.push((d.name.as_str().to_string(), d));
+    }
+}
+
+unsafe extern "C" fn reg_liquid_reaction(r: *mut abi::Registrar, d: *const abi::ReactionDesc) {
+    unsafe {
+        let d = abi::read_sized(d);
+        reg(r).game.reactions.push([d.liquid, d.touching, d.source, d.flowing, d.falls_into].map(|s| s.as_str().to_string()));
+    }
+}
+
+unsafe extern "C" fn liquid_of(state: u32) -> u32 {
+    try_content().and_then(|c| c.states.get(state as usize)).and_then(|s| s.liquid).map_or(u32::MAX, |l| l as u32)
+}
+
+unsafe extern "C" fn use_container(w: *mut abi::WorldCtx, player: u64, stack: ItemStack, handled: *mut u32) -> ItemStack {
+    unsafe {
+        let r = dim(w).use_container(content(), player, stack);
+        if !handled.is_null() {
+            *handled = r.is_some() as u32;
+        }
+        r.unwrap_or(stack)
+    }
+}
+
+unsafe extern "C" fn reg_rule(r: *mut abi::Registrar, name: Str, default: i64) {
+    unsafe { reg(r).game.rules.push((name.as_str().to_string(), default)) }
+}
+
+unsafe extern "C" fn rule(w: *mut abi::WorldCtx, name: Str) -> i64 {
+    unsafe {
+        let name = name.as_str();
+        let rules = &content().game.rules;
+        match rules.binary_search_by(|r| r.0.as_str().cmp(name)) {
+            Ok(i) => dim(w).rules.get(i).copied().unwrap_or(rules[i].1),
+            Err(_) => 0,
+        }
+    }
 }
 
 unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Callback) {

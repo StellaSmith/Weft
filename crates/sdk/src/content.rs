@@ -1230,3 +1230,193 @@ impl<K: kind::Kind> Handle<K> {
         self.name
     }
 }
+
+/// A liquid: its block (16 states) and flow rules, optionally a filled bucket item.
+///
+/// ```ignore
+/// r.liquid("oil").handle(&OIL).texture("oil_still").delay(15).drop_off(2).bucket("oil_bucket", "base:bucket");
+/// r.liquid_reaction("#hot", "#water").source("obsidian").flowing("cobblestone").falls_into("stone");
+/// ```
+pub struct LiquidBuilder<'a> {
+    reg: &'a mut Registry,
+    name: String,
+    handle: Option<&'static Block>,
+    texture: String,
+    tint: bool,
+    light: [u8; 3],
+    opacity: u8,
+    drag: f32,
+    components: Vec<Pending>,
+    desc: abi::LiquidDesc,
+    bucket: Option<(String, String)>,
+}
+
+impl LiquidBuilder<'_> {
+    pub fn handle(mut self, h: &'static Block) -> Self {
+        self.handle = Some(h);
+        self
+    }
+    /// Still texture, relative names are under `block/`.
+    pub fn texture(mut self, t: &str) -> Self {
+        self.texture = t.to_string();
+        self
+    }
+    /// Coloured by the biome's water colour.
+    pub fn tint_water(mut self) -> Self {
+        self.tint = true;
+        self
+    }
+    pub fn light(mut self, level: u8) -> Self {
+        self.light = [level; 3];
+        self
+    }
+    /// How much light it absorbs per block.
+    pub fn opacity(mut self, o: u8) -> Self {
+        self.opacity = o;
+        self
+    }
+    /// Movement speed multiplier inside.
+    pub fn drag(mut self, d: f32) -> Self {
+        self.drag = d;
+        self
+    }
+    /// Ticks between flow steps (water 5, lava 30).
+    pub fn delay(mut self, ticks: u32) -> Self {
+        self.desc.delay = ticks;
+        self
+    }
+    /// Level lost per block spread (water 1: 7 blocks, lava 2: 3 blocks).
+    pub fn drop_off(mut self, n: u32) -> Self {
+        self.desc.drop_off = n;
+        self
+    }
+    /// How far it looks for a way down (water 4, lava 2).
+    pub fn slope_find(mut self, n: u32) -> Self {
+        self.desc.slope_find = n;
+        self
+    }
+    /// Sources needed side by side to make a new one (water 2), 0 = never.
+    pub fn infinite(mut self, sources: u32) -> Self {
+        self.desc.infinite = sources;
+        self
+    }
+    /// Rises instead of falling.
+    pub fn rises(mut self) -> Self {
+        self.desc.density = -self.desc.density.abs().max(1);
+        self
+    }
+    /// Roughly Kelvin; 1000 and more burns what touches it.
+    pub fn temperature(mut self, t: u32) -> Self {
+        self.desc.temperature = t;
+        self
+    }
+    /// A tag on every state (`water`, `hot` for reactions).
+    pub fn tag(mut self, tag: &str) -> Self {
+        self.components.push(Pending::tag(tag));
+        self
+    }
+    pub fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
+        self.components.push(comp.raw_value(&v));
+        self
+    }
+    /// Also registers `item`: `empty` (a container item, any mod's) filled with this liquid. The
+    /// engine fills and pours it; no code needed.
+    pub fn bucket(mut self, item: &str, empty: &str) -> Self {
+        self.bucket = Some((item.to_string(), qualify(self.reg.ns, empty)));
+        self
+    }
+}
+
+impl Drop for LiquidBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let short = self.name.rsplit(':').next().unwrap_or(&self.name).to_string();
+        let tex = if self.texture.is_empty() { format!("{short}_still") } else { self.texture.clone() };
+        let (tint, light, opacity, drag) = (self.tint, self.light, self.opacity, self.drag);
+        let mut b = self.reg.block(&short).texture(&tex).states(16, |i, s| s.liquid(if i >= 8 { 0 } else { i as u8 })).light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
+        if tint {
+            b = b.tint_water();
+        }
+        if let Some(h) = self.handle {
+            b = b.handle(h);
+        }
+        b.components = std::mem::take(&mut self.components);
+        drop(b);
+        let desc = abi::LiquidDesc { name: Str::new(&self.name), ..self.desc };
+        unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
+        if let Some((item, empty)) = self.bucket.take() {
+            self.reg.item(&item).stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tab("tools");
+        }
+    }
+}
+
+pub struct ReactionBuilder<'a> {
+    reg: &'a mut Registry,
+    names: [String; 5],
+}
+
+impl ReactionBuilder<'_> {
+    /// What a source of the liquid becomes.
+    pub fn source(mut self, block: &str) -> Self {
+        self.names[2] = qualify(self.reg.ns, block);
+        self
+    }
+    /// What flowing liquid becomes.
+    pub fn flowing(mut self, block: &str) -> Self {
+        self.names[3] = qualify(self.reg.ns, block);
+        self
+    }
+    /// What the touched liquid becomes when this one flows down into it.
+    pub fn falls_into(mut self, block: &str) -> Self {
+        self.names[4] = qualify(self.reg.ns, block);
+        self
+    }
+}
+
+impl Drop for ReactionBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let n = &self.names;
+        let desc = abi::ReactionDesc { liquid: Str::new(&n[0]), touching: Str::new(&n[1]), source: Str::new(&n[2]), flowing: Str::new(&n[3]), falls_into: Str::new(&n[4]), ..abi::ReactionDesc::DEFAULT };
+        unsafe { (host().reg_liquid_reaction)(self.reg.raw, &desc) }
+    }
+}
+
+fn block_or_tag(ns: &str, s: &str) -> String {
+    if s.starts_with('#') { s.to_string() } else { qualify(ns, s) }
+}
+
+impl Registry {
+    /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers.
+    pub fn liquid<'a>(&'a mut self, name: &str) -> LiquidBuilder<'a> {
+        LiquidBuilder {
+            name: qualify(self.ns, name),
+            reg: self,
+            handle: None,
+            texture: String::new(),
+            tint: false,
+            light: [0; 3],
+            opacity: 2,
+            drag: 0.5,
+            components: Vec::new(),
+            desc: abi::LiquidDesc::DEFAULT,
+            bucket: None,
+        }
+    }
+
+    /// When `liquid` touches `touching` (names or `#tags` of liquid blocks), see `ReactionBuilder`.
+    pub fn liquid_reaction<'a>(&'a mut self, liquid: &str, touching: &str) -> ReactionBuilder<'a> {
+        let names = [block_or_tag(self.ns, liquid), block_or_tag(self.ns, touching), String::new(), String::new(), String::new()];
+        ReactionBuilder { reg: self, names }
+    }
+}
+
+/// Liquid id of a block state (`None` for other blocks).
+pub fn liquid_of(state: u32) -> Option<u32> {
+    let l = unsafe { (host().liquid_of)(state) };
+    (l != u32::MAX).then_some(l)
+}

@@ -33,6 +33,8 @@ pub struct WorldMeta {
     pub last_played: u64,
     pub times: Vec<(String, u64)>,
     pub next_entity: u64,
+    /// World rules set by players (`/rule`).
+    pub rules: Vec<(String, i64)>,
 }
 
 pub fn now_secs() -> u64 {
@@ -42,7 +44,7 @@ pub fn now_secs() -> u64 {
 impl WorldMeta {
     pub fn load(dir: &Path) -> Option<WorldMeta> {
         let src = std::fs::read_to_string(dir.join("world.txt")).ok()?;
-        let mut m = WorldMeta { dir: dir.to_path_buf(), name: String::new(), seed: 0, last_played: 0, times: Vec::new(), next_entity: 1 };
+        let mut m = WorldMeta { dir: dir.to_path_buf(), name: String::new(), seed: 0, last_played: 0, times: Vec::new(), next_entity: 1, rules: Vec::new() };
         for line in src.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let (k, v) = (k.trim(), v.trim());
@@ -54,6 +56,8 @@ impl WorldMeta {
                 _ => {
                     if let Some(d) = k.strip_prefix("time.") {
                         m.times.push((d.to_string(), v.parse().unwrap_or(0)));
+                    } else if let Some(r) = k.strip_prefix("rule.") {
+                        m.rules.push((r.to_string(), v.parse().unwrap_or(0)));
                     }
                 }
             }
@@ -68,6 +72,9 @@ impl WorldMeta {
         );
         for (d, t) in &self.times {
             s.push_str(&format!("time.{d} = {t}\n"));
+        }
+        for (r, v) in &self.rules {
+            s.push_str(&format!("rule.{r} = {v}\n"));
         }
         let _ = std::fs::create_dir_all(&self.dir);
         if let Err(e) = std::fs::write(self.dir.join("world.txt"), s) {
@@ -96,7 +103,7 @@ pub fn create(saves: &Path, name: &str, seed: u64) -> WorldMeta {
         n += 1;
         dir = saves.join(format!("{base}_{n}"));
     }
-    let m = WorldMeta { dir, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), next_entity: 1 };
+    let m = WorldMeta { dir, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), next_entity: 1, rules: Vec::new() };
     m.save();
     m
 }

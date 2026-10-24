@@ -4,6 +4,7 @@
 mod dim;
 pub mod energy;
 pub mod entity;
+mod liquid;
 pub mod menu;
 pub mod persist;
 pub mod regions;
@@ -136,6 +137,8 @@ pub struct Server {
     online: Vec<String>,
     /// Generated and inserted totals at the last `load` report.
     load_seen: (u64, u64),
+    /// World rule values by rule id.
+    rules: Arc<[i64]>,
 }
 
 /// Handle the client side uses to reach a running server thread.
@@ -260,7 +263,14 @@ impl Server {
             }
         }
         let (gen_tx, gen_rx) = unbounded();
+        let rules: Arc<[i64]> = c
+            .game
+            .rules
+            .iter()
+            .map(|(name, default)| storage.as_ref().and_then(|s| s.meta.rules.iter().find(|r| &r.0 == name)).map_or(*default, |r| r.1))
+            .collect();
         Server {
+            rules,
             cfg,
             dims,
             players: Vec::new(),
@@ -381,6 +391,7 @@ impl Server {
             for r in &mut d.regions {
                 r.time = t;
                 r.gizmo_groups = groups.clone();
+                r.rules = self.rules.clone();
             }
             d.time += 1;
         }
@@ -557,6 +568,7 @@ impl Server {
             }
         }
         s.meta.times = self.dims.iter().map(|d| (c.dims[d.id as usize].name.clone(), d.time)).collect();
+        s.meta.rules = c.game.rules.iter().zip(self.rules.iter()).map(|(r, v)| (r.0.clone(), *v)).collect();
         s.meta.next_entity = self.next_id.load(Ordering::Relaxed);
         for p in &self.players {
             if p.joined || players {
@@ -708,7 +720,13 @@ impl Server {
                 let Some(sel) = r.entities.get(entity).map(|e| e.selected) else { return };
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 let Some(def) = c.items.get(held.item as usize) else { return };
-                if let Some(cb) = def.on_use {
+                if def.on_use.is_none() {
+                    if let Some(after) = r.use_container(c, entity, held) {
+                        if after != held {
+                            r.entities.set_slot(entity, sel, after);
+                        }
+                    }
+                } else if let Some(cb) = def.on_use {
                     let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
                     let a = r.call(def.owner, cb, |w| abi::ItemUseArgs {
                         world: w,
@@ -1326,6 +1344,19 @@ impl Server {
             }
             // Clients handle it themselves: logging is per process.
             "log" => crate::commands::log_command(a.text("filters").unwrap_or("")),
+            "rule" => {
+                let rules = &c.game.rules;
+                let Some(name) = a.text("name") else {
+                    return rules.iter().zip(self.rules.iter()).map(|(r, v)| format!("{} = {v}", r.0)).collect::<Vec<_>>().join("\n");
+                };
+                let Some(i) = rules.iter().position(|r| r.0 == name || r.0.rsplit(':').next() == Some(name)) else { return format!("no rule {name}") };
+                if let Some(v) = a.int("value") {
+                    let mut now = self.rules.to_vec();
+                    now[i] = v;
+                    self.rules = now.into();
+                }
+                format!("{} = {}", rules[i].0, self.rules[i])
+            }
             _ => format!("unknown command /{name}"),
         }
     }

@@ -57,6 +57,7 @@ pub fn register(r: &mut Registry) {
         .on_tick(passive_ai)
         .on_hurt(panic)
         .on_death(|e| drops(e, &[Drop("beef", 1, 3), Drop("leather", 0, 2)]));
+    r.rule("mob_spawning", 1);
     r.hook_tick("core:player", spawn_around_players);
 }
 
@@ -173,7 +174,7 @@ fn wander(w: &World, id: u64, st: &mut EntityState, speed: f32) {
 /// Every two seconds, try to spawn mobs in a ring around each player.
 fn spawn_around_players(t: &EntityTick) {
     let w = t.world();
-    if w.time() % 40 != 0 {
+    if w.time() % 40 != 0 || w.rule("base:mob_spawning") == 0 {
         return;
     }
     for &p in t.ids() {

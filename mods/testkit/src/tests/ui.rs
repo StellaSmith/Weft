@@ -100,15 +100,26 @@ pub async fn client_command_completion(t: T) -> R {
     t.world(3).await?;
     t.press("core:chat");
     t.screen("core:chat").await?;
-    t.c().type_text("/giz");
-    t.frames(2).await?;
-    t.c().key("Tab", 0.0);
-    t.frames(3).await?;
-    let text = t.c().input_text();
-    t.check(text.starts_with("/gizmo"), format!("Tab completed /giz to '{text}'"));
+    for (typed, want) in [("/giz", "/gizmo"), ("/gizmo cu", "/gizmo cubes"), ("/probe al", "/probe alpha")] {
+        t.c().type_text(typed);
+        t.frames(2).await?;
+        t.c().key("Tab", 0.0);
+        t.frames(3).await?;
+        let text = t.c().input_text();
+        t.check(text.starts_with(want), format!("Tab completed {typed} to '{text}', want {want}"));
+        for _ in 0..text.chars().count() {
+            t.c().key("Backspace", 0.0);
+            t.frames(1).await?;
+        }
+    }
     t.c().key("Escape", 0.0);
     t.no_screen().await?;
     let reply = t.cmd("/gizmo cubes").await?;
-    t.check(reply.contains("cubes"), format!("/gizmo cubes said '{reply}'"));
+    t.check(reply.contains("cubes on"), format!("/gizmo cubes said '{reply}'"));
+    // Any word goes, the list is only for completion (mods' groups).
+    let reply = t.cmd("/gizmo testmod:energy").await?;
+    t.check(reply.contains("testmod:energy on"), format!("/gizmo testmod:energy said '{reply}'"));
+    let reply = t.cmd("/probe beta").await?;
+    t.check_eq(reply, "probe beta on the client".into(), "mod client command");
     Ok(())
 }

@@ -1042,6 +1042,9 @@ impl Server {
         let tokens: Vec<&str> = line.split_whitespace().collect();
         let Some(&name) = tokens.first() else { return String::new() };
         let Some(def) = c.commands.iter().find(|d| d.name == name) else { return format!("unknown command /{name}, try /help") };
+        if def.client {
+            return format!("/{name} runs on the client that types it");
+        }
         let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
         let here = self.dims[dim as usize]
             .entity_region_ref(entity)
@@ -1065,31 +1068,10 @@ impl Server {
             None => self.builtin(c, pi, name, &args, here.pos),
             Some((owner, cb)) => {
                 let Some((r, player)) = self.region(pi) else { return String::new() };
-                let values: Vec<abi::CommandValue> = args
-                    .values
-                    .iter()
-                    .zip(&selected)
-                    .map(|(v, sel)| {
-                        use crate::commands::Value;
-                        let mut out = abi::CommandValue { kind: abi::command_value::NONE, int: 0, float: 0.0, text: abi::Str::new(""), pos: [0.0; 3] };
-                        match v {
-                            None => {}
-                            Some(Value::Int(i)) => (out.kind, out.int, out.float) = (abi::command_value::INT, *i, *i as f64),
-                            Some(Value::Float(f)) => (out.kind, out.float) = (abi::command_value::FLOAT, *f),
-                            Some(Value::Text(t)) => (out.kind, out.text) = (abi::command_value::TEXT, abi::Str::new(t)),
-                            Some(Value::Id(i, n)) => (out.kind, out.int, out.text) = (abi::command_value::ID, *i as i64, abi::Str::new(n)),
-                            Some(Value::Pos(p)) => (out.kind, out.pos) = (abi::command_value::POS, p.to_array()),
-                            Some(Value::Targets(_)) => {
-                                let ids = sel.as_deref().unwrap_or("");
-                                (out.kind, out.int, out.text) = (abi::command_value::TARGETS, ids.split_whitespace().count() as i64, abi::Str::new(ids));
-                            }
-                        }
-                        out
-                    })
-                    .collect();
+                let values = crate::commands::abi_values(&args, &selected);
                 let mut reply = String::new();
                 let reply_ptr = &mut reply as *mut String as *mut core::ffi::c_void;
-                r.call(owner, cb, |w| abi::CommandArgs { world: w, player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr });
+                r.call(owner, cb, |w| abi::CommandArgs { world: w, player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr, client: std::ptr::null_mut() });
                 r.flush_neighbors(c);
                 r.finish_tick(c);
                 reply
@@ -1361,10 +1343,7 @@ impl Server {
                     .collect();
                 format!("regions {}", parts.join(", "))
             }
-            // Clients handle it themselves: logging is per process.
-            "log" => crate::commands::log_command(a.text("filters").unwrap_or("")),
-            // Also handled by the client that types it (it owns the set of shown groups).
-            "gizmo" => "gizmos are switched on the client: type /gizmo there".into(),
+
             "rule" => {
                 let rules = &c.game.rules;
                 let Some(name) = a.text("name") else {

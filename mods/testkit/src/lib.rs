@@ -23,6 +23,12 @@ fn init(r: &mut Registry) {
     server::register(r);
     r.client_packet("reply", |_, data| runner::reply(data));
     r.key("probe", "F9");
+    // A command that never reaches the server: answers from the client it runs on.
+    r.client_command("probe", "<what:word(alpha,beta)>", |cmd| {
+        let side = if cmd.client().is_some() { "client" } else { "server" };
+        let what = cmd.text("what").unwrap_or("").to_string();
+        cmd.reply(&format!("probe {what} on the {side}"));
+    });
     let (test, script) = (launch_option("test"), launch_option("script"));
     if test.is_none() && script.is_none() {
         return;

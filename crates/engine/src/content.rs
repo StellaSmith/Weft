@@ -1103,17 +1103,26 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
     for (name, usage) in crate::commands::BUILTIN {
         let alts = crate::commands::parse_usage(usage).expect("engine command usage");
-        commands.push(crate::commands::CommandDef { name: name.to_string(), usage: usage.to_string(), alts, handler: None });
+        commands.push(crate::commands::CommandDef { name: name.to_string(), usage: usage.to_string(), alts, handler: None, client: false });
     }
-    let mut mod_commands: Vec<(ModId, String, String, Callback)> = games.iter().flat_map(|g| g.commands.iter().cloned()).collect();
+    let gizmos: Vec<&str> = crate::client::gizmo::BUILTIN.iter().map(|g| g.0).collect();
+    for (name, usage) in crate::commands::CLIENT {
+        let usage = usage.replace("{gizmos}", &gizmos.join(","));
+        let alts = crate::commands::parse_usage(&usage).expect("engine command usage");
+        commands.push(crate::commands::CommandDef { name: name.to_string(), usage, alts, handler: None, client: true });
+    }
+    let mut mod_commands: Vec<(ModId, String, String, Callback, bool)> = games
+        .iter()
+        .flat_map(|g| g.commands.iter().map(|c| (c.0, c.1.clone(), c.2.clone(), c.3, false)).chain(g.client_commands.iter().map(|c| (c.0, c.1.clone(), c.2.clone(), c.3, true))))
+        .collect();
     mod_commands.sort_by(|a, b| a.1.cmp(&b.1));
-    for (owner, name, usage, cb) in mod_commands {
+    for (owner, name, usage, cb, client) in mod_commands {
         if commands.iter().any(|d| d.name == name) {
             errors.push(format!("{}: command /{name} is already taken", mod_name(owner)));
             continue;
         }
         match crate::commands::parse_usage(&usage) {
-            Ok(alts) => commands.push(crate::commands::CommandDef { name, usage, alts, handler: Some((owner, cb)) }),
+            Ok(alts) => commands.push(crate::commands::CommandDef { name, usage, alts, handler: Some((owner, cb)), client }),
             Err(e) => errors.push(format!("{}: command /{name}: {e}", mod_name(owner))),
         }
     }

@@ -580,14 +580,8 @@ impl Running {
                     self.set_capture(true);
                 }
                 Request::SendChat(text) => {
-                    if let Some(g) = &mut self.game {
-                        // Logging is per process, so `/log` is handled by whoever types it.
-                        if let Some(spec) = text.trim().strip_prefix("/log").filter(|r| r.is_empty() || r.starts_with(' ')) {
-                            g.client.chat_line(crate::commands::log_command(spec.trim()));
-                        } else if let Some(group) = text.trim().strip_prefix("/gizmo").filter(|r| r.is_empty() || r.starts_with(' ')) {
-                            let reply = g.client.gizmo_command(group.trim());
-                            g.client.chat_line(reply);
-                        } else if !text.trim().is_empty() {
+                    if self.game.is_some() && !self.client_command(&text) && !text.trim().is_empty() {
+                        if let Some(g) = &mut self.game {
                             g.client.send(net::ToServer::Chat(text));
                         }
                     }
@@ -797,6 +791,39 @@ impl Running {
         let mut v = crate::client::modui::ClientView::new(self.game.as_ref().map(|g| &g.client));
         v.run = self as *mut Running as *mut std::ffi::c_void;
         v
+    }
+
+    /// Runs `line` here if it is a command marked to run on the client; false otherwise.
+    fn client_command(&mut self, line: &str) -> bool {
+        let Some(rest) = line.trim().strip_prefix('/') else { return false };
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        let Some(def) = tokens.first().and_then(|n| content().commands.iter().find(|d| d.client && d.name == *n)) else { return false };
+        let Some(g) = &self.game else { return false };
+        let p = &g.client.player;
+        let here = crate::commands::Origin { pos: p.pos, yaw: p.yaw, pitch: p.pitch };
+        let players = g.client.players.clone();
+        let reply = match crate::commands::parse_args(content(), &def.alts, &tokens[1..], here, &players) {
+            Err(e) => format!("{e}. usage: /{} {}", def.name, def.usage),
+            Ok(args) => match def.handler {
+                // Logging is per process; the shown gizmo groups belong to this client.
+                None if def.name == "log" => crate::commands::log_command(args.text("filters").unwrap_or("")),
+                None => self.game.as_mut().map_or(String::new(), |g| g.client.gizmo_command(args.text("group").unwrap_or(""))),
+                Some((owner, cb)) => {
+                    let values = crate::commands::abi_values(&args, &[]);
+                    let mut reply = String::new();
+                    let reply_ptr = &mut reply as *mut String as *mut core::ffi::c_void;
+                    let player = self.game.as_ref().map_or(0, |g| g.client.player_id);
+                    let mut v = self.frame_view();
+                    let mut a = abi::CommandArgs { world: std::ptr::null_mut(), player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr, client: v.raw() };
+                    crate::host::invoke(owner, cb, &mut a);
+                    reply
+                }
+            },
+        };
+        if let Some(g) = &mut self.game {
+            g.client.chat_line(reply);
+        }
+        true
     }
 
     /// Mod channel messages that arrived for the client, each to its handler.

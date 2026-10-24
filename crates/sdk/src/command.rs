@@ -17,8 +17,14 @@ pub struct Command<'a> {
 }
 
 impl Command<'_> {
+    /// The world it runs in; client commands (`Registry::client_command`) have none, use `client`.
     pub fn world(&self) -> World {
         World::from_raw(self.args.world)
+    }
+
+    /// The client that typed a client command.
+    pub fn client(&self) -> Option<crate::Client> {
+        (!self.args.client.is_null()).then(|| crate::Client::from_raw(self.args.client))
     }
 
     /// Entity id of the player who ran the command.

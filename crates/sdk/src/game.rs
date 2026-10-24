@@ -624,6 +624,13 @@ impl Registry {
         unsafe { (host().reg_command)(self.raw, Str::new(name), Str::new(usage), cb) }
     }
 
+    /// Like `command`, but runs on the client that types it (`cmd.client()`), never on the
+    /// server: for what only the player's own game has (views, local settings, debug output).
+    pub fn client_command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
+        let cb = crate::command::command_cb(usage, f);
+        unsafe { (host().reg_client_command)(self.raw, Str::new(name), Str::new(usage), cb) }
+    }
+
     /// HUD element at `anchor` (`hud_anchor::*`); `order` 0 sits nearest the anchor's edge.
     pub fn hud_element(&mut self, name: &str, anchor: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
         let name = qualify(self.ns, name);

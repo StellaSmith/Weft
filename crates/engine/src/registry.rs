@@ -207,6 +207,8 @@ pub struct RawGame {
     pub huds: Vec<HudElement>,
     /// (owner, name, usage, callback).
     pub commands: Vec<(ModId, String, String, Callback)>,
+    /// Commands that run on the client: (owner, name, usage, callback).
+    pub client_commands: Vec<(ModId, String, String, Callback)>,
     pub player_menu: Option<String>,
     pub block_entities: Vec<(String, String, u32)>,
     pub attach: Vec<(String, String)>,

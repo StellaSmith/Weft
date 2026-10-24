@@ -1333,6 +1333,9 @@ pub struct Host {
     /// A system: once per tick and region `cb` gets `SystemArgs` with every entity that has the
     /// per-entity component `name` and their values side by side, to change in place.
     pub reg_system: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, cb: Callback),
+    /// A command that runs on the client that types it (never sent to the server), same usage
+    /// syntax as `reg_command`; `cb` gets `CommandArgs` with `client` set.
+    pub reg_client_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
 }
 
 /// Values are copied out before the call and written back after it (changes of synced
@@ -1931,6 +1934,8 @@ pub struct CommandArgs {
     pub count: u32,
     /// Engine side reply buffer, written through `Host::command_reply`.
     pub reply: *mut core::ffi::c_void,
+    /// Client commands (`Host::reg_client_command`): the client that typed it; `world` is null.
+    pub client: *mut ClientCtx,
 }
 
 /// Places for HUD elements. `HOTBAR_LEFT`/`HOTBAR_RIGHT` stack upwards above the hotbar's halves.

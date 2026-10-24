@@ -3,7 +3,7 @@
 //! `[name:type]` optional parameters, alternatives separated by `|`, for example
 //! `<pos:pos> | <target:player>` or `<item:item> [count:int]`.
 //!
-//! Types: int, float, word, text (rest of the line), item, block, entity, dim, player, time
+//! Types: int, float, word (`word(a,b)`: any word, completing a and b), text (rest of the line), item, block, entity, dim, player, time
 //! (`day`, `noon`, `night`, `midnight` or ticks), pos (three coordinates; `~` relative to the player,
 //! `^left ^up ^forward` relative to where they look) and targets (a player name or a selector:
 //! `@p` nearest player, `@a` all players, `@e` entities, `@s` yourself, `@r` a random player, with
@@ -19,7 +19,8 @@ pub enum Kind {
     Literal(String),
     Int,
     Float,
-    Word,
+    /// Any word; the listed ones are suggested.
+    Word(Vec<String>),
     Text,
     Item,
     Block,
@@ -58,7 +59,8 @@ pub fn parse_usage(usage: &str) -> Result<Vec<Alt>, String> {
             let kind = match ty {
                 "int" => Kind::Int,
                 "float" => Kind::Float,
-                "word" => Kind::Word,
+                "word" => Kind::Word(Vec::new()),
+                w if w.starts_with("word(") && w.ends_with(')') => Kind::Word(w[5..w.len() - 1].split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()),
                 "text" => Kind::Text,
                 "item" => Kind::Item,
                 "block" => Kind::Block,
@@ -268,7 +270,7 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
             }
             Kind::Int => Value::Int(tok.parse().map_err(|_| format!("{} must be a whole number", p.name))?),
             Kind::Float => Value::Float(tok.parse().map_err(|_| format!("{} must be a number", p.name))?),
-            Kind::Word => Value::Text(tok.to_string()),
+            Kind::Word(_) => Value::Text(tok.to_string()),
             Kind::Text => {
                 let v = Value::Text(tokens[i..].join(" "));
                 i = tokens.len();
@@ -355,6 +357,38 @@ pub struct CommandDef {
     pub alts: Vec<Alt>,
     /// `None`: an engine command.
     pub handler: Option<(ModId, Callback)>,
+    /// Runs on the client that typed it (logging, gizmos, mods' client commands), never sent.
+    pub client: bool,
+}
+
+/// Engine commands that run on the client: (name, usage). `{gizmos}` becomes the gizmo groups
+/// the engine knows, so they complete while a mod's group is still accepted.
+pub const CLIENT: &[(&str, &str)] = &[("log", "[filters:text]"), ("gizmo", "[group:word({gizmos})]")];
+
+/// Command values as mods receive them; `selected` holds resolved targets per slot. The values
+/// point into `args` and `selected`.
+pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<voxide_abi::CommandValue> {
+    use voxide_abi::{Str, command_value as cv};
+    args.values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let mut out = voxide_abi::CommandValue { kind: cv::NONE, int: 0, float: 0.0, text: Str::new(""), pos: [0.0; 3] };
+            match v {
+                None => {}
+                Some(Value::Int(n)) => (out.kind, out.int, out.float) = (cv::INT, *n, *n as f64),
+                Some(Value::Float(f)) => (out.kind, out.float) = (cv::FLOAT, *f),
+                Some(Value::Text(t)) => (out.kind, out.text) = (cv::TEXT, Str::new(t)),
+                Some(Value::Id(n, name)) => (out.kind, out.int, out.text) = (cv::ID, *n as i64, Str::new(name)),
+                Some(Value::Pos(p)) => (out.kind, out.pos) = (cv::POS, p.to_array()),
+                Some(Value::Targets(_)) => {
+                    let ids = selected.get(i).and_then(|s| s.as_deref()).unwrap_or("");
+                    (out.kind, out.int, out.text) = (cv::TARGETS, ids.split_whitespace().count() as i64, Str::new(ids));
+                }
+            }
+            out
+        })
+        .collect()
 }
 
 /// Engine commands, handled by the server itself.
@@ -373,8 +407,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]"),
     ("regions", ""),
     ("debugblocks", "[floor:block]"),
-    ("log", "[filters:text]"),
-    ("gizmo", "[group:word]"),
+
     ("rule", "[name:word] [value:int]"),
 ];
 
@@ -454,6 +487,7 @@ pub fn complete(c: &Content, line: &str, players: &[String]) -> Completion {
         };
         let list = match &p.kind {
             Kind::Literal(l) if l.starts_with(partial) => vec![l.clone()],
+            Kind::Word(options) => options.iter().filter(|o| o.starts_with(partial)).cloned().collect(),
             Kind::Item => names_from(c.item_names.keys().collect()),
             Kind::Block => names_from(c.block_names.keys().collect()),
             Kind::Entity => names_from(c.game.entity_names.keys().collect()),

@@ -61,6 +61,7 @@ pub fn all() -> Vec<TestDef> {
         visual::pick_block,
         visual::gizmos,
         visual::multiplayer,
+        visual::client_hooks,
         world::load_benchmark,
     ]
 }

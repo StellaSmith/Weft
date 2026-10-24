@@ -161,3 +161,38 @@ pub async fn multiplayer(t: T) -> R {
     t.check(status.is_some_and(|s| s.success()), format!("second client ended with {status:?}"));
     Ok(())
 }
+
+/// A mod key binding is listed in Controls and reaches the mod; a frame hook draws in the world
+/// and on the screen.
+pub async fn client_hooks(t: T) -> R {
+    t.flat().await?;
+    let before = crate::runner::PROBES.with(|p| p.get());
+    t.c().key("F9", 0.0);
+    t.until("probe key seen", Duration::from_secs(3), |_| crate::runner::PROBES.with(|p| p.get()) > before).await?;
+    t.c().open_screen("core:controls");
+    t.screen("core:controls").await?;
+    for _ in 0..40 {
+        if t.c().ui_rect("text:test probe").is_some() {
+            break;
+        }
+        t.c().cursor(0.5, 0.5);
+        t.c().scroll(-3.0);
+        t.frames(2).await?;
+    }
+    t.check(t.c().ui_rect("text:test probe").is_some(), "Controls does not list the mod's key");
+    t.c().close_screen();
+    t.no_screen().await?;
+    let f = t.feet();
+    let b = [f[0] as f64 + 2.0, f[1] as f64, f[2] as f64 - 4.0];
+    t.c().look(0.0, -10.0);
+    for _ in 0..3 {
+        t.c().draw_box(b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
+        t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "drawn by testkit", 0xFFFF80FF);
+        t.c().screen_text(0.5, 0.3, "screen text from a frame hook", 0x80FFFFFF);
+        t.frames(1).await?;
+    }
+    t.c().draw_box(b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
+    t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "drawn by testkit", 0xFFFF80FF);
+    t.c().screen_text(0.5, 0.3, "screen text from a frame hook", 0x80FFFFFF);
+    t.shot("drawn").await
+}

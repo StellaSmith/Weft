@@ -449,6 +449,8 @@ pub struct Runner {
 }
 
 thread_local! {
+    /// Frames the test kit's own key binding was seen pressed.
+    pub static PROBES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static RUNNER: RefCell<Option<Runner>> = const { RefCell::new(None) };
     static ACTIVE: RefCell<Option<T>> = const { RefCell::new(None) };
 }
@@ -497,6 +499,10 @@ pub fn frame(c: &Client) {
             run.current = Some((t, fut, Instant::now()));
         }
         let (t, fut, began) = run.current.as_mut().unwrap();
+        // Held, not pressed: a key the test taps itself is pressed only within its own frame.
+        if c.held("testkit:probe") {
+            PROBES.with(|p| p.set(p.get() + 1));
+        }
         {
             let st = c.state();
             let mut i = t.0.borrow_mut();

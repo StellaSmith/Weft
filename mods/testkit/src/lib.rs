@@ -22,6 +22,7 @@ static PLAN: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 fn init(r: &mut Registry) {
     server::register(r);
     r.client_packet("reply", |_, data| runner::reply(data));
+    r.key("probe", "F9");
     let (test, script) = (launch_option("test"), launch_option("script"));
     if test.is_none() && script.is_none() {
         return;

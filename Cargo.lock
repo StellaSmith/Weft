@@ -3978,6 +3978,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "testkit"
+version = "0.1.0"
+dependencies = [
+ "voxide_sdk",
+]
+
+[[package]]
 name = "testmod"
 version = "0.1.0"
 dependencies = [

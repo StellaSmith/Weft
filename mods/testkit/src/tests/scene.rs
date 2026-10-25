@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 use super::{add, at};
 use crate::runner::{self, R, T};
@@ -282,21 +282,21 @@ async fn commands(t: &T) -> R {
     Ok(())
 }
 
-/// Damage passes the base game's armour step and the test kit's final step, in stage order,
+/// Damage passes the base game's armor step and the test kit's final step, in stage order,
 /// and the result can be explained.
 async fn damage_chain(t: &T) -> R {
     let bare = t.op("damage 8 0").await?;
-    t.check((value(&bare) - 8.0).abs() < 1e-6, format!("no armour: {bare}"));
+    t.check((value(&bare) - 8.0).abs() < 1e-6, format!("no armor: {bare}"));
     // Iron chestplate: 6 points, 4% each.
     t.op("put me 37 iron_chestplate 1").await?;
-    let armoured = t.op("damage 8 0").await?;
-    t.check((value(&armoured) - 6.08).abs() < 1e-4, format!("iron chestplate: {armoured}"));
+    let armored = t.op("damage 8 0").await?;
+    t.check((value(&armored) - 6.08).abs() < 1e-4, format!("iron chestplate: {armored}"));
     let fall = t.op(&format!("damage 8 {}", abi::damage::FALL)).await?;
-    t.check((value(&fall) - 8.0).abs() < 1e-6, format!("armour does not soften falls: {fall}"));
+    t.check((value(&fall) - 8.0).abs() < 1e-6, format!("armor does not soften falls: {fall}"));
     t.cmd("/rule testkit:half_damage 1").await?;
     let both = t.op("damage 8 0").await?;
     t.cmd("/rule testkit:half_damage 0").await?;
-    t.check((value(&both) - 3.04).abs() < 1e-4, format!("armour then halved: {both}"));
+    t.check((value(&both) - 3.04).abs() < 1e-4, format!("armor then halved: {both}"));
     t.check(both.contains("base at stage 200") && both.contains("testkit at stage 300"), format!("explanation names both steps: {both}"));
     Ok(())
 }

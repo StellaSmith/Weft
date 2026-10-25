@@ -2,13 +2,13 @@
 //! ore veins are anchored to grid cells; a cube asks every nearby cell what it would place, so the
 //! result does not depend on generation order and cubes can be generated in parallel.
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 use crate::OVERWORLD;
 use crate::blocks::*;
 
-use voxide_sdk::noise::*;
-use voxide_sdk::terrain::*;
+use weft_sdk::noise::*;
+use weft_sdk::terrain::*;
 
 pub const SEA: i32 = 63;
 

@@ -119,7 +119,7 @@ impl Feature {
     }
 }
 
-/// Ready-made features. Their code is in `voxide_noise::shape`; copy one into a `Feature::new` to
+/// Ready-made features. Their code is in `weft_noise::shape`; copy one into a `Feature::new` to
 /// make a new kind.
 pub mod preset {
     use super::*;

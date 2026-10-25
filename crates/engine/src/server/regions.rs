@@ -1,5 +1,5 @@
 //! A dimension split into independently simulated regions, like Folia. A region is a connected
-//! set of loaded sections (4x4x4 cubes, 26-neighbourhood). Players far apart end up in different
+//! set of loaded sections (4x4x4 cubes, 26-neighborhood). Players far apart end up in different
 //! regions that tick in parallel; when they approach each other the regions merge, when they part
 //! the region splits. Anything built from loaded blocks (multiblocks, cables) lies in adjacent
 //! sections and therefore always inside one region, so cross-region access never happens.
@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicU64;
 
 use glam::{DVec3, IVec3};
 use rustc_hash::{FxHashMap, FxHashSet};
-use voxide_abi as abi;
+use weft_abi as abi;
 
 use super::dim::{Dim, section_of, section_of_cube};
 use crate::content::Content;
@@ -40,9 +40,9 @@ impl DimSet {
         self.regions.len() - 1
     }
 
-    /// Region owning `section`, or the neighbouring one, or a new region. Touching several regions
+    /// Region owning `section`, or the neighboring one, or a new region. Touching several regions
     /// merges them on the spot: data that is about to connect must already share a region, so
-    /// lighting and anything else reading neighbours never meets a border. Splits can wait.
+    /// lighting and anything else reading neighbors never meets a border. Splits can wait.
     fn region_for(&mut self, c: &Content, section: IVec3) -> usize {
         if let Some(&r) = self.owner.get(&section) {
             return r;

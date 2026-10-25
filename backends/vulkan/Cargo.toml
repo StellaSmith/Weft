@@ -1,11 +1,11 @@
 [package]
-name = "voxide_vulkan"
+name = "weft_vulkan"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-voxide_render.workspace = true
+weft_render.workspace = true
 ash.workspace = true
 ash-window.workspace = true
 gpu-allocator.workspace = true

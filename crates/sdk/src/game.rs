@@ -61,7 +61,7 @@ impl World {
         unsafe { (host().set_entity_size)(self.raw(), id, w, h, eye) }
     }
     /// Draws the entity as another kind (model, texture, animations); `None` as itself. It stays
-    /// the same entity with its own behaviour.
+    /// the same entity with its own behavior.
     pub fn set_look(&self, id: u64, kind: Option<&str>) {
         unsafe { (host().set_entity_look)(self.raw(), id, Str::new(kind.unwrap_or(""))) }
     }
@@ -176,7 +176,7 @@ impl World {
         let g = qualify(crate::mod_id(), group);
         unsafe { (host().gizmo_on)(self.raw(), Str::new(&g)) != 0 }
     }
-    /// A line seen by players showing `group`, colour `0xRRGGBBAA`, for `ticks`.
+    /// A line seen by players showing `group`, color `0xRRGGBBAA`, for `ticks`.
     pub fn gizmo_line(&self, group: &str, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32) {
         self.gizmo(group, abi::gizmo_kind::LINE, a, b, color, ticks, "");
     }
@@ -574,7 +574,7 @@ impl EntityBuilder<'_> {
         self
     }
     /// A moving structure built of blocks (boxes from `from` to `to`, inclusive, in its own
-    /// coordinates; block (0, 0, 0) is centred on the entity's position). Blocks are placed and
+    /// coordinates; block (0, 0, 0) is centered on the entity's position). Blocks are placed and
     /// broken on it like in the world, and it carries what stands on it; usually `.solid()`.
     pub fn blocks(mut self, boxes: &[(&str, [i32; 3], [i32; 3])]) -> Self {
         let text: Vec<String> = boxes
@@ -595,7 +595,7 @@ impl EntityBuilder<'_> {
         self.on_tick = tick_cb(f);
         self
     }
-    /// Behaviour from goals (`ai::Goals`), run every tick; replaces `on_tick`.
+    /// Behavior from goals (`ai::Goals`), run every tick; replaces `on_tick`.
     pub fn goals(self, goals: crate::ai::Goals) -> Self {
         self.on_tick(move |t| goals.tick(t))
     }
@@ -799,7 +799,7 @@ impl Registry {
         }
     }
 
-    /// Adds behaviour to an entity kind registered elsewhere (the engine's player, another mod's mob).
+    /// Adds behavior to an entity kind registered elsewhere (the engine's player, another mod's mob).
     pub fn hook_tick(&mut self, kind: &str, f: impl Fn(&EntityTick) + Send + Sync + 'static) {
         unsafe { (host().reg_entity_hook)(self.raw, Str::new(kind), abi::entity_hook::TICK, tick_cb(f)) }
     }
@@ -898,14 +898,14 @@ impl Registry {
 
     /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or `#tag`.
     /// The recipe viewer shows `item` (a machine or workstation) next to recipes of type `kind`.
-    /// A tint kind: blocks with `.tint(name)` take its colour from the biome they stand in
+    /// A tint kind: blocks with `.tint(name)` take its color from the biome they stand in
     /// (`biome_tint`), `default` (0xRRGGBB) elsewhere and on items.
     pub fn tint_kind(&mut self, name: &str, default: u32) {
         let name = qualify(self.ns, name);
         unsafe { (host().reg_tint_kind)(self.raw, Str::new(&name), default) }
     }
 
-    /// The colour of a tint kind in a biome; either may be another mod's.
+    /// The color of a tint kind in a biome; either may be another mod's.
     pub fn biome_tint(&mut self, biome: &str, kind: &str, color: u32) {
         let (biome, kind) = (qualify(self.ns, biome), qualify(self.ns, kind));
         unsafe { (host().reg_biome_tint)(self.raw, Str::new(&biome), Str::new(&kind), color) }

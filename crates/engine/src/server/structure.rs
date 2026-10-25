@@ -1,6 +1,6 @@
 //! Moving structures: blocks that move together. A structure is a small world of its own (a
 //! `Dim` in its own coordinates, `framed`) owned by an entity whose position places it: block
-//! (0, 0, 0) is centred on the entity. Whatever the world does with blocks works on it as it
+//! (0, 0, 0) is centered on the entity. Whatever the world does with blocks works on it as it
 //! is (placement, support, callbacks, loot, events); what leaves it (dropped items, sounds,
 //! particles) goes to the world it moves in, carried over by `Dim::hand_over`.
 
@@ -21,7 +21,7 @@ pub fn origin(pos: DVec3) -> DVec3 {
 pub fn template(c: &Content, kind: u32) -> Option<&'static [(IVec3, u32)]> {
     static ALL: OnceLock<Vec<Option<Vec<(IVec3, u32)>>>> = OnceLock::new();
     let all = ALL.get_or_init(|| {
-        let comp = c.components.id(voxide_abi::comp::BLOCKS);
+        let comp = c.components.id(weft_abi::comp::BLOCKS);
         (0..c.game.entities.len() as u32)
             .map(|k| {
                 let text = comp.and_then(|id| c.components.text(crate::components::ENTITY, k, id))?;

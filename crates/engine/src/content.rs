@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
-use voxide_abi::{self as abi, Callback, Layer, Model, ModId};
+use weft_abi::{self as abi, Callback, Layer, Model, ModId};
 
 use crate::components::{self as comps, Components, RawSet, RawValue, Target};
 
@@ -42,9 +42,9 @@ pub struct StateInfo {
     pub conductor: bool,
     /// Liquid id (`Content::liquids`) for liquid blocks.
     pub liquid: Option<u16>,
-    /// Face whose neighbour must hold it up, and the tag that neighbour needs (`None`: solid).
+    /// Face whose neighbor must hold it up, and the tag that neighbor needs (`None`: solid).
     pub support: Option<(u8, Option<u32>)>,
-    /// Tag a horizontal neighbour of the support needs (unless the support is the same block).
+    /// Tag a horizontal neighbor of the support needs (unless the support is the same block).
     pub support_near: Option<u32>,
     /// Sound events break, place, step, hit (`u32::MAX` none), from its `sound` component.
     pub sounds: [u32; 4],
@@ -150,7 +150,7 @@ pub struct CreativeTab {
 
 pub struct BiomeDef {
     pub name: String,
-    /// Colour (0xRRGGBB) per tint kind, by `Content::tint_kinds` index.
+    /// Color (0xRRGGBB) per tint kind, by `Content::tint_kinds` index.
     pub tints: Vec<u32>,
 }
 
@@ -261,7 +261,7 @@ pub struct Content {
     pub biomes: Vec<BiomeDef>,
     /// Word sets command parameters `word(#set)` complete from.
     pub word_sets: FxHashMap<String, Vec<String>>,
-    /// Name and default colour of each tint kind, kind 1 first.
+    /// Name and default color of each tint kind, kind 1 first.
     pub tint_kinds: Vec<(String, u32)>,
     pub dims: Vec<DimensionDef>,
     pub components: Components,
@@ -315,7 +315,7 @@ pub(crate) fn set(c: Content) {
     }
 }
 
-/// Colour (0xRRGGBB) of a tint kind on items, which have no biome: the kind's default.
+/// Color (0xRRGGBB) of a tint kind on items, which have no biome: the kind's default.
 pub fn item_tint(tint: u8) -> u32 {
     (tint as usize).checked_sub(1).and_then(|i| content().tint_kinds.get(i)).map_or(0xFFFFFF, |k| k.1)
 }
@@ -356,12 +356,12 @@ impl Content {
         self.components.get(comps::BLOCK, state, comp?)
     }
 
-    /// Whether `neighbour`, on the face the state rests on, holds it up.
-    pub fn supports(&self, state: u32, neighbour: u32) -> bool {
+    /// Whether `neighbor`, on the face the state rests on, holds it up.
+    pub fn supports(&self, state: u32, neighbor: u32) -> bool {
         match &self.states[state as usize].support {
             None => true,
-            Some((_, Some(tag))) => self.block_has(neighbour, Some(*tag)),
-            Some((_, None)) => self.states[neighbour as usize].flags & abi::block_flags::SOLID != 0,
+            Some((_, Some(tag))) => self.block_has(neighbor, Some(*tag)),
+            Some((_, None)) => self.states[neighbor as usize].flags & abi::block_flags::SOLID != 0,
         }
     }
 
@@ -423,7 +423,7 @@ pub struct RawRegistrar {
     pub biomes: Vec<(BiomeDef, usize, Vec<RawValue>)>,
     pub dims: Vec<(DimensionDef, usize, Vec<RawValue>)>,
     pub tint_kinds: Vec<(String, u32)>,
-    /// Biome, tint kind, colour.
+    /// Biome, tint kind, color.
     pub biome_tints: Vec<(String, String, u32)>,
     pub game: crate::registry::RawGame,
     pub errors: Vec<String>,
@@ -857,7 +857,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     for (b, ..) in &mut biomes {
         b.tints.extend(tint_kinds.iter().map(|k| k.1));
     }
-    // In load order: a mod's colours win over those of the mods it depends on.
+    // In load order: a mod's colors win over those of the mods it depends on.
     biome_tints.sort_by_key(|t| t.0);
     for (_, (biome, kind, color)) in biome_tints {
         match (biomes.iter_mut().find(|b| b.0.name == biome), tint_id(&kind)) {

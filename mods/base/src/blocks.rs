@@ -1,5 +1,5 @@
-use voxide_sdk::abi::block_flags as bf;
-use voxide_sdk::*;
+use weft_sdk::abi::block_flags as bf;
+use weft_sdk::*;
 
 use crate::items::{FLAMMABLE, FUEL};
 use crate::worldgen;

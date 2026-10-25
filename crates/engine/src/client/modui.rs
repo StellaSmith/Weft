@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use voxide_abi::{self as abi, Callback, ModId, Str, ui_kind as uk};
+use weft_abi::{self as abi, Callback, ModId, Str, ui_kind as uk};
 
 use super::Client;
 use crate::app::Ctx;
@@ -143,7 +143,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
         };
         let id = match n.kind {
             uk::TEXT => {
-                // Without a class the text takes the colours of the panel it sits on.
+                // Without a class the text takes the colors of the panel it sits on.
                 let node = b.ui.text(spans(n.text, n.args), if class.is_empty() { "default" } else { &class });
                 if n.bind.is_some() {
                     let cb = n.bind;

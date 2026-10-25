@@ -266,7 +266,7 @@ dependencies = [
 name = "base"
 version = "0.1.0"
 dependencies = [
- "voxide_sdk",
+ "weft_sdk",
 ]
 
 [[package]]
@@ -4307,14 +4307,14 @@ name = "testkit"
 version = "0.1.0"
 dependencies = [
  "png",
- "voxide_sdk",
+ "weft_sdk",
 ]
 
 [[package]]
 name = "testmod"
 version = "0.1.0"
 dependencies = [
- "voxide_sdk",
+ "weft_sdk",
 ]
 
 [[package]]
@@ -4767,80 +4767,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "voxide"
-version = "0.1.0"
-dependencies = [
- "log",
- "voxide_engine",
- "voxide_render",
- "voxide_vulkan",
-]
-
-[[package]]
-name = "voxide_abi"
-version = "0.1.0"
-
-[[package]]
-name = "voxide_engine"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "bytemuck",
- "crossbeam-channel",
- "glam 0.34.1",
- "iroh",
- "kira",
- "libloading 0.9.0",
- "log",
- "lz4_flex",
- "parking_lot 0.13.0",
- "png",
- "rayon",
- "rustc-hash 2.1.3",
- "serde_json",
- "tokio",
- "voxide_abi",
- "voxide_noise",
- "voxide_render",
- "winit",
- "zip",
-]
-
-[[package]]
-name = "voxide_noise"
-version = "0.1.0"
-
-[[package]]
-name = "voxide_render"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "naga",
- "raw-window-handle",
-]
-
-[[package]]
-name = "voxide_sdk"
-version = "0.1.0"
-dependencies = [
- "voxide_abi",
- "voxide_noise",
-]
-
-[[package]]
-name = "voxide_vulkan"
-version = "0.1.0"
-dependencies = [
- "ash",
- "ash-window",
- "gpu-allocator",
- "log",
- "naga",
- "raw-window-handle",
- "voxide_render",
-]
-
-[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5088,6 +5014,80 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "weft"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "weft_engine",
+ "weft_render",
+ "weft_vulkan",
+]
+
+[[package]]
+name = "weft_abi"
+version = "0.1.0"
+
+[[package]]
+name = "weft_engine"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "bytemuck",
+ "crossbeam-channel",
+ "glam 0.34.1",
+ "iroh",
+ "kira",
+ "libloading 0.9.0",
+ "log",
+ "lz4_flex",
+ "parking_lot 0.13.0",
+ "png",
+ "rayon",
+ "rustc-hash 2.1.3",
+ "serde_json",
+ "tokio",
+ "weft_abi",
+ "weft_noise",
+ "weft_render",
+ "winit",
+ "zip",
+]
+
+[[package]]
+name = "weft_noise"
+version = "0.1.0"
+
+[[package]]
+name = "weft_render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "naga",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "weft_sdk"
+version = "0.1.0"
+dependencies = [
+ "weft_abi",
+ "weft_noise",
+]
+
+[[package]]
+name = "weft_vulkan"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "ash-window",
+ "gpu-allocator",
+ "log",
+ "naga",
+ "raw-window-handle",
+ "weft_render",
 ]
 
 [[package]]

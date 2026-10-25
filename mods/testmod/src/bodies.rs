@@ -3,7 +3,7 @@
 //! planks that blocks can be added to and broken off on the way, and a crate that falls and can
 //! be stood on.
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 pub fn register(r: &mut Registry) {
     // 4 blocks up in 4 seconds, then down again.

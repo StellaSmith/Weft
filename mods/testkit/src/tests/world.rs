@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use voxide_sdk::abi::entry_kind as ek;
-use voxide_sdk::terrain::Column;
-use voxide_sdk::*;
+use weft_sdk::abi::entry_kind as ek;
+use weft_sdk::terrain::Column;
+use weft_sdk::*;
 
 use super::add;
 use super::probe;
@@ -351,9 +351,9 @@ pub async fn dimensions(t: T) -> R {
     t.c().look(225.0, -25.0);
     t.frames(20).await?;
     let grid = t.shot("debug_blocks").await?;
-    // Many different blocks in view: no colour class covers most of the floor.
+    // Many different blocks in view: no color class covers most of the floor.
     let biggest = [probe::grass, probe::dark, probe::light, probe::brown].map(|f| grid.share(0.0, 0.5, 1.0, 0.9, f)).into_iter().fold(0.0f32, f32::max);
-    t.probe("debug blocks: largest share of one colour class", biggest, biggest < 0.6);
+    t.probe("debug blocks: largest share of one color class", biggest, biggest < 0.6);
     Ok(())
 }
 

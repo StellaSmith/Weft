@@ -84,7 +84,7 @@ unsafe impl Value for Text {
 /// declare the same struct agree without depending on each other.
 ///
 /// ```ignore
-/// voxide_sdk::value! {
+/// weft_sdk::value! {
 ///     pub struct Food { pub hunger: u32, pub saturation: f32 }
 /// }
 /// ```

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use voxide_abi::{config_flags as cf, config_kind as ck};
+use weft_abi::{config_flags as cf, config_kind as ck};
 
 use crate::content::content;
 

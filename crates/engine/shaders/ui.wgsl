@@ -11,7 +11,7 @@ struct Quad {
     color: u32,
     tex: u32,
     layer: u32,
-    // 0 solid colour, 1 texture, 2 item icon, 3 font (alpha from red), 4 GUI fill shader
+    // 0 solid color, 1 texture, 2 item icon, 3 font (alpha from red), 4 GUI fill shader
     mode: u32,
     // Visible rectangle (x0, y0, x1, y1) in pixels; empty = everywhere.
     rect: vec4<f32>,
@@ -26,7 +26,7 @@ struct Screen {
 struct Glyph {
     // Added to this corner of the glyph, physical pixels.
     offset: vec2<f32>,
-    // Linear colour and alpha.
+    // Linear color and alpha.
     color: vec4<f32>,
     time: f32,
     // Number of the glyph in its text, for waves running along it.
@@ -45,7 +45,7 @@ struct GuiPixel {
     uv: vec2<f32>,
     // Panel size in physical pixels.
     size: vec2<f32>,
-    // The theme colour, linear.
+    // The theme color, linear.
     color: vec4<f32>,
     time: f32,
 }

@@ -63,8 +63,8 @@ shared! {
 
 /// A host-visible buffer per frame in flight (`slots`), holding at least `needed` elements of
 /// `stride` bytes; a slot too small is replaced by one grown to the next power of two.
-pub fn frame_buffer(gpu: &mut dyn voxide_render::Backend, slots: &mut Vec<(voxide_render::BufferId, u32)>, slot: usize, needed: u32, stride: u64, usage: u32, label: &str) -> voxide_render::BufferId {
-    use voxide_render::usage::HOST;
+pub fn frame_buffer(gpu: &mut dyn weft_render::Backend, slots: &mut Vec<(weft_render::BufferId, u32)>, slot: usize, needed: u32, stride: u64, usage: u32, label: &str) -> weft_render::BufferId {
+    use weft_render::usage::HOST;
     while slots.len() < gpu.frames_in_flight() {
         slots.push((gpu.create_buffer(stride * 1024, usage | HOST, label), 1024));
     }

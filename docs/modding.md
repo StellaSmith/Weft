@@ -1,4 +1,4 @@
-# Voxide modding cheat sheet
+# Weft modding cheat sheet
 
 ## Contents
 1. [Introduction](#introduction)
@@ -44,7 +44,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # you want to replace this path with the one to the SDK after copying this folder somewhere else
-voxide_sdk = { path = "../../crates/sdk" }
+weft_sdk = { path = "../../crates/sdk" }
 
 # only while the mod folder lies inside another cargo project (like this repository), see examples/examplemod/Cargo.toml
 [workspace]
@@ -52,7 +52,7 @@ voxide_sdk = { path = "../../crates/sdk" }
 
 ```rust
 // lib.rs
-use voxide_sdk::*;
+use weft_sdk::*;
 
 declare_mod!(id: "mymod", name: "My Mod", version: "0.1.0", deps: ["base"], init: init);
 
@@ -77,7 +77,7 @@ run/mods/mymod/
         lang/en_us.lang
 ```
 
-`voxide --pack-mod run/mods/mymod` makes a `mymod.zip` of the same thing, which is what you can send to anyone.\
+`weft --pack-mod run/mods/mymod` makes a `mymod.zip` of the same thing, which is what you can send to anyone.\
 The folder has to hold the library that's what gets packed.
 
 A word on versioning: the mod interface is checked by a hash of its source. If your mod was built
@@ -192,7 +192,7 @@ is dropped.
 - `texture`
 - `model(biped(..))` or `model_file("thing")` (Blockbench geo.json)
 - `animations(..)`
-- `goals(..)` for AI (see `voxide_sdk::ai`)
+- `goals(..)` for AI (see `weft_sdk::ai`)
 - `on_tick`, `on_hurt`, `on_death`, `on_interact`
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and

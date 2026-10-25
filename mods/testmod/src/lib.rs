@@ -1,5 +1,5 @@
 //! Proves the engine is moddable without touching the core. Everything here uses only
-//! `voxide_sdk`:
+//! `weft_sdk`:
 //! - a generator, a cable and an electric furnace talking through the engine's energy contract,
 //! - a block with its own screen (energy bar bound to synced menu data),
 //! - reads the base game's data (fuel values, smelting recipes) by name, no code dependency: it
@@ -15,9 +15,9 @@
 mod bodies;
 mod looks;
 
-use voxide_sdk::abi::slot_flags as sf;
-use voxide_sdk::terrain::*;
-use voxide_sdk::*;
+use weft_sdk::abi::slot_flags as sf;
+use weft_sdk::terrain::*;
+use weft_sdk::*;
 
 declare_mod!(id: "testmod", name: "Test Mod", version: "0.1.0", deps: ["base"], init: init);
 

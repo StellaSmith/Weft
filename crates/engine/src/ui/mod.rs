@@ -196,7 +196,7 @@ pub struct TextNode {
     pub scale: f32,
     pub color: Option<u32>,
     pub center: bool,
-    /// Theme class for the default colour.
+    /// Theme class for the default color.
     pub class: String,
 }
 

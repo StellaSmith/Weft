@@ -482,7 +482,7 @@ macro_rules! state_setters {
             });
             self
         }
-        /// Hide faces between neighbours of the same block (glass panes of a window).
+        /// Hide faces between neighbors of the same block (glass panes of a window).
         pub fn cull_same(mut self) -> Self {
             self.each(|s, _| s.flags |= bf::CULL_SAME);
             self
@@ -506,7 +506,7 @@ macro_rules! state_setters {
         pub fn needs_below(self, tag: &str) -> Self {
             self.needs(2, tag)
         }
-        /// Needs the neighbour on `face` (-X, +X, -Y, +Y, -Z, +Z) to be tagged `tag`, or solid
+        /// Needs the neighbor on `face` (-X, +X, -Y, +Y, -Z, +Z) to be tagged `tag`, or solid
         /// if `tag` is empty.
         pub fn needs(mut self, face: u32, tag: &str) -> Self {
             let tag = tag.trim_start_matches('#').to_string();
@@ -551,7 +551,7 @@ macro_rules! state_setters {
             self.each(|s, _| s.tint_name = "core:grass".into());
             self
         }
-        /// Grass colour on the top face only (the sides carry their own colour).
+        /// Grass color on the top face only (the sides carry their own color).
         pub fn tint_grass_top(mut self) -> Self {
             self.each(|s, _| {
                 s.tint_name = "core:grass".into();
@@ -563,7 +563,7 @@ macro_rules! state_setters {
             self.each(|s, _| s.tint_name = "core:foliage".into());
             self
         }
-        /// Coloured by a tint kind registered with `Registry::tint_kind` (any mod's).
+        /// Colored by a tint kind registered with `Registry::tint_kind` (any mod's).
         pub fn tint(mut self, kind: &str) -> Self {
             self.each(|s, ns| s.tint_name = qualify(ns, kind));
             self
@@ -708,7 +708,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Makes `n` states copied from the current settings, then customises each one.
+    /// Makes `n` states copied from the current settings, then customizes each one.
     pub fn states(mut self, n: u32, f: impl Fn(u32, State) -> State) -> Self {
         self.own_states = true;
         let base = self.states[0].clone();
@@ -1060,7 +1060,7 @@ impl BiomeBuilder<'_> {
         self.handle = Some(h);
         self
     }
-    /// Grass, foliage and water colours (`0xRRGGBB`).
+    /// Grass, foliage and water colors (`0xRRGGBB`).
     pub fn colors(mut self, grass: u32, foliage: u32, water: u32) -> Self {
         self.colors = Some([grass, foliage, water]);
         self
@@ -1117,7 +1117,7 @@ impl DimensionBuilder<'_> {
         self.desc.flags |= abi::dim_flags::PLAYER_SPAWN;
         self
     }
-    /// Blocks never update here (no neighbour updates, block ticks or growth).
+    /// Blocks never update here (no neighbor updates, block ticks or growth).
     pub fn no_block_updates(mut self) -> Self {
         self.desc.flags |= abi::dim_flags::NO_BLOCK_UPDATES;
         self
@@ -1357,7 +1357,7 @@ impl BlockEvent {
     pub fn state(&self) -> u32 {
         self.args.state
     }
-    /// The neighbour that changed, for `on_neighbor`.
+    /// The neighbor that changed, for `on_neighbor`.
     pub fn other(&self) -> [i32; 3] {
         self.args.other
     }
@@ -1485,7 +1485,7 @@ impl LiquidBuilder<'_> {
         self.texture = t.to_string();
         self
     }
-    /// Coloured by the biome's water colour.
+    /// Colored by the biome's water color.
     pub fn tint_water(mut self) -> Self {
         self.tint = true;
         self

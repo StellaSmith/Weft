@@ -1,5 +1,5 @@
 //! Flood-fill lighting across cubes. Four 8-bit channels in one u32: sky, then block red, green,
-//! blue. Coloured light is just three independent block channels; each block can absorb channels
+//! blue. Colored light is just three independent block channels; each block can absorb channels
 //! differently (stained glass). Sky light keeps full strength going straight down through fully
 //! transparent blocks.
 
@@ -171,7 +171,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         if self.sky { &[0, 1, 2, 3] } else { &[1, 2, 3] }
     }
 
-    /// Lights a freshly inserted cube and spreads its light into loaded neighbours.
+    /// Lights a freshly inserted cube and spreads its light into loaded neighbors.
     /// `open_above`: the cube above is unloaded but known to be open sky.
     pub fn light_new(&mut self, cp: IVec3, open_above: bool) {
         crate::diag::LIGHT_CUBES.add(1);
@@ -199,8 +199,8 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                     // Open air: the whole cube is full sky, only the borders can spread further.
                     self.map.cube_mut(cp).unwrap().fill_light(SKY_FULL as u32);
                     self.cache.set((IVec3::MAX, std::ptr::null()));
-                    // Only faces whose neighbour can still take light need seeds; missing
-                    // neighbours pull from this cube when they arrive.
+                    // Only faces whose neighbor can still take light need seeds; missing
+                    // neighbors pull from this cube when they arrive.
                     for (d, face) in [(2, 0), (0, 1), (1, 2), (4, 3), (5, 4)] {
                         if !self.accepts(cp + DIRS[d], SKY, SKY_FULL) {
                             continue;
@@ -218,7 +218,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                                         _ => IVec3::new(a, b, 15),
                                     };
                                 // Seed only where the cell across can still get brighter: a
-                                // neighbour lit earlier is usually full already.
+                                // neighbor lit earlier is usually full already.
                                 let Some((state, light)) = self.read(p + DIRS[d]) else { continue };
                                 if ch(light, SKY) < reach && self.c.states[state as usize].opacity < 15 {
                                     self.add.push_back((p, SKY_FULL));
@@ -245,16 +245,16 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                     }
                 }
             }
-            // Full sky everywhere already: neighbours cannot raise anything here.
+            // Full sky everywhere already: neighbors cannot raise anything here.
             if !full {
-                self.seed_from_neighbours(cp, SKY, &[0, 1, 2, 4, 5]);
+                self.seed_from_neighbors(cp, SKY, &[0, 1, 2, 4, 5]);
             }
             self.propagate(SKY);
         }
 
         for c in 1..4 {
             if !all_opaque {
-                self.seed_from_neighbours(cp, c, &[0, 1, 2, 3, 4, 5]);
+                self.seed_from_neighbors(cp, c, &[0, 1, 2, 3, 4, 5]);
             }
             if emits {
                 for i in 0..4096usize {
@@ -272,7 +272,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
     }
 
     /// Finishes a cube lit on its own by `prelight` (open sky above, its own emitters): pulls
-    /// light in from loaded neighbours and pushes its own out to them. The caller checked that
+    /// light in from loaded neighbors and pushes its own out to them. The caller checked that
     /// the cube above gives full sky (or is open), so the inside light needs no redo.
     pub fn light_prelit(&mut self, cp: IVec3) {
         crate::diag::LIGHT_CUBES.add(1);
@@ -289,7 +289,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
             // Sky from above is already in; from below and the sides it may still come.
             let dirs: &[usize] = if c == SKY { &[0, 1, 2, 4, 5] } else { &[0, 1, 2, 3, 4, 5] };
             if !(c == SKY && uniform.is_some_and(|l| ch(l, SKY) == SKY_FULL)) {
-                self.seed_from_neighbours(cp, c, dirs);
+                self.seed_from_neighbors(cp, c, dirs);
             }
             for d in 0..6 {
                 if c == SKY && d == 3 {
@@ -326,7 +326,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         }
     }
 
-    /// Whether cube `n` may still gain light on channel `c` from a neighbour at `level`: loaded,
+    /// Whether cube `n` may still gain light on channel `c` from a neighbor at `level`: loaded,
     /// not solid all through, and not already uniformly at that level.
     fn accepts(&self, n: IVec3, c: usize, level: u8) -> bool {
         let Some(cube) = self.map.cube(n) else { return false };
@@ -336,11 +336,11 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         !cube.palette().iter().all(|&s| self.c.states[s as usize].opacity >= 15)
     }
 
-    fn seed_from_neighbours(&mut self, cp: IVec3, c: usize, dirs: &[usize]) {
+    fn seed_from_neighbors(&mut self, cp: IVec3, c: usize, dirs: &[usize]) {
         let base = cp * 16;
         for &d in dirs {
             let Some(n) = self.map.cube(cp + DIRS[d]) else { continue };
-            // A uniformly dark neighbour has nothing to give.
+            // A uniformly dark neighbor has nothing to give.
             if n.uniform_light().is_some_and(|l| ch(l, c) <= 1) {
                 continue;
             }

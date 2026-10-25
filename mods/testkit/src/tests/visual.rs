@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 use super::{add, probe};
 use crate::runner::{R, Shot, T};
@@ -14,7 +14,7 @@ fn around(t: &T, shot: &Shot, p: [f64; 3], r: f32, f: impl FnMut([u8; 3]) -> boo
     shot.share(x - r, y - r, x + r, y + r, f)
 }
 
-/// Average colour of the box around where `p` is drawn.
+/// Average color of the box around where `p` is drawn.
 fn avg_around(t: &T, shot: &Shot, p: [f64; 3], r: f32) -> [f32; 3] {
     let Some((x, y)) = t.on_screen(p) else { return [0.0; 3] };
     shot.avg(x - r, y - r, x + r, y + r)
@@ -38,7 +38,7 @@ fn item(name: &str) -> u32 {
     find_item(name).unwrap_or(u32::MAX)
 }
 
-/// Items in the first person hand: each drawn in its own colours at the hand's place.
+/// Items in the first person hand: each drawn in its own colors at the hand's place.
 pub async fn held_items(t: T) -> R {
     t.flat().await?;
     for (i, name) in ["wood_pickaxe", "diamond_sword", "glass", "rose", "torch"].iter().enumerate() {
@@ -46,14 +46,14 @@ pub async fn held_items(t: T) -> R {
     }
     t.c().look(0.0, -10.0);
     let looks: [(&str, fn([u8; 3]) -> bool, f32); 5] = [("pickaxe", probe::brown, 0.03), ("sword", probe::cyan, 0.03), ("block", probe::light, 0.03), ("flower", probe::red, 0.02), ("torch", probe::dark, 0.03)];
-    for (i, (name, colour, min)) in looks.into_iter().enumerate() {
+    for (i, (name, color, min)) in looks.into_iter().enumerate() {
         t.c().select(i as u32);
         t.until("selected", Duration::from_secs(5), |t| t.state().selected == i as u32).await?;
         // The hand lowers and comes back up on a switch.
         t.secs(0.6).await?;
         let shot = t.shot(name).await?;
-        let v = shot.share(0.78, 0.55, 1.0, 0.95, colour);
-        t.probe(&format!("{name} colours in the hand"), v, v > min);
+        let v = shot.share(0.78, 0.55, 1.0, 0.95, color);
+        t.probe(&format!("{name} colors in the hand"), v, v > min);
     }
     Ok(())
 }
@@ -93,7 +93,7 @@ pub async fn tooltips(t: T) -> R {
 }
 
 /// Block light in the dark: a closed stone room is black until a glowstone and a red lamp light
-/// it, the floor by the lamp taking its colour.
+/// it, the floor by the lamp taking its color.
 pub async fn night_light(t: T) -> R {
     t.flat().await?;
     let f = t.feet();

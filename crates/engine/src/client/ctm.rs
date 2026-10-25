@@ -7,10 +7,10 @@
 //! method = compact       # ctm (47 tiles), compact (5), horizontal, vertical, h+v, v+h (4/4/7/7),
 //!                        # top (1), random, repeat, fixed (1)
 //! tiles = glass/0-4      # relative to this file; ranges expand, <default> is the plain texture
-//! connect = tile         # tile (default: neighbours showing this texture on that face, whatever
+//! connect = tile         # tile (default: neighbors showing this texture on that face, whatever
 //!                        # block they are), block (same block), state (same block state)
 //! faces = sides          # all, top, bottom, sides, north, south, east, west
-//! inner_seams = true     # covered neighbours do not connect
+//! inner_seams = true     # covered neighbors do not connect
 //! weights = 8 1 1        # random
 //! symmetry = opposite    # random: none, opposite (pairs opposite faces), all
 //! width = 2              # repeat
@@ -101,7 +101,7 @@ pub fn set(ctm: Ctm) {
     *CURRENT.write().unwrap() = Some(Arc::new(ctm));
 }
 
-/// MCPatcher's neighbour bits (L 1, DL 2, D 4, DR 8, R 16, UR 32, U 64, UL 128) to the 47-tile
+/// MCPatcher's neighbor bits (L 1, DL 2, D 4, DR 8, R 16, UR 32, U 64, UL 128) to the 47-tile
 /// template index.
 const CTM47: [u8; 256] = [
     0, 3, 0, 3, 12, 5, 12, 15, 0, 3, 0, 3, 12, 5, 12, 15, 1, 2, 1, 2, 4, 7, 4, 29, 1, 2, 1, 2, 13, 31, 13, 14, //
@@ -392,10 +392,10 @@ impl Ctm {
                     Connect::State => ns == s,
                     Connect::Tile => c.states[ns as usize].textures[dir] == tex,
                 };
-                // With inner seams a neighbour whose own face here is covered breaks the run.
+                // With inner seams a neighbor whose own face here is covered breaks the run.
                 same && !(rule.inner_seams && {
                     let front = n.states[at(a, b, nrm)];
-                    front != 0 && c.states[front as usize].flags & voxide_abi::block_flags::OPAQUE != 0
+                    front != 0 && c.states[front as usize].flags & weft_abi::block_flags::OPAQUE != 0
                 })
             };
             let tile = match rule.method {

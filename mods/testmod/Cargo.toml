@@ -8,4 +8,4 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-voxide_sdk.workspace = true
+weft_sdk.workspace = true

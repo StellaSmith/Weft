@@ -6,7 +6,7 @@
 
 use glam::{DVec3, IVec3, Mat4, Vec3, Vec4};
 use rustc_hash::FxHashMap;
-use voxide_render::*;
+use weft_render::*;
 
 use super::mesher::Mesh;
 use super::textures::GameTextures;
@@ -132,7 +132,7 @@ pub struct FrameParams {
 }
 
 /// One indirect draw: kind (0 faces, 1 quads), layer, page, arguments, cube origin (w: offset
-/// index), cube centre relative to the camera.
+/// index), cube center relative to the camera.
 type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4], Vec3);
 
 /// A mesh's place: the structure (entity) it belongs to, 0 for the world, and its cube.
@@ -155,7 +155,7 @@ pub struct WorldRenderer {
     /// they use (globals, origins, indirect, offsets).
     translucent: usize,
     buffers: Option<(BufferId, BufferId, BufferId, BufferId)>,
-    /// Biome table, then per block column of the loaded area its blended colours: tiles of
+    /// Biome table, then per block column of the loaded area its blended colors: tiles of
     /// 16x16 blocks addressed by column position modulo `tint_tiles`.
     biomes: BufferId,
     biome_table: Vec<u32>,
@@ -186,7 +186,7 @@ impl WorldRenderer {
 
         let (tex_info, anim, overlays) = Self::texture_info(gpu, textures);
 
-        // Tint kind colours per biome, then the blended columns (`set_tint_tiles`).
+        // Tint kind colors per biome, then the blended columns (`set_tint_tiles`).
         let biome_data: Vec<u32> = if c.biomes.is_empty() {
             c.tint_kinds.iter().map(|k| k.1).collect()
         } else {
@@ -296,7 +296,7 @@ impl WorldRenderer {
         }
     }
 
-    /// Sizes the blended colour area to `tiles` x `tiles` columns; true when it was reallocated
+    /// Sizes the blended color area to `tiles` x `tiles` columns; true when it was reallocated
     /// and every column has to be uploaded again.
     pub fn set_tint_tiles(&mut self, gpu: &mut dyn Backend, tiles: u32) -> bool {
         if tiles == self.tint_tiles {
@@ -306,7 +306,7 @@ impl WorldRenderer {
         let size = (self.biome_table.len() + (tiles * tiles) as usize * 256 * crate::content::content().tint_kinds.len()) * 4;
         self.biomes = gpu.create_buffer(size as u64, usage::STORAGE, "biomes");
         gpu.write_buffer(self.biomes, 0, bytemuck::cast_slice(&self.biome_table));
-        // Zero marks a block without blended colours yet.
+        // Zero marks a block without blended colors yet.
         gpu.write_buffer(self.biomes, self.biome_table.len() as u64 * 4, &vec![0u8; size - self.biome_table.len() * 4]);
         self.tint_tiles = tiles;
         true

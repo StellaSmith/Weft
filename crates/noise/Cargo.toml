@@ -1,5 +1,5 @@
 [package]
-name = "voxide_noise"
+name = "weft_noise"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

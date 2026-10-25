@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use voxide_render::{Shader, ShaderError};
+use weft_render::{Shader, ShaderError};
 
 use crate::app::{Ctx, Request};
 use crate::screens::{BuildCx, Screen, button, frame, label};

@@ -26,7 +26,7 @@ impl Theme {
         for (_, path) in files {
             let Ok(src) = std::fs::read_to_string(&path) else { continue };
             for (line, k, v) in crate::kv::pairs(&src) {
-                // Comments are whole lines only (colours start with `#`).
+                // Comments are whole lines only (colors start with `#`).
                 if v.contains(" #") {
                     log::warn!("{}:{line}: {k} = '{v}': a comment after a value is part of it", path.display());
                 }

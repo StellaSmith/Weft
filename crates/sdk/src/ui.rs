@@ -124,7 +124,7 @@ impl S {
         self.justify = abi::ui_justify::CENTER;
         self
     }
-    /// Children fill the cross axis (rows as wide as the column), so `spacer()`s can centre.
+    /// Children fill the cross axis (rows as wide as the column), so `spacer()`s can center.
     pub fn stretch(mut self) -> S {
         self.align = abi::ui_align::STRETCH;
         self
@@ -233,7 +233,7 @@ impl Ui {
         self.leaf(n)
     }
 
-    /// A slot showing `icon` (a GUI texture) while empty, like the armour slots.
+    /// A slot showing `icon` (a GUI texture) while empty, like the armor slots.
     pub fn slot_icon(&mut self, slot: u32, icon: &str) {
         let mut n = node(k::SLOT, S::default());
         n.slot = slot;

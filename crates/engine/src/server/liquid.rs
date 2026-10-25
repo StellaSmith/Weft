@@ -1,11 +1,11 @@
 //! Liquids flow in the engine, following modern vanilla's FlowingFluid step by step: a liquid
-//! block reacts to neighbour changes by scheduling a tick after its delay; a tick recomputes the
-//! level from the neighbours, falls if it can and otherwise spreads sideways only towards the
+//! block reacts to neighbor changes by scheduling a tick after its delay; a tick recomputes the
+//! level from the neighbors, falls if it can and otherwise spreads sideways only towards the
 //! nearest way down within `slope_find`. Mods describe liquids and reactions as data
 //! (`abi::LiquidDesc`, `abi::ReactionDesc`), nothing calls into a mod per update.
 
 use glam::{DVec3, IVec3};
-use voxide_abi::{ItemStack, block_flags as bf};
+use weft_abi::{ItemStack, block_flags as bf};
 
 use super::dim::Dim;
 use crate::content::{AIR, Content, LiquidDef};
@@ -52,7 +52,7 @@ impl Dim {
         self.get(p).is_none_or(|s| c.states[s as usize].flags & bf::SOLID != 0)
     }
 
-    /// What liquid `l` would make of `p` from its neighbours: a state, or `None` for nothing.
+    /// What liquid `l` would make of `p` from its neighbors: a state, or `None` for nothing.
     fn new_liquid(&self, c: &Content, p: IVec3, l: u16, down: IVec3) -> Option<u32> {
         let def = &c.liquids[l as usize];
         let (mut max, mut sources) = (0, 0);
@@ -201,7 +201,7 @@ impl Dim {
         }
     }
 
-    /// A neighbour of a liquid changed: react with what touches it, else flow after the delay.
+    /// A neighbor of a liquid changed: react with what touches it, else flow after the delay.
     pub(super) fn liquid_neighbor(&mut self, c: &'static Content, p: IVec3, state: u32) {
         let Some(f) = decode(c, state) else { return };
         let def = &c.liquids[f.id as usize];

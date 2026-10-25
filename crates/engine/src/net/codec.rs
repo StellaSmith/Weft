@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use glam::{DVec3, IVec3};
-use voxide_abi::ItemStack;
+use weft_abi::ItemStack;
 
 use super::{ClientTag, EntityView, Message, ServerTag, ToClient, ToServer};
 use crate::world::Cube;
@@ -501,7 +501,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
                 let spread = [r.f32()?, r.f32()?, r.f32()?];
                 let velocity = [r.f32()?, r.f32()?, r.f32()?];
                 let speed = r.f32()?;
-                list.push(voxide_abi::ParticleBurst { kind, pos, spread, velocity, speed, count: r.u32()?, block: r.u32()?, ..voxide_abi::ParticleBurst::DEFAULT });
+                list.push(weft_abi::ParticleBurst { kind, pos, spread, velocity, speed, count: r.u32()?, block: r.u32()?, ..weft_abi::ParticleBurst::DEFAULT });
             }
             ToClient::Particles(list)
         }

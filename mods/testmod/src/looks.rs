@@ -12,7 +12,7 @@
 //! - the player waves when using the rune: keyframes for the player's model in third person and
 //!   for the first person hand.
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 pub static SPARK: Particle = Particle::new();
 static WISP: Entity = Entity::new();

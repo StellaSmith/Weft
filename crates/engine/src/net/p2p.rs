@@ -15,7 +15,7 @@ use super::codec;
 use super::{ClientConn, Conn, ServerConn, ToClient, ToServer};
 use crate::settings::Settings;
 
-const ALPN: &[u8] = b"voxide/1";
+const ALPN: &[u8] = b"weft/1";
 const PROTOCOL: u32 = 1;
 const MAX_FRAME: usize = 64 << 20;
 
@@ -334,7 +334,7 @@ pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
 mod tests {
     #[test]
     fn identity_is_kept_and_never_replaced() {
-        let dir = std::env::temp_dir().join(format!("voxide-identity-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("weft-identity-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let a = super::identity(&dir).expect("a new identity");
         assert_eq!(super::identity(&dir).expect("read again").public(), a.public());

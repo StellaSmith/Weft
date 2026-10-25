@@ -283,7 +283,7 @@ pub trait Backend: Send {
     fn create_compute(&mut self, desc: &ComputeDesc) -> Result<PipelineId, Error>;
     fn destroy_pipeline(&mut self, pipeline: PipelineId);
 
-    /// `None` when the surface cannot be drawn to right now (minimised).
+    /// `None` when the surface cannot be drawn to right now (minimized).
     fn begin_frame(&mut self) -> Option<FrameInfo>;
     fn end_frame(&mut self, cmds: &CommandList);
     /// The next `end_frame` copies the surface image back to the CPU.

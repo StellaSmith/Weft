@@ -1,4 +1,4 @@
-// Colours cycle along the text.
+// Colors cycle along the text.
 fn effect(g: Glyph) -> Glyph {
     var o = g;
     if !g.shadow {

@@ -10,7 +10,7 @@ struct Box {
     uvo: vec4<f32>,
     // Tint (rgb) and hurt flash (a).
     color: vec4<f32>,
-    // skin texture, mode (0 skin, 1 block faces, 2 solid colour, 3 flames, 4 one texel, 5 filled
+    // skin texture, mode (0 skin, 1 block faces, 2 solid color, 3 flames, 4 one texel, 5 filled
     // box), face textures packed 16 bit.
     ids: vec4<u32>,
     // x: last face textures, y: light as the world stores it (all ones: full light); block
@@ -46,7 +46,7 @@ struct VOut {
     @location(4) @interpolate(flat) mode: u32,
     @location(5) dist: f32,
     @location(6) @interpolate(flat) glow: u32,
-    // Unlit, unshaded colour (linear) glowing texels take.
+    // Unlit, unshaded color (linear) glowing texels take.
     @location(7) @interpolate(flat) tint: vec3<f32>,
 }
 

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use glam::{DVec3, IVec3};
 
-use voxide_abi::ItemStack;
+use weft_abi::ItemStack;
 
 use crate::world::Cube;
 
@@ -65,7 +65,7 @@ pub type Move = (u64, DVec3, f32, f32, bool, u64);
 #[derive(Clone)]
 pub enum ToClient {
     Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },
-    /// `hidden`: faces whose neighbour the server will not send (not visible from the player);
+    /// `hidden`: faces whose neighbor the server will not send (not visible from the player);
     /// `KEEP_HIDDEN` on resends keeps what the client already knows.
     Cube { dim: u32, pos: IVec3, cube: Arc<Cube>, hidden: u8 },
     /// Cubes of a moving structure (entity `id`), in its own coordinates; `full`: all of them
@@ -115,7 +115,7 @@ pub enum ToClient {
     Packet { channel: u32, data: Vec<u8> },
     /// Components of other entities: (entity, component id, bytes).
     EntityComponents(Vec<(u64, u32, Vec<u8>)>),
-    Particles(Vec<voxide_abi::ParticleBurst>),
+    Particles(Vec<weft_abi::ParticleBurst>),
     /// The server's values of `SYNCED` settings: (config id, value).
     Configs(Vec<(u32, f64)>),
     /// Sound events: (event, position, volume, pitch or 0).

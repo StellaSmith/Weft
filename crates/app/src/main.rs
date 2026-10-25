@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use voxide_engine::Options;
-use voxide_render::{Backend, BackendDesc, Error};
+use weft_engine::Options;
+use weft_render::{Backend, BackendDesc, Error};
 
 #[global_allocator]
-static ALLOC: voxide_engine::diag::CountingAlloc = voxide_engine::diag::CountingAlloc;
+static ALLOC: weft_engine::diag::CountingAlloc = weft_engine::diag::CountingAlloc;
 
 fn vulkan(desc: &BackendDesc) -> Result<Box<dyn Backend>, Error> {
-    Ok(Box::new(voxide_vulkan::VulkanBackend::new(desc)?))
+    Ok(Box::new(weft_vulkan::VulkanBackend::new(desc)?))
 }
 
 /// Where `run` (and, in the source tree, `mods`) live: the working directory if it has either,
@@ -79,10 +79,10 @@ fn main() {
         }
     }
     opts.automated = extra.iter().any(|(k, _)| k == "script" || k == "test");
-    voxide_engine::set_launch_options(extra);
+    weft_engine::set_launch_options(extra);
     let player_mods = opts.run_dir.join("mods");
     if let Some(dir) = pack {
-        match voxide_engine::modloader::pack(&dir, &player_mods) {
+        match weft_engine::modloader::pack(&dir, &player_mods) {
             Ok(path) => println!("packed {}", path.display()),
             Err(e) => eprintln!("cannot pack {}: {e}", dir.display()),
         }
@@ -95,13 +95,13 @@ fn main() {
         }
         return;
     }
-    voxide_engine::log::init(Some(&opts.run_dir.join("logs").join("latest.log")), verbose, &log_spec);
-    voxide_engine::diag::install_crash_handler(&opts.run_dir);
+    weft_engine::log::init(Some(&opts.run_dir.join("logs").join("latest.log")), verbose, &log_spec);
+    weft_engine::diag::install_crash_handler(&opts.run_dir);
     // Release builds load the game's own mods the way players get them: each packed into one
     // file in `run/mods` (again only when it changed).
     if !cfg!(debug_assertions) && root.join("mods").is_dir() {
         for dir in subdirs(&root.join("mods")) {
-            match voxide_engine::modloader::pack_if_stale(&dir, &player_mods) {
+            match weft_engine::modloader::pack_if_stale(&dir, &player_mods) {
                 Ok((path, true)) => log::info!("packed {}", path.display()),
                 Ok(_) => {}
                 Err(e) => log::warn!("cannot pack {}: {e}", dir.display()),
@@ -111,12 +111,12 @@ fn main() {
         opts.mod_dirs.retain(|d| *d != sources);
     }
     opts.mod_dirs.push(player_mods);
-    voxide_engine::init_workers();
-    if let Err(e) = voxide_engine::run(vulkan, opts) {
+    weft_engine::init_workers();
+    if let Err(e) = weft_engine::run(vulkan, opts) {
         log::error!("{e}");
         std::process::exit(1);
     }
-    std::process::exit(voxide_engine::exit_code());
+    std::process::exit(weft_engine::exit_code());
 }
 
 fn subdirs(dir: &std::path::Path) -> Vec<PathBuf> {
@@ -137,7 +137,7 @@ fn make_dist(root: &std::path::Path, out: &std::path::Path) -> Result<(), String
         if manifest.lines().any(|l| l.replace(' ', "") == "dist=false") {
             continue;
         }
-        voxide_engine::modloader::pack(&dir, &out.join("run").join("mods"))?;
+        weft_engine::modloader::pack(&dir, &out.join("run").join("mods"))?;
     }
     Ok(())
 }

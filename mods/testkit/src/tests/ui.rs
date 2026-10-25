@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 use crate::runner::{R, T};
 
@@ -78,7 +78,7 @@ pub async fn inventory_crafting(t: T) -> R {
     t.op("put me 0 oak_log 16").await?;
     t.press("core:inventory");
     t.screen("core:menu").await?;
-    // Menu slots: 0-3 grid, 4 result, 5-8 armour, 9-35 main, 36-44 hotbar.
+    // Menu slots: 0-3 grid, 4 result, 5-8 armor, 9-35 main, 36-44 hotbar.
     let (log, planks) = (id("base:oak_log"), id("base:oak_planks"));
     t.click_ui("slot:36", 0);
     t.until("logs on the cursor", Duration::from_secs(5), |t| t.c().cursor_stack().item == log).await?;

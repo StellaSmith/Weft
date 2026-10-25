@@ -6,8 +6,8 @@
 
 use glam::Mat4;
 use rayon::prelude::*;
-use voxide_abi::comp;
-use voxide_render::*;
+use weft_abi::comp;
+use weft_render::*;
 
 use crate::assets::Assets;
 use crate::components::ENTITY;

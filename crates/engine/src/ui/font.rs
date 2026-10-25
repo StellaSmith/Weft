@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 pub const CELL: u32 = 16;
 const ATLAS_COLS: u32 = 64;
 /// Cells are spaced with an empty pixel all around: with fractional text scales a quad's edge can
-/// sample just outside its glyph, which must hit blank space and not the neighbouring glyph.
+/// sample just outside its glyph, which must hit blank space and not the neighboring glyph.
 const STRIDE: u32 = CELL + 2;
 
 fn cell_origin(cell: u32) -> (u32, u32) {

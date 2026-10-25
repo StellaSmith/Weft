@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glam::Vec2;
-use voxide_abi as abi;
-use voxide_render::{Backend, BackendDesc, Cmd, CommandList, Format, Target, TextureDesc, TextureId};
+use weft_abi as abi;
+use weft_render::{Backend, BackendDesc, Cmd, CommandList, Format, Target, TextureDesc, TextureId};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -31,7 +31,7 @@ use crate::ui::text::{self, Arg};
 use crate::ui::theme::Theme;
 use crate::ui::{Kind, Ui};
 
-pub type BackendFactory = fn(&BackendDesc) -> Result<Box<dyn Backend>, voxide_render::Error>;
+pub type BackendFactory = fn(&BackendDesc) -> Result<Box<dyn Backend>, weft_render::Error>;
 
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -242,7 +242,7 @@ impl App {
             settings.view_distance = v;
         }
         let mut attrs = Window::default_attributes()
-            .with_title("Voxide")
+            .with_title("Weft")
             .with_inner_size(winit::dpi::PhysicalSize::new(self.opts.size.0, self.opts.size.1));
         // Automated runs work in the background: no focus taken, under other windows, off the
         // desktop (still rendered at full size, so screenshots are the same).
@@ -772,7 +772,7 @@ impl Running {
                 if let Some(h) = hovered {
                     if let Kind::Custom { tag, data } = ui.nodes[h].kind {
                         let stack = if tag == crate::client::modui::TAG_CREATIVE {
-                            voxide_abi::ItemStack::new(data as u32, 1)
+                            weft_abi::ItemStack::new(data as u32, 1)
                         } else {
                             g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default()
                         };

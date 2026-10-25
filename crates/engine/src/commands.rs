@@ -12,7 +12,7 @@
 //! filters like `@e[type=zombie,distance=..10,limit=3,sort=nearest]`).
 
 use glam::DVec3;
-use voxide_abi::{Callback, ModId};
+use weft_abi::{Callback, ModId};
 
 use crate::content::Content;
 
@@ -418,13 +418,13 @@ pub fn usage_text(alts: &[Alt]) -> String {
 
 /// Command values as mods receive them; `selected` holds resolved targets per slot. The values
 /// point into `args` and `selected`.
-pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<voxide_abi::CommandValue> {
-    use voxide_abi::{Str, command_value as cv};
+pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<weft_abi::CommandValue> {
+    use weft_abi::{Str, command_value as cv};
     args.values
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            let mut out = voxide_abi::CommandValue { kind: cv::NONE, int: 0, float: 0.0, text: Str::new(""), pos: [0.0; 3], name: Str::new(&args.names[i]) };
+            let mut out = weft_abi::CommandValue { kind: cv::NONE, int: 0, float: 0.0, text: Str::new(""), pos: [0.0; 3], name: Str::new(&args.names[i]) };
             match v {
                 None => {}
                 Some(Value::Int(n)) => (out.kind, out.int, out.float) = (cv::INT, *n, *n as f64),

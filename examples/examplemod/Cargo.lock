@@ -6,16 +6,16 @@ version = 4
 name = "examplemod"
 version = "0.1.0"
 dependencies = [
- "voxide_sdk",
+ "weft_sdk",
 ]
 
 [[package]]
-name = "voxide_abi"
+name = "weft_abi"
 version = "0.1.0"
 
 [[package]]
-name = "voxide_sdk"
+name = "weft_sdk"
 version = "0.1.0"
 dependencies = [
- "voxide_abi",
+ "weft_abi",
 ]

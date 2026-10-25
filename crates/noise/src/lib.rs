@@ -138,7 +138,7 @@ impl Fields {
     }
 }
 
-/// The terrain presets (`voxide_sdk::terrain::preset`): the height each adds at a point. Each is a
+/// The terrain presets (`weft_sdk::terrain::preset`): the height each adds at a point. Each is a
 /// few lines; copy one into a `Feature::new` to make a new kind.
 pub mod shape {
     use super::*;

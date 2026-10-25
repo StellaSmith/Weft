@@ -3,7 +3,7 @@
 
 use crate::gpu_layout::ui_mode;
 use rustc_hash::FxHashMap;
-use voxide_render::*;
+use weft_render::*;
 
 use std::sync::Arc;
 
@@ -39,7 +39,7 @@ pub struct Quad {
 /// Quads of a node and its children moved by keyframes every frame: `<class>.animation =
 /// ns:name` in a theme names `animations/<name>.animation.json`, whose `open` animation plays
 /// once when the screen opens and `idle` loops after. Any bone: position in GUI pixels (y up),
-/// rotation z in degrees clockwise and scale, about the node's centre.
+/// rotation z in degrees clockwise and scale, about the node's center.
 #[derive(Clone)]
 pub struct Animated {
     pub quads: std::ops::Range<usize>,
@@ -81,7 +81,7 @@ pub fn animate(quads: &mut [Quad], list: &[Animated]) {
 /// vanilla's `.png.mcmeta` with `gui.scaling`. Themes only give a fallback for bare images.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Slicing {
-    /// Corners keep their size, edges and centre stretch; borders left, top, right, bottom in GUI
+    /// Corners keep their size, edges and center stretch; borders left, top, right, bottom in GUI
     /// pixels of an image `size` GUI pixels big.
     Nine { size: [f32; 2], border: [f32; 4] },
     Tile { size: [f32; 2] },
@@ -362,7 +362,7 @@ impl UiRenderer {
         self.quads.push(Quad { p0: [r.x, r.y], u: [r.w, 0.0], v: [0.0, r.h], uv, color, tex, mode: ui_mode::TEXTURE, ..Default::default() });
     }
 
-    /// 9-slice: corners keep their size (scaled), edges and centre stretch.
+    /// 9-slice: corners keep their size (scaled), edges and center stretch.
     pub fn nine(&mut self, r: Rect, tex: (u32, u32, u32), border: f32, scale: f32, color: u32) {
         self.nine_sliced(r, tex.0, [tex.1 as f32, tex.2 as f32], [border; 4], scale, color);
     }
@@ -422,7 +422,7 @@ impl UiRenderer {
                         } else {
                             color.map_or(default_color, |c| c << 8 | (default_color & 0xFF))
                         };
-                        // Whole physical pixels: centred text starts mid-pixel, and nearest sampling
+                        // Whole physical pixels: centered text starts mid-pixel, and nearest sampling
                         // at texel borders would drop or double glyph columns.
                         self.quads.push(Quad {
                             p0: [(x + gx * px + off).round(), (y + gy * px + off).round()],
@@ -578,7 +578,7 @@ impl UiRenderer {
         }
     }
 
-    /// Plain text centred on `cx` in one colour (`0xRRGGBBAA`) with a shadow.
+    /// Plain text centered on `cx` in one color (`0xRRGGBBAA`) with a shadow.
     pub fn label_colored(&mut self, text: &str, cx: f32, y: f32, px: f32, color: u32) {
         let layout = super::text::layout(&super::text::plain(text), &self.font, None);
         let mut icons = Vec::new();
@@ -586,7 +586,7 @@ impl UiRenderer {
         self.glyph_run(&layout.items, x, y.round(), px, color, Some(0x00000000 | (color & 0xFF) / 2), &mut icons);
     }
 
-    /// One line of text centred on `cx` with its top at `y` (physical pixels); `alpha` fades it.
+    /// One line of text centered on `cx` with its top at `y` (physical pixels); `alpha` fades it.
     pub fn label(&mut self, spans: &[super::text::Span], cx: f32, y: f32, px: f32, alpha: u32) {
         let layout = super::text::layout(spans, &self.font, None);
         let mut icons = Vec::new();
@@ -645,8 +645,8 @@ impl UiRenderer {
                 let parent_hover = parent.is_some_and(|p| ui.hovered == Some(p));
                 let parent_disabled = parent.is_some_and(|p| matches!(ui.nodes[p].kind, Kind::Button { enabled: false, .. }));
                 let state = if parent_disabled { "disabled_text" } else if parent_hover { "hover_text" } else { "text" };
-                // Generic classes inherit from the surface: `default` its text colour, `dim` its
-                // dim colour.
+                // Generic classes inherit from the surface: `default` its text color, `dim` its
+                // dim color.
                 let class = match (t.class.as_str(), surface) {
                     ("default", Some(s)) => s,
                     _ => t.class.as_str(),
@@ -674,9 +674,9 @@ impl UiRenderer {
                 let fill = theme.get(class, "fill_texture").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n));
                 let v = value.clamp(0.0, 1.0);
                 let (fr, uv) = match *dir {
-                    voxide_abi::ui_dir::UP => (Rect { y: r.y + r.h * (1.0 - v), h: r.h * v, ..r }, [0.0, 1.0 - v, 1.0, 1.0]),
-                    voxide_abi::ui_dir::LEFT => (Rect { x: r.x + r.w * (1.0 - v), w: r.w * v, ..r }, [1.0 - v, 0.0, 1.0, 1.0]),
-                    voxide_abi::ui_dir::DOWN => (Rect { h: r.h * v, ..r }, [0.0, 0.0, 1.0, v]),
+                    weft_abi::ui_dir::UP => (Rect { y: r.y + r.h * (1.0 - v), h: r.h * v, ..r }, [0.0, 1.0 - v, 1.0, 1.0]),
+                    weft_abi::ui_dir::LEFT => (Rect { x: r.x + r.w * (1.0 - v), w: r.w * v, ..r }, [1.0 - v, 0.0, 1.0, 1.0]),
+                    weft_abi::ui_dir::DOWN => (Rect { h: r.h * v, ..r }, [0.0, 0.0, 1.0, v]),
                     _ => (Rect { w: r.w * v, ..r }, [0.0, 0.0, v, 1.0]),
                 };
                 match fill {
@@ -750,7 +750,7 @@ impl UiRenderer {
                 custom(self, *tag, *data, r, hovered, icon)
             }
         }
-        // Children of a themed panel or button read text colours from it.
+        // Children of a themed panel or button read text colors from it.
         let own = match &n.kind {
             Kind::Container { class: Some(c) } | Kind::Button { class: c, .. } if theme.get(c, "text").is_some() => Some(c.as_str()),
             _ => None,
@@ -866,7 +866,7 @@ mod animation_tests {
         let mut q = [Quad { p0: [12.0, 10.0], u: [4.0, 0.0], v: [0.0, 4.0], ..Default::default() }];
         crate::shaders::pin_time(true);
         animate(&mut q, &[a]);
-        // A quarter turn clockwise about the centre, then 2 and 1 GUI pixels right and up.
+        // A quarter turn clockwise about the center, then 2 and 1 GUI pixels right and up.
         let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4;
         assert!(near(q[0].p0, [14.0, 10.0]) && near(q[0].u, [0.0, 4.0]) && near(q[0].v, [-4.0, 0.0]), "{:?} {:?} {:?}", q[0].p0, q[0].u, q[0].v);
     }

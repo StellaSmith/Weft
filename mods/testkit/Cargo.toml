@@ -8,9 +8,9 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-voxide_sdk.workspace = true
+weft_sdk.workspace = true
 png.workspace = true
 
-# Development tool: left out of `voxide --dist`.
-[package.metadata.voxide]
+# Development tool: left out of `weft --dist`.
+[package.metadata.weft]
 dist = false

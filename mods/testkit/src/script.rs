@@ -22,8 +22,8 @@
 
 use std::time::Duration;
 
-use voxide_sdk::client::client_flags as cf;
-use voxide_sdk::launch_option;
+use weft_sdk::client::client_flags as cf;
+use weft_sdk::launch_option;
 
 use crate::runner::{R, T};
 
@@ -42,13 +42,13 @@ pub async fn run(t: T, src: String) -> R {
             "wait" => t.secs(num(0, 1.0)).await?,
             "loaded" => {
                 t.loaded().await?;
-                voxide_sdk::info!("script: loaded at {:.2} s", started.elapsed().as_secs_f32());
+                weft_sdk::info!("script: loaded at {:.2} s", started.elapsed().as_secs_f32());
             }
             "idle" => {
                 t.idle().await?;
                 let s = t.state();
-                voxide_sdk::info!("script: idle at {:.2} s", started.elapsed().as_secs_f32());
-                voxide_sdk::info!(
+                weft_sdk::info!("script: idle at {:.2} s", started.elapsed().as_secs_f32());
+                weft_sdk::info!(
                     "load: {} cubes on client, generated {} ({:.0} us each on a worker), inserted {} ({:.0} us each on the server thread)",
                     s.cubes,
                     s.generated,

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use glam::{DVec3, IVec3};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use voxide_abi::{self as abi, ItemStack, block_flags as bf, damage, entity_flags as ef};
+use weft_abi::{self as abi, ItemStack, block_flags as bf, damage, entity_flags as ef};
 
 use super::entity::{Entities, Entity, step};
 use crate::components as comps;
@@ -164,7 +164,7 @@ fn hash(seed: u64, x: i64, y: i64, z: i64) -> u64 {
     h ^ (h >> 31)
 }
 
-/// Veins start in this and the 26 neighbouring cubes and wander a block per step, so the result
+/// Veins start in this and the 26 neighboring cubes and wander a block per step, so the result
 /// does not depend on which cube is generated first.
 fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32], biomes: &[u16; 256]) {
     let o = pos * 16;
@@ -459,7 +459,7 @@ impl Dim {
         c.dims[self.id as usize].daylight(time)
     }
 
-    /// Writes a block, relights, records the change for clients, queues neighbour updates and keeps
+    /// Writes a block, relights, records the change for clients, queues neighbor updates and keeps
     /// block entities in sync with their block.
     pub fn set(&mut self, c: &'static Content, p: IVec3, state: u32) -> Option<u32> {
         if !c.dims[self.id as usize].editable {
@@ -777,7 +777,7 @@ impl Dim {
         self.finish_tick(c);
     }
 
-    /// Structures tick like the world (scheduled ticks, neighbour updates, growth) at its time;
+    /// Structures tick like the world (scheduled ticks, neighbor updates, growth) at its time;
     /// what they let go of comes over here. Structures whose entity is gone go with it.
     fn tick_structures(&mut self, c: &'static Content) {
         let entities = &self.entities;
@@ -1080,7 +1080,7 @@ impl Dim {
         }
     }
 
-    /// Item entities: merge neighbours, get picked up by players.
+    /// Item entities: merge neighbors, get picked up by players.
     fn items(&mut self, c: &'static Content) {
         let players: Vec<(u64, DVec3)> =
             self.entities.list.iter().filter(|e| e.player && !e.removed && e.health > 0.0 && e.mode != crate::world::GameMode::Spectator).map(|e| (e.id, e.pos)).collect();
@@ -1141,7 +1141,7 @@ impl Dim {
         let mut budget = MAX_NEIGHBOR_UPDATES;
         while let Some((p, from)) = self.neighbor_queue.pop_front() {
             if budget == 0 {
-                log::warn!("neighbour update storm in dimension {}, dropping {} updates", self.id, self.neighbor_queue.len());
+                log::warn!("neighbor update storm in dimension {}, dropping {} updates", self.id, self.neighbor_queue.len());
                 self.neighbor_queue.clear();
                 break;
             }
@@ -1159,7 +1159,7 @@ impl Dim {
         }
     }
 
-    /// The block `state` would be held up at `p` (unloaded neighbours count as holding).
+    /// The block `state` would be held up at `p` (unloaded neighbors count as holding).
     fn supported(&self, c: &'static Content, p: IVec3, state: u32) -> bool {
         let Some((side, _)) = c.states[state as usize].support else { return true };
         let at = p + DIRS[side as usize];
@@ -1301,7 +1301,7 @@ impl Dim {
             self.growth.remove(&p);
             let Some(state) = self.get(p) else { continue };
             let Some((_, need)) = c.grows(state) else { continue };
-            // Support that went away without a neighbour noticing (water two blocks off).
+            // Support that went away without a neighbor noticing (water two blocks off).
             if !self.supported(c, p, state) {
                 self.break_off(c, p, state);
                 continue;

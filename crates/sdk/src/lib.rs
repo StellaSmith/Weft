@@ -1,12 +1,12 @@
-//! Safe Rust API for writing Voxide mods. The base game uses exactly this crate.
+//! Safe Rust API for writing Weft mods. The base game uses exactly this crate.
 
-pub use voxide_abi as abi;
+pub use weft_abi as abi;
 
 pub mod ai;
 mod cache;
 pub mod client;
 mod component;
-pub use voxide_noise as noise;
+pub use weft_noise as noise;
 pub mod terrain;
 mod command;
 mod config;
@@ -44,7 +44,7 @@ static MOD_ID: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 pub fn host() -> &'static Host {
     let p = HOST.load(Ordering::Relaxed);
-    assert!(!p.is_null(), "voxide host used before mod init");
+    assert!(!p.is_null(), "weft host used before mod init");
     unsafe { &*p }
 }
 
@@ -91,15 +91,15 @@ macro_rules! trace { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::T
 /// Declares the mod entry point.
 ///
 /// ```ignore
-/// voxide_sdk::declare_mod!(id: "mymod", name: "My Mod", version: "1.0.0", deps: ["base"], init: init);
+/// weft_sdk::declare_mod!(id: "mymod", name: "My Mod", version: "1.0.0", deps: ["base"], init: init);
 /// ```
 #[macro_export]
 macro_rules! declare_mod {
     (id: $id:literal, name: $name:literal, version: $ver:literal, deps: [$($dep:literal),* $(,)?], init: $init:path $(,)?) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn voxide_mod() -> *const $crate::abi::ModDecl {
+        pub extern "C" fn weft_mod() -> *const $crate::abi::ModDecl {
             static DEPS: &[$crate::abi::Str] = &[$($crate::abi::Str::new($dep)),*];
-            unsafe extern "C" fn __voxide_init(
+            unsafe extern "C" fn __weft_init(
                 host: *const $crate::abi::Host,
                 me: $crate::abi::ModId,
                 reg: *mut $crate::abi::Registrar,
@@ -112,7 +112,7 @@ macro_rules! declare_mod {
                 name: $crate::abi::Str::new($name),
                 version: $crate::abi::Str::new($ver),
                 deps: $crate::abi::Slice::new(DEPS),
-                init: __voxide_init,
+                init: __weft_init,
             };
             &DECL
         }

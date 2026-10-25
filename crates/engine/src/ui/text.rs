@@ -1,7 +1,7 @@
 //! Rich text. Formatting lives in the translation, not in code:
 //!
 //! - `{0}`..`{9}` insert arguments, so each language orders values its own way
-//! - `{#rrggbb}` switches colour, `{/}` goes back to the default
+//! - `{#rrggbb}` switches color, `{/}` goes back to the default
 //! - `{key:core:inventory}` shows the key the player bound to an action
 //! - `{item:base:diamond}` draws an item icon inline
 //! - `{link:target}text{/link}` makes a clickable link to another element or screen
@@ -62,7 +62,7 @@ pub struct Cond {
 #[derive(Clone, Debug, Default)]
 pub struct Span {
     pub piece: Piece,
-    /// `None` = element default colour.
+    /// `None` = element default color.
     pub color: Option<u32>,
     /// Text effect (`fx_id`), 0 for none.
     pub fx: u16,

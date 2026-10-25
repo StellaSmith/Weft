@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use glam::{DVec2, DVec3, IVec3, Vec3};
 use rustc_hash::{FxHashMap, FxHashSet};
-use voxide_abi::{ItemStack, block_flags as bf};
-use voxide_render::{Backend, CommandList, FrameInfo};
+use weft_abi::{ItemStack, block_flags as bf};
+use weft_render::{Backend, CommandList, FrameInfo};
 
 use crate::content::content;
 use crate::input::Input;
@@ -555,7 +555,7 @@ on: {on}", list.join("
                         Some(o) if (sample - o).abs() < 0.25 => self.offset_target += (sample - self.offset_target) * 0.1,
                         _ => (self.tick_offset, self.offset_target) = (Some(sample), sample),
                     }
-                    let solid = |k: u32| content().game.entities[k as usize].is(voxide_abi::entity_flags::SOLID);
+                    let solid = |k: u32| content().game.entities[k as usize].is(weft_abi::entity_flags::SOLID);
                     for &(id, pos, yaw, pitch, crouched, frame) in &list {
                         if let Some(e) = self.entities.get_mut(&id) {
                             e.crouched = crouched;
@@ -907,7 +907,7 @@ on: {on}", list.join("
                 let mut push = DVec3::ZERO;
                 for (&id, e) in &self.entities {
                     let k = &c.game.entities[e.kind as usize];
-                    if k.is(voxide_abi::entity_flags::SOLID) {
+                    if k.is(weft_abi::entity_flags::SOLID) {
                         // A falling block collides where it falls here (and is drawn).
                         let (now, delta) = match e.fall {
                             Some(_) => {
@@ -928,7 +928,7 @@ on: {on}", list.join("
                         };
                         let blocks = built.map(|s| (s as &dyn physics::Blocks, crate::server::structure_origin(now)));
                         bodies.push(physics::Body { id, aabb, delta, carry: k.carry_height as f64, crushes: false, blocks });
-                    } else if k.is(voxide_abi::entity_flags::PUSHABLE) && e.item.is_empty() && e.dying.is_none() {
+                    } else if k.is(weft_abi::entity_flags::PUSHABLE) && e.item.is_empty() && e.dying.is_none() {
                         let d = self.player.pos - e.pos;
                         let ((ehw, eh, _), (hw, h, _)) = (e.dims(), self.player.dims());
                         let reach = ehw + hw;
@@ -1107,14 +1107,14 @@ on: {on}", list.join("
         let mut frames = std::mem::take(&mut self.frames);
         frames.clear();
         let at = self.body_tick(shown);
-        frames.extend(self.entities.iter().filter(|(_, e)| c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID)).map(|(&id, e)| (id, e.pose(at))));
+        frames.extend(self.entities.iter().filter(|(_, e)| c.game.entities[e.kind as usize].is(weft_abi::entity_flags::SOLID)).map(|(&id, e)| (id, e.pose(at))));
         for e in self.entities.values_mut().filter(|e| e.pulled.is_none()) {
             let before = e.pos;
             let body = e.rel_target.and_then(|t| frames.iter().find(|f| f.0 == e.frame).map(|f| (f.1, t)));
             let mut walked = None;
             e.pos = if e.fall.is_some() {
                 e.falling_at(&self.world, c.dims[self.world.dim as usize].gravity as f64, shown)
-            } else if c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID) {
+            } else if c.game.entities[e.kind as usize].is(weft_abi::entity_flags::SOLID) {
                 e.pose(at)
             } else if let Some((at, rel_target)) = body {
                 let rel_before = e.rel;
@@ -1144,23 +1144,23 @@ on: {on}", list.join("
         let done: Vec<u64> = self.entities.iter().filter(|(_, e)| e.dying.is_some_and(|d| d >= 1.0)).map(|(&id, _)| id).collect();
         for id in done {
             let Some(e) = self.entities.remove(&id) else { continue };
-            let Some(&kind) = c.game.particle_names.get(voxide_abi::particle::POOF) else { continue };
+            let Some(&kind) = c.game.particle_names.get(weft_abi::particle::POOF) else { continue };
             let k = &c.game.entities[e.kind as usize];
             let (w, h) = (k.width * 0.5, k.height * 0.5);
             let pos = (e.pos + DVec3::Y * h as f64).to_array();
-            self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..voxide_abi::ParticleBurst::DEFAULT });
+            self.particles.spawn(&weft_abi::ParticleBurst { kind, pos, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..weft_abi::ParticleBurst::DEFAULT });
         }
         // Hitting a block chips pieces off the face being hit, one per tick like vanilla.
         self.hit_dust -= dt as f32;
         if let (Some((frame, pos, _)), Some(hit)) = (self.breaking, self.target) {
             if self.hit_dust <= 0.0 && (hit.frame, hit.block) == (frame, pos) {
                 self.hit_dust = 0.05;
-                if let Some(&kind) = c.game.particle_names.get(voxide_abi::particle::BLOCK) {
+                if let Some(&kind) = c.game.particle_names.get(weft_abi::particle::BLOCK) {
                     let normal = crate::world::DIRS[hit.face as usize].as_vec3();
                     let at = pos.as_dvec3() + self.frame_origin(frame) + DVec3::splat(0.5) + (normal * 0.55).as_dvec3();
                     let spread = (glam::Vec3::splat(0.45) * (glam::Vec3::ONE - normal.abs())).to_array();
                     let velocity = (normal * 0.6).to_array();
-                    self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..voxide_abi::ParticleBurst::DEFAULT });
+                    self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..weft_abi::ParticleBurst::DEFAULT });
                 }
             }
         }
@@ -1443,7 +1443,7 @@ on: {on}", list.join("
         content().dims[self.world.dim as usize].daylight(self.world.time)
     }
 
-    /// Fog and sky colours (linear), dimmed towards night.
+    /// Fog and sky colors (linear), dimmed towards night.
     fn sky_colors(&self) -> (Vec3, Vec3) {
         let def = &content().dims[self.world.dim as usize];
         let dim = (self.daylight().powi(2)).max(0.02);
@@ -1473,7 +1473,7 @@ on: {on}", list.join("
         // translucent blocks, cracks and gizmo fills, blended particles, and the hand.
         let frames: Vec<(u64, DVec3)> = self.entities.iter().filter(|(_, e)| e.structure.is_some()).map(|(&id, e)| (id, crate::server::structure_origin(e.pos))).collect();
         self.render.draw(gpu, list, frame, &cam, &params, &frames);
-        list.push(voxide_render::Cmd::Mark);
+        list.push(weft_render::Cmd::Mark);
         let mut late = std::mem::take(&mut self.late);
         late.clear();
         self.render.draw_translucent(&mut late);
@@ -1495,7 +1495,7 @@ on: {on}", list.join("
         list.append(&mut late);
         list.append(&mut hand_late);
         (self.late, self.hand_late) = (late, hand_late);
-        list.push(voxide_render::Cmd::Mark);
+        list.push(weft_render::Cmd::Mark);
     }
 
     pub fn fog_color(&self) -> [f32; 4] {
@@ -1574,7 +1574,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
     let (sy, cy) = (p.yaw as f64).sin_cos();
     let forward = DVec3::new(-sy, 0.0, -cy);
     let right = DVec3::new(cy, 0.0, -sy);
-    // Vanilla's moveRelative: the input vector, normalised only when longer than 1.
+    // Vanilla's moveRelative: the input vector, normalized only when longer than 1.
     let accelerate = |vel: &mut DVec3, speed: f64| {
         let len2 = fwd_in * fwd_in + side_in * side_in;
         if len2 < 1e-7 {

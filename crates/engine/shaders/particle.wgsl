@@ -13,9 +13,9 @@ struct View {
 }
 
 struct Particle {
-    // Centre relative to the camera, and edge length in blocks.
+    // Center relative to the camera, and edge length in blocks.
     pos_size: vec4<f32>,
-    // x colour 0xRRGGBBAA, y texture (16 bits) | shader slot << 24,
+    // x color 0xRRGGBBAA, y texture (16 bits) | shader slot << 24,
     // z uv rectangle as four bytes (u0 v0 u1 v1, /255), w light: sky, red, green, blue bytes
     // (0..15), all ones = unlit
     data: vec4<u32>,
@@ -24,11 +24,11 @@ struct Particle {
 }
 
 // What a particle shader (`shaders/particle/<name>.wgsl`, `fn shade(p: ParticleFrag) -> vec4<f32>`)
-// gets; it returns the colour before lighting and fog.
+// gets; it returns the color before lighting and fog.
 struct ParticleFrag {
     // 0..1 across the quad.
     uv: vec2<f32>,
-    // The texture sample and the kind's colour at this age, both linear.
+    // The texture sample and the kind's color at this age, both linear.
     albedo: vec4<f32>,
     color: vec4<f32>,
     // 0 at birth, 1 at the end of its life.

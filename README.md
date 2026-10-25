@@ -1,6 +1,6 @@
-# Voxide
+# Weft
 
-A voxel sandbox engine in Rust, built for speed and for mods. The game itself is a mod
+A voxel sandbox engine in Rust, built for speed and mods. The game itself is a mod
 like any other only using public SDK.
 
 - Native mods behind a stable C ABI (`crates/abi`), written with the safe `crates/sdk` wrapper
@@ -18,6 +18,7 @@ cargo run
 Mods are loaded from `mods/<id>/`; in development builds the library is picked up from
 `target/<profile>/`.
 
-## License
+## Development
+Before starting working on a mod, check docs folder, there are plenty of examples on different systems and basic mod setup
 
-MPL-2.0
+## License - MPL-2.0

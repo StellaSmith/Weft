@@ -2,7 +2,7 @@
 //! survives mods being added, removed or reordered.
 
 use glam::{DVec3, IVec3};
-use voxide_abi::{ItemStack, component_flags as cf};
+use weft_abi::{ItemStack, component_flags as cf};
 
 use super::entity::Entity;
 use crate::content::Content;

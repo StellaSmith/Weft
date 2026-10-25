@@ -1,11 +1,11 @@
 [package]
-name = "voxide"
+name = "weft"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-voxide_engine.workspace = true
-voxide_vulkan.workspace = true
-voxide_render.workspace = true
+weft_engine.workspace = true
+weft_vulkan.workspace = true
+weft_render.workspace = true
 log.workspace = true

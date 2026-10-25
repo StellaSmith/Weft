@@ -10,8 +10,8 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use voxide_sdk::client::{self, ClientState, client_flags as cf};
-use voxide_sdk::*;
+use weft_sdk::client::{self, ClientState, client_flags as cf};
+use weft_sdk::*;
 
 pub type R = Result<(), String>;
 pub type BoxTest = Pin<Box<dyn Future<Output = R>>>;
@@ -42,7 +42,7 @@ pub struct Inner {
 }
 
 /// Handle a test uses for everything; cheap to clone, only touched on the main thread. A
-/// scenario of a shared scene gets a copy labelled with its name (`scoped`).
+/// scenario of a shared scene gets a copy labeled with its name (`scoped`).
 #[derive(Clone)]
 pub struct T(Rc<RefCell<Inner>>, Option<Rc<str>>);
 
@@ -63,19 +63,19 @@ impl T {
         )
     }
 
-    /// The same test, its failures and notes labelled with `label`.
+    /// The same test, its failures and notes labeled with `label`.
     pub fn scoped(&self, label: &str) -> T {
         T(self.0.clone(), Some(Rc::from(label)))
     }
 
-    fn labelled(&self, m: String) -> String {
+    fn labeled(&self, m: String) -> String {
         match &self.1 {
             Some(l) => format!("{l}: {m}"),
             None => m,
         }
     }
 
-    /// Whether this scenario (or the whole test, unlabelled) has failed a check.
+    /// Whether this scenario (or the whole test, unlabeled) has failed a check.
     pub fn failed(&self) -> bool {
         let i = self.0.borrow();
         match &self.1 {
@@ -103,14 +103,14 @@ impl T {
 
     /// A failed check that does not stop the test.
     pub fn fail(&self, msg: impl Into<String>) {
-        let m = self.labelled(msg.into());
-        voxide_sdk::warn!("[{}] FAIL {m}", self.name());
+        let m = self.labeled(msg.into());
+        weft_sdk::warn!("[{}] FAIL {m}", self.name());
         self.0.borrow_mut().failures.push(m);
     }
 
     pub fn note(&self, msg: impl Into<String>) {
-        let m = self.labelled(msg.into());
-        voxide_sdk::info!("[{}] {m}", self.name());
+        let m = self.labeled(msg.into());
+        weft_sdk::info!("[{}] {m}", self.name());
         self.0.borrow_mut().notes.push(m);
     }
 
@@ -384,7 +384,7 @@ impl T {
         Ok(self.capture("grab").await?.px)
     }
 
-    /// This frame's colour at (x, y), fractions of the window size.
+    /// This frame's color at (x, y), fractions of the window size.
     pub async fn pixel(&self, x: f32, y: f32) -> Result<[u8; 3], String> {
         Ok(self.capture("pixel").await?.at(x, y))
     }
@@ -489,7 +489,7 @@ impl Shot {
         }
     }
 
-    /// Average colour of the box from (x0, y0) to (x1, y1).
+    /// Average color of the box from (x0, y0) to (x1, y1).
     pub fn avg(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> [f32; 3] {
         let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
         self.each(x0, y0, x1, y1, |c| {
@@ -517,7 +517,7 @@ pub fn lum(c: [f32; 3]) -> f32 {
     0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
 }
 
-/// Pixels whose colour differs noticeably.
+/// Pixels whose color differs noticeably.
 fn compare(a: &[u8], b: &[u8]) -> u32 {
     let n = a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(p, q)| (0..3).any(|i| (p[i] as i32 - q[i] as i32).abs() > 40)).count();
     n as u32
@@ -545,7 +545,7 @@ impl Future for All {
     }
 }
 
-/// One scenario of a scene: labelled failures, its error reported as a failure, its time noted.
+/// One scenario of a scene: labeled failures, its error reported as a failure, its time noted.
 pub fn scenario<F: Future<Output = R> + 'static>(t: &T, name: &str, f: impl FnOnce(T) -> F) -> BoxTest {
     let t = t.scoped(name);
     let fut = f(t.clone());
@@ -607,7 +607,7 @@ thread_local! {
 }
 
 pub fn start(queue: Vec<TestDef>) {
-    voxide_sdk::info!("testkit: running {} test(s): {}", queue.len(), queue.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "));
+    weft_sdk::info!("testkit: running {} test(s): {}", queue.len(), queue.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "));
     RUNNER.with(|r| *r.borrow_mut() = Some(Runner { queue, current: None, done: Vec::new(), started: Instant::now(), finished: false, warmup: 3 }));
 }
 
@@ -647,7 +647,7 @@ pub fn frame(c: &Client) {
                 return;
             }
             let def = run.queue.remove(0);
-            voxide_sdk::info!("testkit: --- {} ---", def.name);
+            weft_sdk::info!("testkit: --- {} ---", def.name);
             let t = T::new(&def.name);
             ACTIVE.with(|a| *a.borrow_mut() = Some(t.clone()));
             let fut = (def.run)(t.clone());
@@ -678,7 +678,7 @@ pub fn frame(c: &Client) {
                 lines.push(format!("ERROR {e}"));
             }
             let out = Outcome { name: i.name.clone(), ok, secs: began.elapsed().as_secs_f32(), lines };
-            voxide_sdk::info!("testkit: {} {} in {:.1} s", if out.ok { "PASS" } else { "FAIL" }, out.name, out.secs);
+            weft_sdk::info!("testkit: {} {} in {:.1} s", if out.ok { "PASS" } else { "FAIL" }, out.name, out.secs);
             drop(i);
             run.done.push(out);
             run.current = None;
@@ -711,7 +711,7 @@ fn finish(c: &Client, run: &mut Runner) {
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::fs::write(format!("{dir}/report.txt"), &report);
     for line in report.lines() {
-        voxide_sdk::info!("{line}");
+        weft_sdk::info!("{line}");
     }
     // Test worlds are throwaway.
     if launch_option("test-keep").is_none() {

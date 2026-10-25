@@ -13,7 +13,7 @@ use core::sync::atomic::AtomicU32;
 /// to load instead of reading the wrong memory.
 pub const ABI_VERSION: u64 = fnv(include_str!("lib.rs").as_bytes());
 /// Symbol every mod library exports: `extern "C" fn() -> *const ModDecl`.
-pub const ENTRY_SYMBOL: &[u8] = b"voxide_mod\0";
+pub const ENTRY_SYMBOL: &[u8] = b"weft_mod\0";
 
 const fn fnv(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -264,10 +264,10 @@ pub mod comp {
     /// tools made for blocks (swords set 1).
     pub const WEAR_PER_HIT: &str = "wear_per_hit";
     /// Entity kinds: blocks it is built of, a moving structure (`str`): `;`-separated
-    /// `<block> x y z [x2 y2 z2]` boxes in its own coordinates, block (0, 0, 0) centred on the
+    /// `<block> x y z [x2 y2 z2]` boxes in its own coordinates, block (0, 0, 0) centered on the
     /// entity's position. Players place and break blocks on it like in the world.
     pub const BLOCKS: &str = "blocks";
-    /// Tags of items worn in the armour slots, head to feet.
+    /// Tags of items worn in the armor slots, head to feet.
     pub const ARMOR: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
 }
 
@@ -285,7 +285,7 @@ pub mod tool_tier {
 pub mod block_flags {
     /// Entities collide with it.
     pub const SOLID: u32 = 1;
-    /// Full opaque cube: hides neighbour faces, blocks light, gets ambient occlusion.
+    /// Full opaque cube: hides neighbor faces, blocks light, gets ambient occlusion.
     pub const OPAQUE: u32 = 2;
     /// Placing a block into it replaces it (air, grass, water).
     pub const REPLACEABLE: u32 = 4;
@@ -337,10 +337,10 @@ defaults!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6] })
 #[derive(Clone, Copy)]
 pub struct StateDesc {
     pub flags: u32,
-    /// Emitted light per colour channel. 15 is a normal full-strength source (torch is 14); higher
+    /// Emitted light per color channel. 15 is a normal full-strength source (torch is 14); higher
     /// values are allowed and simply reach further (up to 255).
     pub light: [u8; 3],
-    /// Extra per-channel absorption on top of `opacity`, for coloured glass.
+    /// Extra per-channel absorption on top of `opacity`, for colored glass.
     pub filter: [u8; 3],
     /// How much light it absorbs per block, 0 for air/glass, 15 or more blocks it fully.
     pub opacity: u8,
@@ -359,14 +359,14 @@ pub struct StateDesc {
     pub friction: f32,
     /// Movement speed multiplier while inside (cobweb, liquids).
     pub drag: f32,
-    /// Face (-X, +X, -Y, +Y, -Z, +Z) whose neighbour holds the block up, 255 = none. Unsupported,
+    /// Face (-X, +X, -Y, +Y, -Z, +Z) whose neighbor holds the block up, 255 = none. Unsupported,
     /// it cannot be placed and breaks off (dropping itself) when the support goes.
     pub support_side: u8,
     /// Block tag the supporting block needs; empty = any solid block.
     pub support: Str,
     /// Components of this state only, on top of the block's.
     pub components: Slice<CompValue>,
-    /// Block tag one of the supporting block's four horizontal neighbours needs (sugar cane:
+    /// Block tag one of the supporting block's four horizontal neighbors needs (sugar cane:
     /// `water`), unless the support is the same block (a stack); empty = none.
     pub support_near: Str,
     /// A tint kind by name (`Host::reg_tint_kind`, or `core:grass`, `core:foliage`, `core:water`);
@@ -559,7 +559,7 @@ defaults!(DimensionDesc {
 pub mod dim_flags {
     /// Players start here (and respawn without a bed). Of several, the mod loaded last wins.
     pub const PLAYER_SPAWN: u32 = 1;
-    /// Blocks never update: no neighbour updates (support, liquids), scheduled, random or
+    /// Blocks never update: no neighbor updates (support, liquids), scheduled, random or
     /// growth ticks. For showcases like the engine's `core:debug_blocks`.
     pub const NO_BLOCK_UPDATES: u32 = 2;
 }
@@ -606,7 +606,7 @@ pub struct BlockEventArgs {
     pub world: *mut WorldCtx,
     pub pos: [i32; 3],
     pub state: u32,
-    /// Neighbour position for `on_neighbor`, otherwise unused.
+    /// Neighbor position for `on_neighbor`, otherwise unused.
     pub other: [i32; 3],
     pub entity: u64,
 }
@@ -822,14 +822,14 @@ pub struct EntityEventArgs {
     pub entity: u64,
     /// Attacker / interacting player, 0 if none.
     pub other: u64,
-    /// In/out for `on_hurt`: change it to reduce damage (armour).
+    /// In/out for `on_hurt`: change it to reduce damage (armor).
     pub amount: f32,
     pub cause: u32,
     pub handled: u32,
 }
 
 /// Damage causes. Mods add their own numbers; a cause with `BYPASSES_ARMOR` set is not
-/// reduced by armour (falling, starving, drowning, the void).
+/// reduced by armor (falling, starving, drowning, the void).
 pub mod damage {
     pub const BYPASSES_ARMOR: u32 = 1 << 31;
     pub const GENERIC: u32 = 0;
@@ -1230,7 +1230,7 @@ pub struct Host {
 
     /// During `MenuDesc::setup`: add `count` slots of `owner`'s inventory (0 = the menu's temp slots,
     /// u64::MAX = the player) starting at `start`. A non-empty `accepts` takes only items with that
-    /// tag or component (armour slots); shift-clicks fill these before plain slots.
+    /// tag or component (armor slots); shift-clicks fill these before plain slots.
     pub menu_slots: unsafe extern "C" fn(menu: *mut MenuCtx, owner: u64, start: u32, count: u32, flags: u32, accepts: Str),
     pub menu_get: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32) -> ItemStack,
     pub menu_set: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32, stack: ItemStack),
@@ -1320,7 +1320,7 @@ pub struct Host {
     pub client_ui_rect: unsafe extern "C" fn(client: *mut ClientCtx, query: Str, out: *mut [f32; 4]) -> u32,
     /// Client: draws for this frame only. `kind` 0 line, 1 box outline, 2 text at a world position,
     /// 3 text on screen at `a[0], a[1]` (fractions of the window), 4 filled box (see-through by
-    /// its alpha: range previews, blueprints); colour 0xRRGGBBAA.
+    /// its alpha: range previews, blueprints); color 0xRRGGBBAA.
     pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, text: Str),
     /// Client: sends `data` on channel `name` to the server.
     pub client_send_packet: unsafe extern "C" fn(client: *mut ClientCtx, name: Str, data: Slice<u8>),
@@ -1469,10 +1469,10 @@ pub struct Host {
     /// A sound category with its own volume setting (`<ns>:volume_<name>`); `world` != 0: heard
     /// through caves and water like block sounds (else like music and UI).
     pub reg_sound_category: unsafe extern "C" fn(reg: *mut Registrar, name: Str, world: u32),
-    /// A tint kind: blocks naming it take a colour per biome, `default` (0xRRGGBB) where the biome
+    /// A tint kind: blocks naming it take a color per biome, `default` (0xRRGGBB) where the biome
     /// sets none and on items.
     pub reg_tint_kind: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: u32),
-    /// The colour of a tint kind in a biome (any mod's of either).
+    /// The color of a tint kind in a biome (any mod's of either).
     pub reg_biome_tint: unsafe extern "C" fn(reg: *mut Registrar, biome: Str, kind: Str, color: u32),
     /// The player inventory: `slots` in all, the first `hotbar` of them the hotbar, and
     /// `worn_count` from `worn_start` equipment (never filled by pickups, shown on the model).
@@ -1593,7 +1593,7 @@ pub mod gizmo_kind {
     pub const BOX: u32 = 1;
     /// `text` at `a`.
     pub const LABEL: u32 = 2;
-    /// The box `a`..`b` filled, see-through by the colour's alpha.
+    /// The box `a`..`b` filled, see-through by the color's alpha.
     pub const FILL: u32 = 3;
 }
 
@@ -1605,7 +1605,7 @@ pub mod entity_hook {
     pub const INTERACT: u32 = 3;
 }
 
-/// Tint kinds of block faces: colour from the biome. The engine has `core:grass`,
+/// Tint kinds of block faces: color from the biome. The engine has `core:grass`,
 /// `core:foliage` and `core:water`; mods add their own with `Host::reg_tint_kind` and name them
 /// in `StateDesc::tint_name`.
 pub mod tint {
@@ -1797,7 +1797,7 @@ pub mod event {
     pub const PLAYER_JOINED: &str = "player_joined";
     /// `Pickup`.
     pub const ITEM_PICKED_UP: &str = "item_picked_up";
-    /// `Hurt`: damage was applied (after armour and every modifier).
+    /// `Hurt`: damage was applied (after armor and every modifier).
     pub const ENTITY_HURT: &str = "entity_hurt";
 }
 
@@ -2302,7 +2302,7 @@ pub mod client_op {
     /// Closes the top screen (and its menu).
     pub const CLOSE_SCREEN: u32 = 9;
     pub const RELOAD_ASSETS: u32 = 10;
-    /// Frame, GPU and server statistics over `num` seconds, logged as a `BENCH` line labelled
+    /// Frame, GPU and server statistics over `num` seconds, logged as a `BENCH` line labeled
     /// `text`; the numbers land in `ClientState::bench_*`.
     pub const BENCH: u32 = 11;
     pub const RESPAWN: u32 = 12;
@@ -2386,7 +2386,7 @@ pub mod terrain_mask {
     pub const NOT: u32 = 5;
 }
 
-/// The engine's terrain presets; `params` in the order of `voxide_noise::shape`.
+/// The engine's terrain presets; `params` in the order of `weft_noise::shape`.
 pub mod terrain_preset {
     /// `height` is a callback (`FeatureArgs`).
     pub const CUSTOM: u32 = 0;

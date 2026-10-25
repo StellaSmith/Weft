@@ -1,7 +1,7 @@
 //! Crafting and smelting recipes. Ingredients are item names (this mod's namespace by default) or
 //! `#tag` so other mods' planks and ingots work too.
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 pub static CRAFTING: RecipeKind = RecipeKind::named("base:crafting");
 pub static SMELTING: RecipeKind = RecipeKind::named("base:smelting");

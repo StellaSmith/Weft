@@ -1,4 +1,4 @@
-//! Goal-driven mob behaviour: goals in priority order, and each tick every entity runs the first
+//! Goal-driven mob behavior: goals in priority order, and each tick every entity runs the first
 //! goal that wants to act. Movement goes through the engine's navigation (`World::navigate`),
 //! so mobs walk around walls instead of into them.
 //!
@@ -8,7 +8,7 @@
 
 use crate::{EntityState, EntityTick, World};
 
-/// One behaviour: acts this tick and returns true, or returns false to let a lower one act.
+/// One behavior: acts this tick and returns true, or returns false to let a lower one act.
 pub trait Goal: Send + Sync + 'static {
     fn run(&self, w: &World, id: u64, st: &EntityState) -> bool;
 }

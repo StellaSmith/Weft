@@ -18,7 +18,7 @@ use crate::world::DIRS;
 /// Entered from nowhere: every face is an exit (the player's own cube).
 const START: u8 = 1 << 6;
 
-/// The range a fill was made for: centre cube, radius, cubes above and below.
+/// The range a fill was made for: center cube, radius, cubes above and below.
 pub type Range = (IVec3, i32, i32, i32);
 
 /// A loaded cube the fill went through: faces it was entered by (`START` too) and faces it was
@@ -36,7 +36,7 @@ pub struct Visibility {
     explored: FxHashMap<IVec3, Explored>,
     /// Exits that led out of range: (cube, face), taken once the range moves over them.
     frontier: FxHashSet<(IVec3, u8)>,
-    /// Reached but unloaded cubes: the faces they were entered through (`START` for the centre,
+    /// Reached but unloaded cubes: the faces they were entered through (`START` for the center,
     /// 0 for cubes wanted only because they are near).
     pub waiting: FxHashMap<IVec3, u8>,
 }
@@ -53,7 +53,7 @@ impl Visibility {
     }
 
     /// Follows the player's `range` (`in_range` tells what is in it; cubes within `near` of
-    /// its centre are always wanted), re-explores `edited` cubes and goes on from waiting cubes
+    /// its center are always wanted), re-explores `edited` cubes and goes on from waiting cubes
     /// that got loaded. Returns the loaded cubes the fill entered for the first time and the
     /// cubes that left the range.
     pub fn update(&mut self, dim: &mut DimSet, c: &Content, range: Range, in_range: &impl Fn(IVec3) -> bool, near: i32, edited: &[IVec3]) -> (Vec<IVec3>, Vec<IVec3>) {

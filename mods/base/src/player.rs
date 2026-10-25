@@ -1,8 +1,8 @@
-//! Survival rules on top of the engine's player: hunger, regeneration, drowning, armour, eating,
+//! Survival rules on top of the engine's player: hunger, regeneration, drowning, armor, eating,
 //! the HUD and the inventory screen with its 2x2 crafting grid.
 
-use voxide_sdk::abi::slot_flags as sf;
-use voxide_sdk::*;
+use weft_sdk::abi::slot_flags as sf;
+use weft_sdk::*;
 
 use crate::items::{ARMOR, FOOD};
 
@@ -17,7 +17,7 @@ pub static CRAFTING: Menu = Menu::new();
 
 const MAX_AIR: f32 = 300.0;
 
-/// Armour, head to feet, after the hotbar (9) and the main inventory (27).
+/// Armor, head to feet, after the hotbar (9) and the main inventory (27).
 const WORN_SLOTS: std::ops::Range<u32> = 36..40;
 
 pub fn register(r: &mut Registry) {
@@ -28,7 +28,7 @@ pub fn register(r: &mut Registry) {
         &["core:player"],
     );
     r.hook_tick("core:player", tick_players);
-    // Armour is a step of the damage chain (4% per point, like 1.7.10), and wears when the hit
+    // Armor is a step of the damage chain (4% per point, like 1.7.10), and wears when the hit
     // actually lands, a quarter of the damage per piece (at least 1) like vanilla.
     r.modify(chain::DAMAGE, stage::MULTIPLY, |m| {
         let q = *m.query();
@@ -78,7 +78,7 @@ pub fn register(r: &mut Registry) {
         ui.icons_rtl("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }))
     });
 
-    // Menu slots in the order `setup` adds them: grid, result, armour, inventory and hotbar.
+    // Menu slots in the order `setup` adds them: grid, result, armor, inventory and hotbar.
     const GRID: u32 = 0;
     const RESULT: u32 = GRID + 4;
     const WORN: u32 = RESULT + 1;

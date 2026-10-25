@@ -1,7 +1,7 @@
 //! The engine's `key = value` text files (settings, world and player files, themes, configs, GUI
 //! sidecars, animations, connected textures): one reader, so all treat comments alike. A line
-//! starting with `#` is a comment; a value is taken whole, `#` included (theme colours, text
-//! colour tags).
+//! starting with `#` is a comment; a value is taken whole, `#` included (theme colors, text
+//! color tags).
 
 /// (line number, key, value) of every `key = value` line, both trimmed.
 pub fn pairs(src: &str) -> impl Iterator<Item = (usize, &str, &str)> {

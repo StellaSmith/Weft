@@ -19,7 +19,7 @@ pub struct ClientWorld {
     pub cubes: FxHashMap<IVec3, Arc<Cube>>,
     pub time: u64,
     dirty: FxHashSet<IVec3>,
-    /// Dirty cubes whose six neighbours are all known: meshable now. Kept up to date as cubes
+    /// Dirty cubes whose six neighbors are all known: meshable now. Kept up to date as cubes
     /// come and go, so a frame never walks every dirty cube (tens of thousands while loading).
     ready: FxHashSet<IVec3>,
     versions: FxHashMap<IVec3, u32>,
@@ -28,12 +28,12 @@ pub struct ClientWorld {
     rx: Receiver<MeshResult>,
     pub removed: Vec<IVec3>,
     next_version: u32,
-    /// Per cube, faces whose neighbour the server is not going to send: meshed as solid.
+    /// Per cube, faces whose neighbor the server is not going to send: meshed as solid.
     hidden: FxHashMap<IVec3, u8>,
-    /// An opaque state standing in for hidden neighbours.
+    /// An opaque state standing in for hidden neighbors.
     filler: u32,
     columns: FxHashMap<IVec2, Column>,
-    /// Columns whose blended biome colours are out of date.
+    /// Columns whose blended biome colors are out of date.
     tints_dirty: FxHashSet<IVec2>,
     /// A moving structure's blocks: cubes that are not there are air (the server sends all of
     /// them), and the block bounds (inclusive), for collisions.
@@ -57,13 +57,13 @@ struct Column {
     cubes: u32,
 }
 
-/// Biome colours are averaged over (2 BLEND + 1)^2 blocks.
+/// Biome colors are averaged over (2 BLEND + 1)^2 blocks.
 const BLEND: i32 = 4;
-/// About 9 us each; while loading, columns get redone as neighbours arrive.
+/// About 9 us each; while loading, columns get redone as neighbors arrive.
 const TINTS_PER_FRAME: usize = 64;
 
-/// Grass, foliage and water colours of one block column, 0xFFRRGGBB.
-/// Blended colours of a column: per block (z, x), one per tint kind.
+/// Grass, foliage and water colors of one block column, 0xFFRRGGBB.
+/// Blended colors of a column: per block (z, x), one per tint kind.
 pub type ColumnTints = [u32];
 
 impl ClientWorld {
@@ -82,7 +82,7 @@ impl ClientWorld {
             removed: Vec::new(),
             next_version: 0,
             hidden: FxHashMap::default(),
-            filler: content().states.iter().position(|s| s.flags & voxide_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
+            filler: content().states.iter().position(|s| s.flags & weft_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
             columns: FxHashMap::default(),
             tints_dirty: FxHashSet::default(),
             bounded: false,
@@ -112,8 +112,8 @@ impl ClientWorld {
         self.bounds = out;
     }
 
-    /// Whether the neighbour of `p` in direction `d` is present or never coming.
-    fn neighbour_known(&self, p: IVec3, d: usize, min_y: i32, max_y: i32) -> bool {
+    /// Whether the neighbor of `p` in direction `d` is present or never coming.
+    fn neighbor_known(&self, p: IVec3, d: usize, min_y: i32, max_y: i32) -> bool {
         let n = p + crate::world::DIRS[d];
         self.bounded || self.cubes.contains_key(&n) || n.y < min_y || n.y > max_y || self.hidden.get(&p).is_some_and(|h| h & (1 << d) != 0)
     }
@@ -121,7 +121,7 @@ impl ClientWorld {
     /// Updates whether `p` is meshable now.
     fn refresh(&mut self, p: IVec3) {
         let def = &content().dims[self.dim as usize];
-        if self.dirty.contains(&p) && (0..6).all(|d| self.neighbour_known(p, d, def.min_cube_y, def.max_cube_y)) {
+        if self.dirty.contains(&p) && (0..6).all(|d| self.neighbor_known(p, d, def.min_cube_y, def.max_cube_y)) {
             self.ready.insert(p);
         } else {
             self.ready.remove(&p);
@@ -146,11 +146,11 @@ impl ClientWorld {
         self.versions.insert(pos, self.next_version);
     }
 
-    fn touch(&mut self, pos: IVec3, neighbours: bool) {
+    fn touch(&mut self, pos: IVec3, neighbors: bool) {
         self.bump(pos);
         self.dirty.insert(pos);
         self.refresh(pos);
-        if neighbours {
+        if neighbors {
             for dz in -1..=1 {
                 for dy in -1..=1 {
                     for dx in -1..=1 {
@@ -231,7 +231,7 @@ impl ClientWorld {
         self.tints_dirty.extend(self.columns.keys().copied());
     }
 
-    /// Recomputes the blended colours of columns whose biomes or neighbours changed. Only columns
+    /// Recomputes the blended colors of columns whose biomes or neighbors changed. Only columns
     /// at most `reach` from `center` are done: the GPU keeps a window of 2 reach + 1 columns, and
     /// cubes of an area the player just left would overwrite the ones around them.
     pub fn take_tints(&mut self, center: IVec2, reach: i32) -> Vec<(IVec2, Box<ColumnTints>)> {
@@ -256,7 +256,7 @@ impl ClientWorld {
         let defaults: Vec<u32> = c.tint_kinds.iter().map(|t| t.1).collect();
         let get = |c: &Column, x: i32, z: i32| c.biomes.as_ref().map_or(0, |b| b[(z * 16 + x) as usize]);
         let own = &self.columns[&col];
-        // Blocks of missing neighbour columns repeat this column's edge.
+        // Blocks of missing neighbor columns repeat this column's edge.
         let biome_at = |x: i32, z: i32| -> u16 {
             match self.columns.get(&(col + IVec2::new(x.div_euclid(16), z.div_euclid(16)))) {
                 Some(other) => get(other, x.rem_euclid(16), z.rem_euclid(16)),
@@ -342,7 +342,7 @@ impl ClientWorld {
             self.dirty.remove(&pos);
             self.ready.remove(&pos);
             let center_cube = self.cubes[&pos].clone();
-            // Air cubes never produce faces themselves; neighbours draw the faces facing them.
+            // Air cubes never produce faces themselves; neighbors draw the faces facing them.
             if center_cube.uniform_state() == Some(AIR) {
                 let _ = self.tx.send(MeshResult { pos, version: self.versions[&pos], mesh: Mesh::default() });
                 self.in_flight.insert(pos);
@@ -386,7 +386,7 @@ impl ClientWorld {
         out
     }
 
-    /// Jobs running plus dirty cubes that could be meshed now (edge cubes wait for neighbours
+    /// Jobs running plus dirty cubes that could be meshed now (edge cubes wait for neighbors
     /// that may never come and are not counted).
     pub fn pending_meshes(&self) -> usize {
         self.ready.len() + self.in_flight.len()
@@ -410,7 +410,7 @@ fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32, pos: 
             for x in -1..17i32 {
                 let cx = if x < 0 { 0 } else if x > 15 { 2 } else { 1 };
                 let Some(cube) = &around[cy * 9 + cz * 3 + cx] else {
-                    // A face neighbour that will never be sent is solid ground: no faces toward it.
+                    // A face neighbor that will never be sent is solid ground: no faces toward it.
                     let face = match (cx, cy, cz) {
                         (0, 1, 1) => Some(0),
                         (2, 1, 1) => Some(1),

@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
-use voxide_abi::{self as abi, Callback, ModId, entity_flags as ef, part_role};
+use weft_abi::{self as abi, Callback, ModId, entity_flags as ef, part_role};
 
 use crate::components::{self as comps, Components, RawSet, RawValue};
 
@@ -81,7 +81,7 @@ pub struct Part {
     pub cuboids: Vec<Cuboid>,
     pub rest: [f32; 3],
     /// Free-form triangles: model pixels (absolute, not pivot relative) and texels.
-    pub mesh: Vec<voxide_abi::MeshVertex>,
+    pub mesh: Vec<weft_abi::MeshVertex>,
 }
 
 pub struct EntityKind {
@@ -361,7 +361,7 @@ pub struct RawGame {
     pub packets: Vec<(ModId, String, u32, Callback)>,
     pub keys: Vec<(String, String)>,
     /// (block name, flow rules).
-    pub liquids: Vec<(String, voxide_abi::LiquidDesc)>,
+    pub liquids: Vec<(String, weft_abi::LiquidDesc)>,
     /// World rules: (name, default).
     pub rules: Vec<(String, i64)>,
     /// liquid, touching, source result, flowing result, falls-into result.
@@ -972,16 +972,16 @@ pub fn freeze(
 
     // Entity storage, indexed by component id like everything else.
     g.components = c.names.iter().map(|n| ComponentDef { name: n.clone(), ..Default::default() }).collect();
-    let energy = size_of::<voxide_abi::Energy>() as u32;
+    let energy = size_of::<weft_abi::Energy>() as u32;
     components.push(RawComponent {
         owner: ENGINE,
-        def: ComponentDef { name: abi::comp::ENERGY.into(), size: energy, flags: voxide_abi::component_flags::SAVE | voxide_abi::component_flags::SYNC_MENU, default: vec![0; energy as usize], runtime: true },
+        def: ComponentDef { name: abi::comp::ENERGY.into(), size: energy, flags: weft_abi::component_flags::SAVE | weft_abi::component_flags::SYNC_MENU, default: vec![0; energy as usize], runtime: true },
         schema: String::new(),
     });
     // Variable length (size 0): attribute modifiers, added on demand.
     components.push(RawComponent {
         owner: ENGINE,
-        def: ComponentDef { name: MODIFIERS.into(), size: 0, flags: voxide_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
+        def: ComponentDef { name: MODIFIERS.into(), size: 0, flags: weft_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
         schema: String::new(),
     });
     for rc in components {

@@ -64,7 +64,7 @@ struct View {
 }
 
 // What an entity shader (`fn shade(p: EntityPixel) -> vec4<f32>`) gets; it returns the lit
-// colour, alpha below 0.5 cuts the pixel out.
+// color, alpha below 0.5 cuts the pixel out.
 struct EntityPixel {
     uv: vec2<f32>,
     // Skin texel and the light on it (shading, hurt flash and glow included), linear.

@@ -1,4 +1,4 @@
-//! The base game. It is an ordinary mod: everything here goes through `voxide_sdk`, nothing in the
+//! The base game. It is an ordinary mod: everything here goes through `weft_sdk`, nothing in the
 //! engine knows about stone, water or zombies.
 
 mod blocks;
@@ -10,12 +10,12 @@ mod recipes;
 mod sounds;
 mod worldgen;
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 pub static OVERWORLD: Dimension = Dimension::new();
 pub static FLATLANDS: Dimension = Dimension::new();
 
-declare_mod!(id: "base", name: "Voxide", version: "0.1.0", deps: [], init: init);
+declare_mod!(id: "base", name: "Weft", version: "0.1.0", deps: [], init: init);
 
 fn init(r: &mut Registry) {
     // Vanilla's creative tabs; blocks and items join them with `.tab(..)`.

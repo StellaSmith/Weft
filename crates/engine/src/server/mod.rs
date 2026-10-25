@@ -27,7 +27,7 @@ use glam::{DVec3, IVec3};
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use voxide_abi::{self as abi, ItemStack, component_flags as cf, damage};
+use weft_abi::{self as abi, ItemStack, component_flags as cf, damage};
 
 pub use dim::{Dim, DimEvent, break_time};
 
@@ -71,13 +71,13 @@ pub struct Player {
     last_y: f64,
     dead: bool,
     first_sync: bool,
-    /// View (dim, centre, radius, height) whose cubes were all present at the last check, and the
+    /// View (dim, center, radius, height) whose cubes were all present at the last check, and the
     /// same plus the settled version when nothing was left to send. Lets idle ticks skip scanning
     /// the whole view volume.
     gen_done: Option<(u32, IVec3, i32, i32, u64)>,
     /// What the player can see; only these cubes (and the sky column) get loaded.
     vis: Option<visibility::Visibility>,
-    /// Settled cubes in range not sent yet (waiting for their neighbours), and the range they
+    /// Settled cubes in range not sent yet (waiting for their neighbors), and the range they
     /// were gathered for: only cubes newly settled or newly in range are looked at.
     unsent: FxHashSet<IVec3>,
     sync_range: Option<(IVec3, i32, i32, i32)>,
@@ -128,7 +128,7 @@ pub struct Shared {
     /// Loaded cubes and live entities over all dimensions, refreshed every 10 ticks.
     pub cubes: AtomicU64,
     pub entities: AtomicU64,
-    /// Where players load cubes (dim, centre, radius, up, down), for generation jobs to skip
+    /// Where players load cubes (dim, center, radius, up, down), for generation jobs to skip
     /// cubes a fast player already left behind.
     pub views: parking_lot::RwLock<Vec<(u32, IVec3, i32, i32, i32)>>,
 }
@@ -154,7 +154,7 @@ pub struct Server {
     incoming: Receiver<ServerConn>,
     /// Generated cubes waiting for insertion (lighting is budgeted per tick).
     backlog: std::collections::VecDeque<Generated>,
-    /// Cubes some player still needs, as of the last request: a cube whose upper neighbour is
+    /// Cubes some player still needs, as of the last request: a cube whose upper neighbor is
     /// among them waits for it, or it would be lit dark and relit when the sky arrives.
     wanted: FxHashSet<(u32, IVec3)>,
     storage: Option<Arc<Mutex<Storage>>>,
@@ -1323,7 +1323,7 @@ impl Server {
         }
     }
 
-    /// Centre cube, radius, cubes above and cubes below. Flying high, the view reaches down past
+    /// Center cube, radius, cubes above and cubes below. Flying high, the view reaches down past
     /// the air under the player so the ground shows; on the ground it stays shallow, since
     /// reaching deeper only loads caves.
     fn view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
@@ -1743,7 +1743,7 @@ impl Server {
                 p.sync_range = Some(range);
             }
             p.unsent.extend(settled[p.dim as usize].iter().copied().filter(|&q| in_range(q) && !p.sent.contains(&q)));
-            // Send a cube once its neighbours exist and its sky light is final.
+            // Send a cube once its neighbors exist and its sky light is final.
             let mut to_send: Vec<(i32, IVec3)> = p
                 .unsent
                 .iter()

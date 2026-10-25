@@ -1,4 +1,4 @@
-//! One log sink for the engine and mods: coloured on the terminal, mirrored into `logs/latest.log`
+//! One log sink for the engine and mods: colored on the terminal, mirrored into `logs/latest.log`
 //! (the previous logs are kept with their date), filtered per target.
 //!
 //! Filters are `target=level` items separated by commas, given with `--log` or `/log`:
@@ -113,14 +113,14 @@ struct Logger {
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
-/// Short target shown in brackets and matched by filters: `voxide_engine::server::dim` becomes
-/// `server::dim`, `voxide_vulkan` becomes `vulkan`.
+/// Short target shown in brackets and matched by filters: `weft_engine::server::dim` becomes
+/// `server::dim`, `weft_vulkan` becomes `vulkan`.
 fn short(target: &str) -> &str {
-    target.strip_prefix("voxide_engine::").or_else(|| target.strip_prefix("voxide_")).unwrap_or(target)
+    target.strip_prefix("weft_engine::").or_else(|| target.strip_prefix("weft_")).unwrap_or(target)
 }
 
 fn is_ours(target: &str) -> bool {
-    target.starts_with("voxide") || target.starts_with("mod:") || target == "vulkan" || CHANNELS.iter().any(|c| c.0 == target)
+    target.starts_with("weft") || target.starts_with("mod:") || target == "vulkan" || CHANNELS.iter().any(|c| c.0 == target)
 }
 
 /// `verbose` is `--verbose` (debug for everything of ours), `spec` the `--log` filters.
@@ -153,7 +153,7 @@ pub fn init(file: Option<&Path>, verbose: bool, spec: &str) {
 /// Changes filters at run time (`/log`): `reset` goes back to the command line ones. Returns the
 /// filters now in effect.
 pub fn set(spec: &str) -> Result<String, String> {
-    let Some(l) = LOGGER.get() else { return Err("logging is not initialised".into()) };
+    let Some(l) = LOGGER.get() else { return Err("logging is not initialized".into()) };
     {
         let mut f = l.filter.write();
         if spec.trim() == "reset" {

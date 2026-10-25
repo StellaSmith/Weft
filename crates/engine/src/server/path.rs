@@ -7,7 +7,7 @@ use std::collections::BinaryHeap;
 
 use glam::{DVec3, IVec3};
 use rustc_hash::FxHashMap;
-use voxide_abi::block_flags as bf;
+use weft_abi::block_flags as bf;
 
 use crate::content::Content;
 
@@ -84,7 +84,7 @@ pub fn find(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, from: IVec3, to:
         }
         for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
             let side = IVec3::new(dx, 0, dz);
-            // Diagonals only where both straight neighbours leave room (no corner cutting).
+            // Diagonals only where both straight neighbors leave room (no corner cutting).
             if dx != 0 && dz != 0 && !(room(p + IVec3::new(dx, 0, 0)) && room(p + IVec3::new(0, 0, dz))) {
                 continue;
             }

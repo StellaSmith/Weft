@@ -1,5 +1,5 @@
 [package]
-name = "voxide_render"
+name = "weft_render"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

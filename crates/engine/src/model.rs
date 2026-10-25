@@ -8,7 +8,7 @@
 
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use serde_json::Value;
-use voxide_abi::{MeshVertex, part_role as role};
+use weft_abi::{MeshVertex, part_role as role};
 
 use crate::registry::{Cuboid, Part};
 
@@ -146,7 +146,7 @@ fn poly_mesh(pm: &Value, tex: [f32; 2]) -> Vec<MeshVertex> {
                 let p = *positions.get(num(c.first()?) as usize)?;
                 let mut uv = c.get(2).and_then(|i| uvs.get(num(i) as usize)).copied().unwrap_or([0.0; 2]);
                 if normalized {
-                    // Normalised uvs count from the bottom of the texture.
+                    // Normalized uvs count from the bottom of the texture.
                     uv = [uv[0] * tex[0], (1.0 - uv[1]) * tex[1]];
                 }
                 Some(MeshVertex { pos: p, uv })

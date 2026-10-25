@@ -1,13 +1,13 @@
 [package]
-name = "voxide_engine"
+name = "weft_engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-voxide_abi.workspace = true
-voxide_noise.workspace = true
-voxide_render.workspace = true
+weft_abi.workspace = true
+weft_noise.workspace = true
+weft_render.workspace = true
 winit.workspace = true
 glam.workspace = true
 bytemuck.workspace = true

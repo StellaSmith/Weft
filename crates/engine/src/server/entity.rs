@@ -4,7 +4,7 @@
 use rayon::prelude::*;
 use glam::{DVec3, IVec3};
 use rustc_hash::{FxHashMap, FxHashSet};
-use voxide_abi::{ItemStack, entity_flags as ef};
+use weft_abi::{ItemStack, entity_flags as ef};
 
 use crate::content::Content;
 use crate::physics;
@@ -118,9 +118,9 @@ impl Entity {
         self.pos + DVec3::Y * (self.eye(c) - 0.3)
     }
 
-    pub fn state(&self, c: &Content, max_health: f32) -> voxide_abi::EntityState {
+    pub fn state(&self, c: &Content, max_health: f32) -> weft_abi::EntityState {
         let k = &c.game.entities[self.kind as usize];
-        voxide_abi::EntityState {
+        weft_abi::EntityState {
             kind: self.kind,
             flags: k.flags | if self.blocked { ef::BLOCKED } else { 0 },
             pos: self.pos.to_array(),
@@ -352,7 +352,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
     }
     let feet = e.pos.floor().as_ivec3();
     let flags_at = |p: IVec3| block(p).map_or(0, |s| c.states[s as usize].flags);
-    e.in_liquid = flags_at(feet) & voxide_abi::block_flags::LIQUID != 0;
+    e.in_liquid = flags_at(feet) & weft_abi::block_flags::LIQUID != 0;
     // After riding: falls and walking are measured relative to the body.
     let start = e.pos;
 
@@ -420,7 +420,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
 }
 
 /// Soft bodies (`PUSHABLE`) overlapping each other drift apart like vanilla mobs: a push of up
-/// to 1 block/s per neighbour. `pushers` may push without being pushed (players move on their
+/// to 1 block/s per neighbor. `pushers` may push without being pushed (players move on their
 /// clients). Returns the velocity change per entity.
 /// Vanilla's `maxEntityCramming`.
 const MAX_CRAMMING: u32 = 24;

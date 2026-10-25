@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use log::Level;
-use voxide_abi::ModId;
+use weft_abi::ModId;
 
 use crate::log::{Channel, on};
 
@@ -428,7 +428,7 @@ fn write_report(what: &str) {
     let Some(dir) = CRASH_DIR.get() else { return };
     let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
     let mut r = String::new();
-    r.push_str(&format!("Voxide {} crash report, {}\n\n", env!("CARGO_PKG_VERSION"), crate::log::now_stamp()));
+    r.push_str(&format!("Weft {} crash report, {}\n\n", env!("CARGO_PKG_VERSION"), crate::log::now_stamp()));
     r.push_str(&format!("What:   {what}\nThread: {thread}\n"));
     match current_mod() {
         Some(m) => r.push_str(&format!("Mod:    {m} (its code was running when this happened)\n")),

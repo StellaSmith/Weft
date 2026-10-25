@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
-use voxide_abi::{self as abi, Callback, ModId, TerrainColumn, rule_field as rf, terrain_op as op};
-use voxide_noise::*;
+use weft_abi::{self as abi, Callback, ModId, TerrainColumn, rule_field as rf, terrain_op as op};
+use weft_noise::*;
 
 use crate::host;
 
@@ -550,7 +550,7 @@ impl Terrain {
         if oy > max_h.max(sea) + 16 {
             return cols;
         }
-        // Decided per block from its column alone, so neighbouring cubes agree: tunnels may open
+        // Decided per block from its column alone, so neighboring cubes agree: tunnels may open
         // onto the surface, caverns close up under it except where `cavern_roof` lets them out.
         let cave = match &self.caves {
             Some(_) if oy <= max_h => Some(cave_fields(seed, ox, oy, oz)),

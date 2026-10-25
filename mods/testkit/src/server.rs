@@ -4,8 +4,8 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use voxide_sdk::abi::entry_kind as ek;
-use voxide_sdk::*;
+use weft_sdk::abi::entry_kind as ek;
+use weft_sdk::*;
 
 /// How many of each event arrived since `events reset`, in `EVENT_NAMES` order.
 static COUNTS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];

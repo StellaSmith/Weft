@@ -303,9 +303,9 @@ pub fn texture_stamp(assets: &Assets, name: &str) -> u64 {
     h
 }
 
-/// Full size first, halved down to 1x1. Transparent texels take the colour of the opaque ones
+/// Full size first, halved down to 1x1. Transparent texels take the color of the opaque ones
 /// next to them first: filtering at cutout edges (tall grass, leaves, overlays) then blends
-/// towards the right colour instead of black, which drew dark seams.
+/// towards the right color instead of black, which drew dark seams.
 fn mip_chain(mut rgba: Vec<u8>, size: u32) -> Vec<Vec<u8>> {
     let mut out = Vec::with_capacity(size.trailing_zeros() as usize + 1);
     let mut s = size;
@@ -320,7 +320,7 @@ fn mip_chain(mut rgba: Vec<u8>, size: u32) -> Vec<Vec<u8>> {
     }
 }
 
-/// Gives fully transparent texels the average colour of their non-transparent neighbours, a few
+/// Gives fully transparent texels the average color of their non-transparent neighbors, a few
 /// rings deep (alpha stays 0).
 fn bleed(rgba: &mut [u8], size: u32) {
     let n = size as usize;

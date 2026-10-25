@@ -1,4 +1,4 @@
-use voxide_sdk::*;
+use weft_sdk::*;
 
 pub static STICK: Item = Item::new();
 pub static COAL: Item = Item::new();

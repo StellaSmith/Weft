@@ -25,7 +25,7 @@ impl World {
         unsafe { (host().set_block)(self.raw, &pos, state) != 0 }
     }
 
-    /// A block of moving structure `entity` (in its own coordinates; block (0, 0, 0) is centred
+    /// A block of moving structure `entity` (in its own coordinates; block (0, 0, 0) is centered
     /// on the entity); `None` if the entity is not one.
     pub fn structure_block(&self, entity: u64, pos: [i32; 3]) -> Option<u32> {
         let s = unsafe { (host().structure_block)(self.raw, entity, &pos) };

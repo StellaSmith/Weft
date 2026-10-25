@@ -4,8 +4,8 @@
 
 use glam::{DVec3, IVec3, Vec3};
 use rayon::prelude::*;
-use voxide_abi::{ParticleBurst, particle_flags as pf};
-use voxide_render::*;
+use weft_abi::{ParticleBurst, particle_flags as pf};
+use weft_render::*;
 
 use super::textures::GameTextures;
 use super::world::ClientWorld;
@@ -150,7 +150,7 @@ impl Particles {
         }
         // Block dust shows the block's side texture (a box model's first box's).
         let side = |s: &crate::content::StateInfo| match s.boxes.first() {
-            Some(b) if s.model == voxide_abi::Model::Boxes => b.textures[1],
+            Some(b) if s.model == weft_abi::Model::Boxes => b.textures[1],
             _ => s.textures[1],
         };
         let layer = if k.frames.is_empty() { c.states.get(b.block as usize).map_or(0, side) } else { 0 };
@@ -200,7 +200,7 @@ impl Particles {
             p.vel *= keep[p.kind as usize];
             let delta = (p.vel * dt).as_dvec3();
             if k.flags & pf::COLLIDE != 0 {
-                // Vanilla's particles collide as a 0.2 block box around their centre.
+                // Vanilla's particles collide as a 0.2 block box around their center.
                 let r = crate::physics::move_box(c, &block, p.pos - DVec3::Y * 0.1, 0.1, 0.2, delta, 0.0);
                 p.pos = r.pos + DVec3::Y * 0.1;
                 for i in 0..3 {

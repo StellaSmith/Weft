@@ -154,7 +154,7 @@ impl Screen for Title {
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         ui.root_style(Style::default().stretch());
         ui.panel("background", Style::default().grow().center().gap(6.0), |ui| {
-            let logo = ui.text(text::plain("VOXIDE"), "title");
+            let logo = ui.text(text::plain("WEFT"), "title");
             if let Some(t) = ui.text_mut(logo) {
                 t.scale = 5.0;
                 t.wrap = false;
@@ -317,7 +317,7 @@ impl Screen for ConfigScreen {
     }
 
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
-        use voxide_abi::config_kind as ck;
+        use weft_abi::config_kind as ck;
         let c = crate::content::content();
         let ns = self.ns.clone();
         let title = self.title.clone().unwrap_or_else(|| "settings.mods.title".into());
@@ -381,7 +381,7 @@ impl Screen for ConfigScreen {
                     };
                     let tip = format!("{key}.tooltip");
                     let mut spans = if cx.lang.has(&tip) { cx.t(&tip, &[]) } else { Vec::new() };
-                    for (on, note) in [(locked, "settings.config_synced"), (d.flags & voxide_abi::config_flags::RESTART != 0, "settings.config_restart")] {
+                    for (on, note) in [(locked, "settings.config_synced"), (d.flags & weft_abi::config_flags::RESTART != 0, "settings.config_restart")] {
                         if on {
                             if !spans.is_empty() {
                                 spans.push(Span::text("\n", None));

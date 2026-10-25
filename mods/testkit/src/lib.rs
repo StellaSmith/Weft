@@ -1,10 +1,10 @@
 //! Automated tests and scripted runs, written on the public client and server mod API.
 //!
-//! `voxide --test all` runs every test (`--test furnace,armor` some, `--test list` names them,
+//! `weft --test all` runs every test (`--test furnace,armor` some, `--test list` names them,
 //! `--test bench` the benchmarks), each in a fresh throwaway world, then writes
 //! `run/test-reports/report.txt` and exits with the number of failed tests. Screenshots of the
 //! run go to `run/test-shots/` for looking at; checks never compare pictures with references.
-//! `--test-keep` keeps the test worlds. `voxide --world w --script file.txt` runs a line script (see `script.rs`).
+//! `--test-keep` keeps the test worlds. `weft --world w --script file.txt` runs a line script (see `script.rs`).
 //! Without those options the mod only registers its message channels.
 
 mod runner;
@@ -14,7 +14,7 @@ mod tests;
 
 use std::sync::OnceLock;
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 declare_mod!(id: "testkit", name: "Test Kit", version: "0.1.0", deps: [], init: init);
 

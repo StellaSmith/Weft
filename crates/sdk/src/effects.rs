@@ -78,7 +78,7 @@ impl ParticleBuilder<'_> {
         self.desc.flags |= pf::SHRINK;
         self
     }
-    /// Colours it with `shaders/particle/<name>.wgsl` (`fn shade(p: ParticleFrag) -> vec4<f32>`).
+    /// Colors it with `shaders/particle/<name>.wgsl` (`fn shade(p: ParticleFrag) -> vec4<f32>`).
     pub fn shader(mut self, name: &str) -> Self {
         self.shader = qualify(self.ns, name);
         self

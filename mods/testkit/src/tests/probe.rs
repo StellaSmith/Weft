@@ -1,5 +1,5 @@
-//! Colour classes for pixel probes. Generous on purpose: they tell one material from another
-//! (grass, sky, water, lava, a texture's main colour), not shades.
+//! Color classes for pixel probes. Generous on purpose: they tell one material from another
+//! (grass, sky, water, lava, a texture's main color), not shades.
 
 pub type C = [u8; 3];
 
@@ -53,7 +53,7 @@ pub fn grass(c: C) -> bool {
     g > r + 10 && g > b + 25 && (70..200).contains(&g)
 }
 
-/// Bright and nearly grey or white (glass, snow, skin highlights not included).
+/// Bright and nearly gray or white (glass, snow, skin highlights not included).
 pub fn light(c: C) -> bool {
     c.iter().all(|&v| v > 170)
 }

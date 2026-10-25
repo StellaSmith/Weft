@@ -1,7 +1,7 @@
 //! Furnace and chest: blocks with an entity holding their inventory and state.
 
-use voxide_sdk::abi::slot_flags as sf;
-use voxide_sdk::*;
+use weft_sdk::abi::slot_flags as sf;
+use weft_sdk::*;
 
 use crate::blocks::{CHEST, FURNACE};
 use crate::items::FUEL;

@@ -6,7 +6,7 @@ struct Globals {
     fog_color: vec4<f32>,
     // x daylight 0..1, y fog start, z fog end, w time in seconds
     params: vec4<f32>,
-    // y ambient light 0..15, z biome count, w blended colour tiles
+    // y ambient light 0..15, z biome count, w blended color tiles
     ids: vec4<u32>,
     // x brightness setting 0 (moody) .. 1 (bright)
     look: vec4<f32>,
@@ -20,7 +20,7 @@ struct Globals {
 @group(1) @binding(0) var<storage, read> g: Globals;
 @group(1) @binding(1) var<storage, read> origins: array<vec4<i32>>;
 @group(1) @binding(2) var<storage, read> records: array<u32>;
-// Per biome a colour per tint kind (`g.extra.z` kinds), 0xRRGGBB. Then the blended colours of
+// Per biome a color per tint kind (`g.extra.z` kinds), 0xRRGGBB. Then the blended colors of
 // loaded block columns, 0xFFRRGGBB, in 16x16 tiles addressed by column position modulo g.ids.w.
 @group(1) @binding(3) var<storage, read> biomes: array<u32>;
 // Two words per texture name, see `GameTextures::world_tables`.
@@ -47,7 +47,7 @@ struct VOut {
     @location(5) @interpolate(flat) layer2: u32,
     @location(6) @interpolate(flat) blend: f32,
     // Overlay texture + 1 (0: none) and the tint it takes; without an overlay the tint is also
-    // in `color` (`tint` then only colours emission).
+    // in `color` (`tint` then only colors emission).
     @location(7) @interpolate(flat) overlay: u32,
     @location(8) tint: vec3<f32>,
     // Glow mask texture (LabPBR emission), all ones: none.
@@ -74,7 +74,7 @@ fn column_tint(x: i32, z: i32, tint: u32) -> u32 {
 }
 
 // Tint at a block corner: average of the four columns touching it, falling back to the face's
-// own biome where colours are not uploaded yet.
+// own biome where colors are not uploaded yet.
 fn tint_color(tint: u32, biome: u32, x: i32, z: i32) -> vec3<f32> {
     if tint == 0u {
         return vec3(1.0);
@@ -237,7 +237,7 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
     var light = in.color * lightmap(in.light, g.params.x, f32(g.ids.y) / 15.0, g.look.x);
     // Glowing texels are lifted towards full brightness by their mask: lit = albedo * max(light,
-    // emission), so they stay their own (tinted, unshaded) colour in the dark.
+    // emission), so they stay their own (tinted, unshaded) color in the dark.
     if in.glow != 0xffffffffu {
         let e = textureSampleLevel(textures[in.glow], nearest_clamp, in.uv, 0.0).r;
         light = max(light, select(in.tint, vec3(1.0), in.overlay != 0u) * e);
@@ -251,7 +251,7 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
 }
 
 // Nearest texels with antialiased borders (vanilla 26.1's sampleNearest): up close each texel
-// keeps its colour but its edge blends over one screen pixel, so blocks look clean, not jagged.
+// keeps its color but its edge blends over one screen pixel, so blocks look clean, not jagged.
 fn nearest_uv(tex: u32, uv: vec2<f32>, du: vec2<f32>, dv: vec2<f32>) -> vec2<f32> {
     let size = vec2<f32>(textureDimensions(textures[tex]).xy);
     let per_pixel = sqrt(du * du + dv * dv) * size;

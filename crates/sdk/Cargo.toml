@@ -1,9 +1,9 @@
 [package]
-name = "voxide_sdk"
+name = "weft_sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-voxide_abi.workspace = true
-voxide_noise.workspace = true
+weft_abi.workspace = true
+weft_noise.workspace = true

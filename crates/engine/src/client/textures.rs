@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
-use voxide_render::*;
+use weft_render::*;
 
 use crate::assets::{self, Anim, Assets, LoadedTexture};
 use crate::content::Content;
@@ -39,7 +39,7 @@ struct Inner {
     item: Vec<u32>,
     particle: Vec<u32>,
     requests: Vec<u32>,
-    /// Glow mask index per bindless colour index (`u32::MAX` none), on the GPU too.
+    /// Glow mask index per bindless color index (`u32::MAX` none), on the GPU too.
     glow_map: Vec<u32>,
     glow_buffer: BufferId,
     glow_capacity: usize,
@@ -174,12 +174,12 @@ impl GameTextures {
         self.frame(e, 0)
     }
 
-    /// Glow mask of a colour texture (bindless index), `u32::MAX` for none.
+    /// Glow mask of a color texture (bindless index), `u32::MAX` for none.
     pub fn glow_of(&self, index: u32) -> u32 {
         self.inner.borrow().glow_map.get(index as usize).copied().unwrap_or(u32::MAX)
     }
 
-    /// The glow map on the GPU, indexed by bindless colour index.
+    /// The glow map on the GPU, indexed by bindless color index.
     pub fn glow_buffer(&self) -> BufferId {
         self.inner.borrow().glow_buffer
     }
@@ -329,11 +329,11 @@ fn composite_stamp(assets: &Assets, entries: &[Entry], parts: [u32; 4]) -> u64 {
     parts.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &p| (h ^ assets::texture_stamp(assets, &entries[p as usize].name)).wrapping_mul(0x100_0000_01b3))
 }
 
-fn set_glow(map: &mut Vec<u32>, colour: u32, glow: u32) {
-    if colour as usize >= map.len() {
-        map.resize(colour as usize + 1, u32::MAX);
+fn set_glow(map: &mut Vec<u32>, color: u32, glow: u32) {
+    if color as usize >= map.len() {
+        map.resize(color as usize + 1, u32::MAX);
     }
-    map[colour as usize] = glow;
+    map[color as usize] = glow;
 }
 
 /// Reads and prepares entries in parallel (composites read their parts again).

@@ -398,7 +398,7 @@ fn recipe_slot(ui: &mut Ui, cx: &BuildCx, ing: &crate::registry::Ingredient, cou
     });
     let tip = match ing {
         Ingredient::Tag(t) => cx.t("recipes.tag", &[text::Arg::Text(c.components.names[*t as usize].clone())]),
-        _ => crate::hud::item_tooltip(cx.lang, cx.input, voxide_abi::ItemStack::new(first, count.max(1))),
+        _ => crate::hud::item_tooltip(cx.lang, cx.input, weft_abi::ItemStack::new(first, count.max(1))),
     };
     ui.nodes[b].tooltip = Some(tip);
 }
@@ -443,7 +443,7 @@ fn recipe_row(ui: &mut Ui, cx: &BuildCx, kind: &str, r: &crate::registry::Recipe
                 None => recipe_slot(ui, cx, r.inputs.first().unwrap_or(&Ingredient::Empty), 1),
             }
             ui.container(Style::default().gap(1.0).center(), |ui| {
-                ui.add(Kind::Progress { class: "arrow".into(), bind: Box::new(|_: &Ctx| 1.0), value: 1.0, dir: voxide_abi::ui_dir::RIGHT }, Style::default().size(24.0, 16.0));
+                ui.add(Kind::Progress { class: "arrow".into(), bind: Box::new(|_: &Ctx| 1.0), value: 1.0, dir: weft_abi::ui_dir::RIGHT }, Style::default().size(24.0, 16.0));
                 if r.time > 0 {
                     label(ui, cx, "recipes.time", &[text::Arg::Float(r.time as f64 / 20.0, 1)], "dim");
                 }

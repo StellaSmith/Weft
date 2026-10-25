@@ -8,14 +8,14 @@
 //!
 //! Build: `cargo build --release`. Then make `run/mods/<your id>/` with the library from
 //! `target/release/` and the `assets` folder next to it.
-//! To share it, run `voxide --pack-mod run/mods/<your id>`,
+//! To share it, run `weft --pack-mod run/mods/<your id>`,
 //! it packs that folder (library included) into a zip.
 //!
 //! This example adds one item, a setting, and a gift for joined players.
 //! Everything else is commented examples. The full cheat sheet is at `docs/modding.md`.
 //! `mods/base` and `mods/testmod` use exactly this API, so for more examples check those.
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 declare_mod!(id: "examplemod", name: "Example Mod", version: "0.1.0", deps: ["base"], init: init);
 

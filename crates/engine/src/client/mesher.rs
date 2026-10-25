@@ -4,7 +4,7 @@
 //! Everything else (plants, boxes, liquids): 8-word quads with explicit corners.
 
 use crate::gpu_layout::{face, quad};
-use voxide_abi::{Layer, Model, block_flags as bf};
+use weft_abi::{Layer, Model, block_flags as bf};
 
 use crate::content::Content;
 
@@ -20,7 +20,7 @@ pub const fn pidx(x: i32, y: i32, z: i32) -> usize {
 pub struct Neighborhood {
     pub states: Box<[u32; PAD_VOLUME]>,
     pub light: Box<[u32; PAD_VOLUME]>,
-    /// Biome id per column of the centre cube.
+    /// Biome id per column of the center cube.
     pub biomes: [u16; 256],
     /// World position of the cube's first block.
     pub origin: [i32; 3],

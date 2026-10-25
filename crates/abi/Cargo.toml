@@ -1,5 +1,5 @@
 [package]
-name = "voxide_abi"
+name = "weft_abi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

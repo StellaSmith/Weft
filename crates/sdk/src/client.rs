@@ -226,7 +226,7 @@ impl Client {
     }
 
     /// Own inventory slot (`player_layout`: with the base game 0..9 hotbar, 9..36 main, 36..40
-    /// armour).
+    /// armor).
     pub fn inventory_slot(&self, slot: u32) -> ItemStack {
         unsafe { (host().client_slot)(self.raw, 0, slot) }
     }
@@ -281,7 +281,7 @@ impl Client {
         unsafe { (host().client_draw)(self.raw, kind, &a, &b, color, s(text)) }
     }
 
-    /// Lines, boxes and labels for this frame only; colours are 0xRRGGBBAA.
+    /// Lines, boxes and labels for this frame only; colors are 0xRRGGBBAA.
     pub fn draw_line(&self, a: [f64; 3], b: [f64; 3], color: u32) {
         self.draw(0, a, b, color, "");
     }
@@ -294,7 +294,7 @@ impl Client {
         self.draw(2, pos, pos, color, text);
     }
 
-    /// Text centred at fractions of the window.
+    /// Text centered at fractions of the window.
     pub fn screen_text(&self, x: f32, y: f32, text: &str, color: u32) {
         self.draw(3, [x as f64, y as f64, 0.0], [0.0; 3], color, text);
     }

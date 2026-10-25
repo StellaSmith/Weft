@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 use super::{add, at};
 use crate::runner::{R, T};
@@ -76,7 +76,7 @@ pub async fn mining_and_wear(t: T) -> R {
     Ok(())
 }
 
-/// Shift-click puts armour into its slots; hits wear it.
+/// Shift-click puts armor into its slots; hits wear it.
 pub async fn armor(t: T) -> R {
     t.flat().await?;
     for (slot, name) in [(0, "iron_helmet"), (1, "diamond_chestplate"), (2, "gold_leggings"), (3, "leather_boots")] {
@@ -90,7 +90,7 @@ pub async fn armor(t: T) -> R {
         t.click_ui(&format!("slot:{i}"), 0);
         t.frames(4).await?;
     }
-    t.until("armour worn", Duration::from_secs(5), |t| (36..40).all(|s| !t.c().inventory_slot(s).is_empty())).await?;
+    t.until("armor worn", Duration::from_secs(5), |t| (36..40).all(|s| !t.c().inventory_slot(s).is_empty())).await?;
     t.shot("worn").await?;
     t.c().close_screen();
     t.no_screen().await?;
@@ -102,9 +102,9 @@ pub async fn armor(t: T) -> R {
     for s in 36..40 {
         worn += t.slot("me", s).await?.2;
     }
-    t.check(worn > 0, "armour took no damage from a zombie hit");
+    t.check(worn > 0, "armor took no damage from a zombie hit");
     let hp = t.state().health;
-    t.check(hp > 17.0, format!("armour did not reduce the hit: health {hp}"));
+    t.check(hp > 17.0, format!("armor did not reduce the hit: health {hp}"));
     Ok(())
 }
 
@@ -235,7 +235,7 @@ pub async fn sounds(t: T) -> R {
     t.hold("core:forward", 1.5);
     t.until("steps", std::time::Duration::from_secs(3), |t| t.state().sounds >= before + 2).await?;
     t.cmd("/music").await?;
-    t.until("music", std::time::Duration::from_secs(3), |t| t.flag(voxide_sdk::client::client_flags::MUSIC)).await?;
+    t.until("music", std::time::Duration::from_secs(3), |t| t.flag(weft_sdk::client::client_flags::MUSIC)).await?;
     Ok(())
 }
 

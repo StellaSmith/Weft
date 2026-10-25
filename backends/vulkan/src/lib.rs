@@ -7,7 +7,7 @@ use std::mem::ManuallyDrop;
 use ash::{ext, khr, vk};
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc};
-use voxide_render::*;
+use weft_render::*;
 
 const FRAMES: usize = 2;
 /// Timestamp queries per frame: start, after uploads, marks, end.
@@ -152,7 +152,7 @@ pub struct VulkanBackend {
 }
 
 // Raw Vulkan handles are plain integers/pointers that may be used from any thread as long as access
-// is externally synchronised, which `&mut self` guarantees.
+// is externally synchronized, which `&mut self` guarantees.
 unsafe impl Send for VulkanBackend {}
 
 unsafe extern "system" fn debug_callback(
@@ -205,8 +205,8 @@ impl VulkanBackend {
             }
 
             let app = vk::ApplicationInfo::default()
-                .application_name(c"Voxide")
-                .engine_name(c"Voxide")
+                .application_name(c"Weft")
+                .engine_name(c"Weft")
                 .api_version(vk::API_VERSION_1_3);
             let instance = entry
                 .create_instance(

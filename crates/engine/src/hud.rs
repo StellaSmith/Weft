@@ -1,7 +1,7 @@
 //! In-game overlay: crosshair, hotbar, debug lines, chat, and HUD parts registered by mods.
 //! Rebuilt only when what it shows changes; mod parts update through their bindings.
 
-use voxide_abi::ItemStack;
+use weft_abi::ItemStack;
 
 use crate::app::Ctx;
 use crate::client::Client;
@@ -56,25 +56,25 @@ impl Hud {
         self.key = Some(key);
         let c = content();
         // Elements per anchor, mod parts plus the hotbar itself, with the player's overrides.
-        let mut placed: Vec<(String, i32, Option<(voxide_abi::ModId, voxide_abi::Callback)>)> =
+        let mut placed: Vec<(String, i32, Option<(weft_abi::ModId, weft_abi::Callback)>)> =
             vec![("core:hotbar".into(), 0, None)].into_iter().chain(c.game.huds.iter().map(|h| (h.name.clone(), h.order, Some((h.owner, h.cb))))).collect::<Vec<_>>()
                 .into_iter()
                 .map(|(name, order, cb)| {
-                    let default = if cb.is_none() { voxide_abi::hud_anchor::HOTBAR.to_string() } else { c.game.huds.iter().find(|h| h.name == name).map(|h| h.anchor.clone()).unwrap_or_default() };
+                    let default = if cb.is_none() { weft_abi::hud_anchor::HOTBAR.to_string() } else { c.game.huds.iter().find(|h| h.name == name).map(|h| h.anchor.clone()).unwrap_or_default() };
                     let (anchor, order) = self.layout.get(&name).cloned().unwrap_or((default, order));
                     (anchor, order, cb)
                 })
                 .collect();
         placed.sort_by_key(|p| p.1);
         let mods_debug = mod_debug_groups();
-        let at = |anchor: &str, upwards: bool| -> Vec<Option<(voxide_abi::ModId, voxide_abi::Callback)>> {
+        let at = |anchor: &str, upwards: bool| -> Vec<Option<(weft_abi::ModId, weft_abi::Callback)>> {
             let mut v: Vec<_> = placed.iter().filter(|p| p.0 == anchor).map(|p| p.2).collect();
             if upwards {
                 v.reverse();
             }
             v
         };
-        let draw = |ui: &mut Ui, part: Option<(voxide_abi::ModId, voxide_abi::Callback)>| match part {
+        let draw = |ui: &mut Ui, part: Option<(weft_abi::ModId, weft_abi::Callback)>| match part {
             Some((owner, cb)) => modui::build(ui, lang, Some(input), owner, cb, Some(client)),
             None if client.mode == crate::world::GameMode::Spectator => {}
             None => {
@@ -85,12 +85,12 @@ impl Hud {
                 });
             }
         };
-        use voxide_abi::hud_anchor as a;
+        use weft_abi::hud_anchor as a;
         let ui = &mut self.ui;
         ui.clear();
         ui.root_style(Style::default().stretch());
         // Both halves start at zero height and split the rest evenly, so the crosshair sits at the
-        // exact screen centre whatever they contain.
+        // exact screen center whatever they contain.
         ui.container(Style::row().h(0.0).grow().pad(4.0).align(Align::Start), |ui| {
             // Half the screen each, so wide text on one side never pushes the other off screen
             // (the two may overlap on narrow screens, like vanilla's).
@@ -338,7 +338,7 @@ pub fn draw_custom(
     }
 }
 
-/// Item icon centred in `r`, with count and durability bar.
+/// Item icon centered in `r`, with count and durability bar.
 pub fn stack_icon(ren: &mut UiRenderer, textures: &GameTextures, r: Rect, stack: ItemStack, scale: f32, text_unit: f32) {
     if stack.is_empty() {
         return;
@@ -400,10 +400,10 @@ pub fn item_name(lang: &Lang, item: u32) -> String {
     }
 }
 
-/// The name, then the `<name key>.tooltip` translation in grey (details usually behind
+/// The name, then the `<name key>.tooltip` translation in gray (details usually behind
 /// `{on_key:core:sneak}`) and the mods' own lines under it, then durability for damaged tools.
-pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi::ItemStack) -> Vec<text::Span> {
-    const GREY: u32 = 0xA8A8A8;
+pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::ItemStack) -> Vec<text::Span> {
+    const GRAY: u32 = 0xA8A8A8;
     let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
     let cx = text::Ctx { lang, input: Some(input), item_name: &items };
     let mut out = text::plain(&item_name(lang, stack.item));
@@ -412,7 +412,7 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi:
         let start = out.len();
         text::format(template, args, &cx, out);
         for s in &mut out[start..] {
-            s.color = s.color.or(Some(GREY));
+            s.color = s.color.or(Some(GRAY));
         }
     };
     if let Some(key) = item_key(lang, stack.item).map(|k| format!("{k}.tooltip")) {
@@ -437,11 +437,11 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi:
     out
 }
 
-type ModPart = (voxide_abi::ModId, voxide_abi::Callback);
+type ModPart = (weft_abi::ModId, weft_abi::Callback);
 
 /// Mods' F3 panels in group order (after the engine's): title key, right side, part.
 pub fn mod_debug_groups() -> Vec<(&'static str, bool, ModPart)> {
-    use voxide_abi::hud_anchor as a;
+    use weft_abi::hud_anchor as a;
     let mut v: Vec<_> = content().game.huds.iter().filter(|h| h.anchor == a::DEBUG_LEFT || h.anchor == a::DEBUG_RIGHT).collect();
     v.sort_by_key(|h| h.order);
     v.into_iter().take(9 - DEBUG_GROUPS.len()).map(|h| (h.title.as_str(), h.anchor == a::DEBUG_RIGHT, (h.owner, h.cb))).collect()

@@ -9,12 +9,12 @@ license = "MPL-2.0"
 rust-version = "1.90"
 
 [workspace.dependencies]
-voxide_abi = { path = "crates/abi" }
-voxide_sdk = { path = "crates/sdk" }
-voxide_noise = { path = "crates/noise" }
-voxide_render = { path = "crates/render" }
-voxide_engine = { path = "crates/engine" }
-voxide_vulkan = { path = "backends/vulkan" }
+weft_abi = { path = "crates/abi" }
+weft_sdk = { path = "crates/sdk" }
+weft_noise = { path = "crates/noise" }
+weft_render = { path = "crates/render" }
+weft_engine = { path = "crates/engine" }
+weft_vulkan = { path = "backends/vulkan" }
 
 ash = "0.38"
 ash-window = "0.13"

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use voxide_sdk::*;
+use weft_sdk::*;
 
 use super::{add, probe};
 use crate::runner::{R, T};
@@ -44,7 +44,7 @@ pub async fn particle_crowd(t: T) -> R {
 }
 
 /// Texture edges at a distance, where mip levels mix texels: no light line along the edge of a
-/// snowy grass block over dirt; a 64x64 texture shows its own colours among 16x16 ones.
+/// snowy grass block over dirt; a 64x64 texture shows its own colors among 16x16 ones.
 pub async fn texture_seams(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
@@ -77,15 +77,15 @@ pub async fn texture_seams(t: T) -> R {
     t.probe("light points along the snowy grass edge", light as f32, light == 0);
     // The middle of the 2x2 mosaic face the camera sees.
     let p = t.on_screen([(mosaic[0] + 1) as f64, (mosaic[1] + 1) as f64, mosaic[2] as f64 + 1.01]).unwrap_or((0.5, 0.5));
-    let colours = shot.share(p.0 - 0.03, p.1 - 0.05, p.0 + 0.03, p.1 + 0.05, |c| {
+    let colors = shot.share(p.0 - 0.03, p.1 - 0.05, p.0 + 0.03, p.1 + 0.05, |c| {
         let (hi, lo) = (*c.iter().max().unwrap() as i32, *c.iter().min().unwrap() as i32);
         hi - lo > 80
     });
-    t.probe("the mosaic's saturated colours", colours, colours > 0.3);
+    t.probe("the mosaic's saturated colors", colors, colors > 0.3);
     Ok(())
 }
 
-/// A 16x16 texture of one colour.
+/// A 16x16 texture of one color.
 fn write_png(path: &str, rgb: [u8; 3]) -> Result<(), String> {
     let dir = std::path::Path::new(path).parent().ok_or("no folder")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -96,7 +96,7 @@ fn write_png(path: &str, rgb: [u8; 3]) -> Result<(), String> {
     enc.write_header().and_then(|mut w| w.write_image_data(&px)).map_err(|e| e.to_string())
 }
 
-/// A mod's tint kind takes the biome's colour where it sets one (plains: teal), else its
+/// A mod's tint kind takes the biome's color where it sets one (plains: teal), else its
 /// default (violet; the flatlands are beach).
 pub async fn tint_kinds(t: T) -> R {
     for (flat, teal) in [(true, false), (false, true)] {
@@ -110,7 +110,7 @@ pub async fn tint_kinds(t: T) -> R {
         let (a, b) = (add(f, [-3, 0, -3]), add(f, [3, 3, -3]));
         t.fill(a, b, "testmod:glow_moss").await?;
         let moss = find_block("testmod:glow_moss");
-        // Every block of the wall must reach the client before its colour can be looked at.
+        // Every block of the wall must reach the client before its color can be looked at.
         t.until("the moss wall on the client", Duration::from_secs(5), |t| (a[1]..=b[1]).all(|y| (a[0]..=b[0]).all(|x| t.c().block([x, y, a[2]]) == moss))).await?;
         t.c().look(0.0, 0.0);
         t.settled().await?;

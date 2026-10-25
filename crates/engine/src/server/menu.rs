@@ -2,7 +2,7 @@
 //! the menu's own temporary grid), the cursor stack, and synced integers. Click handling is generic;
 //! mods only describe slots and react to changes (crafting).
 
-use voxide_abi::{self as abi, ItemStack, slot_flags as sf};
+use weft_abi::{self as abi, ItemStack, slot_flags as sf};
 
 use super::dim::Dim;
 use crate::content::Content;
@@ -279,7 +279,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
                 i != slot && s.flags & sf::OUTPUT == 0 && (s.owner == Owner::Player) != from_player && fits(c, &s, cur.item)
             })
             .collect();
-        // Slots made for this item (armour) win over generic ones.
+        // Slots made for this item (armor) win over generic ones.
         let fitted: Vec<u32> = (0..m.slots.len() as u32)
             .filter(|&i| {
                 let s = m.slots[i as usize];

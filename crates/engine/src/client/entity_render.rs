@@ -6,8 +6,8 @@ use crate::gpu_layout::box_mode;
 use super::models::{MAX_LAYERS, Posed};
 use glam::{DVec3, IVec3, Mat4, Quat, Vec3, Vec4};
 use rustc_hash::FxHashMap;
-use voxide_abi::Model;
-use voxide_render::*;
+use weft_abi::Model;
+use weft_render::*;
 
 use super::ClientEntity;
 use super::models::{Instance, Models};
@@ -31,7 +31,7 @@ struct GpuBox {
 /// What the first person view holds: the item (or the bare arm), the swing progress and the
 /// walk distance for bobbing.
 pub struct Hand {
-    pub stack: voxide_abi::ItemStack,
+    pub stack: weft_abi::ItemStack,
     pub swing: Option<f32>,
     /// The local player's animation started by the server and the player's age, for the `hand`
     /// bone of its keyframes.
@@ -75,7 +75,7 @@ pub struct EntityRenderer {
     /// The inventory figure's view; it is drawn into its own texture so the UI can layer it like
     /// any image.
     preview: Vec<BufferId>,
-    /// Colour, depth, size, bindless index.
+    /// Color, depth, size, bindless index.
     preview_target: Option<(TextureId, TextureId, [u32; 2], u32)>,
     /// Texture, bindless index and size, by name; and the glow masks of those that have one.
     skins: FxHashMap<String, Option<(TextureId, u32, [u32; 2])>>,
@@ -122,7 +122,7 @@ pub const HOOK: crate::shaders::Hook = crate::shaders::Hook {
 /// Light on boxes and model layers drawn without any (the inventory figure, flames).
 const FULL_LIGHT: u32 = u32::MAX;
 
-/// Gives boxes pushed since `from` the light they stand in (the shader turns it into colour).
+/// Gives boxes pushed since `from` the light they stand in (the shader turns it into color).
 fn light_boxes(boxes: &mut [GpuBox], from: usize, light: u32) {
     for b in &mut boxes[from..] {
         b.ids2[1] = light;
@@ -250,7 +250,7 @@ impl EntityRenderer {
         let (s, mut slots) = crate::packs::compose("model.wgsl", include_str!("../../shaders/model.wgsl"), &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
         let slots = slots.pop().unwrap_or_default();
         let c = content();
-        let comp = c.components.id(voxide_abi::comp::SHADER);
+        let comp = c.components.id(weft_abi::comp::SHADER);
         let kinds = (0..c.game.entities.len() as u32)
             .map(|k| {
                 let name = comp.and_then(|id| c.components.text(crate::components::ENTITY, k, id));
@@ -423,8 +423,8 @@ impl EntityRenderer {
                 match sprite_name(item).and_then(|n| self.sprites.get(n)).and_then(|s| s.as_ref()) {
                     Some(sp) => {
                         let n = sp.size as f32;
-                        // Only the outline: a side face against a neighbouring pixel would fight
-                        // with it. Mode 4: every face takes the colour of this one texel.
+                        // Only the outline: a side face against a neighboring pixel would fight
+                        // with it. Mode 4: every face takes the color of this one texel.
                         for &(x, y, hidden) in &sp.pixels {
                             let m = Mat4::from_translation(Vec3::new(x as f32 / n, 1.0 - (y as f32 + 1.0) / n, 7.5 / 16.0)) * Mat4::from_scale(Vec3::new(1.0 / n, 1.0 / n, 1.0 / 16.0));
                             self.item_boxes.push(GpuBox { rows: rows(m), uvo: [(x as f32 + 0.5) / n, (y as f32 + 0.5) / n, 0.0, 0.0], color: white.to_array(), ids: [0, box_mode::TEXEL, l, hidden], ..Default::default() });
@@ -531,7 +531,7 @@ impl EntityRenderer {
                 gpu.destroy_texture(dep);
             }
             let desc = |format| TextureDesc { width: size[0], height: size[1], mips: 1, format, render_target: true };
-            let col = gpu.create_texture(&desc(Format::Rgba8Srgb), "preview colour");
+            let col = gpu.create_texture(&desc(Format::Rgba8Srgb), "preview color");
             let dep = gpu.create_texture(&desc(Format::Depth32), "preview depth");
             self.preview_target = Some((col, dep, size, gpu.texture_index(col)));
         }

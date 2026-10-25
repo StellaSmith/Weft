@@ -185,7 +185,7 @@ impl Audio {
     }
 
     fn music(&mut self, assets: &Assets, l: &Listener) {
-        use voxide_abi::music_when as mw;
+        use weft_abi::music_when as mw;
         if self.music.as_ref().is_some_and(|m| m.state() != kira::sound::PlaybackState::Stopped) || Instant::now() < self.next_music {
             return;
         }

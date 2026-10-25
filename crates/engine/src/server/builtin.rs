@@ -2,7 +2,7 @@
 //! side by side, so a listed command always has one.
 
 use glam::{DVec3, IVec3};
-use voxide_abi::{ItemStack, damage};
+use weft_abi::{ItemStack, damage};
 
 use super::Server;
 use crate::commands::Args;

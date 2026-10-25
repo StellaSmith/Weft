@@ -11,7 +11,7 @@ use crate::content::content;
 use crate::net::GizmoShape;
 
 pub const BUILTIN: &[(&str, &str)] = &[
-    ("cubes", "borders of the cube you are in and its neighbours"),
+    ("cubes", "borders of the cube you are in and its neighbors"),
     ("hitboxes", "entity boxes"),
     ("collision", "collision boxes of blocks nearby"),
     ("light", "block light on blocks nearby: red spawnable, yellow spawnable at night"),
@@ -19,7 +19,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("visibility", "cubes the server considers visible (green loaded, orange waiting)"),
 ];
 
-/// A line between two points, in the colour `0xRRGGBBAA`.
+/// A line between two points, in the color `0xRRGGBBAA`.
 pub type Line = (DVec3, DVec3, u32);
 /// A filled box between two corners; its alpha makes it see-through.
 pub type Fill = (DVec3, DVec3, u32);
@@ -77,9 +77,9 @@ impl Gizmos {
         self.shapes.retain(|s| s.1 > now);
         for (s, _) in &self.shapes {
             match s.kind as u32 {
-                voxide_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
-                voxide_abi::gizmo_kind::BOX => cuboid(&mut lines, s.a, s.b, s.color),
-                voxide_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
+                weft_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
+                weft_abi::gizmo_kind::BOX => cuboid(&mut lines, s.a, s.b, s.color),
+                weft_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
                 _ => labels.push((s.a, s.text.clone(), s.color)),
             }
         }
@@ -125,7 +125,7 @@ impl Gizmos {
             }
         }
         if self.on("light") {
-            // Coloured by the hostile spawn rules of this dimension, as the server checks them
+            // Colored by the hostile spawn rules of this dimension, as the server checks them
             // (light = sky light times daylight, or block light, whichever is more): red where
             // monsters may spawn now, yellow where they may at night, green where never.
             let dim = client.world.dim;
@@ -138,13 +138,13 @@ impl Gizmos {
                     for dx in -6..=6 {
                         let p = feet + IVec3::new(dx, dy, dz);
                         let (Some(below), Some(here)) = (client.world.block_or_air(p - IVec3::Y), client.world.block_or_air(p)) else { continue };
-                        let solid = |s: u32| c.states[s as usize].flags & voxide_abi::block_flags::SOLID != 0;
+                        let solid = |s: u32| c.states[s as usize].flags & weft_abi::block_flags::SOLID != 0;
                         if !solid(below) || solid(here) {
                             continue;
                         }
                         let l = client.world.light(p);
-                        let block = voxide_abi::light::block(l).min(15);
-                        let now = voxide_abi::light::effective(l, day);
+                        let block = weft_abi::light::block(l).min(15);
+                        let now = weft_abi::light::effective(l, day);
                         let color = if spawns(now) {
                             0xFF5040FF
                         } else if spawns(block) {

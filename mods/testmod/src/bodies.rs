@@ -18,7 +18,7 @@ fn deck(n: i32) -> Vec<Part> {
 
 pub fn register(r: &mut Registry) {
     // 4 blocks up in 4 seconds, then down again.
-    r.entity("lift").size(2.0, 0.5).health(100.0).solid().kinematic().texture("bodies", 64, 64).model(deck(2)).on_tick(|t| {
+    r.entity("lift").size(2.0, 0.5).health(100.0).invulnerable().solid().kinematic().texture("bodies", 64, 64).model(deck(2)).on_tick(|t| {
         let w = t.world();
         for &id in t.ids() {
             let Some(mut st) = w.entity(id) else { continue };
@@ -27,7 +27,7 @@ pub fn register(r: &mut Registry) {
         }
     });
     // 6 blocks a second along x for 3 seconds each way; riders stay with it up to 3 blocks up.
-    r.entity("skiff").size(3.0, 0.5).health(100.0).solid().kinematic().carry_height(3.0).texture("bodies", 64, 64).model(deck(3)).on_tick(|t| {
+    r.entity("skiff").size(3.0, 0.5).health(100.0).invulnerable().solid().kinematic().carry_height(3.0).texture("bodies", 64, 64).model(deck(3)).on_tick(|t| {
         let w = t.world();
         for &id in t.ids() {
             let Some(mut st) = w.entity(id) else { continue };
@@ -38,6 +38,7 @@ pub fn register(r: &mut Registry) {
     r.entity("crate")
         .size(1.0, 1.0)
         .health(10.0)
+        .invulnerable()
         .solid()
         .texture("bodies", 64, 64)
         .model(vec![Part::new([0.0; 3], abi::part_role::STATIC).cube([-8.0, 0.0, -8.0], [16.0, 16.0, 16.0], [0.0, 24.0])]);

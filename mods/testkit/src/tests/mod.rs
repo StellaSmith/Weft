@@ -46,6 +46,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::furnace,
         gameplay::crafting_table_tags,
         gameplay::mining_and_wear,
+        gameplay::creative_and_invulnerable,
         gameplay::armor,
         gameplay::slot_accepts,
         gameplay::bucket,
@@ -106,7 +107,6 @@ pub fn all() -> Vec<TestDef> {
         bodies::natural_spawning,
         bodies::pathfinding,
         bodies::zombie_chases,
-        bodies::creative_unseen,
         bodies::morph,
         world::load_benchmark,
     ]

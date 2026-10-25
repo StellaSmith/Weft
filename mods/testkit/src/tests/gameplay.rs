@@ -358,3 +358,41 @@ pub async fn sounds(t: T) -> R {
     t.until("music", std::time::Duration::from_secs(3), |t| t.flag(voxide_sdk::client::client_flags::MUSIC)).await?;
     Ok(())
 }
+
+/// Creative tools never wear, and invulnerable entities (the test mod's crate) take no damage
+/// from hits.
+pub async fn creative_and_invulnerable(t: T) -> R {
+    t.flat().await?;
+    t.op("mode creative").await?;
+    t.op("put me 0 stone_pickaxe 1").await?;
+    t.c().select(0);
+    let f = t.feet();
+    let stone = add(f, [2, 0, 0]);
+    t.set(stone, "stone").await?;
+    t.look_at(stone);
+    t.frames(2).await?;
+    t.hold("core:attack", 0.3);
+    t.secs(0.6).await?;
+    t.check_eq(t.block(stone).await?, "core:air".into(), "stone broken in creative");
+    t.check_eq(t.slot("me", 0).await?.2, 0, "no pickaxe wear in creative");
+    t.op("mode survival").await?;
+    let id = t.op(&format!("spawn testmod:crate {} {} {}", stone[0], stone[1], stone[2])).await?;
+    t.look_at(stone);
+    t.frames(2).await?;
+    t.hold("core:attack", 1.5);
+    t.secs(2.0).await?;
+    let health = t.op(&format!("entity #{}", id.trim())).await?;
+    t.check(health.ends_with(" 10"), format!("the crate kept its health ({health})"));
+    // The same hits do hurt an ordinary entity there.
+    t.op(&format!("remove #{}", id.trim())).await?;
+    let idol = t.op(&format!("spawn testmod:idol {} {} {}", stone[0], stone[1], stone[2])).await?;
+    let before = t.op(&format!("entity #{}", idol.trim())).await?;
+    t.look_at(stone);
+    t.frames(2).await?;
+    t.hold("core:attack", 1.5);
+    t.secs(2.0).await?;
+    let after = t.op(&format!("entity #{}", idol.trim())).await?;
+    let hp = |s: &str| s.rsplit(' ').next().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+    t.check(hp(&after) < hp(&before), format!("an idol is hurt by the same hits ({before} -> {after})"));
+    Ok(())
+}

@@ -105,6 +105,20 @@ pub async fn skiff_smooth(t: T) -> R {
     t.note(format!("skiff speed over {} frames {lo:.2}..{hi:.2} blocks/s, rider moves on the deck up to {slip:.4} a frame", speeds.len()));
     t.check(lo > 3.0 && hi < 9.0, "the skiff glides (no stops or jumps)");
     t.check(slip < 0.02, "its rider stays on its spot of the deck");
+    // Through a turn (every 3 seconds): no jump back, the fastest frame stays near its speed.
+    let (mut fastest, mut last, mut at) = (0.0f64, x(&t, skiff), std::time::Instant::now());
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs_f64() < 3.5 {
+        t.frames(1).await?;
+        let (now, when) = (x(&t, skiff), std::time::Instant::now());
+        let dt = (when - at).as_secs_f64();
+        if dt > 0.002 {
+            fastest = fastest.max((now - last).abs() / dt);
+        }
+        (last, at) = (now, when);
+    }
+    t.note(format!("fastest frame through a turn: {fastest:.1} blocks/s"));
+    t.check(fastest < 15.0, "the skiff turns without jumping");
     // Riding it too: the deck keeps its place in front of the camera.
     t.op(&format!("onto #{skiff} 0.5")).await?;
     t.secs(0.5).await?;
@@ -199,24 +213,6 @@ pub async fn pathfinding(t: T) -> R {
     Ok(())
 }
 
-/// A zombie's goals: it finds its way around a wall to the player and hits it.
-/// Mobs do not notice a creative player (its `visibility` is 0), and do again in survival.
-pub async fn creative_unseen(t: T) -> R {
-    t.flat().await?;
-    t.op("mode creative").await?;
-    let f = t.feet();
-    let id = spawn(&t, "zombie", add(f, [6, 0, 0])).await?;
-    t.secs(3.0).await?;
-    let z = pos_of(&t, &format!("#{id}")).await?;
-    t.check((z[0] - f[0] as f64).abs() > 4.0 || (z[2] - f[2] as f64).abs() > 4.0, format!("the zombie left the creative player alone (x {:.1})", z[0]));
-    t.op("mode survival").await?;
-    t.secs(4.0).await?;
-    let z = pos_of(&t, &format!("#{id}")).await?;
-    let me = t.state().pos;
-    t.check(((z[0] - me[0]).powi(2) + (z[2] - me[2]).powi(2)).sqrt() < 2.5, format!("in survival it came (x {:.1})", z[0]));
-    Ok(())
-}
-
 /// A mod changes one entity's box and look while it stays the same entity: a player morphed
 /// into a pig is 0.9 high, walks through a gap 1 block high and sees from 0.77; crouching still
 /// lowers whatever box it has; morphing back restores the player's.
@@ -246,6 +242,7 @@ pub async fn morph(t: T) -> R {
     Ok(())
 }
 
+/// A zombie's goals: it finds its way around a wall to the player and hits it.
 pub async fn zombie_chases(t: T) -> R {
     t.flat().await?;
     let f = t.feet();

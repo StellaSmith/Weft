@@ -281,8 +281,8 @@ pub async fn deep_caves(t: T) -> R {
     Ok(())
 }
 
-/// Trees and flowers are data: the test mod's glowing birch and flower grow in birch forests
-/// next to the base ones, and nowhere else.
+/// Trees and flowers are data: birch forests grow the base birches; the test mod's glowing birch
+/// and flower are not generated.
 pub async fn flora(t: T) -> R {
     t.world(5).await?;
     t.op("mode spectator").await?;
@@ -306,8 +306,8 @@ pub async fn flora(t: T) -> R {
             t.shot_within("birch_forest", 0.03).await?;
         }
     }
-    t.check(glow_in > 0, "glowing trees or flowers in a birch forest");
-    t.check_eq(glow_out, 0, "glowing plants outside birch forests");
+    // The test mod's glowing birch and flower are not generated.
+    t.check_eq(glow_in + glow_out, 0, "no glowing plants in the world");
     Ok(())
 }
 

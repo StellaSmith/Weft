@@ -92,6 +92,10 @@ pub struct ClientEntity {
     /// are predicted from them, so riding one does not lag behind it.
     pub vel: DVec3,
     pub received: f64,
+    /// Where the prediction was off when the last update came (turns, stops) and when: it fades
+    /// out over a tenth of a second instead of the body jumping back.
+    pub correction: DVec3,
+    pub corrected: f64,
     /// A picked up item flying to who took it: where it started, the taker, seconds so far.
     pub pulled: Option<(DVec3, u64, f32)>,
     /// Its own box (width, height, eye) and the kind it looks like, when a mod set them.
@@ -136,7 +140,7 @@ impl ClientEntity {
     /// Where a solid body is at `clock`, extrapolated from the last update (at most 0.25 s on,
     /// and back when the update counts as later than `clock`).
     pub fn predicted(&self, clock: f64) -> DVec3 {
-        self.target + self.vel * (clock - self.received).clamp(-0.1, 0.25)
+        self.target + self.vel * (clock - self.received).clamp(-0.1, 0.25) + self.correction * (-(clock - self.corrected).max(0.0) / 0.1).exp()
     }
 }
 
@@ -475,6 +479,8 @@ on: {on}", list.join("
                                 block: e.block,
                                 vel: DVec3::ZERO,
                                 received: self.body_clock,
+                                correction: DVec3::ZERO,
+                                corrected: 0.0,
                                 pulled: None,
                                 size: None,
                                 look: None,
@@ -495,14 +501,23 @@ on: {on}", list.join("
                         _ => sample,
                     };
                     self.tick_offset = Some(off);
+                    let now = self.body_clock - STEP + self.accum;
                     for &(id, pos, yaw, pitch, vel, crouched, frame) in &list {
                         if let Some(e) = self.entities.get_mut(&id) {
+                            let was = e.predicted(now);
                             e.crouched = crouched;
                             e.target = pos;
                             e.target_yaw = yaw;
                             e.pitch = pitch;
                             e.frame = frame;
                             (e.vel, e.received) = (glam::Vec3::from_array(vel).as_dvec3(), at + off);
+                            // Bodies continue smoothly from where they were drawn (a far jump is
+                            // a teleport and is taken as it is).
+                            e.correction = DVec3::ZERO;
+                            let miss = was - e.predicted(now);
+                            if miss.length_squared() < 4.0 {
+                                (e.correction, e.corrected) = (miss, now);
+                            }
                         }
                     }
                     // Riders relative to their body, both where the server had them this tick.
@@ -1229,6 +1244,8 @@ on: {on}", list.join("
             block: 0,
             vel: self.player.vel * 20.0,
             received: self.body_clock,
+            correction: DVec3::ZERO,
+            corrected: 0.0,
             pulled: None,
             size: None,
             look: self.self_look,

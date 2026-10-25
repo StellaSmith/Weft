@@ -1891,8 +1891,11 @@ fn within(eye: DVec3, block: IVec3) -> bool {
     (block.as_dvec3() + DVec3::splat(0.5) - eye).length_squared() < REACH * REACH
 }
 
-/// Damages the held tool; breaks it when used up.
+/// Damages the held tool; breaks it when used up. Creative players' tools never wear.
 fn wear(c: &Content, d: &mut Dim, player: u64, slot: u32, amount: u32) {
+    if d.entities.get(player).is_some_and(|e| e.mode == GameMode::Creative) {
+        return;
+    }
     let Some(stack) = d.entities.inventories.get(&player).and_then(|i| i.get(slot as usize)).copied() else { return };
     let Some(def) = c.items.get(stack.item as usize) else { return };
     if def.durability == 0 || stack.is_empty() {

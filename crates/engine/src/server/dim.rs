@@ -398,13 +398,16 @@ impl Dim {
             self.grid.cube_unloaded(pos);
             self.settled.remove(&pos);
             self.conn.remove(&pos);
-            // Growing blocks are kept with the time they were simulated to, to catch up later.
+            // Only cubes where something happened are saved; the rest generate again the same.
+            // Saved ones keep the time their growing blocks were simulated to, to catch up later
+            // (untouched ones start growing again when they come back, like vanilla's).
             let grows = cube.palette().iter().any(|&s| c.grows(s).is_some());
-            if grows {
-                Arc::make_mut(&mut cube).ticked = self.time;
-                grew = true;
-            }
-            if self.modified.remove(&pos) || !inside.is_empty() || grows {
+            grew |= grows;
+            let modified = self.modified.remove(&pos);
+            if modified || !inside.is_empty() {
+                if grows {
+                    Arc::make_mut(&mut cube).ticked = self.time;
+                }
                 out.push((pos, cube, inside));
             }
         }

@@ -57,16 +57,12 @@ pub fn register(r: &mut Registry) {
     r.tint_kind("glow", 0xc080ff);
     r.biome_tint("base:plains", "glow", 0x40e0c0);
     r.block("glow_moss").tint("glow").hardness(0.6).mineable("shovel");
-    // Trees and flowers of the base world are data: a glowing birch and flower join its birch
-    // forests.
+    // A glowing birch (a log's `tree` component grows it from a sapling or worldgen) and
+    // flower; not generated in the world, only from the creative tabs.
     static TREE: Component<Text> = Component::new("tree");
-    static TREE_KINDS: Component<Text> = Component::new("tree_kinds");
-    static FLOWERS: Component<Text> = Component::new("flowers");
     r.block("glow_log").textures("glow_log_top", "glow_log", "glow_log_top").hardness(2.0).mineable("axe").tag("logs").set_text(&TREE, "round testmod:glow_leaves");
     r.block("glow_leaves").cutout().opacity(1).tint("glow").hardness(0.2).tag("leaves").mineable("shears");
     r.block("glow_flower").plant().needs_below("plant_soil").tint("glow");
-    r.set_text_on(Target::Biome("base:birch_forest"), &TREE_KINDS, "base:birch_log:2 testmod:glow_log:1");
-    r.set_text_on(Target::Biome("base:birch_forest"), &FLOWERS, "base:dandelion testmod:glow_flower");
     r.block("glow_crystal")
         .hardness(1.5)
         .mineable("pickaxe")
@@ -78,8 +74,8 @@ pub fn register(r: &mut Registry) {
             e.world().particles(&SPARK, [x as f64 + 0.5, y as f64 + 1.1, z as f64 + 0.5]).count(3).spread(0.4).speed(0.4);
         });
 
-    // Its own category: at most four wisps spawn around a player, and they drift off again
-    // when nobody is within 64 blocks.
+    // Its own category (no spawning rule: wisps come only from commands and creative): they
+    // drift off again when nobody is within 64 blocks.
     r.entity_category("spirits", 4, 64.0);
     r.entity("wisp")
         .category("spirits")
@@ -121,8 +117,6 @@ pub fn register(r: &mut Registry) {
         .model(vec![Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]);
 
     r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
-    // Wisps drift through forests at night (a spawning rule on the biome tag).
-    r.spawn("wisp").biome("forest").light(0, 7).group(1, 2);
     r.item("rune").handle(&RUNE).stack(1).on_use(|u| {
         let w = u.world();
         w.play_animation(u.player(), "wave", false);

@@ -11,7 +11,6 @@ use crate::content::{self, ModMeta, RawRegistrar};
 
 pub struct LoadedMod {
     pub id: String,
-    pub dir: PathBuf,
     pub assets: PathBuf,
     _lib: libloading::Library,
     decl: &'static abi::ModDecl,
@@ -168,13 +167,13 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
             unsafe { lib.get(abi::ENTRY_SYMBOL) }.map_err(|_| format!("{} is not a Voxide mod", lib_path.display()))?;
         let decl = unsafe { &*entry() };
         if decl.abi_version != abi::ABI_VERSION {
-            return Err(format!("mod {name} was built for mod ABI {} but this engine has ABI {}; rebuild it against the current voxide_sdk", decl.abi_version, abi::ABI_VERSION));
+            return Err(format!("mod {name} was built against another mod ABI ({:016x}, this engine has {:016x}); rebuild it against the current voxide_sdk", decl.abi_version, abi::ABI_VERSION));
         }
         let id = unsafe { decl.id.as_str() }.to_string();
         if id != name {
             log::warn!("mod directory {name} contains mod '{id}'");
         }
-        mods.push(LoadedMod { id, assets: dir.join("assets"), dir, _lib: lib, decl });
+        mods.push(LoadedMod { id, assets: dir.join("assets"), _lib: lib, decl });
     }
     mods.sort_by(|a, b| a.id.cmp(&b.id));
     let _ = NAMES.set(mods.iter().map(|m| m.id.clone()).collect());

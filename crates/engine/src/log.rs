@@ -51,10 +51,6 @@ pub fn on(ch: Channel, level: Level) -> bool {
     CHANNEL_LEVEL[ch as usize].load(Ordering::Relaxed) >= level as u8
 }
 
-pub fn channel_name(ch: Channel) -> &'static str {
-    CHANNELS[ch as usize].0
-}
-
 const KEEP_LOGS: usize = 5;
 const RECENT: usize = 300;
 

@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::abi::{self, Layer, Model, Slice, Str, Versioned, block_flags as bf};
+use crate::abi::{self, Layer, Model, Slice, Str, block_flags as bf};
 use crate::component::{self as c, Component, Value};
 use crate::{World, callback, host, qualify};
 
@@ -166,7 +166,7 @@ with_components!(BlockBuilder, ItemBuilder, BiomeBuilder, DimensionBuilder, Liqu
 /// A component value waiting to be sent with a descriptor. Text is kept as a `String` until then.
 #[derive(Clone)]
 pub struct Pending {
-    name: String,
+    pub(crate) name: String,
     schema: String,
     bytes: Vec<u8>,
     text: Option<String>,
@@ -261,7 +261,7 @@ impl Registry {
     }
 
     pub fn biome<'a>(&'a mut self, name: &str) -> BiomeBuilder<'a> {
-        BiomeBuilder { _p: PhantomData, raw: self.raw, name: qualify(self.ns, name), handle: None, desc: abi::BiomeDesc::DEFAULT, components: Vec::new() }
+        BiomeBuilder { _p: PhantomData, raw: self.raw, name: qualify(self.ns, name), handle: None, desc: abi::BiomeDesc::DEFAULT, colors: None, components: Vec::new() }
     }
 
     /// Creative inventory tab named `tab.<ns>.<name>` in the language files, shown with `icon`.
@@ -366,7 +366,6 @@ struct StateDef {
     light: [u8; 3],
     filter: [u8; 3],
     opacity: u8,
-    tint: u8,
     tint_faces: u8,
     tint_name: String,
     layer: Layer,
@@ -392,7 +391,6 @@ impl StateDef {
             light: d.light,
             filter: d.filter,
             opacity: d.opacity,
-            tint: d.tint,
             tint_faces: d.tint_faces,
             tint_name: String::new(),
             layer: d.layer,
@@ -550,19 +548,19 @@ macro_rules! state_setters {
             self
         }
         pub fn tint_grass(mut self) -> Self {
-            self.each(|s, _| s.tint = 1);
+            self.each(|s, _| s.tint_name = "core:grass".into());
             self
         }
         /// Grass colour on the top face only (the sides carry their own colour).
         pub fn tint_grass_top(mut self) -> Self {
             self.each(|s, _| {
-                s.tint = 1;
+                s.tint_name = "core:grass".into();
                 s.tint_faces = 1 << 3;
             });
             self
         }
         pub fn tint_foliage(mut self) -> Self {
-            self.each(|s, _| s.tint = 2);
+            self.each(|s, _| s.tint_name = "core:foliage".into());
             self
         }
         /// Coloured by a tint kind registered with `Registry::tint_kind` (any mod's).
@@ -626,7 +624,7 @@ macro_rules! state_setters {
             self
         }
         pub fn tint_water(mut self) -> Self {
-            self.each(|s, _| s.tint = 3);
+            self.each(|s, _| s.tint_name = "core:water".into());
             self
         }
         /// Air-like: invisible, no collision, not targetable.
@@ -777,7 +775,6 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Replaces the block with this name from a mod listed in `deps` (its item stays).
     /// Replaces the block of this name registered by a mod this one depends on. Without
     /// `.states(...)` it keeps that block's states (shapes, textures, support, placement and other
     /// callbacks it does not set itself), taking only light, hardness, friction and drag from
@@ -818,7 +815,6 @@ impl<'a> BlockBuilder<'a> {
     }
 
     pub fn random_ticks(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.each(|s, _| s.flags |= bf::RANDOM_TICKS);
         self.callbacks.on_random_tick = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
         self
     }
@@ -851,8 +847,6 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Picks the placed state from the default state index 0: returns the index to use. The
-    /// state ids come from the block's first state the engine passes in.
     /// One state per direction in `allowed` (`f` builds each), placed by `toward`: three allowed
     /// directions are three states.
     pub fn facing(self, allowed: crate::Facings, toward: crate::Toward, f: impl Fn(crate::Dir, State) -> State) -> Self {
@@ -901,7 +895,6 @@ impl Drop for BlockBuilder<'_> {
                 light: s.light,
                 filter: s.filter,
                 opacity: s.opacity,
-                tint: s.tint,
                 tint_faces: s.tint_faces,
                 layer: s.layer,
                 level: s.level,
@@ -1058,6 +1051,7 @@ pub struct BiomeBuilder<'a> {
     name: String,
     handle: Option<&'static Biome>,
     desc: abi::BiomeDesc,
+    colors: Option<[u32; 3]>,
     components: Vec<Pending>,
 }
 
@@ -1068,7 +1062,7 @@ impl BiomeBuilder<'_> {
     }
     /// Grass, foliage and water colours (`0xRRGGBB`).
     pub fn colors(mut self, grass: u32, foliage: u32, water: u32) -> Self {
-        (self.desc.grass, self.desc.foliage, self.desc.water) = (grass, foliage, water);
+        self.colors = Some([grass, foliage, water]);
         self
     }
     pub fn climate(mut self, temperature: f32, rainfall: f32) -> Self {
@@ -1086,6 +1080,9 @@ impl Drop for BiomeBuilder<'_> {
         let values = raw_values(&self.components, &mut scratch);
         let desc = abi::BiomeDesc { name: Str::new(&self.name), cell: cell(self.handle), components: Slice::new(&values), ..self.desc };
         unsafe { (host().reg_biome)(self.raw, &desc) }
+        for (kind, color) in ["core:grass", "core:foliage", "core:water"].into_iter().zip(self.colors.into_iter().flatten()) {
+            unsafe { (host().reg_biome_tint)(self.raw, Str::new(&self.name), Str::new(kind), color) }
+        }
     }
 }
 

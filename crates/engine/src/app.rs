@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use glam::{DVec3, Vec2};
+use glam::Vec2;
 use voxide_abi as abi;
 use voxide_render::{Backend, BackendDesc, Cmd, CommandList, Format, Target, TextureDesc, TextureId};
 use winit::application::ApplicationHandler;
@@ -38,11 +38,6 @@ pub struct Options {
     pub run_dir: PathBuf,
     pub mod_dirs: Vec<PathBuf>,
     pub gpu_debug: bool,
-    /// Automation: save a screenshot here once the world finished loading, then quit.
-    pub shot: Option<PathBuf>,
-    pub shot_delay: f32,
-    /// Automation: fixed camera (x, y, z, yaw degrees, pitch degrees).
-    pub camera: Option<[f64; 5]>,
     /// Automation: skip the menu and play this world (created if missing).
     pub world: Option<String>,
     pub seed: Option<u64>,
@@ -155,7 +150,6 @@ pub(crate) struct Running {
     hud: Hud,
     game: Option<Game>,
     last: Instant,
-    started: Instant,
     shot_pending: bool,
     fps: f32,
     frame_ms: f32,
@@ -318,7 +312,6 @@ impl App {
             },
             game: None,
             last: Instant::now(),
-            started: Instant::now(),
             shot_pending: false,
             fps: 0.0,
             frame_ms: 0.0,
@@ -385,7 +378,7 @@ impl App {
 
 fn make_depth(gpu: &mut dyn Backend, w: u32, h: u32) -> (TextureId, u32, u32) {
     let t = gpu.create_texture(
-        &TextureDesc { width: w.max(1), height: h.max(1), layers: None, mips: 1, format: Format::Depth32, render_target: true },
+        &TextureDesc { width: w.max(1), height: h.max(1), mips: 1, format: Format::Depth32, render_target: true },
         "depth",
     );
     (t, w, h)
@@ -1092,7 +1085,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Focused(false) if !self.opts.automated => {
                 r.input.release_all();
-                if r.game.is_some() && r.screens.is_empty() && self.opts.shot.is_none() {
+                if r.game.is_some() && r.screens.is_empty() {
                     r.open(screens::engine("core:pause"));
                 }
                 r.set_capture(false);
@@ -1321,13 +1314,6 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         }
         r.prof[0] = t.elapsed().as_secs_f32() * 1000.0;
         r.prof[1] = Instant::now().duration_since(now).as_secs_f32() * 1000.0;
-        if let Some(cam) = opts.camera {
-            g.client.player.pos = DVec3::new(cam[0], cam[1] - 1.62, cam[2]);
-            g.client.player.yaw = (cam[3] as f32).to_radians();
-            g.client.player.pitch = (cam[4] as f32).to_radians();
-            g.client.player.flying = true;
-            g.client.player.vel = DVec3::ZERO;
-        }
     }
     r.client_packets();
     if let Some(a) = &mut r.audio {
@@ -1601,16 +1587,6 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     r.list.push(Cmd::EndPass);
 
     let capture_now = r.shot_pending;
-    if opts.shot.is_some() && !opts.automated && !r.shot_pending {
-        let ready = match &r.game {
-            Some(g) => g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0,
-            None => true,
-        };
-        if ready && r.started.elapsed().as_secs_f32() > opts.shot_delay {
-            r.gpu.request_capture();
-            r.shot_pending = true;
-        }
-    }
     let t3 = Instant::now();
     r.prof[3] = t3.duration_since(t2).as_secs_f32() * 1000.0;
     r.gpu.end_frame(&r.list);
@@ -1656,7 +1632,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     if capture_now {
         r.shot_pending = false;
         if let Some(cap) = r.gpu.take_capture() {
-            let path = r.shot_path.take().or_else(|| opts.shot.clone().filter(|_| !opts.automated)).unwrap_or_else(|| {
+            let path = r.shot_path.take().unwrap_or_else(|| {
                 r.settings.run_dir.join("screenshots").join(format!("{}.png", saves::now_secs()))
             });
             if let Some(dir) = path.parent() {
@@ -1669,9 +1645,6 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             if let Some(id) = r.shot_image.take() {
                 api::store_image(id, cap.width, cap.height, cap.rgba);
             }
-        }
-        if opts.shot.is_some() && !opts.automated {
-            return true;
         }
     }
     r.fps_frames += 1;

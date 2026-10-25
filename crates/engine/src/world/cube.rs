@@ -148,14 +148,6 @@ impl Cube {
         }
     }
 
-    /// Rewrites palette entries in place, used to translate ids between saves/peers and runtime.
-    pub fn remap(&mut self, f: impl Fn(u32) -> u32) {
-        match &mut self.blocks {
-            Blocks::Uniform(s) => *s = f(*s),
-            Blocks::Packed { palette, .. } => palette.iter_mut().for_each(|p| *p = f(*p)),
-        }
-    }
-
     /// Drops unused palette entries and shrinks the bit width; collapses to uniform if possible.
     pub fn compact(&mut self) {
         if let Blocks::Packed { .. } = self.blocks {
@@ -205,13 +197,6 @@ impl Cube {
         match &self.light {
             Light::Uniform(v) => Some(*v),
             Light::Full(_) => None,
-        }
-    }
-
-    pub fn light_array(&self) -> Option<&[u32; VOLUME]> {
-        match &self.light {
-            Light::Full(l) => Some(l),
-            Light::Uniform(_) => None,
         }
     }
 

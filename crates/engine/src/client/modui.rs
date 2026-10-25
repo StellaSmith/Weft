@@ -71,7 +71,7 @@ pub fn build(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input>, owne
 fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
     let mut out = Vec::new();
     unsafe {
-        abi::each_sized(list, |a| {
+        list.as_slice().iter().copied().for_each(|a| {
             out.push(match a.kind {
                 abi::ui_arg::TEXT => Arg::Text(a.text.as_str().to_string()),
                 abi::ui_arg::KEY => Arg::Key(a.text.as_str().to_string()),
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             return;
         }
         let b = &mut *(u as *mut UiBuild);
-        let n = &abi::read_sized(node);
+        let n = &*node;
         let owner = b.owner;
         let class = n.class.as_str().to_string();
         let len = |v: f32| if v.is_nan() { Len::Auto } else { Len::Px(v) };
@@ -261,7 +261,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                 max_health: cl.max_health,
                 ..Default::default()
             };
-            abi::write_sized(out, &state);
+            *out = state;
             return 1;
         }
         match cl.entities.get(&id) {
@@ -273,10 +273,14 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                     pitch: e.pitch,
                     moved: e.swing,
                     health: e.health,
-                    max_health: content.game.entities[e.kind as usize].max_health,
+                    // The kind's own value: clients do not see attribute modifiers of others.
+                    max_health: {
+                        let attr = &content.game.attributes[crate::server::MAX_HEALTH as usize];
+                        attr.comp.and_then(|id| content.components.get::<f64>(crate::components::ENTITY, e.kind, id)).unwrap_or(attr.default) as f32
+                    },
                     ..Default::default()
                 };
-                abi::write_sized(out, &state);
+                *out = state;
                 1
             }
             None => 0,

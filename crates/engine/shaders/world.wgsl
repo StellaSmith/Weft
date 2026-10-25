@@ -13,24 +13,25 @@ struct Globals {
     // Origins are relative to this cube.
     cam_cube: vec4<i32>,
     // x: start of the overlay table in `frames` (per texture: overlay texture + 1, or 0),
-    // y: start of the glow map (glow mask texture per texture index, all ones: none)
+    // z: tint kinds
     extra: vec4<u32>,
 }
 
 @group(1) @binding(0) var<storage, read> g: Globals;
 @group(1) @binding(1) var<storage, read> origins: array<vec4<i32>>;
 @group(1) @binding(2) var<storage, read> records: array<u32>;
-// Per biome: grass, foliage, water as 0xRRGGBB. Then the blended colours of loaded block
-// columns, 0xFFRRGGBB, in 16x16 tiles addressed by column position modulo g.ids.w.
-// Per biome a colour per tint kind (`g.extra.z` kinds), then the blended columns.
+// Per biome a colour per tint kind (`g.extra.z` kinds), 0xRRGGBB. Then the blended colours of
+// loaded block columns, 0xFFRRGGBB, in 16x16 tiles addressed by column position modulo g.ids.w.
 @group(1) @binding(3) var<storage, read> biomes: array<u32>;
-// Two words per texture name, see world_render.rs.
+// Two words per texture name, see `GameTextures::world_tables`.
 @group(1) @binding(4) var<storage, read> tex_info: array<u32>;
-// Animated frames: texture | ticks << 16; then the overlay table and the glow map.
+// Animated frames: texture | ticks << 16; then the overlay table.
 @group(1) @binding(5) var<storage, read> frames: array<u32>;
 // Camera-relative positions of moving structures drawn this frame (0: none, the world's cubes):
 // a cube's `origin.w` picks one, its `origin.xyz` is then the cube in the structure.
 @group(1) @binding(6) var<storage, read> offsets: array<vec4<f32>>;
+// Glow mask texture per bindless texture index, all ones: none.
+@group(1) @binding(7) var<storage, read> glow_map: array<u32>;
 
 var<private> TRI_FLIP: array<u32, 6> = array<u32, 6>(1u, 2u, 3u, 1u, 3u, 0u);
 var<private> AO: array<f32, 4> = array<f32, 4>(0.42, 0.62, 0.8, 1.0);
@@ -54,11 +55,10 @@ struct VOut {
 }
 
 fn glow_of(tex: u32) -> u32 {
-    let i = g.extra.y + tex;
-    if i >= arrayLength(&frames) {
+    if tex >= arrayLength(&glow_map) {
         return 0xffffffffu;
     }
-    return frames[i];
+    return glow_map[tex];
 }
 
 fn unpack_rgb(c: u32) -> vec3<f32> {

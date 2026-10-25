@@ -51,9 +51,6 @@ pub struct Entity {
     pub crouched: bool,
     /// Where it walks to by itself (`Host::navigate`).
     pub nav: Option<super::path::Nav>,
-    /// Solid bodies: how far it moved last tick (clients predict it from this, not from `vel`,
-    /// which keeps gravity's pull while it rests).
-    pub last_move: DVec3,
 }
 
 impl Entity {
@@ -90,7 +87,6 @@ impl Entity {
             block: 0,
             crouched: false,
             nav: None,
-            last_move: DVec3::ZERO,
         }
     }
 
@@ -122,10 +118,9 @@ impl Entity {
         self.pos + DVec3::Y * (self.eye(c) - 0.3)
     }
 
-    pub fn state(&self, c: &Content) -> voxide_abi::EntityState {
+    pub fn state(&self, c: &Content, max_health: f32) -> voxide_abi::EntityState {
         let k = &c.game.entities[self.kind as usize];
         voxide_abi::EntityState {
-            size: size_of::<voxide_abi::EntityState>() as u32,
             kind: self.kind,
             flags: k.flags | if self.blocked { ef::BLOCKED } else { 0 },
             pos: self.pos.to_array(),
@@ -135,7 +130,7 @@ impl Entity {
             on_ground: self.on_ground as u32,
             in_liquid: self.in_liquid as u32,
             health: self.health,
-            max_health: k.max_health,
+            max_health,
             age: self.age,
             fall: self.fall,
             moved: self.moved,
@@ -267,10 +262,6 @@ impl Entities {
     pub fn sort_by_id(&mut self) {
         self.list.sort_by_key(|e| e.id);
         self.index = self.list.iter().enumerate().map(|(i, e)| (e.id, i)).collect();
-    }
-
-    pub fn inv(&mut self, owner: u64) -> Option<&mut Vec<ItemStack>> {
-        self.inventories.get_mut(&owner)
     }
 
     pub fn set_slot(&mut self, owner: u64, slot: u32, stack: ItemStack) {

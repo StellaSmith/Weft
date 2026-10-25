@@ -118,7 +118,6 @@ fn fall_tick(e: &mut BlockEvent) {
 }
 
 pub fn register(r: &mut Registry) {
-    // harvest level N > 0 needs a matching tool of tier N-1 (wood 0, stone 1, iron 2, diamond 3).
     r.block("stone").handle(&STONE).sounds("stone").hardness(1.5).mineable("pickaxe").needs_tool(0).drops("cobblestone", 1).tag("stone").tag("stone_ore_replaceables").tab("building");
     r.block("cobblestone").handle(&COBBLESTONE).sounds("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tag("stone").tag("materials/stone").tab("building");
     r.block("mossy_cobblestone").handle(&MOSSY_COBBLESTONE).sounds("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tab("building");
@@ -262,8 +261,8 @@ fn grass_tick(e: &mut BlockEvent) {
 /// Torches stand on the floor or hang on a wall, facing away from it.
 pub const TORCH_FACINGS: Facings = Facings::only(&[Dir::Up, Dir::North, Dir::East, Dir::South, Dir::West]);
 
-/// A torch facing `d`: on the floor (`Up`) or raised against the wall behind it.
-// ponytail: wall torches stand straight; vanilla's lean needs rotated block boxes.
+/// A torch facing `d`: on the floor (`Up`) or raised against the wall behind it. Wall torches
+/// stand straight: vanilla's lean needs rotated block boxes.
 pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
     let (min, max) = match d {
         Dir::South => ([7.0, 3.0, 0.0], [9.0, 13.0, 2.0]),

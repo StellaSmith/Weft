@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use glam::{DVec3, IVec3, Vec2};
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
-use voxide_abi::{self as abi, ItemStack, Slice, Str, Versioned, client_flags as cf};
+use voxide_abi::{self as abi, ItemStack, Slice, Str, client_flags as cf};
 
 use super::{Request, Running};
 use crate::client::Client;
@@ -221,7 +221,7 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.entities = cl.entities.len() as u32;
             s.particles = cl.particles.len() as u32;
         }
-        abi::write_sized(out, &s);
+        *out = s;
     }
 }
 
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn client_set_player(c: *mut abi::ClientCtx, control: *con
     unsafe {
         let Some(r) = run(c) else { return };
         let Some(g) = r.game.as_mut() else { return };
-        let ctl = abi::read_sized(control);
+        let ctl = *control;
         let p = &mut g.client.player;
         if ctl.mask & m::POS != 0 && DVec3::from_array(ctl.pos).is_finite() {
             p.pos = DVec3::from_array(ctl.pos);
@@ -530,7 +530,7 @@ pub unsafe extern "C" fn client_particles(c: *mut abi::ClientCtx, burst: *const 
     unsafe {
         let Some(r) = run(c) else { return };
         if let Some(g) = r.game.as_mut() {
-            g.client.particles.spawn(&abi::read_sized(burst));
+            g.client.particles.spawn(&*burst);
         }
     }
 }

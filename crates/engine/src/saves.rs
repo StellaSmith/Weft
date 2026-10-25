@@ -31,7 +31,7 @@ pub const SAVE_FORMAT: u32 = 3;
 #[derive(Clone, Debug)]
 pub struct WorldMeta {
     pub dir: PathBuf,
-    /// `SAVE_FORMAT` of the build that wrote it (1: before versions were recorded).
+    /// `SAVE_FORMAT` of the build that wrote it.
     pub format: u32,
     pub name: String,
     pub seed: u64,

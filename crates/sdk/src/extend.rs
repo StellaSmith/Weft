@@ -17,7 +17,7 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::abi::{self, ItemStack, Slice, Str, Versioned};
+use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
 use crate::{Registry, World, callback, host, qualify};
 
@@ -466,7 +466,7 @@ impl Registry {
     /// A step on value chain `name` (`chain::*` or a mod's own) at `stage` (`stage::*`).
     pub fn modify(&mut self, name: &str, stage: u32, f: impl Fn(&mut Modify) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ModifyArgs| {
-            let mut m = Modify { world: World::from_raw(a.world), query: unsafe { abi::read_sized(a.ctx) }, base: a.base, value: a.value };
+            let mut m = Modify { world: World::from_raw(a.world), query: unsafe { *a.ctx }, base: a.base, value: a.value };
             f(&mut m);
             a.value = m.value;
         });

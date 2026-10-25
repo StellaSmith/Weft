@@ -65,10 +65,6 @@ impl Gizmos {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.enabled.is_empty()
-    }
-
     /// Lines, filled boxes and labels to draw this frame.
     pub fn collect(&mut self, client: &Client) -> (Vec<Line>, Vec<Fill>, Vec<Label>) {
         let mut lines = Vec::new();
@@ -133,7 +129,7 @@ impl Gizmos {
             // (light = sky light times daylight, or block light, whichever is more): red where
             // monsters may spawn now, yellow where they may at night, green where never.
             let dim = client.world.dim;
-            let hostile = |s: &&crate::registry::SpawnRule| s.category == voxide_abi::entity_category::HOSTILE && s.dimension.is_none_or(|d| d == dim);
+            let hostile = |s: &&crate::registry::SpawnRule| c.game.categories[s.category as usize].name == "core:hostile" && s.dimension.is_none_or(|d| d == dim);
             let rules: Vec<[u32; 2]> = c.game.spawns.iter().filter(hostile).map(|s| s.light).collect();
             let day = client.daylight();
             let spawns = |light: u32| rules.iter().any(|r| (r[0]..=r[1]).contains(&light));

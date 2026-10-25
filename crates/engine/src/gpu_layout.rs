@@ -36,9 +36,6 @@ shared! {
     /// Tint kinds of faces and quads (0 none); mods' kinds follow the engine's.
     tint {
         MASK = 15,
-        GRASS = voxide_abi::tint::GRASS,
-        FOLIAGE = voxide_abi::tint::FOLIAGE,
-        WATER = voxide_abi::tint::WATER,
     }
     /// Entity box modes (`entity.wgsl`).
     box_mode {

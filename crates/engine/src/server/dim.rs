@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use glam::{DVec3, IVec3};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use voxide_abi::{self as abi, ItemStack, Versioned, block_flags as bf, damage, entity_flags as ef};
+use voxide_abi::{self as abi, ItemStack, block_flags as bf, damage, entity_flags as ef};
 
 use super::entity::{Entities, Entity, step};
 use crate::components as comps;
@@ -242,11 +242,9 @@ pub fn see_through(c: &Content, cube: &Cube) -> u16 {
 /// Seconds to break `state` holding `tool` (item id, 0 = hand), and whether it drops anything.
 pub fn break_time(c: &Content, state: u32, tool: u32) -> (f32, bool) {
     let s = &c.states[state as usize];
-    let b = c.block_of(state);
     if s.hardness < 0.0 {
         return (f32::INFINITY, false);
     }
-    let _ = b;
     // A tool fits when it is of a class the block is mineable with (`mineable/pickaxe` on the
     // block, `tools/pickaxe` on the item).
     let fits = tool != 0 && c.tool_classes.iter().any(|&(mineable, tools)| c.components.has(comps::BLOCK, state, mineable) && c.item_has(tool, tools));
@@ -377,12 +375,7 @@ impl Dim {
             self.light_dirty.insert(p);
         });
         if open_above || !def.sky_light || self.settled.contains(&(pos + IVec3::Y)) {
-            let mut p = pos;
-            while self.cubes.contains_key(&p) && self.settled.insert(p) {
-                self.settled_gen += 1;
-                self.newly_settled.push(p);
-                p -= IVec3::Y;
-            }
+            self.settle_down(pos);
         }
     }
 
@@ -394,8 +387,8 @@ impl Dim {
         if gone.is_empty() {
             return out;
         }
-        // One pass over entities and growth for all cubes (a crowd of mobs and every growing
-        // block were looked at again for each cube leaving).
+        // One pass over entities and growth for all cubes leaving, not one per cube (a crowd of
+        // mobs times thousands of cubes).
         let mut inside: FxHashMap<IVec3, Vec<u64>> = FxHashMap::default();
         for e in self.entities.list.iter().filter(|e| !e.removed && !e.player) {
             let cp = cube_of(e.pos.floor().as_ivec3());
@@ -518,7 +511,7 @@ impl Dim {
         if let Some(blocks) = super::structure::template(c, kind) {
             self.structures.insert(id, Box::new(Dim::new_structure(c, self.id, self.seed, self.next_id.clone(), blocks)));
         }
-        let mut e = Entity::new(id, kind, pos, k.max_health);
+        let mut e = Entity::new(id, kind, pos, 0.0);
         // Solid bodies collide as axis-aligned boxes, so they start square to the world.
         if !k.is(ef::SOLID) {
             e.yaw = (self.rng.float() * std::f32::consts::TAU) - std::f32::consts::PI;
@@ -752,15 +745,15 @@ impl Dim {
         }
     }
 
-    /// Starts or retargets `id`'s walk to `target`. A target close to the current one only
-    /// moves it (the path follows at the next look); for a new one the path is looked for in
-    /// `navigation`, after the mods' tick, together with every other walk started this tick.
     /// Players mods see (spectators left out, so mobs neither chase nor spawn around them).
     pub fn visible_players(&mut self) -> &[u64] {
         let list = &self.entities.list;
         self.players.get_or_insert_with(|| list.iter().filter(|e| e.player && !e.removed && e.mode != crate::world::GameMode::Spectator).map(|e| e.id).collect())
     }
 
+    /// Starts or retargets `id`'s walk to `target`. A target close to the current one only
+    /// moves it (the path follows at the next look); for a new one the path is looked for in
+    /// `navigation`, after the mods' tick, together with every other walk started this tick.
     pub fn navigate(&mut self, id: u64, target: DVec3, speed: f32) -> bool {
         let Some(e) = self.entities.get_mut(id) else { return false };
         if speed <= 0.0 {
@@ -917,7 +910,6 @@ impl Dim {
             }
             let before = e.pos;
             step(c, e, gravity, &block, &bodies);
-            e.last_move = e.pos - before;
             // A structure collides as its blocks, an empty one not at all.
             let built = structures.get(&e.id);
             let Some(aabb) = built.map_or(Some(e.aabb(c)), |s| s.structure_box(e.pos)) else { continue };
@@ -1159,15 +1151,6 @@ impl Dim {
             let resent: FxHashSet<IVec3> = self.resend.iter().map(|r| r.0).collect();
             self.changes.retain(|(p, _)| !resent.contains(&cube_of(*p)));
         }
-    }
-
-    /// The player finished breaking a block holding `tool`.
-    pub fn player_break(&mut self, c: &'static Content, p: IVec3, player: u64, tool: ItemStack) -> bool {
-        let creative = self.entities.get(player).is_some_and(|e| e.mode == crate::world::GameMode::Creative);
-        let done = self.break_block(c, p, tool, player, !creative);
-        self.flush_neighbors(c);
-        self.finish_tick(c);
-        done
     }
 
     /// Breaks a block as if mined with `tool`: asks interceptors, drops its loot if the tool may

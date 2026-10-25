@@ -117,12 +117,6 @@ pub struct Selector {
     pub sort: Option<String>,
 }
 
-impl Selector {
-    pub fn players_only(&self) -> bool {
-        self.base != 'e'
-    }
-}
-
 /// Where and which way the command runs from, for `~` and `^` coordinates and selectors.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Origin {
@@ -337,21 +331,6 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
     Ok(Args { names: slots.to_vec(), values })
 }
 
-/// Parses `tokens` against the first alternative that accepts them.
-pub fn parse_args(c: &Content, alts: &[Alt], tokens: &[&str], here: Origin, players: &[String]) -> Result<Args, String> {
-    let slots = slots(alts);
-    let mut first_err = None;
-    for alt in alts {
-        match parse_alt(c, alt, tokens, here, players, &slots) {
-            Ok(a) => return Ok(a),
-            Err(e) => {
-                first_err.get_or_insert(e);
-            }
-        }
-    }
-    Err(first_err.unwrap_or_else(|| "bad arguments".into()))
-}
-
 #[derive(Clone)]
 pub struct CommandDef {
     pub name: String,
@@ -390,7 +369,6 @@ impl CommandDef {
         Err(first_err.unwrap_or_else(|| "bad arguments".into()))
     }
 
-    /// Adds completion words to every `word` parameter called `param`; false if there is none.
     /// Another mod's alternatives with its own handler.
     pub fn add_branch(&mut self, alts: Vec<Alt>, handler: (ModId, Callback)) {
         self.branches.push(handler);
@@ -446,7 +424,7 @@ pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<voxide_abi::C
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            let mut out = voxide_abi::CommandValue { kind: cv::NONE, int: 0, float: 0.0, text: Str::new(""), pos: [0.0; 3] };
+            let mut out = voxide_abi::CommandValue { kind: cv::NONE, int: 0, float: 0.0, text: Str::new(""), pos: [0.0; 3], name: Str::new(&args.names[i]) };
             match v {
                 None => {}
                 Some(Value::Int(n)) => (out.kind, out.int, out.float) = (cv::INT, *n, *n as f64),

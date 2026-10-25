@@ -1,12 +1,7 @@
-//! The stable boundary between the engine and mods. Everything here is `repr(C)` so a mod built
-//! with any rustc (or another language) keeps working. Rules:
-//! - [`Host`] only grows at the end, `size` tells a mod how much of it exists.
-//! - Every descriptor a mod hands to the engine starts with `size: u32`, the struct size the mod
-//!   was built with. Descriptors only grow at the end; the engine reads what the mod has and uses
-//!   the `DEFAULT` of the fields it does not know. Structs passed in slices carry their size too,
-//!   so the engine walks them with the mod's stride.
-//! - Structs the engine writes into mod memory (`EntityState`) start with `size` as well.
-//! - Callback args only grow at the end; older mods read the part they know.
+//! The boundary between the engine and mods. Everything here is `repr(C)` so a mod built with
+//! any rustc (or another language) can be loaded. Rules:
+//! - A mod is loaded only if it was built against this exact file (`ABI_VERSION` is a hash of
+//!   it), so layouts may change freely; mods are rebuilt with the engine.
 //! - Descriptor structs passed to the host are read during the call only.
 //! - Strings are UTF-8 `(ptr, len)`, never NUL terminated.
 #![no_std]
@@ -14,10 +9,21 @@
 use core::ffi::c_void;
 use core::sync::atomic::AtomicU32;
 
-/// Version 2: sized descriptors, components instead of props and fixed item fields.
-pub const ABI_VERSION: u32 = 2;
+/// FNV-1a of this file: any change to it (layouts included) makes mods built before it refuse
+/// to load instead of reading the wrong memory.
+pub const ABI_VERSION: u64 = fnv(include_str!("lib.rs").as_bytes());
 /// Symbol every mod library exports: `extern "C" fn() -> *const ModDecl`.
-pub const ENTRY_SYMBOL: &[u8] = b"voxide_mod_v1\0";
+pub const ENTRY_SYMBOL: &[u8] = b"voxide_mod\0";
+
+const fn fnv(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < bytes.len() {
+        h = (h ^ bytes[i] as u64).wrapping_mul(0x0100_0000_01b3);
+        i += 1;
+    }
+    h
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -73,62 +79,11 @@ impl<T> Slice<T> {
     }
 }
 
-/// A descriptor that starts with its own size (see the crate docs).
-///
-/// # Safety
-/// The type must be `repr(C)` with `size: u32` as its first field.
-pub unsafe trait Versioned: Copy {
-    const DEFAULT: Self;
-}
-
-/// Reads a sized descriptor written by a mod built against any older or equal ABI: the bytes it
-/// has over the defaults of the rest.
-///
-/// # Safety
-/// `p` must point to a descriptor of type `T` (of the mod's version).
-pub unsafe fn read_sized<T: Versioned>(p: *const T) -> T {
-    let mut out = T::DEFAULT;
-    unsafe {
-        let theirs = *(p as *const u32) as usize;
-        let n = theirs.min(size_of::<T>());
-        core::ptr::copy_nonoverlapping(p as *const u8, &mut out as *mut T as *mut u8, n);
-        *(&mut out as *mut T as *mut u32) = size_of::<T>() as u32;
-    }
-    out
-}
-
-/// Calls `f` with every element of a slice of sized descriptors, stepping by the mod's size.
-///
-/// # Safety
-/// `s` must hold `len` descriptors of type `T` laid out with the size their first one names.
-pub unsafe fn each_sized<T: Versioned>(s: Slice<T>, mut f: impl FnMut(T)) {
-    if s.len == 0 {
-        return;
-    }
-    unsafe {
-        let stride = (*(s.ptr as *const u32) as usize).max(4);
-        for i in 0..s.len {
-            f(read_sized((s.ptr as *const u8).add(i * stride) as *const T));
-        }
-    }
-}
-
-/// Writes a struct into memory a mod owns, at most the size it says it has.
-///
-/// # Safety
-/// `out` must point to a `T` of the mod's version whose first field is its size.
-pub unsafe fn write_sized<T: Versioned>(out: *mut T, value: &T) {
-    unsafe {
-        let theirs = *(out as *const u32) as usize;
-        let n = theirs.min(size_of::<T>());
-        core::ptr::copy_nonoverlapping((value as *const T as *const u8).add(4), (out as *mut u8).add(4), n.saturating_sub(4));
-    }
-}
-
-macro_rules! versioned {
+/// `DEFAULT` for descriptors, so mods fill in only what they set (`..X::DEFAULT`).
+macro_rules! defaults {
     ($t:ident { $($f:ident: $v:expr),* $(,)? }) => {
-        unsafe impl Versioned for $t {
-            const DEFAULT: Self = $t { size: size_of::<$t>() as u32, $($f: $v),* };
+        impl $t {
+            pub const DEFAULT: Self = $t { $($f: $v),* };
         }
     };
 }
@@ -173,7 +128,7 @@ pub struct WorldCtx {
 
 #[repr(C)]
 pub struct ModDecl {
-    pub abi_version: u32,
+    pub abi_version: u64,
     pub id: Str,
     pub name: Str,
     pub version: Str,
@@ -231,13 +186,12 @@ pub mod set_target {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SetDesc {
-    pub size: u32,
     pub target_kind: u32,
     pub target: Str,
     pub value: CompValue,
     pub remove: u32,
 }
-versioned!(SetDesc { target_kind: 0, target: Str::EMPTY, value: CompValue { name: Str::EMPTY, schema: Str::EMPTY, value: Slice::EMPTY }, remove: 0 });
+defaults!(SetDesc { target_kind: 0, target: Str::EMPTY, value: CompValue { name: Str::EMPTY, schema: Str::EMPTY, value: Slice::EMPTY }, remove: 0 });
 
 /// Frozen components of one entry kind, readable directly by mods: whether entry `e` has
 /// component `c` is bit `c % 64` of `bits[e * words + c / 64]`; its value (if the component has
@@ -261,7 +215,6 @@ pub struct Column {
 
 #[repr(C)]
 pub struct ComponentTable {
-    pub size: u32,
     /// Number of component ids.
     pub components: u32,
     pub kinds: [KindTable; entry_kind::COUNT],
@@ -340,7 +293,7 @@ pub mod block_flags {
     pub const CLIMBABLE: u32 = 16;
     /// Raycasts pass through (air, liquids for normal interaction).
     pub const NOT_TARGETABLE: u32 = 32;
-    /// Receives random ticks.
+    /// Receives random ticks: set by the engine on blocks with `on_random_tick`.
     pub const RANDOM_TICKS: u32 = 64;
     /// Hide faces between two blocks of this kind (glass). Without it see-through blocks keep
     /// their inner faces, which is what makes leaves look dense.
@@ -373,18 +326,16 @@ pub enum Layer {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModelBox {
-    pub size: u32,
     /// In 1/16 block units.
     pub min: [f32; 3],
     pub max: [f32; 3],
     pub textures: [Str; 6],
 }
-versioned!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6] });
+defaults!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6] });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct StateDesc {
-    pub size: u32,
     pub flags: u32,
     /// Emitted light per colour channel. 15 is a normal full-strength source (torch is 14); higher
     /// values are allowed and simply reach further (up to 255).
@@ -393,8 +344,6 @@ pub struct StateDesc {
     pub filter: [u8; 3],
     /// How much light it absorbs per block, 0 for air/glass, 15 or more blocks it fully.
     pub opacity: u8,
-    /// 0 none, 1 grass, 2 foliage, 3 water (biome colours).
-    pub tint: u8,
     /// Which faces the tint applies to, bit per face in -X, +X, -Y, +Y, -Z, +Z order.
     pub tint_faces: u8,
     pub layer: Layer,
@@ -420,15 +369,15 @@ pub struct StateDesc {
     /// Block tag one of the supporting block's four horizontal neighbours needs (sugar cane:
     /// `water`), unless the support is the same block (a stack); empty = none.
     pub support_near: Str,
-    /// A tint kind by name (`Host::reg_tint_kind`, or `core:grass` ...), instead of `tint`.
+    /// A tint kind by name (`Host::reg_tint_kind`, or `core:grass`, `core:foliage`, `core:water`);
+    /// empty = none.
     pub tint_name: Str,
 }
-versioned!(StateDesc {
+defaults!(StateDesc {
     flags: block_flags::SOLID | block_flags::OPAQUE,
     light: [0; 3],
     filter: [0; 3],
     opacity: 15,
-    tint: 0,
     tint_faces: 0x3F,
     layer: Layer::Opaque,
     level: 0,
@@ -449,7 +398,6 @@ versioned!(StateDesc {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BlockDesc {
-    pub size: u32,
     pub name: Str,
     /// Receives the id of the first state once registries are frozen (null = no handle).
     pub cell: *const AtomicU32,
@@ -486,7 +434,7 @@ pub struct BlockDesc {
     /// names, applied to those states and the block's item.
     pub retexture: Slice<Str>,
 }
-versioned!(BlockDesc {
+defaults!(BlockDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     states: Slice::EMPTY,
@@ -511,7 +459,6 @@ versioned!(BlockDesc {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ItemDesc {
-    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     /// Texture for the flat icon. Empty with `block` set means a 3D block icon.
@@ -523,22 +470,18 @@ pub struct ItemDesc {
     /// `ItemUseArgs`.
     pub on_use: Callback,
 }
-versioned!(ItemDesc { name: Str::EMPTY, cell: core::ptr::null(), texture: Str::EMPTY, block: Str::EMPTY, components: Slice::EMPTY, on_use: Callback::NONE });
+defaults!(ItemDesc { name: Str::EMPTY, cell: core::ptr::null(), texture: Str::EMPTY, block: Str::EMPTY, components: Slice::EMPTY, on_use: Callback::NONE });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BiomeDesc {
-    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
-    pub grass: u32,
-    pub foliage: u32,
-    pub water: u32,
     pub temperature: f32,
     pub rainfall: f32,
     pub components: Slice<CompValue>,
 }
-versioned!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), grass: 0x8db360, foliage: 0x77ab2f, water: 0x3f76e4, temperature: 0.8, rainfall: 0.4, components: Slice::EMPTY });
+defaults!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), temperature: 0.8, rainfall: 0.4, components: Slice::EMPTY });
 
 #[repr(C)]
 pub struct GenArgs {
@@ -560,7 +503,6 @@ pub struct SpawnArgs {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DimensionDesc {
-    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     /// `GenArgs`, called in parallel from worker threads, must be a pure function of its args.
@@ -589,7 +531,7 @@ pub struct DimensionDesc {
     /// `dim_flags`.
     pub flags: u32,
 }
-versioned!(DimensionDesc {
+defaults!(DimensionDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     generator: Callback::NONE,
@@ -642,7 +584,6 @@ pub struct StructureBlock {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct StructureDesc {
-    pub size: u32,
     pub name: Str,
     pub dimension: Str,
     pub blocks: Slice<StructureBlock>,
@@ -651,7 +592,7 @@ pub struct StructureDesc {
     pub biome: Str,
     pub sink: i32,
 }
-versioned!(StructureDesc { name: Str::EMPTY, dimension: Str::EMPTY, blocks: Slice::EMPTY, spacing: 32, chance: 0.5, biome: Str::EMPTY, sink: 0 });
+defaults!(StructureDesc { name: Str::EMPTY, dimension: Str::EMPTY, blocks: Slice::EMPTY, spacing: 32, chance: 0.5, biome: Str::EMPTY, sink: 0 });
 
 // ---------------------------------------------------------------- callback args
 
@@ -771,7 +712,6 @@ pub mod part_role {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModelCuboid {
-    pub size: u32,
     pub origin: [f32; 3],
     pub extent: [f32; 3],
     pub uv: [f32; 2],
@@ -783,7 +723,7 @@ pub struct ModelCuboid {
     pub faces: [[f32; 4]; 6],
     pub per_face: u32,
 }
-versioned!(ModelCuboid { origin: [0.0; 3], extent: [1.0; 3], uv: [0.0; 2], inflate: 0.0, mirror: 0, faces: [[0.0; 4]; 6], per_face: 0 });
+defaults!(ModelCuboid { origin: [0.0; 3], extent: [1.0; 3], uv: [0.0; 2], inflate: 0.0, mirror: 0, faces: [[0.0; 4]; 6], per_face: 0 });
 
 /// A corner of a model's free-form triangles (spheres, curved shapes): model pixels like the
 /// pivots, texels.
@@ -797,7 +737,6 @@ pub struct MeshVertex {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ModelPart {
-    pub size: u32,
     /// Pivot in model pixels, y up from the feet.
     pub pivot: [f32; 3],
     pub role: u32,
@@ -811,23 +750,19 @@ pub struct ModelPart {
     /// Triangles, three corners each, besides the boxes.
     pub mesh: Slice<MeshVertex>,
 }
-versioned!(ModelPart { pivot: [0.0; 3], role: 0, cuboids: Slice::EMPTY, rest: [0.0; 3], name: Str::EMPTY, parent: -1, mesh: Slice::EMPTY });
+defaults!(ModelPart { pivot: [0.0; 3], role: 0, cuboids: Slice::EMPTY, rest: [0.0; 3], name: Str::EMPTY, parent: -1, mesh: Slice::EMPTY });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct EntityDesc {
-    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     pub width: f32,
     pub height: f32,
     pub eye: f32,
-    pub max_health: f32,
     /// Walking speed in blocks per second.
     pub speed: f32,
     pub flags: u32,
-    /// `entity_category` (0 misc, 1 hostile, 2 passive); `category_name` names others.
-    pub category: u32,
     pub texture: Str,
     pub texture_size: [u32; 2],
     pub parts: Slice<ModelPart>,
@@ -843,19 +778,18 @@ pub struct EntityDesc {
     /// Solid bodies: how far above it a rider may be (jumping) and still move with it, keeping
     /// its own motion relative to the body; 0 = only while standing on it.
     pub carry_height: f32,
-    /// A category by name (`Host::reg_entity_category`), instead of `category`.
+    /// A category by name (`core:misc`, `core:hostile`, `core:passive`, or one from
+    /// `Host::reg_entity_category`); empty = `core:misc`.
     pub category_name: Str,
 }
-versioned!(EntityDesc {
+defaults!(EntityDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     width: 0.6,
     height: 1.8,
     eye: 1.6,
-    max_health: 20.0,
     speed: 3.0,
     flags: entity_flags::FALL_DAMAGE | entity_flags::PUSHABLE,
-    category: 0,
     texture: Str::EMPTY,
     texture_size: [64, 32],
     parts: Slice::EMPTY,
@@ -909,7 +843,6 @@ pub mod damage {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct EntityState {
-    pub size: u32,
     pub kind: u32,
     pub flags: u32,
     pub pos: [f64; 3],
@@ -927,7 +860,7 @@ pub struct EntityState {
     /// standing, 1 running) in the frame of what it stands on.
     pub moved: f32,
 }
-versioned!(EntityState {
+defaults!(EntityState {
     kind: 0,
     flags: 0,
     pos: [0.0; 3],
@@ -961,11 +894,11 @@ pub mod component_flags {
 }
 
 /// Per-entity data storage (hunger, machine state): created with `default` on spawn of the kinds
-/// in `attach_to`. The name lives in the same namespace as content components.
+/// it is attached to (`Host::reg_attach_value`). The name lives in the same namespace as content
+/// components.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ComponentDesc {
-    pub size: u32,
     pub name: Str,
     pub schema: Str,
     /// Value size in bytes.
@@ -973,10 +906,8 @@ pub struct ComponentDesc {
     pub flags: u32,
     /// Initial bytes, `value_size` long.
     pub default: Slice<u8>,
-    /// Entity kinds ("core:player") that get this component when spawned.
-    pub attach_to: Slice<Str>,
 }
-versioned!(ComponentDesc { name: Str::EMPTY, schema: Str::EMPTY, value_size: 0, flags: 0, default: Slice::EMPTY, attach_to: Slice::EMPTY });
+defaults!(ComponentDesc { name: Str::EMPTY, schema: Str::EMPTY, value_size: 0, flags: 0, default: Slice::EMPTY });
 
 /// Recipe ingredients are item names or `#tag`.
 #[repr(C)]
@@ -989,7 +920,6 @@ pub struct RecipeKey {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RecipeDesc {
-    pub size: u32,
     /// Recipe type, e.g. "base:crafting", "base:smelting". Any mod can add types.
     pub kind: Str,
     /// Shaped recipes: rows of key characters. Empty for shapeless/processing.
@@ -1002,7 +932,7 @@ pub struct RecipeDesc {
     /// Processing time in ticks, meaning is up to the recipe type.
     pub time: u32,
 }
-versioned!(RecipeDesc { kind: Str::EMPTY, pattern: Slice::EMPTY, keys: Slice::EMPTY, inputs: Slice::EMPTY, output: Str::EMPTY, count: 1, time: 0 });
+defaults!(RecipeDesc { kind: Str::EMPTY, pattern: Slice::EMPTY, keys: Slice::EMPTY, inputs: Slice::EMPTY, output: Str::EMPTY, count: 1, time: 0 });
 
 pub mod slot_flags {
     /// Can only be taken from (crafting result).
@@ -1012,7 +942,6 @@ pub mod slot_flags {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MenuDesc {
-    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     /// Slots in the menu's own temporary inventory (crafting grids), returned to the player on close.
@@ -1028,7 +957,7 @@ pub struct MenuDesc {
     /// `UiArgs`, client: build the screen. Slot widgets refer to menu slot indices.
     pub screen: Callback,
 }
-versioned!(MenuDesc {
+defaults!(MenuDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     temp_slots: 0,
@@ -1114,18 +1043,16 @@ pub mod ui_dir {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct UiArg {
-    pub size: u32,
     /// 0 text, 1 translation key, 2 integer, 3 float, 4 item id.
     pub kind: u32,
     pub text: Str,
     pub num: f64,
 }
-versioned!(UiArg { kind: 0, text: Str::EMPTY, num: 0.0 });
+defaults!(UiArg { kind: 0, text: Str::EMPTY, num: 0.0 });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct UiNode {
-    pub size: u32,
     pub kind: u32,
     pub class: Str,
     /// Translation key (or texture for IMAGE).
@@ -1152,7 +1079,7 @@ pub struct UiNode {
     /// `ui_dir` for progress bars.
     pub dir: u32,
 }
-versioned!(UiNode {
+defaults!(UiNode {
     kind: 0,
     class: Str::EMPTY,
     text: Str::EMPTY,
@@ -1201,8 +1128,6 @@ pub mod level {
 
 #[repr(C)]
 pub struct Host {
-    /// `size_of::<Host>()` of the engine build, see crate docs.
-    pub size: usize,
     pub log: unsafe extern "C" fn(me: ModId, level: u32, msg: Str),
     /// Like `log` under a sub-target of the mod's own: `mod:<id>::<target>` (`mod:<id>` if empty),
     /// so players can filter it with `--log`/`/log`.
@@ -1217,11 +1142,9 @@ pub struct Host {
     pub reg_dimension: unsafe extern "C" fn(reg: *mut Registrar, desc: *const DimensionDesc),
     pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
     pub reg_component: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ComponentDesc),
-    /// Extra callbacks on an entity kind owned by someone else: hook 1 hurt, 2 death, 3 interact
-    /// (`EntityEventArgs`); tick hooks go through `reg_entity_tick_hook`.
+    /// Extra callbacks on an entity kind owned by someone else (`entity_hook`): the tick gets
+    /// `EntityTickArgs` with every entity of `kind`, the others `EntityEventArgs`.
     pub reg_entity_hook: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, hook: u32, cb: Callback),
-    /// `EntityTickArgs` with every entity of `kind` once per tick.
-    pub reg_entity_tick_hook: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
     pub reg_recipe: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeDesc),
     pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
     /// Menu opened by the inventory key.
@@ -1229,8 +1152,6 @@ pub struct Host {
     /// Block entity kind created (with an inventory of `slots`) when the block is placed, removed
     /// (dropping its items) when broken.
     pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str, slots: u32),
-    /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at spawn.
-    pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str),
     /// HUD element `name` placed at `anchor` (see `hud_anchor`), `order` 0 nearest the anchor's
     /// edge. Players can move any element to another anchor in `config/hud.txt`.
     pub reg_hud_element: unsafe extern "C" fn(reg: *mut Registrar, name: Str, anchor: Str, order: i32, cb: Callback),
@@ -1284,9 +1205,9 @@ pub struct Host {
     pub entity_look_at: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32) -> u32,
     /// Fills `out` with ids near `pos` (all kinds if `kind` is u32::MAX), returns how many matched.
     pub entities_near: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize,
-    /// An entity's component bytes, null if it has none. `write` non-zero marks it changed (sent
-    /// to its owner, saved); reads pass 0, or every read would be synced.
-    pub component: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, comp: u32, write: u32) -> *mut u8,
+    /// An entity's component bytes, null if it has none. Changes are found by comparing with
+    /// what was last sent, so writing through the pointer is enough.
+    pub component: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, comp: u32) -> *mut u8,
     pub player_count: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
     pub player_at: unsafe extern "C" fn(world: *mut WorldCtx, index: u32) -> u64,
     /// Non-zero for a player in creative mode (no damage, hunger or item use costs).
@@ -1303,8 +1224,9 @@ pub struct Host {
     pub open_menu: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, menu: u32, owner: u64),
 
     /// During `MenuDesc::setup`: add `count` slots of `owner`'s inventory (0 = the menu's temp slots,
-    /// u64::MAX = the player) starting at `start`.
-    pub menu_slots: unsafe extern "C" fn(menu: *mut MenuCtx, owner: u64, start: u32, count: u32, flags: u32),
+    /// u64::MAX = the player) starting at `start`. A non-empty `accepts` takes only items with that
+    /// tag or component (armour slots); shift-clicks fill these before plain slots.
+    pub menu_slots: unsafe extern "C" fn(menu: *mut MenuCtx, owner: u64, start: u32, count: u32, flags: u32, accepts: Str),
     pub menu_get: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32) -> ItemStack,
     pub menu_set: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32, stack: ItemStack),
 
@@ -1338,7 +1260,7 @@ pub struct Host {
     /// corners `a` and `b`, 2 `text` at `a`, 3 filled box; `color` is 0xRRGGBBAA, kept for `ticks`.
     pub gizmo: unsafe extern "C" fn(world: *mut WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, text: Str),
 
-    // ------------------------------------------------ client side and mod channels (ABI 2.1)
+    // ------------------------------------------------ client side and mod channels
     /// Client callback, see `client_hook`.
     pub reg_client_hook: unsafe extern "C" fn(reg: *mut Registrar, hook: u32, cb: Callback),
     /// Message channel `name` between a mod's client and server parts. `side` 0: `cb` runs on the
@@ -1409,7 +1331,7 @@ pub struct Host {
     /// `ns:block#i` for its `i`-th state. Empty if unknown. Valid for the whole session.
     pub name_of: unsafe extern "C" fn(kind: u32, id: u32) -> Str,
 
-    // ------------------------------------------------ liquids (stage 2)
+    // ------------------------------------------------ liquids
     /// Makes a registered block (16 liquid states, see `LiquidDesc`) a liquid the engine flows.
     pub reg_liquid: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LiquidDesc),
     pub reg_liquid_reaction: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ReactionDesc),
@@ -1426,7 +1348,7 @@ pub struct Host {
     /// Current value of a rule in this world, 0 for unknown names.
     pub rule: unsafe extern "C" fn(world: *mut WorldCtx, name: Str) -> i64,
 
-    // ------------------------------------------------ events, interceptors, modifiers, loot (stage 3)
+    // ------------------------------------------------ events, interceptors, modifiers, loot
     /// Subscribes to event `name` carrying values of `schema` (checked against every other use);
     /// `cb` gets `EventArgs` once per tick and region with every value queued since.
     pub reg_event_handler: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, cb: Callback),
@@ -1479,7 +1401,7 @@ pub struct Host {
     /// `CommandArgs` laid out by this usage; runs where the command runs.
     pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, cb: Callback),
 
-    // ------------------------------------------------ text, shaders, particles (stage 6)
+    // ------------------------------------------------ text, shaders, particles
     /// Condition `<ns>:<name>` for `{if:...}` in texts, answered by `cb` (`TextConditionArgs`)
     /// on the client while a text using it is on screen.
     pub reg_text_condition: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cb: Callback),
@@ -1490,7 +1412,7 @@ pub struct Host {
     /// Client: particles only this client shows.
     pub client_particles: unsafe extern "C" fn(client: *mut ClientCtx, burst: *const ParticleBurst),
 
-    // ------------------------------------------------ configs, sound, models (stage 7)
+    // ------------------------------------------------ configs, sound, models
     /// A setting players change in Settings > Mods (and `config/<ns>.txt`), see `ConfigDesc`.
     pub reg_config: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ConfigDesc),
     /// Current value of config `id` (bools 0/1, choices their index); 0 for unknown ids.
@@ -1517,9 +1439,9 @@ pub struct Host {
     pub reg_spawn: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SpawnDesc),
     /// Biome id at a block (underground biomes included); 0 where nothing is loaded.
     pub biome_at: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
-    /// Entity `id` walks to `target` by itself along a path around obstacles (looked for again
-    /// every second, so a moving target can be given every tick), at `speed` times its walking
-    /// speed; 0 stops it. Returns 1 when the path found reaches the target.
+    /// Entity `id` walks to `target` by itself along a path around obstacles (a moving target can
+    /// be given every tick), at `speed` times its walking speed; 0 stops it. Returns 1 when the
+    /// walk was accepted.
     pub navigate: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, target: *const [f64; 3], speed: f32) -> u32,
     /// Whether `id` is still walking somewhere.
     pub navigating: unsafe extern "C" fn(world: *mut WorldCtx, id: u64) -> u32,
@@ -1530,7 +1452,8 @@ pub struct Host {
     /// The block at `pos` falls as an entity and is placed again where it lands; returns the
     /// entity (0 if there was no block).
     pub fall_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u64,
-    /// `reg_attach` with this kind's own starting value (the component's size in bytes).
+    /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at
+    /// spawn, starting as `value` (the component's size in bytes), empty: the component's default.
     pub reg_attach_value: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str, value: Slice<u8>),
     /// A kind of recipe (`base:crafting`): recipes, stations and loot naming a kind nobody
     /// registered are freeze errors.
@@ -1546,9 +1469,6 @@ pub struct Host {
     pub reg_tint_kind: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: u32),
     /// The colour of a tint kind in a biome (any mod's of either).
     pub reg_biome_tint: unsafe extern "C" fn(reg: *mut Registrar, biome: Str, kind: Str, color: u32),
-    /// Like `menu_slots`, taking only items with tag or component `accepts` (armour slots);
-    /// shift-clicks fill these before plain slots.
-    pub menu_slots_for: unsafe extern "C" fn(menu: *mut MenuCtx, owner: u64, start: u32, count: u32, flags: u32, accepts: Str),
     /// The player inventory: `slots` in all, the first `hotbar` of them the hotbar, and
     /// `worn_count` from `worn_start` equipment (never filled by pickups, shown on the model).
     /// Of several, the mod loaded last wins.
@@ -1581,7 +1501,6 @@ pub struct Host {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SpawnDesc {
-    pub size: u32,
     pub entity: Str,
     /// Tag the spot's biome must carry (`forest`, `cave`), empty: any biome.
     pub biome: Str,
@@ -1599,7 +1518,7 @@ pub struct SpawnDesc {
     /// Chance per attempt once the rule is picked.
     pub chance: f32,
 }
-versioned!(SpawnDesc {
+defaults!(SpawnDesc {
     entity: Str::EMPTY,
     biome: Str::EMPTY,
     ground: Str::EMPTY,
@@ -1611,7 +1530,6 @@ versioned!(SpawnDesc {
     chance: 1.0,
 });
 
-/// What a sound is, for its volume setting.
 /// Light as the world stores it: a byte each for sky, red, green and blue, 0..15.
 pub mod light {
     pub const fn sky(l: u32) -> u32 {
@@ -1667,7 +1585,7 @@ pub mod gizmo_kind {
     pub const FILL: u32 = 3;
 }
 
-/// `Host::reg_entity_hook` (the tick has `reg_entity_tick_hook`).
+/// `Host::reg_entity_hook`.
 pub mod entity_hook {
     pub const TICK: u32 = 0;
     pub const HURT: u32 = 1;
@@ -1675,36 +1593,12 @@ pub mod entity_hook {
     pub const INTERACT: u32 = 3;
 }
 
-/// Tint kinds of block faces (`BlockDesc` tint): colour from the biome.
-/// The engine's tint kinds (`core:grass`, `core:foliage`, `core:water`); mods add their own
-/// with `Host::reg_tint_kind` and name them in `StateDesc::tint_name`.
+/// Tint kinds of block faces: colour from the biome. The engine has `core:grass`,
+/// `core:foliage` and `core:water`; mods add their own with `Host::reg_tint_kind` and name them
+/// in `StateDesc::tint_name`.
 pub mod tint {
-    pub const NONE: u32 = 0;
-    pub const GRASS: u32 = 1;
-    pub const FOLIAGE: u32 = 2;
-    pub const WATER: u32 = 3;
     /// Kinds that fit the face and quad records, the engine's three included.
     pub const MAX: u32 = 15;
-}
-
-/// `EntityDesc::category`: the engine's categories (`core:misc`, `core:hostile`,
-/// `core:passive`).
-pub mod entity_category {
-    pub const MISC: u32 = 0;
-    pub const HOSTILE: u32 = 1;
-    pub const PASSIVE: u32 = 2;
-}
-
-/// The engine's sound categories (`core:blocks` ...); mods add their own with
-/// `Host::reg_sound_category` and name them in `SoundDesc::category_name`.
-pub mod sound_category {
-    pub const BLOCKS: u32 = 0;
-    pub const CREATURES: u32 = 1;
-    pub const PLAYERS: u32 = 2;
-    pub const AMBIENT: u32 = 3;
-    pub const MUSIC: u32 = 4;
-    /// Not affected by caves or water.
-    pub const UI: u32 = 5;
 }
 
 /// A sound event: plays one of `files` (`sounds/<name>.ogg` or `.wav` in any mod or resource
@@ -1712,20 +1606,20 @@ pub mod sound_category {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SoundDesc {
-    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     pub files: Slice<Str>,
-    pub category: u32,
     pub volume: f32,
     /// Playback speed picked between the two (1 = as recorded).
     pub pitch: [f32; 2],
     /// Blocks away it can still be heard (at volume 1).
     pub range: f32,
-    /// A mod's category by name, instead of `category`.
+    /// Category by name, for its volume setting: the engine's `core:blocks` (empty),
+    /// `core:creatures`, `core:players`, `core:ambient`, `core:music`, `core:ui`, or one from
+    /// `Host::reg_sound_category`.
     pub category_name: Str,
 }
-versioned!(SoundDesc { name: Str::EMPTY, cell: core::ptr::null(), files: Slice::EMPTY, category: sound_category::BLOCKS, volume: 1.0, pitch: [1.0, 1.0], range: 16.0, category_name: Str::EMPTY });
+defaults!(SoundDesc { name: Str::EMPTY, cell: core::ptr::null(), files: Slice::EMPTY, volume: 1.0, pitch: [1.0, 1.0], range: 16.0, category_name: Str::EMPTY });
 
 /// When background music may play; 0 = always.
 pub mod music_when {
@@ -1741,7 +1635,6 @@ pub mod music_when {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MusicDesc {
-    pub size: u32,
     pub name: Str,
     /// Sound files streamed (`sounds/<name>.ogg|.wav`).
     pub tracks: Slice<Str>,
@@ -1749,7 +1642,7 @@ pub struct MusicDesc {
     pub dimension: Str,
     pub when: u32,
 }
-versioned!(MusicDesc { name: Str::EMPTY, tracks: Slice::EMPTY, dimension: Str::EMPTY, when: 0 });
+defaults!(MusicDesc { name: Str::EMPTY, tracks: Slice::EMPTY, dimension: Str::EMPTY, when: 0 });
 
 /// Kinds of `ConfigDesc` values.
 pub mod config_kind {
@@ -1771,7 +1664,6 @@ pub mod config_flags {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ConfigDesc {
-    pub size: u32,
     /// `ns:key`.
     pub name: Str,
     pub cell: *const AtomicU32,
@@ -1784,7 +1676,7 @@ pub struct ConfigDesc {
     pub choices: Slice<Str>,
     pub flags: u32,
 }
-versioned!(ConfigDesc { name: Str::EMPTY, cell: core::ptr::null(), kind: config_kind::BOOL, default: 0.0, min: 0.0, max: 1.0, step: 0.0, choices: Slice::EMPTY, flags: 0 });
+defaults!(ConfigDesc { name: Str::EMPTY, cell: core::ptr::null(), kind: config_kind::BOOL, default: 0.0, min: 0.0, max: 1.0, step: 0.0, choices: Slice::EMPTY, flags: 0 });
 
 #[repr(C)]
 pub struct TextConditionArgs {
@@ -1808,7 +1700,6 @@ pub mod particle_flags {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ParticleDesc {
-    pub size: u32,
     pub name: Str,
     pub cell: *const AtomicU32,
     /// Frames shown in order over its life; empty: a random piece of the burst's block texture
@@ -1829,7 +1720,7 @@ pub struct ParticleDesc {
     /// Fragment shader `shaders/particle/<name>.wgsl`, empty for the plain texture.
     pub shader: Str,
 }
-versioned!(ParticleDesc {
+defaults!(ParticleDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     textures: Slice::EMPTY,
@@ -1847,7 +1738,6 @@ versioned!(ParticleDesc {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParticleBurst {
-    pub size: u32,
     /// Particle id (`find` with `entry_kind::PARTICLE`).
     pub kind: u32,
     pub pos: [f64; 3],
@@ -1861,7 +1751,7 @@ pub struct ParticleBurst {
     /// Block state the textureless kinds take their texture from.
     pub block: u32,
 }
-versioned!(ParticleBurst { kind: 0, pos: [0.0; 3], spread: [0.0; 3], velocity: [0.0; 3], speed: 0.0, count: 1, block: 0 });
+defaults!(ParticleBurst { kind: 0, pos: [0.0; 3], spread: [0.0; 3], velocity: [0.0; 3], speed: 0.0, count: 1, block: 0 });
 
 /// Particle kinds the engine itself uses.
 pub mod particle {
@@ -1976,7 +1866,6 @@ pub mod verdict {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Query {
-    pub size: u32,
     pub verdict: u32,
     pub entity: u64,
     pub other: u64,
@@ -1987,7 +1876,7 @@ pub struct Query {
     pub cause: u32,
     pub amount: f64,
 }
-versioned!(Query { verdict: 0, entity: 0, other: 0, pos: [0; 3], state: 0, item: 0, dim: 0, cause: 0, amount: 0.0 });
+defaults!(Query { verdict: 0, entity: 0, other: 0, pos: [0; 3], state: 0, item: 0, dim: 0, cause: 0, amount: 0.0 });
 
 #[repr(C)]
 pub struct InterceptArgs {
@@ -2056,19 +1945,17 @@ pub mod loot_cond {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LootCond {
-    pub size: u32,
     pub kind: u32,
     pub value: f32,
     pub text: Str,
 }
-versioned!(LootCond { kind: 0, value: 1.0, text: Str::EMPTY });
+defaults!(LootCond { kind: 0, value: 1.0, text: Str::EMPTY });
 
 /// One weighted choice of a pool: `item` (name, or `#tag` for the tag's first item; empty = no
 /// item), `min..=max` of it. A burning victim drops it cooked by recipe type `smelt` if set.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LootEntry {
-    pub size: u32,
     pub item: Str,
     pub weight: u32,
     pub min: u32,
@@ -2076,31 +1963,29 @@ pub struct LootEntry {
     pub conditions: Slice<LootCond>,
     pub smelt: Str,
 }
-versioned!(LootEntry { item: Str::EMPTY, weight: 1, min: 1, max: 1, conditions: Slice::EMPTY, smelt: Str::EMPTY });
+defaults!(LootEntry { item: Str::EMPTY, weight: 1, min: 1, max: 1, conditions: Slice::EMPTY, smelt: Str::EMPTY });
 
 /// Rolls `rolls_min..=rolls_max` times if its conditions pass; each roll picks one entry by
 /// weight among those whose conditions pass.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LootPool {
-    pub size: u32,
     pub rolls_min: u32,
     pub rolls_max: u32,
     pub conditions: Slice<LootCond>,
     pub entries: Slice<LootEntry>,
 }
-versioned!(LootPool { rolls_min: 1, rolls_max: 1, conditions: Slice::EMPTY, entries: Slice::EMPTY });
+defaults!(LootPool { rolls_min: 1, rolls_max: 1, conditions: Slice::EMPTY, entries: Slice::EMPTY });
 
 /// A loot table. Blocks and entities use the table named like them; mods may name any others
 /// (chests).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LootDesc {
-    pub size: u32,
     pub name: Str,
     pub pools: Slice<LootPool>,
 }
-versioned!(LootDesc { name: Str::EMPTY, pools: Slice::EMPTY });
+defaults!(LootDesc { name: Str::EMPTY, pools: Slice::EMPTY });
 
 pub mod loot_op {
     /// Adds `pool`.
@@ -2118,25 +2003,23 @@ pub mod loot_op {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LootModDesc {
-    pub size: u32,
     pub table: Str,
     pub op: u32,
     pub pool: LootPool,
     pub from: Str,
     pub to: Str,
 }
-versioned!(LootModDesc { table: Str::EMPTY, op: 0, pool: LootPool::DEFAULT, from: Str::EMPTY, to: Str::EMPTY });
+defaults!(LootModDesc { table: Str::EMPTY, op: 0, pool: LootPool::DEFAULT, from: Str::EMPTY, to: Str::EMPTY });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LootCtx {
-    pub size: u32,
     pub tool: ItemStack,
     pub killer: u64,
     pub by_player: u32,
     pub on_fire: u32,
 }
-versioned!(LootCtx { tool: ItemStack::EMPTY, killer: 0, by_player: 0, on_fire: 0 });
+defaults!(LootCtx { tool: ItemStack::EMPTY, killer: 0, by_player: 0, on_fire: 0 });
 
 /// Flags of stack components (`Host::reg_stack_component`).
 pub mod stack_flags {
@@ -2151,7 +2034,6 @@ pub mod stack_flags {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LiquidDesc {
-    pub size: u32,
     /// The block's full name.
     pub name: Str,
     /// Ticks between flow steps (vanilla water 5, lava 30).
@@ -2168,7 +2050,7 @@ pub struct LiquidDesc {
     /// Roughly Kelvin: water 300, lava 1300. From 1000 up it burns what touches it.
     pub temperature: u32,
 }
-versioned!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, infinite: 2, density: 1000, temperature: 300 });
+defaults!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, infinite: 2, density: 1000, temperature: 300 });
 
 /// What happens where two liquids meet. `liquid` and `touching` are block names or `#tags` of
 /// liquid blocks. When `liquid` has `touching` beside or above it, it turns into `source` (if
@@ -2177,14 +2059,13 @@ versioned!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReactionDesc {
-    pub size: u32,
     pub liquid: Str,
     pub touching: Str,
     pub source: Str,
     pub flowing: Str,
     pub falls_into: Str,
 }
-versioned!(ReactionDesc { liquid: Str::EMPTY, touching: Str::EMPTY, source: Str::EMPTY, flowing: Str::EMPTY, falls_into: Str::EMPTY });
+defaults!(ReactionDesc { liquid: Str::EMPTY, touching: Str::EMPTY, source: Str::EMPTY, flowing: Str::EMPTY, falls_into: Str::EMPTY });
 
 // ---------------------------------------------------------------- client side
 
@@ -2247,7 +2128,6 @@ pub mod client_flags {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ClientState {
-    pub size: u32,
     pub flags: u32,
     pub frame: u64,
     /// Seconds since the previous frame.
@@ -2303,7 +2183,7 @@ pub struct ClientState {
     pub target: [i32; 3],
     pub target_frame: u64,
 }
-versioned!(ClientState {
+defaults!(ClientState {
     flags: 0,
     frame: 0,
     dt: 0.0,
@@ -2374,7 +2254,6 @@ pub mod control_mask {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PlayerControl {
-    pub size: u32,
     pub mask: u32,
     pub pos: [f64; 3],
     pub vel: [f64; 3],
@@ -2385,7 +2264,7 @@ pub struct PlayerControl {
     pub fly_speed: f32,
     pub selected: u32,
 }
-versioned!(PlayerControl { mask: 0, pos: [0.0; 3], vel: [0.0; 3], yaw: 0.0, pitch: 0.0, flying: 0, fly_speed: 1.0, selected: 0 });
+defaults!(PlayerControl { mask: 0, pos: [0.0; 3], vel: [0.0; 3], yaw: 0.0, pitch: 0.0, flying: 0, fly_speed: 1.0, selected: 0 });
 
 /// `Host::client_command` operations.
 pub mod client_op {
@@ -2441,7 +2320,6 @@ pub mod client_text {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OreDesc {
-    pub size: u32,
     /// Full dimension name.
     pub dimension: Str,
     pub block: Str,
@@ -2456,7 +2334,7 @@ pub struct OreDesc {
     /// Only in biomes with this tag (the block's own column of its cube), empty: anywhere.
     pub biome: Str,
 }
-versioned!(OreDesc { dimension: Str::EMPTY, block: Str::EMPTY, replace: Str::EMPTY, min_y: i32::MIN, max_y: i32::MAX, veins: 4, blocks: 8, biome: Str::EMPTY });
+defaults!(OreDesc { dimension: Str::EMPTY, block: Str::EMPTY, replace: Str::EMPTY, min_y: i32::MIN, max_y: i32::MAX, veins: 4, blocks: 8, biome: Str::EMPTY });
 
 /// One command argument; kinds in `command_value`.
 #[repr(C)]
@@ -2468,6 +2346,8 @@ pub struct CommandValue {
     /// Text, or the full registry name for ids.
     pub text: Str,
     pub pos: [f64; 3],
+    /// The parameter's name in the usage string.
+    pub name: Str,
 }
 
 pub mod command_value {
@@ -2522,43 +2402,4 @@ pub struct Energy {
     /// with `max_in > 0`.
     pub max_in: i64,
     pub max_out: i64,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn older_descriptors_get_defaults() {
-        // A mod built when OreDesc ended after `max_y` (veins and blocks unknown to it).
-        let mut d = OreDesc::DEFAULT;
-        d.min_y = -5;
-        d.veins = 99;
-        d.size = (core::mem::offset_of!(OreDesc, max_y) + 4) as u32;
-        let read = unsafe { read_sized(&d) };
-        assert_eq!((read.min_y, read.veins, read.blocks, read.size), (-5, 4, 8, size_of::<OreDesc>() as u32));
-    }
-
-    #[test]
-    fn slices_step_by_the_mods_size() {
-        // An older UiArg without `num`.
-        #[repr(C)]
-        #[derive(Clone, Copy)]
-        struct Old {
-            size: u32,
-            kind: u32,
-            text: Str,
-        }
-        let n = size_of::<Old>() as u32;
-        let old = [Old { size: n, kind: 2, text: Str::EMPTY }, Old { size: n, kind: 3, text: Str::EMPTY }];
-        let mut seen = [(0u32, 1.0f64); 2];
-        let mut i = 0;
-        unsafe {
-            each_sized(Slice { ptr: old.as_ptr() as *const UiArg, len: 2 }, |a| {
-                seen[i] = (a.kind, a.num);
-                i += 1;
-            })
-        };
-        assert_eq!(seen, [(2, 0.0), (3, 0.0)]);
-    }
 }

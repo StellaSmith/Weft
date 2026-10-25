@@ -108,8 +108,8 @@ pub struct ClientEntity {
     pub structure: Option<Box<ClientWorld>>,
     /// Falling blocks: where the server last had it, its velocity and when that arrived (client
     /// clock). It is shown where the server's physics takes it from there by now
-    /// (`falling_at`), so it reaches the ground when its block appears; drawn from server
-    /// positions it lagged a tick and more and the block showed up a block above it.
+    /// (`falling_at`), so it reaches the ground when its block appears (server positions arrive
+    /// a tick late or more, and the block would show up above it).
     pub fall: Option<(DVec3, DVec3, f64)>,
 }
 
@@ -211,7 +211,6 @@ pub enum ClientEvent {
     Died,
 }
 
-/// Crouching, like modern versions: fits under 1.5 block gaps.
 /// Player physics runs at vanilla's tick rate; the camera is interpolated between ticks.
 const STEP: f64 = 1.0 / 20.0;
 /// How far behind the newest server tick bodies are shown (Sable, under Create: Aeronautics,
@@ -235,7 +234,7 @@ pub struct Client {
     /// Client clock (`body_clock`) less server time (ticks x `STEP`): maps the client's clock
     /// onto the server's timeline bodies are shown on. It follows `offset_target` (arrival
     /// times, averaged) by stretching time at most 5%, so that timeline only ever goes on
-    /// evenly: moving it by each arrival's jitter stepped bodies back and forth by millimetres.
+    /// evenly: following each arrival's jitter would step bodies back and forth.
     tick_offset: Option<f64>,
     offset_target: f64,
     /// Structures whose cubes are uploaded for drawing.
@@ -315,7 +314,6 @@ pub struct Client {
     pub gizmo_lines: Vec<gizmo::Line>,
     pub gizmo_fills: Vec<gizmo::Fill>,
     pub gizmo_labels: Vec<gizmo::Label>,
-    /// Block being broken and progress 0..1.
     /// The block being broken (frame, block as in `Hit`) and how far.
     pub breaking: Option<(u64, IVec3, f32)>,
     /// Hotbar contents last frame, so the HUD knows when to redraw.
@@ -967,8 +965,8 @@ on: {on}", list.join("
             }
         }
 
-        // From the eye as drawn, the moment structures are drawn at too: from the physics step's
-        // eye, a block on a structure the player rides flickered between its neighbours.
+        // From the eye as drawn, the moment structures are drawn at too, so a block on a
+        // structure the player rides stays the one aimed at.
         let eye = self.camera().pos;
         let look = self.camera().forward().as_dvec3();
         self.target = if spectator { None } else { self.raycast(eye, look, 5.0) };
@@ -1149,7 +1147,7 @@ on: {on}", list.join("
             let k = &c.game.entities[e.kind as usize];
             let (w, h) = (k.width * 0.5, k.height * 0.5);
             let pos = (e.pos + DVec3::Y * h as f64).to_array();
-            self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..voxide_abi::Versioned::DEFAULT });
+            self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..voxide_abi::ParticleBurst::DEFAULT });
         }
         // Hitting a block chips pieces off the face being hit, one per tick like vanilla.
         self.hit_dust -= dt as f32;
@@ -1161,7 +1159,7 @@ on: {on}", list.join("
                     let at = pos.as_dvec3() + self.frame_origin(frame) + DVec3::splat(0.5) + (normal * 0.55).as_dvec3();
                     let spread = (glam::Vec3::splat(0.45) * (glam::Vec3::ONE - normal.abs())).to_array();
                     let velocity = (normal * 0.6).to_array();
-                    self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..voxide_abi::Versioned::DEFAULT });
+                    self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..voxide_abi::ParticleBurst::DEFAULT });
                 }
             }
         }

@@ -174,7 +174,8 @@ impl EntityRenderer {
         })
     }
 
-    /// The first person hand: drawn last and without depth test so it never sinks into walls.
+    /// The first person hand: drawn last with its depth squeezed to the front, so it never sinks
+    /// into walls.
     fn hand_pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
         let s = shader().map_err(|e| e.0)?;
         gpu.create_pipeline(&PipelineDesc {
@@ -467,7 +468,7 @@ impl EntityRenderer {
         }
         let loaded = assets.read(name, "textures", "png").and_then(|b| decode_png(&b)).map(|img| {
             let t = gpu.create_texture(
-                &TextureDesc { width: img.width, height: img.height, layers: None, mips: 1, format: Format::Rgba8Srgb, render_target: false },
+                &TextureDesc { width: img.width, height: img.height, mips: 1, format: Format::Rgba8Srgb, render_target: false },
                 name,
             );
             gpu.write_texture(t, 0, &img.rgba);
@@ -477,7 +478,7 @@ impl EntityRenderer {
             log::warn!("missing entity texture {name}");
         }
         if let Some(mask) = crate::assets::emission_mask(assets, name) {
-            let t = gpu.create_texture(&TextureDesc { width: mask.width, height: mask.height, layers: None, mips: 1, format: Format::R8Unorm, render_target: false }, name);
+            let t = gpu.create_texture(&TextureDesc { width: mask.width, height: mask.height, mips: 1, format: Format::R8Unorm, render_target: false }, name);
             gpu.write_texture(t, 0, &mask.rgba);
             self.glows.insert(name.to_string(), (t, gpu.texture_index(t)));
         }
@@ -529,7 +530,7 @@ impl EntityRenderer {
                 gpu.destroy_texture(col);
                 gpu.destroy_texture(dep);
             }
-            let desc = |format| TextureDesc { width: size[0], height: size[1], layers: None, mips: 1, format, render_target: true };
+            let desc = |format| TextureDesc { width: size[0], height: size[1], mips: 1, format, render_target: true };
             let col = gpu.create_texture(&desc(Format::Rgba8Srgb), "preview colour");
             let dep = gpu.create_texture(&desc(Format::Depth32), "preview depth");
             self.preview_target = Some((col, dep, size, gpu.texture_index(col)));
@@ -936,8 +937,8 @@ fn block_shape(out: &mut Vec<GpuBox>, textures: &GameTextures, m: Mat4, s: &crat
         let (mn, mx) = (Vec3::from_array(b.min), Vec3::from_array(b.max));
         let mb = m * Mat4::from_translation(mn) * Mat4::from_scale(mx - mn);
         let l = b.textures.map(|t| textures.block(t));
-        // Faces the block tints take the tint here; drawing them again tinted on top showed the
-        // untinted ones through cutout holes and at the edges.
+        // Faces the block tints take the tint here, not from a tinted copy drawn on top (the
+        // untinted faces would show through cutout holes and at the edges).
         let overlaid = |d: usize| textures.overlays.get(b.textures[d] as usize).is_some_and(|&o| o != 0);
         let tinted = if s.tint == 0 { 0 } else { (0..6).filter(|&d| s.tint_faces & (1 << d) != 0 && !overlaid(d)).fold(0, |m, d| m | 1 << d) };
         out.push(GpuBox {

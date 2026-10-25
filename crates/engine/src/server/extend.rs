@@ -178,7 +178,7 @@ impl Dim {
         let e = self.entities.get(entity)?;
         let def = &c.game.attributes[attr as usize];
         let own = def.comp.and_then(|id| c.components.get::<f64>(crate::components::ENTITY, e.kind, id));
-        Some(own.unwrap_or_else(|| if attr == MAX_HEALTH { c.game.entities[e.kind as usize].max_health as f64 } else { def.default }))
+        Some(own.unwrap_or(def.default))
     }
 
     fn modifiers_of(&self, c: &Content, entity: u64) -> Vec<AttrMod> {
@@ -250,12 +250,12 @@ impl Dim {
         }
     }
 
-    /// Attribute by name, the default for unknown entities, NaN for unknown names.
     /// The only maximum health there is: the attribute (the kind's value plus modifiers).
     pub fn max_health(&self, c: &Content, entity: u64) -> f32 {
         self.attribute(c, entity, MAX_HEALTH, false) as f32
     }
 
+    /// Attribute by name, the default for unknown entities, NaN for unknown names.
     pub fn attribute_named(&self, c: &Content, entity: u64, name: &str, explain: bool) -> f64 {
         match c.game.attr_names.get(name) {
             Some(&a) => self.attribute(c, entity, a, explain),

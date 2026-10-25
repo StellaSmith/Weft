@@ -1,7 +1,7 @@
 //! UI building for HUD parts and menu screens. Nodes are sent to the engine as they are created;
 //! bound values are callbacks the engine polls every frame and redraws only on change.
 
-use crate::abi::{self, ItemStack, Slice, Str, Versioned, ui_kind as k};
+use crate::abi::{self, ItemStack, Slice, Str, ui_kind as k};
 use crate::component::{Component, Value};
 use crate::{callback, host};
 
@@ -45,8 +45,7 @@ impl ClientView {
         let o = unsafe { (host().client_menu_owner)(self.raw) };
         (o != 0).then_some(o)
     }
-    /// A component of the open menu's machine, synced with `SYNC_MENU`: screens bind to it
-    /// instead of copying values into menu data.
+    /// A component of the open menu's machine, synced with `SYNC_MENU`, for screens to bind to.
     pub fn menu_component<T: Value>(&self, c: &Component<T>) -> Option<T> {
         self.component_of(self.menu_owner()?, c)
     }

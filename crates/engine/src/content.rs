@@ -9,7 +9,6 @@ use voxide_abi::{self as abi, Callback, Layer, Model, ModId};
 use crate::components::{self as comps, Components, RawSet, RawValue, Target};
 
 pub const AIR: u32 = 0;
-pub const NO_ITEM: u32 = 0;
 
 #[derive(Clone)]
 pub struct ModelBox {
@@ -31,7 +30,7 @@ pub struct StateInfo {
     pub layer: Layer,
     pub level: u8,
     pub model: Model,
-    /// Layers in the block texture array.
+    /// Block texture ids (`Content::block_textures`) per face.
     pub textures: [u32; 6],
     pub boxes: Vec<ModelBox>,
     /// In block units.
@@ -52,11 +51,6 @@ pub struct StateInfo {
 }
 
 impl StateInfo {
-    #[inline]
-    pub fn is(&self, flag: u32) -> bool {
-        self.flags & flag != 0
-    }
-
     /// The block texture an item of this block shows as a flat sprite (vanilla's generated item
     /// models): plants and liquids. Other shapes are drawn as their model.
     pub fn item_sprite(&self) -> Option<u32> {
@@ -158,8 +152,6 @@ pub struct BiomeDef {
     pub name: String,
     /// Colour (0xRRGGBB) per tint kind, by `Content::tint_kinds` index.
     pub tints: Vec<u32>,
-    pub temperature: f32,
-    pub rainfall: f32,
 }
 
 pub struct DimensionDef {
@@ -254,11 +246,8 @@ pub struct Ids {
     pub needs_tool: Option<u32>,
     pub damage: Option<u32>,
     pub conductor: Option<u32>,
-    pub energy: Option<u32>,
     pub worn: Option<u32>,
     pub worn_texture: Option<u32>,
-    /// Item tags armour slots accept: head, chest, legs, feet.
-    pub armor: [Option<u32>; 4],
     pub wear_per_hit: Option<u32>,
 }
 
@@ -330,11 +319,6 @@ pub fn item_tint(tint: u8) -> u32 {
 }
 
 impl Content {
-    #[inline]
-    pub fn state(&self, id: u32) -> &StateInfo {
-        &self.states[id as usize]
-    }
-
     pub fn block_of(&self, state: u32) -> &BlockDef {
         &self.blocks[self.states[state as usize].block as usize]
     }
@@ -344,10 +328,6 @@ impl Content {
         let b = self.block_of(state);
         let last = state + 1 == b.first_state + b.states;
         b.cb.grow.filter(|_| b.cb.on_grow.is_some() || !last)
-    }
-
-    pub fn find_state(&self, name: &str) -> Option<u32> {
-        self.block_names.get(name).map(|&b| self.blocks[b as usize].first_state)
     }
 
     /// The item a middle click on this block picks: the block's own item, else what it drops.
@@ -364,15 +344,6 @@ impl Content {
     #[inline]
     pub fn item_has(&self, item: u32, comp: Option<u32>) -> bool {
         comp.is_some_and(|c| self.components.has(comps::ITEM, item, c))
-    }
-
-    /// By name, for commands and other rare uses; hot paths keep the id.
-    pub fn block_has_tag(&self, state: u32, tag: &str) -> bool {
-        self.block_has(state, self.components.id(tag))
-    }
-
-    pub fn item_has_tag(&self, item: u32, tag: &str) -> bool {
-        self.item_has(item, self.components.id(tag))
     }
 
     pub fn item_value<T: Copy>(&self, item: u32, comp: Option<u32>) -> Option<T> {
@@ -565,15 +536,15 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
 pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
     unsafe {
         let mut states = Vec::new();
-        abi::each_sized(d.states, |s| {
+        d.states.as_slice().iter().copied().for_each(|s| {
             let mut boxes = Vec::new();
-            abi::each_sized(s.boxes, |b| boxes.push((b.min, b.max, std::array::from_fn(|i| b.textures[i].as_str().to_string()))));
+            s.boxes.as_slice().iter().copied().for_each(|b| boxes.push((b.min, b.max, std::array::from_fn(|i| b.textures[i].as_str().to_string()))));
             states.push(RawState {
                 flags: s.flags,
                 light: s.light,
                 filter: s.filter,
                 opacity: s.opacity,
-                tint: s.tint,
+                tint: 0,
                 tint_faces: s.tint_faces,
                 tint_name: s.tint_name.as_str().to_string(),
                 layer: s.layer,
@@ -827,7 +798,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     for r in regs {
         games.push(r.game);
         tint_kinds.extend(r.tint_kinds);
-        biome_tints.extend(r.biome_tints);
+        biome_tints.extend(r.biome_tints.into_iter().map(|t| (mods[r.owner.0 as usize].order, t)));
         errors.extend(r.errors.into_iter().map(|e| format!("{}: {e}", mods[r.owner.0 as usize].id)));
         blocks.extend(r.blocks.into_iter().map(|b| (r.owner, b)));
         items.extend(r.items.into_iter().map(|i| (r.owner, i)));
@@ -880,9 +851,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     for (b, ..) in &mut biomes {
-        b.tints.extend(tint_kinds[3..].iter().map(|k| k.1));
+        b.tints.extend(tint_kinds.iter().map(|k| k.1));
     }
-    for (biome, kind, color) in biome_tints {
+    // In load order: a mod's colours win over those of the mods it depends on.
+    biome_tints.sort_by_key(|t| t.0);
+    for (_, (biome, kind, color)) in biome_tints {
         match (biomes.iter_mut().find(|b| b.0.name == biome), tint_id(&kind)) {
             (Some(b), Some(t)) => b.0.tints[t as usize - 1] = color,
             _ => errors.push(format!("biome tint: no biome {biome} or tint kind {kind}")),
@@ -996,9 +969,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 collision.push(u);
             }
             boxes.shrink_to_fit();
+            // Random ticks reach blocks that have the callback, inherited ones included.
+            let random = if b.cb.on_random_tick.is_some() { abi::block_flags::RANDOM_TICKS } else { 0 };
             states.push(StateInfo {
                 block: index,
-                flags: s.flags,
+                flags: s.flags | random,
                 light: s.light,
                 absorb: std::array::from_fn(|i| s.opacity.saturating_add(s.filter[i])),
                 opacity: s.opacity,
@@ -1306,10 +1281,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         needs_tool: id(abi::comp::NEEDS_TOOL),
         damage: id(abi::comp::DAMAGE),
         conductor: id(abi::comp::CONDUCTOR),
-        energy: id(abi::comp::ENERGY),
         worn: id(abi::comp::WORN),
         worn_texture: id(abi::comp::WORN_TEXTURE),
-        armor: abi::comp::ARMOR.map(id),
         wear_per_hit: id(abi::comp::WEAR_PER_HIT),
     };
     for (i, s) in states.iter_mut().enumerate() {

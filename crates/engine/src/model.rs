@@ -324,7 +324,7 @@ pub struct Motion<'a> {
     pub crouch: bool,
 }
 
-/// Same angles as the old GPU path: (about x, about y) added to a part's rest by its role.
+/// (about x, about y) added to a part's rest by its role.
 pub fn role_angles(r: u32, pitch: f32, swing: f32) -> [f32; 2] {
     match r {
         // Faces look along -Z: tilting the front up is a positive turn about X.

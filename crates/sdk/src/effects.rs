@@ -12,7 +12,7 @@
 
 use std::marker::PhantomData;
 
-use crate::abi::{self, Slice, Str, Versioned, particle_flags as pf};
+use crate::abi::{self, Slice, Str, particle_flags as pf};
 use crate::{Client, ClientView, Particle, Registry, World, callback, host, qualify};
 
 pub struct ParticleBuilder<'a> {
@@ -237,13 +237,9 @@ impl SoundBuilder<'_> {
         self.files = names.iter().map(|n| qualify(self.ns, n)).collect();
         self
     }
-    /// `abi::sound_category`, for its volume setting.
-    pub fn category(mut self, c: u32) -> Self {
-        self.desc.category = c;
-        self
-    }
-    /// A category registered with `Registry::sound_category` (any mod's).
-    pub fn in_category(mut self, name: &str) -> Self {
+    /// Category for its volume setting: the engine's (`core:creatures` ...) or one registered
+    /// with `Registry::sound_category` (any mod's).
+    pub fn category(mut self, name: &str) -> Self {
         self.category_name = qualify(self.ns, name);
         self
     }

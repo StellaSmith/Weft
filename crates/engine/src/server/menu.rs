@@ -27,7 +27,6 @@ pub struct SlotRef {
 pub struct OpenMenu {
     pub kind: u32,
     pub owner: u64,
-    pub window: u32,
     pub slots: Vec<SlotRef>,
     pub temp: Vec<ItemStack>,
     pub cursor: ItemStack,
@@ -112,12 +111,11 @@ fn call(m: &mut OpenMenu, dim: &mut Dim, c: &Content, player: u64, slot: u32, pi
     host::invoke(def.owner, cb, &mut args);
 }
 
-pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64, window: u32) -> OpenMenu {
+pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64) -> OpenMenu {
     let def = &c.game.menus[kind as usize];
     let mut m = OpenMenu {
         kind,
         owner,
-        window,
         slots: Vec::new(),
         temp: vec![ItemStack::EMPTY; def.temp_slots as usize],
         cursor: ItemStack::EMPTY,

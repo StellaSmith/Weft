@@ -263,10 +263,6 @@ impl Models {
         self.counts = counts;
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.queued.is_empty()
-    }
-
     /// Draws what was queued since `begin`, one instanced draw per kind, with `pipe` and the
     /// view in `view`.
     pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, pipe: PipelineId, view: BufferId) {

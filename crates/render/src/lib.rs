@@ -1,8 +1,8 @@
 //! Backend-neutral rendering interface. Only crates under `backends/` talk to a graphics API.
 //!
 //! Model: no vertex buffers (shaders pull from storage buffers), all sampled textures live in a
-//! global bindless table (group 0), per-draw buffers are group 1, small per-draw data goes through
-//! push constants (`var<immediate>`). Shaders are WGSL, prefixed with [`PRELUDE`].
+//! global bindless table (group 0), per-draw buffers are group 1, small per-draw data may go
+//! through push constants (`var<immediate>`). Shaders are WGSL, prefixed with [`PRELUDE`].
 
 mod shader;
 
@@ -18,21 +18,19 @@ pub struct TextureId(pub u32);
 pub struct PipelineId(pub u32);
 
 /// Global WGSL declarations every shader can use. Texture handles index into these arrays.
-/// The `mipped` samplers clamp too: textures are never tiled, and wrapping made the edge texels
-/// of a face blend with the opposite edge (seams between overlays and cutout blocks).
+/// The `mipped` samplers clamp too: textures are never tiled, and wrapping would blend the edge
+/// texels of a face with the opposite edge (seams between overlays and cutout blocks).
 pub const PRELUDE: &str = r#"enable wgpu_binding_array;
 @group(0) @binding(0) var textures: binding_array<texture_2d<f32>, 65536>;
-@group(0) @binding(1) var texture_arrays: binding_array<texture_2d_array<f32>, 256>;
-@group(0) @binding(2) var nearest_clamp: sampler;
-@group(0) @binding(3) var linear_clamp: sampler;
-@group(0) @binding(4) var nearest_mipped: sampler;
-@group(0) @binding(5) var linear_mipped: sampler;
+@group(0) @binding(1) var nearest_clamp: sampler;
+@group(0) @binding(2) var linear_clamp: sampler;
+@group(0) @binding(3) var nearest_mipped: sampler;
+@group(0) @binding(4) var linear_mipped: sampler;
 "#;
 
 /// Every texture of every kind is its own entry (blocks, items, particles, skins, GUI, each
 /// animation frame): big packs have thousands; face records keep 16-bit indices.
 pub const MAX_TEXTURES: u32 = 65536;
-pub const MAX_TEXTURE_ARRAYS: u32 = 256;
 
 pub mod usage {
     pub const STORAGE: u32 = 1;
@@ -69,8 +67,6 @@ impl Format {
 pub struct TextureDesc {
     pub width: u32,
     pub height: u32,
-    /// `Some(n)` makes a 2D array texture indexed through `texture_arrays`.
-    pub layers: Option<u32>,
     pub mips: u32,
     pub format: Format,
     pub render_target: bool,
@@ -276,9 +272,9 @@ pub trait Backend: Send {
     fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]);
     fn destroy_buffer(&mut self, buffer: BufferId);
 
-    /// Returns the texture and its bindless index (into `textures` or `texture_arrays`).
+    /// Returns the texture and its bindless index (into `textures`).
     fn create_texture(&mut self, desc: &TextureDesc, label: &str) -> TextureId;
-    /// `data` holds every layer of one mip level, tightly packed.
+    /// `data` holds one mip level, tightly packed.
     fn write_texture(&mut self, texture: TextureId, mip: u32, data: &[u8]);
     fn texture_index(&self, texture: TextureId) -> u32;
     fn destroy_texture(&mut self, texture: TextureId);

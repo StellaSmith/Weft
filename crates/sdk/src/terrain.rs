@@ -640,8 +640,8 @@ mod tests {
         assert_eq!(ramp(2.0, 0.0, 1.0), 1.0);
     }
 
-    /// Caverns used to be carved only in cubes wholly below the highest column, so they ran up
-    /// to the bottom of the surface cube: flat stone slabs hanging over open space.
+    /// Caverns end under a roof, not at the bottom of the surface cube (that leaves flat stone
+    /// slabs hanging over open space).
     #[test]
     fn caverns_keep_a_roof() {
         static S: Block = Block::new();
@@ -705,7 +705,8 @@ mod tests {
         assert_eq!(checked, 16384);
     }
 
-    /// Lava used to fill every open block between two heights, hanging over caves below.
+    /// Lava lakes lie on stone, not in every open block between two heights (lava hanging
+    /// over caves below).
     #[test]
     fn lava_lakes_rest_on_stone() {
         static S: Block = Block::new();

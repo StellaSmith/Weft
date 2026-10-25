@@ -14,7 +14,6 @@ use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::track::{SendTrackBuilder, SendTrackHandle, SpatialTrackBuilder, TrackBuilder, TrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Decibels, DefaultBackend, Mix, Tween};
 use rustc_hash::FxHashMap;
-use voxide_abi::sound_category as cat;
 
 use crate::assets::Assets;
 use crate::content::content;
@@ -149,7 +148,7 @@ impl Audio {
     /// Settings, listener, environment and music, once a frame.
     pub fn update(&mut self, assets: &Assets, l: Option<&Listener>) {
         let ids = self.volume_ids.get_or_insert_with(|| {
-            let mut ids: Vec<Option<u32>> = crate::content::content().game.sound_categories.iter().map(|k| crate::config::by_name(&k.setting)).collect();
+            let mut ids: Vec<Option<u32>> = crate::content::content().game.sound_categories.iter().map(|k| k.setting.as_deref().and_then(crate::config::by_name)).collect();
             ids.push(crate::config::by_name("core:volume_master"));
             ids
         });
@@ -208,7 +207,7 @@ impl Audio {
             return;
         };
         match StreamingSoundData::from_file(&path) {
-            Ok(data) => match self.groups[cat::MUSIC as usize].play(data.fade_in_tween(Tween { duration: Duration::from_secs(3), ..Default::default() })) {
+            Ok(data) => match self.groups[crate::registry::MUSIC_CATEGORY as usize].play(data.fade_in_tween(Tween { duration: Duration::from_secs(3), ..Default::default() })) {
                 Ok(h) => {
                     log::debug!("music: {track}");
                     self.music = Some(h);

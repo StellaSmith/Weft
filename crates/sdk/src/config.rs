@@ -11,7 +11,7 @@
 
 use std::marker::PhantomData;
 
-use crate::abi::{self, Slice, Str, Versioned, config_flags as cf, config_kind as ck};
+use crate::abi::{self, Slice, Str, config_flags as cf, config_kind as ck};
 use crate::content::{Handle, kind};
 use crate::{Registry, host, qualify};
 

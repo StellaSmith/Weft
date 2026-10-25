@@ -96,7 +96,7 @@ impl GameTextures {
         }
         let item = c.item_textures.iter().map(|n| add(n.clone(), Source::File, &mut entries)).collect();
         let particle = c.game.particle_textures.iter().map(|n| add(n.clone(), Source::File, &mut entries)).collect();
-        let blank = gpu.create_texture(&TextureDesc { width: 1, height: 1, layers: None, mips: 1, format: Format::Rgba8Srgb, render_target: false }, "blank texture");
+        let blank = gpu.create_texture(&TextureDesc { width: 1, height: 1, mips: 1, format: Format::Rgba8Srgb, render_target: false }, "blank texture");
         gpu.write_texture(blank, 0, &[0, 0, 0, 0]);
         let blank = (blank, gpu.texture_index(blank));
         let glow_buffer = gpu.create_buffer(4096 * 4, usage::STORAGE, "glow map");
@@ -248,8 +248,8 @@ impl GameTextures {
     /// The world shader's tables, per block texture id. `info`: two words, static -> (index, 0),
     /// animated -> (offset into `frames`, count | total ticks << 16 | interpolate << 31).
     /// `frames`: animation frames (index | ticks << 16), then from `overlays` per block texture
-    /// its overlay id + 1 or 0, then from `glows` the glow map by bindless index.
-    pub fn world_tables(&self) -> (Vec<u32>, Vec<u32>, u32, u32) {
+    /// its overlay id + 1 or 0.
+    pub fn world_tables(&self) -> (Vec<u32>, Vec<u32>, u32) {
         let i = self.inner.borrow();
         let mut info: Vec<u32> = Vec::with_capacity(i.block.len() * 2);
         let mut frames: Vec<u32> = vec![0];
@@ -268,10 +268,7 @@ impl GameTextures {
         }
         let overlays = frames.len() as u32;
         frames.extend((0..i.block.len()).map(|b| self.overlays.get(b).copied().unwrap_or(0)));
-        let glows = frames.len() as u32;
-        frames.extend(i.glow_map.iter().copied());
-        frames.push(u32::MAX);
-        (info, frames, overlays, glows)
+        (info, frames, overlays)
     }
 
     /// Takes assets that may have changed on disk: block, item and particle lists and connected
@@ -362,14 +359,14 @@ fn upload(gpu: &mut dyn Backend, i: &mut Inner, l: Loaded) {
     let mut frames = Vec::new();
     let mut glows = Vec::new();
     for (mips, glow) in l.tex.frames.iter().zip(&l.tex.glow) {
-        let t = gpu.create_texture(&TextureDesc { width: size, height: size, layers: None, mips: mips.len() as u32, format: Format::Rgba8Srgb, render_target: false }, label);
+        let t = gpu.create_texture(&TextureDesc { width: size, height: size, mips: mips.len() as u32, format: Format::Rgba8Srgb, render_target: false }, label);
         for (m, data) in mips.iter().enumerate() {
             gpu.write_texture(t, m as u32, data);
         }
         let index = gpu.texture_index(t);
         images.push(t);
         let g = glow.as_ref().map_or(u32::MAX, |mask| {
-            let g = gpu.create_texture(&TextureDesc { width: size, height: size, layers: None, mips: 1, format: Format::R8Unorm, render_target: false }, label);
+            let g = gpu.create_texture(&TextureDesc { width: size, height: size, mips: 1, format: Format::R8Unorm, render_target: false }, label);
             gpu.write_texture(g, 0, mask);
             images.push(g);
             gpu.texture_index(g)

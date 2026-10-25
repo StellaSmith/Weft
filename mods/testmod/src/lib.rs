@@ -77,7 +77,7 @@ fn init(r: &mut Registry) {
     morph(r);
     r.block("cable").handle(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor").hardness(0.5);
 
-    // Same name as the base game's torch: the base game's handle, item and recipes now give this.
+    // Same name as the base game's torch: the base game's handle, item and recipes give this.
     // It keeps the base torch's states (floor and walls) and placement, only its texture and
     // light are its own.
     r.block("base:torch").handle(&SOUL_TORCH)
@@ -91,7 +91,7 @@ fn init(r: &mut Registry) {
     let flags = component_flags::SAVE | component_flags::SYNC_MENU;
     // Machines' sounds have their own category (and volume setting `testmod:volume_machines`).
     r.sound_category("machines", true);
-    r.sound("machine.hum").handle(&HUM).files(&["base:dig/stone1"]).in_category("machines").pitch(0.45, 0.5);
+    r.sound("machine.hum").handle(&HUM).files(&["base:dig/stone1"]).category("machines").pitch(0.45, 0.5);
     r.machine("generator", &GENERATOR_MENU)
         .block(|b| b.handle(&GENERATOR).textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         .slots(&[0])
@@ -250,7 +250,7 @@ fn debug_panel(r: &mut Registry) {
     });
 }
 
-/// `first`: menu index of the first player slot (after the machine's own slots).
+/// `player`: menu index of the first player slot (after the machine's own slots).
 fn machine_screen(ui: &mut Ui, title: &'static str, player: u32, slots: impl FnOnce(&mut Ui)) {
     // Drawn by the mod's GUI shader (`testmod_panel.shader` in its theme).
     ui.panel("testmod_panel", S::col().pad(7.0).gap(4.0), |ui| {

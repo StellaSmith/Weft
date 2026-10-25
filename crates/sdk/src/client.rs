@@ -8,7 +8,7 @@
 //! r.packet("boost", |p| { let w = p.world(); /* server side */ });
 //! ```
 
-use crate::abi::{self, ItemStack, Slice, Str, Versioned};
+use crate::abi::{self, ItemStack, Slice, Str};
 use crate::{ClientView, Registry, World, callback, host, qualify};
 
 pub use abi::{ClientState, client_flags};

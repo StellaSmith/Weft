@@ -1,4 +1,4 @@
-use crate::abi::{self, ItemStack, Slice, Str, Versioned};
+use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::{Component, ENERGY, Value};
 use crate::content::{Handle, Pending, kind};
 use crate::ui::{Ui, ui_callback};
@@ -65,7 +65,6 @@ impl World {
     pub fn set_look(&self, id: u64, kind: Option<&str>) {
         unsafe { (host().set_entity_look)(self.raw(), id, Str::new(kind.unwrap_or(""))) }
     }
-    /// Steer an AI entity this tick: direction on the ground plane, speed factor, jump.
     /// `id` walks to `target` by itself, around obstacles, at `speed` times its walking speed
     /// (0 stops it). Call it again as the target moves. The path is found later in the tick;
     /// `navigating` turns false when the walk ends (arrived, or stuck for two seconds).
@@ -113,12 +112,12 @@ impl World {
     }
     /// An entity's component, read only (`component_mut` to change it).
     pub fn component<T: Value>(&self, id: u64, c: &Component<T>) -> Option<&T> {
-        let p = unsafe { (host().component)(self.raw(), id, c.id(), 0) };
+        let p = unsafe { (host().component)(self.raw(), id, c.id()) };
         (!p.is_null()).then(|| unsafe { &*(p as *const T) })
     }
-    /// Marks the component changed (saved, synced to its owner) and lends it out for writing.
+    /// The component to write; changes are saved and synced like any other.
     pub fn component_mut<T: Value>(&self, id: u64, c: &Component<T>) -> Option<&mut T> {
-        let p = unsafe { (host().component)(self.raw(), id, c.id(), 1) };
+        let p = unsafe { (host().component)(self.raw(), id, c.id()) };
         (!p.is_null()).then(|| unsafe { &mut *(p as *mut T) })
     }
     /// A player in creative mode: no damage, hunger or item costs.
@@ -438,10 +437,8 @@ pub struct EntityBuilder<'a> {
     width: f32,
     height: f32,
     eye: f32,
-    health: f32,
     speed: f32,
     flags: u32,
-    category: u32,
     texture: String,
     texture_size: [u32; 2],
     parts: Vec<Part>,
@@ -518,7 +515,8 @@ impl EntityBuilder<'_> {
         self
     }
     pub fn health(mut self, h: f32) -> Self {
-        self.health = h;
+        self.components.retain(|p| p.name != abi::attribute::MAX_HEALTH);
+        self.components.push(Pending::value(abi::attribute::MAX_HEALTH, "f64".into(), crate::component::pod_bytes(&(h as f64))));
         self
     }
     pub fn speed(mut self, s: f32) -> Self {
@@ -536,11 +534,11 @@ impl EntityBuilder<'_> {
         self
     }
     pub fn hostile(mut self) -> Self {
-        self.category = abi::entity_category::HOSTILE;
+        self.category_name = "core:hostile".into();
         self
     }
     pub fn passive(mut self) -> Self {
-        self.category = abi::entity_category::PASSIVE;
+        self.category_name = "core:passive".into();
         self
     }
     /// Skin texture, relative names are under `entity/`.
@@ -633,10 +631,8 @@ impl Drop for EntityBuilder<'_> {
             width: self.width,
             height: self.height,
             eye: self.eye,
-            max_health: self.health,
             speed: self.speed,
             flags: self.flags,
-            category: self.category,
             texture: Str::new(&self.texture),
             texture_size: self.texture_size,
             parts: Slice::new(&parts),
@@ -678,11 +674,11 @@ impl MenuCtx {
     }
     /// Adds slots: `TEMP` (menu grid), `PLAYER`, or an entity id.
     pub fn slots(&self, owner: u64, start: u32, count: u32, flags: u32) {
-        unsafe { (host().menu_slots)(self.args.menu, owner, start, count, flags) }
+        unsafe { (host().menu_slots)(self.args.menu, owner, start, count, flags, Str::EMPTY) }
     }
     /// Slots taking only items with tag or component `accepts` (any mod's, full name).
     pub fn slots_for(&self, owner: u64, start: u32, count: u32, flags: u32, accepts: &str) {
-        unsafe { (host().menu_slots_for)(self.args.menu, owner, start, count, flags, Str::new(accepts)) }
+        unsafe { (host().menu_slots)(self.args.menu, owner, start, count, flags, Str::new(accepts)) }
     }
     /// The player's main inventory, then the hotbar (the layout `ui.player_inventory` shows).
     pub fn player_slots(&self) {
@@ -768,10 +764,8 @@ impl Registry {
             width: d.width,
             height: d.height,
             eye: d.eye,
-            health: d.max_health,
             speed: d.speed,
             flags: d.flags,
-            category: 0,
             texture: String::new(),
             texture_size: d.texture_size,
             parts: Vec::new(),
@@ -791,22 +785,23 @@ impl Registry {
     pub fn entity_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32, attach_to: &[&str]) {
         let bytes = crate::component::pod_bytes(&default);
         let schema = T::schema();
-        let attach: Vec<Str> = attach_to.iter().map(|s| Str::new(s)).collect();
         let desc = abi::ComponentDesc {
             name: Str::new(comp.name()),
             schema: Str::new(&schema),
             value_size: size_of::<T>() as u32,
             flags,
             default: Slice::new(&bytes),
-            attach_to: Slice::new(&attach),
             ..abi::ComponentDesc::DEFAULT
         };
         unsafe { (host().reg_component)(self.raw, &desc) }
+        for kind in attach_to {
+            unsafe { (host().reg_attach_value)(self.raw, Str::new(kind), Str::new(comp.name()), Slice::EMPTY) }
+        }
     }
 
     /// Adds behaviour to an entity kind registered elsewhere (the engine's player, another mod's mob).
     pub fn hook_tick(&mut self, kind: &str, f: impl Fn(&EntityTick) + Send + Sync + 'static) {
-        unsafe { (host().reg_entity_tick_hook)(self.raw, Str::new(kind), tick_cb(f)) }
+        unsafe { (host().reg_entity_hook)(self.raw, Str::new(kind), abi::entity_hook::TICK, tick_cb(f)) }
     }
 
     pub fn hook(&mut self, kind: &str, hook: Hook, f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) {
@@ -843,7 +838,7 @@ impl Registry {
     /// Attaches a component (by full name, e.g. "core:energy") to an entity kind.
     pub fn attach(&mut self, kind: &str, component: &str) {
         let k = qualify(self.ns, kind);
-        unsafe { (host().reg_attach)(self.raw, Str::new(&k), Str::new(component)) }
+        unsafe { (host().reg_attach_value)(self.raw, Str::new(&k), Str::new(component), Slice::EMPTY) }
     }
 
     /// `attach` with the value this kind starts with (a battery's capacity).
@@ -856,14 +851,14 @@ impl Registry {
     /// Chat command `/name`; `usage` declares its arguments (`<name:type>`, `[name:type]`,
     /// literal words, `|` alternatives), which the engine parses, checks and completes.
     pub fn command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
-        let cb = crate::command::command_cb(usage, f);
+        let cb = crate::command::command_cb(f);
         unsafe { (host().reg_command)(self.raw, Str::new(name), Str::new(usage), cb) }
     }
 
     /// Like `command`, but runs on the client that types it (`cmd.client()`), never on the
     /// server: for what only the player's own game has (views, local settings, debug output).
     pub fn client_command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
-        let cb = crate::command::command_cb(usage, f);
+        let cb = crate::command::command_cb(f);
         unsafe { (host().reg_client_command)(self.raw, Str::new(name), Str::new(usage), cb) }
     }
 
@@ -884,7 +879,7 @@ impl Registry {
     /// A new branch of an existing command, handled here: `r.command_branch("gizmo", "clear",
     /// |cmd| ..)` makes `/gizmo clear` this mod's. Earlier alternatives win when both fit.
     pub fn command_branch(&mut self, command: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
-        let cb = crate::command::command_cb(usage, f);
+        let cb = crate::command::command_cb(f);
         unsafe { (host().reg_command_branch)(self.raw, Str::new(command), Str::new(usage), cb) }
     }
 

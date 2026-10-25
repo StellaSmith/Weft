@@ -4,7 +4,7 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 pub struct Shader {
     pub module: naga::Module,
     pub info: naga::valid::ModuleInfo,
-    /// Content hash of the source, backends use it as a cache key.
+    /// Content hash of the source (a key for caching compiled modules).
     pub hash: u64,
     pub push_constant_size: u32,
     /// Group 1 bindings: (binding, kind).

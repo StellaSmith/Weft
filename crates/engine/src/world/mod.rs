@@ -74,10 +74,6 @@ impl Rng {
         mix(self.0)
     }
 
-    pub fn below(&mut self, n: u32) -> u32 {
-        (((self.next() >> 32) * n as u64) >> 32) as u32
-    }
-
     pub fn float(&mut self) -> f32 {
         (self.next() >> 40) as f32 / (1u64 << 24) as f32
     }

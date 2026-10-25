@@ -73,7 +73,7 @@ struct Pipeline {
 
 enum Deferred {
     Buffer(vk::Buffer, Allocation),
-    Texture(vk::Image, vk::ImageView, Allocation, bool, u32),
+    Texture(vk::Image, vk::ImageView, Allocation, u32),
     Pipeline(vk::Pipeline, vk::PipelineLayout, vk::DescriptorSetLayout),
 }
 
@@ -142,9 +142,7 @@ pub struct VulkanBackend {
     global_set: vk::DescriptorSet,
     samplers: [vk::Sampler; 4],
     free_tex: Vec<u32>,
-    free_arr: Vec<u32>,
     next_tex: u32,
-    next_arr: u32,
     capture_requested: bool,
     capture: Option<(vk::Buffer, Allocation, u32, u32, vk::Format)>,
     device_name: String,
@@ -272,8 +270,8 @@ impl VulkanBackend {
             let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut indexing);
             instance.get_physical_device_properties2(pdev, &mut props2);
             let images = indexing.max_per_stage_descriptor_update_after_bind_sampled_images.min(indexing.max_descriptor_set_update_after_bind_sampled_images);
-            if images < MAX_TEXTURES + MAX_TEXTURE_ARRAYS {
-                return Err(Error(format!("{device_name} can bind {images} textures at once, the game needs {}", MAX_TEXTURES + MAX_TEXTURE_ARRAYS)));
+            if images < MAX_TEXTURES {
+                return Err(Error(format!("{device_name} can bind {images} textures at once, the game needs {MAX_TEXTURES}")));
             }
 
             let features = vk::PhysicalDeviceFeatures::default()
@@ -355,7 +353,7 @@ impl VulkanBackend {
             }
 
             let flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND;
-            let binding_flags = [flags, flags, vk::DescriptorBindingFlags::empty(), Default::default(), Default::default(), Default::default()];
+            let binding_flags = [flags, vk::DescriptorBindingFlags::empty(), Default::default(), Default::default(), Default::default()];
             let bindings = [
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(0)
@@ -364,8 +362,8 @@ impl VulkanBackend {
                     .stage_flags(vk::ShaderStageFlags::ALL),
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(1)
-                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-                    .descriptor_count(MAX_TEXTURE_ARRAYS)
+                    .descriptor_type(vk::DescriptorType::SAMPLER)
+                    .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::ALL),
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(2)
@@ -379,11 +377,6 @@ impl VulkanBackend {
                     .stage_flags(vk::ShaderStageFlags::ALL),
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(4)
-                    .descriptor_type(vk::DescriptorType::SAMPLER)
-                    .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::ALL),
-                vk::DescriptorSetLayoutBinding::default()
-                    .binding(5)
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::ALL),
@@ -401,7 +394,7 @@ impl VulkanBackend {
             let sizes = [
                 vk::DescriptorPoolSize {
                     ty: vk::DescriptorType::SAMPLED_IMAGE,
-                    descriptor_count: MAX_TEXTURES + MAX_TEXTURE_ARRAYS,
+                    descriptor_count: MAX_TEXTURES,
                 },
                 vk::DescriptorPoolSize { ty: vk::DescriptorType::SAMPLER, descriptor_count: 4 },
             ];
@@ -452,7 +445,7 @@ impl VulkanBackend {
                 .map(|(i, info)| {
                     vk::WriteDescriptorSet::default()
                         .dst_set(global_set)
-                        .dst_binding(2 + i as u32)
+                        .dst_binding(1 + i as u32)
                         .descriptor_type(vk::DescriptorType::SAMPLER)
                         .image_info(info)
                 })
@@ -493,9 +486,7 @@ impl VulkanBackend {
                 global_set,
                 samplers,
                 free_tex: Vec::new(),
-                free_arr: Vec::new(),
                 next_tex: 0,
-                next_arr: 0,
                 capture_requested: false,
                 capture: None,
                 device_name,
@@ -594,7 +585,7 @@ impl VulkanBackend {
                                 .image(image)
                                 .view_type(vk::ImageViewType::TYPE_2D)
                                 .format(format.format)
-                                .subresource_range(color_range(1, 1)),
+                                .subresource_range(color_range(1)),
                             None,
                         )
                         .map_err(err("swapchain view"))?,
@@ -673,12 +664,12 @@ impl VulkanBackend {
                     self.device.destroy_buffer(b, None);
                     self.allocator.free(a).ok();
                 }
-                Deferred::Texture(image, view, a, array, index) => {
+                Deferred::Texture(image, view, a, index) => {
                     self.device.destroy_image_view(view, None);
                     self.device.destroy_image(image, None);
                     self.allocator.free(a).ok();
                     if index != u32::MAX {
-                        if array { self.free_arr.push(index) } else { self.free_tex.push(index) }
+                        self.free_tex.push(index);
                     }
                 }
                 Deferred::Pipeline(p, l, s) => {
@@ -768,8 +759,7 @@ impl VulkanBackend {
                         let staging = chunks[src.0 as usize];
                         let src = src.1;
                         let Some(Some(t)) = self.textures.items.get(dst as usize) else { continue };
-                        let layers = t.desc.layers.unwrap_or(1);
-                        let range = color_range(t.desc.mips, layers);
+                        let range = color_range(t.desc.mips);
                         let (image, layout) = (t.image, t.layout);
                         self.barrier_image(cmd, image, range, layout, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
                         let region = [vk::BufferImageCopy::default()
@@ -778,7 +768,7 @@ impl VulkanBackend {
                                 aspect_mask: vk::ImageAspectFlags::COLOR,
                                 mip_level: mip,
                                 base_array_layer: 0,
-                                layer_count: layers,
+                                layer_count: 1,
                             })
                             .image_extent(vk::Extent3D {
                                 width: (t.desc.width >> mip).max(1),
@@ -810,7 +800,7 @@ impl VulkanBackend {
                         let (range, new) = if depth {
                             (depth_range(), vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
                         } else {
-                            (color_range(t.desc.mips, t.desc.layers.unwrap_or(1)), vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            (color_range(t.desc.mips), vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                         };
                         let image = t.image;
                         self.barrier_image(cmd, image, range, vk::ImageLayout::UNDEFINED, new);
@@ -823,13 +813,13 @@ impl VulkanBackend {
     }
 }
 
-fn color_range(mips: u32, layers: u32) -> vk::ImageSubresourceRange {
+fn color_range(mips: u32) -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,
         base_mip_level: 0,
         level_count: mips,
         base_array_layer: 0,
-        layer_count: layers,
+        layer_count: 1,
     }
 }
 
@@ -1021,7 +1011,6 @@ impl Backend for VulkanBackend {
     fn create_texture(&mut self, desc: &TextureDesc, label: &str) -> TextureId {
         let format = self.vk_format(desc.format);
         let depth = desc.format == Format::Depth32;
-        let layers = desc.layers.unwrap_or(1);
         let usage = if depth {
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
         } else {
@@ -1040,7 +1029,7 @@ impl Backend for VulkanBackend {
                         .format(format)
                         .extent(vk::Extent3D { width: desc.width, height: desc.height, depth: 1 })
                         .mip_levels(desc.mips)
-                        .array_layers(layers)
+                        .array_layers(1)
                         .samples(vk::SampleCountFlags::TYPE_1)
                         .tiling(vk::ImageTiling::OPTIMAL)
                         .usage(usage),
@@ -1059,17 +1048,13 @@ impl Backend for VulkanBackend {
                 })
                 .unwrap_or_else(|e| panic!("allocating texture {label}: {e}"));
             self.device.bind_image_memory(image, alloc.memory(), alloc.offset()).expect("bind image memory");
-            let range = if depth { depth_range() } else { color_range(desc.mips, layers) };
+            let range = if depth { depth_range() } else { color_range(desc.mips) };
             let view = self
                 .device
                 .create_image_view(
                     &vk::ImageViewCreateInfo::default()
                         .image(image)
-                        .view_type(if desc.layers.is_some() {
-                            vk::ImageViewType::TYPE_2D_ARRAY
-                        } else {
-                            vk::ImageViewType::TYPE_2D
-                        })
+                        .view_type(vk::ImageViewType::TYPE_2D)
                         .format(format)
                         .subresource_range(range),
                     None,
@@ -1079,25 +1064,17 @@ impl Backend for VulkanBackend {
             let index = if depth {
                 u32::MAX
             } else {
-                let array = desc.layers.is_some();
-                let index = if array {
-                    self.free_arr.pop().unwrap_or_else(|| {
-                        self.next_arr += 1;
-                        self.next_arr - 1
-                    })
-                } else {
-                    self.free_tex.pop().unwrap_or_else(|| {
-                        self.next_tex += 1;
-                        self.next_tex - 1
-                    })
-                };
-                assert!(index < if array { MAX_TEXTURE_ARRAYS } else { MAX_TEXTURES }, "more than {MAX_TEXTURES} textures");
+                let index = self.free_tex.pop().unwrap_or_else(|| {
+                    self.next_tex += 1;
+                    self.next_tex - 1
+                });
+                assert!(index < MAX_TEXTURES, "more than {MAX_TEXTURES} textures");
                 let info = [vk::DescriptorImageInfo::default()
                     .image_view(view)
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
                 let write = vk::WriteDescriptorSet::default()
                     .dst_set(self.global_set)
-                    .dst_binding(if array { 1 } else { 0 })
+                    .dst_binding(0)
                     .dst_array_element(index)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(&info);
@@ -1132,7 +1109,6 @@ impl Backend for VulkanBackend {
                 t.image,
                 t.view,
                 t.alloc,
-                t.desc.layers.is_some(),
                 t.index,
             ));
         }
@@ -1358,7 +1334,7 @@ impl Backend for VulkanBackend {
                             };
                             let old = if clear.is_some() { vk::ImageLayout::UNDEFINED } else { old };
                             // Also when the layout stays: a pass loading what the last one wrote.
-                            self.barrier_image(cmd, image, color_range(1, 1), old, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+                            self.barrier_image(cmd, image, color_range(1), old, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
                             color_att = Some(
                                 vk::RenderingAttachmentInfo::default()
                                     .image_view(view)
@@ -1418,7 +1394,7 @@ impl Backend for VulkanBackend {
                             self.barrier_image(
                                 cmd,
                                 image,
-                                color_range(1, 1),
+                                color_range(1),
                                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                             );
@@ -1508,7 +1484,7 @@ impl Backend for VulkanBackend {
                     MemoryLocation::GpuToCpu,
                     "capture",
                 );
-                self.barrier_image(cmd, sc_image, color_range(1, 1), old, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
+                self.barrier_image(cmd, sc_image, color_range(1), old, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
                 let region = [vk::BufferImageCopy::default()
                     .image_subresource(vk::ImageSubresourceLayers {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -1518,11 +1494,11 @@ impl Backend for VulkanBackend {
                     })
                     .image_extent(vk::Extent3D { width: w, height: h, depth: 1 })];
                 self.device.cmd_copy_image_to_buffer(cmd, sc_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, buf, &region);
-                self.barrier_image(cmd, sc_image, color_range(1, 1), vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR);
+                self.barrier_image(cmd, sc_image, color_range(1), vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR);
                 let fmt = self.swapchain.as_ref().unwrap().format;
                 self.capture = Some((buf, alloc, w, h, fmt));
             } else {
-                self.barrier_image(cmd, sc_image, color_range(1, 1), old, vk::ImageLayout::PRESENT_SRC_KHR);
+                self.barrier_image(cmd, sc_image, color_range(1), old, vk::ImageLayout::PRESENT_SRC_KHR);
             }
             self.swapchain.as_mut().unwrap().layouts[image_index as usize] = vk::ImageLayout::PRESENT_SRC_KHR;
             self.device.cmd_write_timestamp2(cmd, vk::PipelineStageFlags2::ALL_COMMANDS, self.queries, first_query + marks);

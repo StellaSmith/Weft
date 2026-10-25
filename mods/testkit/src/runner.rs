@@ -49,7 +49,7 @@ impl T {
     fn new(name: &str) -> T {
         T(Rc::new(RefCell::new(Inner {
             client: None,
-            state: <ClientState as abi::Versioned>::DEFAULT,
+            state: ClientState::DEFAULT,
             screen: String::new(),
             seq: 0,
             replies: HashMap::new(),

@@ -9,7 +9,6 @@ use winit::keyboard::KeyCode;
 pub const HOTBAR: [&str; 9] = ["core:hotbar1", "core:hotbar2", "core:hotbar3", "core:hotbar4", "core:hotbar5", "core:hotbar6", "core:hotbar7", "core:hotbar8", "core:hotbar9"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-
 pub enum Key {
     Code(KeyCode),
     Mouse(u8),

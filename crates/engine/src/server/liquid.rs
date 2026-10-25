@@ -265,12 +265,6 @@ impl Dim {
         let dir = DVec3::new(-sy * cp, sp, -cy * cp);
         crate::physics::raycast(c, &|p| self.get(p), eye, dir, max, liquids)
     }
-
-    /// Temperature of the liquid at `p`, if any.
-    pub fn liquid_temperature(&self, c: &Content, p: IVec3) -> Option<u32> {
-        let s = self.get(p)?;
-        c.states[s as usize].liquid.map(|l| c.liquids[l as usize].temperature)
-    }
 }
 
 /// Liquids from this hot burn what touches them.

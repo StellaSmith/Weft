@@ -13,7 +13,6 @@ use crate::{World, callback, host};
 
 pub struct Command<'a> {
     args: &'a mut abi::CommandArgs,
-    names: &'a [String],
 }
 
 impl Command<'_> {
@@ -33,9 +32,8 @@ impl Command<'_> {
     }
 
     fn value(&self, name: &str) -> Option<&abi::CommandValue> {
-        let i = self.names.iter().position(|n| n == name)?;
         let all = unsafe { std::slice::from_raw_parts(self.args.values, self.args.count as usize) };
-        all.get(i).filter(|v| v.kind != cv::NONE)
+        all.iter().find(|v| unsafe { v.name.as_str() } == name).filter(|v| v.kind != cv::NONE)
     }
 
     pub fn int(&self, name: &str) -> Option<i64> {
@@ -75,24 +73,6 @@ impl Command<'_> {
     }
 }
 
-/// Parameter names in the engine's order: first appearance across `|` alternatives.
-fn names(usage: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for tok in usage.split_whitespace() {
-        if tok == "|" {
-            continue;
-        }
-        let inner = tok.strip_prefix('<').or_else(|| tok.strip_prefix('[')).and_then(|t| t.strip_suffix('>').or_else(|| t.strip_suffix(']')));
-        // Literal words are slots too: present when that word was typed.
-        let name = inner.and_then(|t| t.split_once(':')).map_or(tok, |(n, _)| n);
-        if !out.iter().any(|o| o == name) {
-            out.push(name.to_string());
-        }
-    }
-    out
-}
-
-pub(crate) fn command_cb(usage: &str, f: impl Fn(&mut Command) + Send + Sync + 'static) -> abi::Callback {
-    let names = names(usage);
-    callback(move |args: &mut abi::CommandArgs| f(&mut Command { args, names: &names }))
+pub(crate) fn command_cb(f: impl Fn(&mut Command) + Send + Sync + 'static) -> abi::Callback {
+    callback(move |args: &mut abi::CommandArgs| f(&mut Command { args }))
 }

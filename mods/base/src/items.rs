@@ -26,7 +26,6 @@ pub static FUEL: Component<u32> = Component::new("fuel");
 pub static ARMOR: Component<Armor> = Component::new("armor");
 /// How readily fire takes it.
 pub static FLAMMABLE: Component<u32> = Component::new("flammable");
-/// Item left behind when this one is used up as fuel or ingredient (the bucket of a lava bucket).
 /// Slot tags; `<slot>/<material>` tags pick the recipe (see recipes.rs).
 pub const ARMOR_SLOTS: [&str; 4] = abi::comp::ARMOR;
 

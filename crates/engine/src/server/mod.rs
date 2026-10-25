@@ -26,7 +26,7 @@ use glam::{DVec3, IVec3};
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use voxide_abi::{self as abi, ItemStack, Versioned, component_flags as cf, damage};
+use voxide_abi::{self as abi, ItemStack, component_flags as cf, damage};
 
 pub use dim::{Dim, DimEvent, break_time};
 
@@ -322,7 +322,6 @@ impl Server {
         }
     }
 
-    /// Paused single player: keep talking to the client but do not advance the world.
     /// Inserts generated cubes and keeps the workers fed until `deadline`, between ticks.
     fn load_until(&mut self, deadline: Instant) {
         let c = content();
@@ -358,6 +357,7 @@ impl Server {
         }
     }
 
+    /// Paused single player: keep talking to the client but do not advance the world.
     fn idle(&mut self) {
         let c = content();
         self.accept();
@@ -632,7 +632,7 @@ impl Server {
             menu::close(m, r, c, p.entity);
         }
         p.window += 1;
-        let m = menu::open(r, c, p.entity, kind, owner, p.window);
+        let m = menu::open(r, c, p.entity, kind, owner);
         p.conn.send(ToClient::OpenMenu { kind, window: p.window, slots: m.slots.len() as u32, owner });
         p.menu = Some(m);
     }
@@ -646,7 +646,7 @@ impl Server {
         for d in &mut self.dims {
             for r in &mut d.regions {
                 // Cubes where something happened, and the ones entities are in (they move and
-                // spawn in untouched cubes too; those were lost on quitting).
+                // spawn in untouched cubes too).
                 let mut cubes: Vec<IVec3> = std::mem::take(&mut r.modified).into_iter().collect();
                 cubes.extend(r.entities.list.iter().filter(|e| !e.removed && !e.player && e.kind != c.game.virtual_kind).map(|e| cube_of(e.pos.floor().as_ivec3())));
                 cubes.sort_unstable_by_key(|p| (p.x, p.y, p.z));
@@ -1374,7 +1374,7 @@ impl Server {
                 continue;
             }
             let def = &c.dims[pdim as usize];
-            let (lo, hi) = loaded_y_range(def, center.y, h, down);
+            let (_, hi) = loaded_y_range(def, center.y, h, down);
             let in_view = |pos: IVec3| {
                 let d = pos - center;
                 d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
@@ -1413,7 +1413,6 @@ impl Server {
             for t in tops {
                 dim.settle_down(t);
             }
-            let _ = lo;
             // Everything above a wanted cube up to the top of the range comes first, so light
             // always arrives from above before a cube is lit; otherwise it would be lit dark and
             // the whole column relit when the sky shows up. Solid cubes cost almost nothing.
@@ -1887,7 +1886,6 @@ pub fn structure_near(c: &Content, dim: u32, seed: u64, name: &str, pos: IVec3, 
     best
 }
 
-/// Items in a player's equipment slots that show on the model.
 /// Gizmo shapes for one player: what mods drew in the groups it shows, and every second the
 /// engine's server-side groups.
 fn gizmos_for(p: &Player, dim: &DimSet, tick: u64, me: DVec3) -> Vec<crate::net::GizmoShape> {
@@ -1935,6 +1933,7 @@ fn mode_modifiers(c: &Content, r: &mut Dim, id: u64, mode: GameMode) {
     }
 }
 
+/// Items in a player's equipment slots that show on the model.
 fn worn_of(c: &Content, ents: &entity::Entities, id: u64) -> Vec<u32> {
     let worn = &c.game.player_layout.worn;
     let Some(inv) = ents.inventories.get(&id).and_then(|i| i.get(worn.start as usize..worn.end as usize)) else { return Vec::new() };

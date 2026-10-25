@@ -11,7 +11,7 @@ struct Quad {
     color: u32,
     tex: u32,
     layer: u32,
-    // 0 solid colour, 1 texture, 2 texture array layer, 3 font (alpha from red), 4 GUI fill shader
+    // 0 solid colour, 1 texture, 2 item icon, 3 font (alpha from red), 4 GUI fill shader
     mode: u32,
     // Visible rectangle (x0, y0, x1, y1) in pixels; empty = everywhere.
     rect: vec4<f32>,

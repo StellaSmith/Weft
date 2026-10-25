@@ -30,9 +30,6 @@ fn main() {
         // Mod sources of the game itself; players' mods go into `run/mods`, added below.
         mod_dirs: vec![root.join("mods")],
         gpu_debug: false,
-        shot: None,
-        shot_delay: 0.0,
-        camera: None,
         world: None,
         seed: None,
         screen: None,
@@ -57,14 +54,6 @@ fn main() {
             "--gpu-debug" => opts.gpu_debug = true,
             "--verbose" => verbose = true,
             "--log" => log_spec = value(),
-            "--shot" => opts.shot = Some(PathBuf::from(value())),
-            "--shot-delay" => opts.shot_delay = value().parse().unwrap_or(0.0),
-            "--camera" => {
-                let v: Vec<f64> = value().split(',').filter_map(|s| s.parse().ok()).collect();
-                if v.len() == 5 {
-                    opts.camera = Some([v[0], v[1], v[2], v[3], v[4]]);
-                }
-            }
             "--world" => opts.world = Some(value()),
             "--seed" => opts.seed = value().parse().ok(),
             "--screen" => opts.screen = Some(value()),

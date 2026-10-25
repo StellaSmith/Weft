@@ -387,7 +387,6 @@ pub fn slot_background(ren: &mut UiRenderer, theme: &Theme, r: Rect, selected: b
 }
 
 /// Display name of an item: `item.<ns>.<path>`, then `block.<ns>.<path>`, then the raw name.
-/// `item.ns.name`, or `block.ns.name` for block items that only have that.
 fn item_key(lang: &Lang, item: u32) -> Option<String> {
     let d = content().items.get(item as usize)?;
     let path = d.name.replace(':', ".");

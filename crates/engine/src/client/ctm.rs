@@ -23,7 +23,7 @@
 //! ```
 //!
 //! Resolving is a texture id swap at mesh time, so records and shaders are unchanged. Compact sets
-//! are expanded to all 47 tiles when the texture array is built.
+//! are expanded to all 47 tiles when the block textures are listed.
 
 use std::sync::{Arc, RwLock};
 
@@ -81,7 +81,7 @@ pub struct Ctm {
     pub overlay: Vec<u32>,
 }
 
-/// What the texture array needs on top of the content's block textures.
+/// Textures needed on top of the content's block textures.
 #[derive(Default)]
 pub struct Extra {
     /// Tile textures, ids continue after the content's block textures.

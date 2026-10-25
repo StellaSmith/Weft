@@ -1,5 +1,5 @@
 //! Screen effects mods turn on (`client_op::POST_EFFECT`): `shaders/post/<name>.wgsl` snippets in
-//! one pipeline. With none on, the world is drawn straight to the screen as before; with some,
+//! one pipeline. With none on, the world is drawn straight to the screen; with some,
 //! it goes into an image the effects read one after another, the last one onto the screen.
 
 use voxide_render::*;
@@ -88,7 +88,7 @@ impl Post {
             if let Some((old, ..)) = self.targets.take() {
                 old.into_iter().for_each(|t| gpu.destroy_texture(t));
             }
-            let desc = TextureDesc { width: w.max(1), height: h.max(1), layers: None, mips: 1, format: Format::Surface, render_target: true };
+            let desc = TextureDesc { width: w.max(1), height: h.max(1), mips: 1, format: Format::Surface, render_target: true };
             let t = [gpu.create_texture(&desc, "post a"), gpu.create_texture(&desc, "post b")];
             self.targets = Some((t, t.map(|t| gpu.texture_index(t)), (w, h)));
         }

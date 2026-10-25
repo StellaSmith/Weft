@@ -152,10 +152,14 @@ pub fn synced() -> Vec<(u32, f64)> {
     content().game.configs.iter().enumerate().filter(|(_, d)| d.synced()).map(|(i, _)| (i as u32, get(i as u32))).collect()
 }
 
-/// Settings the engine itself reads.
+/// Settings the engine itself reads; each sound category adds its volume (`volume`).
 pub fn engine_configs() -> Vec<ConfigDef> {
-    let volume = |name: &str| ConfigDef { name: format!("core:{name}"), kind: ck::INT, default: 100.0, min: 0.0, max: 100.0, step: 1.0, choices: Vec::new(), flags: 0 };
-    ["volume_master", "volume_music", "volume_blocks", "volume_creatures", "volume_players", "volume_ambient"].into_iter().map(volume).collect()
+    vec![volume("core:volume_master")]
+}
+
+/// A volume setting in percent.
+pub fn volume(name: &str) -> ConfigDef {
+    ConfigDef { name: name.into(), kind: ck::INT, default: 100.0, min: 0.0, max: 100.0, step: 1.0, choices: Vec::new(), flags: 0 }
 }
 
 #[cfg(test)]

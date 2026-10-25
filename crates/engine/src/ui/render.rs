@@ -224,7 +224,7 @@ impl UiRenderer {
         let desc = desc.map(|d| String::from_utf8_lossy(&d).into_owned());
         let font = Font::new(&String::from_utf8_lossy(&hex), desc.as_deref().zip(img.as_ref()));
         let tex = gpu.create_texture(
-            &TextureDesc { width: font.atlas_width, height: font.atlas_height, layers: None, mips: 1, format: Format::R8Unorm, render_target: false },
+            &TextureDesc { width: font.atlas_width, height: font.atlas_height, mips: 1, format: Format::R8Unorm, render_target: false },
             "font",
         );
         gpu.write_texture(tex, 0, &font.atlas);
@@ -305,7 +305,7 @@ impl UiRenderer {
         }
         let loaded = assets.read(name, "textures", "png").and_then(|b| decode_png(&b)).map(|img| {
             let t = gpu.create_texture(
-                &TextureDesc { width: img.width, height: img.height, layers: None, mips: 1, format: Format::Rgba8Srgb, render_target: false },
+                &TextureDesc { width: img.width, height: img.height, mips: 1, format: Format::Rgba8Srgb, render_target: false },
                 name,
             );
             gpu.write_texture(t, 0, &img.rgba);
@@ -578,7 +578,6 @@ impl UiRenderer {
         }
     }
 
-    /// One line of text centred on `cx` with its top at `y` (physical pixels); `alpha` fades it.
     /// Plain text centred on `cx` in one colour (`0xRRGGBBAA`) with a shadow.
     pub fn label_colored(&mut self, text: &str, cx: f32, y: f32, px: f32, color: u32) {
         let layout = super::text::layout(&super::text::plain(text), &self.font, None);
@@ -587,6 +586,7 @@ impl UiRenderer {
         self.glyph_run(&layout.items, x, y.round(), px, color, Some(0x00000000 | (color & 0xFF) / 2), &mut icons);
     }
 
+    /// One line of text centred on `cx` with its top at `y` (physical pixels); `alpha` fades it.
     pub fn label(&mut self, spans: &[super::text::Span], cx: f32, y: f32, px: f32, alpha: u32) {
         let layout = super::text::layout(spans, &self.font, None);
         let mut icons = Vec::new();
@@ -777,7 +777,7 @@ impl UiRenderer {
             Kind::Text(t) => Some(t.class.as_str()),
             _ => None,
         };
-        // ponytail: item icons are queued apart and stay put; animate them when a theme needs it.
+        // Item icons are queued apart and do not follow these animations yet.
         if let Some(file) = class.and_then(|c| theme.get(c, "animation")) {
             let list = self.anims.entry(file.to_string()).or_insert_with(|| {
                 let src = assets.read(file, "animations", "animation.json").map(|b| String::from_utf8_lossy(&b).into_owned());

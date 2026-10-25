@@ -501,7 +501,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
                 let spread = [r.f32()?, r.f32()?, r.f32()?];
                 let velocity = [r.f32()?, r.f32()?, r.f32()?];
                 let speed = r.f32()?;
-                list.push(voxide_abi::ParticleBurst { kind, pos, spread, velocity, speed, count: r.u32()?, block: r.u32()?, ..voxide_abi::Versioned::DEFAULT });
+                list.push(voxide_abi::ParticleBurst { kind, pos, spread, velocity, speed, count: r.u32()?, block: r.u32()?, ..voxide_abi::ParticleBurst::DEFAULT });
             }
             ToClient::Particles(list)
         }
@@ -735,7 +735,7 @@ mod tests {
     fn server_messages_roundtrip() {
         let msgs = [
             ToServer::Join { name: "Ann".into(), key: "k".into() },
-            ToServer::Use { pos: IVec3::new(-5, 70, 3), face: 3, look: [0.1, -0.5, 0.8], sneak: true },
+            ToServer::Use { pos: IVec3::new(-5, 70, 3), face: 3, look: [0.1, -0.5, 0.8], sneak: true, frame: 0 },
             ToServer::Click { slot: 7, button: 1, shift: true },
             ToServer::Drag { slots: vec![3, 4, 9], button: 0 },
             ToServer::Chat("/give stone 5".into()),

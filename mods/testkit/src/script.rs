@@ -1,4 +1,4 @@
-//! The line script language the engine's autopilot used to run, now on the client mod API:
+//! A line script language on the client mod API:
 //!
 //! ```text
 //! wait 2.5            # seconds
@@ -101,7 +101,7 @@ pub async fn run(t: T, src: String) -> R {
             "quit" => return Ok(()),
             _ => t.fail(format!("unknown script line '{line}'")),
         }
-        // One step per frame, like the old autopilot.
+        // One step per frame.
         t.frames(1).await?;
     }
     Ok(())

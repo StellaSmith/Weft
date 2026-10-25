@@ -97,7 +97,7 @@ macro_rules! trace { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::T
 macro_rules! declare_mod {
     (id: $id:literal, name: $name:literal, version: $ver:literal, deps: [$($dep:literal),* $(,)?], init: $init:path $(,)?) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn voxide_mod_v1() -> *const $crate::abi::ModDecl {
+        pub extern "C" fn voxide_mod() -> *const $crate::abi::ModDecl {
             static DEPS: &[$crate::abi::Str] = &[$($crate::abi::Str::new($dep)),*];
             unsafe extern "C" fn __voxide_init(
                 host: *const $crate::abi::Host,

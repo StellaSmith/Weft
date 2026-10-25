@@ -27,8 +27,8 @@ pub struct Nav {
 
 impl Nav {
     /// Worth a new search: never searched, the target moved off, or the walk got stuck. A path
-    /// to a target that stays put is kept (searching every mob's path every second was most of a
-    /// tick with thousands of mobs).
+    /// to a target that stays put is kept (searching every mob's path every second costs most of
+    /// a tick with thousands of mobs).
     pub fn stale(&self, age: u64) -> bool {
         age >= self.repath && self.found_for.is_none_or(|f| (f - self.target).length_squared() > 4.0 || self.stuck > 10)
     }

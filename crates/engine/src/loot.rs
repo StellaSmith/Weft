@@ -90,7 +90,7 @@ pub struct RawLootMod {
 
 unsafe fn conds(s: abi::Slice<abi::LootCond>) -> Vec<RawCond> {
     let mut out = Vec::new();
-    unsafe { abi::each_sized(s, |c| out.push(RawCond { kind: c.kind, value: c.value, text: c.text.as_str().to_string() })) };
+    unsafe { s.as_slice().iter().copied().for_each(|c| out.push(RawCond { kind: c.kind, value: c.value, text: c.text.as_str().to_string() })) };
     out
 }
 
@@ -99,7 +99,7 @@ unsafe fn conds(s: abi::Slice<abi::LootCond>) -> Vec<RawCond> {
 pub unsafe fn copy_pool(p: &abi::LootPool) -> RawPool {
     unsafe {
         let mut entries = Vec::new();
-        abi::each_sized(p.entries, |e| {
+        p.entries.as_slice().iter().copied().for_each(|e| {
             entries.push(RawEntry { item: e.item.as_str().to_string(), weight: e.weight, min: e.min, max: e.max.max(e.min), conds: conds(e.conditions), smelt: e.smelt.as_str().to_string() })
         });
         RawPool { rolls: (p.rolls_min, p.rolls_max.max(p.rolls_min)), conds: conds(p.conditions), entries }

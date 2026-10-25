@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
-use voxide_abi::{self as abi, Callback, ModId, Versioned, entity_flags as ef, part_role};
+use voxide_abi::{self as abi, Callback, ModId, entity_flags as ef, part_role};
 
 use crate::components::{self as comps, Components, RawSet, RawValue};
 
@@ -90,7 +90,6 @@ pub struct EntityKind {
     pub width: f32,
     pub height: f32,
     pub eye: f32,
-    pub max_health: f32,
     pub speed: f32,
     pub flags: u32,
     pub category: u32,
@@ -231,7 +230,7 @@ pub struct Game {
     /// Particle kinds by id (sorted by name).
     pub particles: Vec<ParticleDef>,
     pub particle_names: FxHashMap<String, u32>,
-    /// Particle texture names, index = layer in the particle texture array.
+    /// Particle texture names, by particle texture index.
     pub particle_textures: Vec<String>,
     /// Items shown with a recipe type in the recipe viewer (the machines making them).
     pub recipe_stations: FxHashMap<String, Vec<u32>>,
@@ -293,7 +292,6 @@ unsafe impl Send for RawParticle {}
 
 #[derive(Default)]
 pub struct PacketDef {
-    pub name: String,
     pub server: Option<(ModId, Callback)>,
     pub client: Option<(ModId, Callback)>,
 }
@@ -312,7 +310,6 @@ pub struct RawComponent {
     pub owner: ModId,
     pub def: ComponentDef,
     pub schema: String,
-    pub attach_to: Vec<String>,
 }
 
 pub struct RawRecipe {
@@ -470,17 +467,21 @@ impl PlayerLayout {
 #[derive(Clone, Debug)]
 pub struct SoundCategory {
     pub name: String,
-    /// `<ns>:volume_<name>`.
-    pub setting: String,
+    /// `<ns>:volume_<name>`, none for `core:ui`.
+    pub setting: Option<String>,
     pub world: bool,
 }
 
 impl SoundCategory {
     pub fn new(name: &str, world: bool) -> SoundCategory {
         let (ns, short) = name.split_once(':').unwrap_or(("core", name));
-        SoundCategory { name: name.to_string(), setting: format!("{ns}:volume_{short}"), world }
+        let setting = (name != "core:ui").then(|| format!("{ns}:volume_{short}"));
+        SoundCategory { name: name.to_string(), setting, world }
     }
 }
+
+/// `SoundDef::category` of the engine's music track: the first category.
+pub const MUSIC_CATEGORY: u32 = 0;
 
 /// What natural spawning and despawning know of entities by category.
 #[derive(Clone, Debug)]
@@ -546,9 +547,9 @@ fn opt(c: Callback) -> Option<Callback> {
 pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity {
     unsafe {
         let mut parts = Vec::new();
-        abi::each_sized(d.parts, |p| {
+        d.parts.as_slice().iter().copied().for_each(|p| {
             let mut cuboids = Vec::new();
-            abi::each_sized(p.cuboids, |c| {
+            p.cuboids.as_slice().iter().copied().for_each(|c| {
                 cuboids.push(Cuboid { origin: c.origin, size: c.extent, uv: c.uv, inflate: c.inflate, mirror: c.mirror != 0, faces: (c.per_face != 0).then_some(c.faces) })
             });
             let n = parts.len() as i32;
@@ -567,10 +568,9 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 width: d.width,
                 height: d.height,
                 eye: d.eye,
-                max_health: d.max_health,
                 speed: d.speed,
                 flags: d.flags,
-                category: d.category,
+                category: 0,
                 category_name: d.category_name.as_str().to_string(),
                 texture: d.texture.as_str().to_string(),
                 texture_size: d.texture_size,
@@ -639,7 +639,6 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         width,
         height,
         eye: height * 0.9,
-        max_health: 20.0,
         speed: 4.3,
         flags,
         category: 0,
@@ -768,7 +767,8 @@ pub fn freeze(
     let mut sounds: Vec<(usize, SoundDef)> = engine_sounds();
     let mut music: Vec<(String, MusicDef)> = Vec::new();
     let mut spawns: Vec<RawSpawn> = Vec::new();
-    let mut sound_categories: Vec<SoundCategory> = ["blocks", "creatures", "players", "ambient", "music", "ui"].map(|n| SoundCategory::new(&format!("core:{n}"), n != "music" && n != "ui")).to_vec();
+    // Music first (`MUSIC_CATEGORY`); the order is also that of the volume settings.
+    let mut sound_categories: Vec<SoundCategory> = ["music", "blocks", "creatures", "players", "ambient", "ui"].map(|n| SoundCategory::new(&format!("core:{n}"), n != "music" && n != "ui")).to_vec();
     let mut categories: Vec<CategoryDef> = vec![
         CategoryDef { name: "core:misc".into(), cap: 6, despawn: 0.0 },
         CategoryDef { name: "core:hostile".into(), cap: 8, despawn: 128.0 },
@@ -823,18 +823,17 @@ pub fn freeze(
     g.item_kind = g.entity_names[ITEM];
     g.falling_kind = g.entity_names[FALLING];
     g.virtual_kind = g.entity_names[VIRTUAL];
-    g.client_hooks.sort_by_key(|h| h.0.0);
+    g.client_hooks.sort_by_key(|h| order(h.0));
     freeze_particles(&mut g, particles, errors);
-    for k in sound_categories.iter().skip(6) {
-        configs.push((0, crate::config::ConfigDef { name: k.setting.clone(), kind: abi::config_kind::INT, default: 100.0, min: 0.0, max: 100.0, step: 1.0, choices: Vec::new(), flags: 0 }));
-    }
+    // Volume settings right after the master volume.
+    let volumes: Vec<(usize, crate::config::ConfigDef)> = sound_categories.iter().filter_map(|k| k.setting.as_deref()).map(|s| (0, crate::config::volume(s))).collect();
+    configs.splice(1..1, volumes);
     sounds.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     for (cell, mut d) in sounds {
-        if !d.category_name.is_empty() {
-            match sound_categories.iter().position(|k| k.name == d.category_name) {
-                Some(i) => d.category = i as u32,
-                None => errors.push(format!("sound {}: no category {}", d.name, d.category_name)),
-            }
+        let category = if d.category_name.is_empty() { "core:blocks" } else { &d.category_name };
+        match sound_categories.iter().position(|k| k.name == category) {
+            Some(i) => d.category = i as u32,
+            None => errors.push(format!("sound {}: no category {category}", d.name)),
         }
         if g.sound_names.contains_key(&d.name) {
             errors.push(format!("sound {} registered twice", d.name));
@@ -887,10 +886,6 @@ pub fn freeze(
             Some(i) => k.category = i as u32,
             None => errors.push(format!("entity {}: no category {}", k.name, k.category_name)),
         }
-    }
-    for k in g.entities.iter_mut().filter(|k| k.category as usize >= categories.len()) {
-        errors.push(format!("entity {}: no category {}", k.name, k.category));
-        k.category = 0;
     }
     g.categories = categories;
     g.sound_categories = sound_categories;
@@ -963,7 +958,7 @@ pub fn freeze(
     packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
     for (owner, name, side, cb) in packets {
         let id = *g.packet_names.entry(name.clone()).or_insert_with(|| {
-            g.packets.push(PacketDef { name: name.clone(), ..Default::default() });
+            g.packets.push(PacketDef::default());
             g.packets.len() as u32 - 1
         });
         let def = &mut g.packets[id as usize];
@@ -981,23 +976,15 @@ pub fn freeze(
         owner: ENGINE,
         def: ComponentDef { name: abi::comp::ENERGY.into(), size: energy, flags: voxide_abi::component_flags::SAVE | voxide_abi::component_flags::SYNC_MENU, default: vec![0; energy as usize], runtime: true },
         schema: String::new(),
-        attach_to: Vec::new(),
     });
     // Variable length (size 0): attribute modifiers, added on demand.
     components.push(RawComponent {
         owner: ENGINE,
         def: ComponentDef { name: MODIFIERS.into(), size: 0, flags: voxide_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
         schema: String::new(),
-        attach_to: Vec::new(),
     });
     for rc in components {
         let Some(id) = c.id(&rc.def.name) else { continue };
-        for k in &rc.attach_to {
-            match g.entity_names.get(k) {
-                Some(&e) => g.entities[e as usize].components.push(id),
-                None => errors.push(format!("component {} attaches to unknown entity {k}", rc.def.name)),
-            }
-        }
         g.components[id as usize] = ComponentDef { runtime: true, ..rc.def };
     }
     g.component_names = g.components.iter().enumerate().filter(|(_, d)| d.runtime).map(|(i, d)| (d.name.clone(), i as u32)).collect();
@@ -1032,7 +1019,7 @@ pub fn freeze(
     }
 
     // Hooks run after the kind's own callback, in mod order.
-    hooks.sort_by_key(|h: &(ModId, String, u32, Callback)| h.0.0);
+    hooks.sort_by_key(|h: &(ModId, String, u32, Callback)| order(h.0));
     for (owner, kind, hook, cb) in hooks {
         let Some(&e) = g.entity_names.get(&kind) else {
             errors.push(format!("hook on unknown entity {kind}"));
@@ -1223,10 +1210,10 @@ impl Game {
 
 /// Sounds the engine plays itself (files in its own assets, packs may replace them).
 fn engine_sounds() -> Vec<(usize, SoundDef)> {
-    let one = |name: &str, file: &str, category: u32, volume: f32, pitch: [f32; 2]| (0, SoundDef { name: name.into(), files: vec![file.into()], category, category_name: String::new(), volume, pitch, range: 16.0 });
+    let one = |name: &str, file: &str, category: &str, volume: f32, pitch: [f32; 2]| (0, SoundDef { name: name.into(), files: vec![file.into()], category: 0, category_name: category.into(), volume, pitch, range: 16.0 });
     vec![
-        one("core:ui.click", "core:ui/click", abi::sound_category::UI, 0.6, [1.0, 1.0]),
-        one("core:item.pickup", "core:item/pickup", abi::sound_category::PLAYERS, 0.4, [1.4, 2.2]),
+        one("core:ui.click", "core:ui/click", "core:ui", 0.6, [1.0, 1.0]),
+        one("core:item.pickup", "core:item/pickup", "core:players", 0.4, [1.4, 2.2]),
     ]
 }
 

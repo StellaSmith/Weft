@@ -177,57 +177,6 @@ impl DimSet {
         }
     }
 
-    /// What a viewer in cube `center` could see: a flood fill from that cube through loaded
-    /// cubes, leaving each one only by faces its blocks connect to the face it was entered by.
-    /// Solid ground and sealed caves stop the fill, so they are never loaded unless they come
-    /// within `near` cubes. Returns every reached cube (loaded or not) and the unloaded ones.
-    pub fn visible(&mut self, c: &Content, center: IVec3, in_range: impl Fn(IVec3) -> bool, near: i32) -> (FxHashSet<IVec3>, Vec<IVec3>) {
-        let mut seen: FxHashSet<IVec3> = FxHashSet::default();
-        let mut missing = Vec::new();
-        for dy in -near..=near {
-            for dz in -near..=near {
-                for dx in -near..=near {
-                    let p = center + IVec3::new(dx, dy, dz);
-                    if in_range(p) && seen.insert(p) && !self.has(p) {
-                        missing.push(p);
-                    }
-                }
-            }
-        }
-        // Faces already left through, per cube: entering again only explores new exits.
-        let mut explored: FxHashMap<IVec3, u8> = FxHashMap::default();
-        let mut queue: std::collections::VecDeque<(IVec3, usize)> = std::collections::VecDeque::new();
-        if self.has(center) {
-            queue.push_back((center, 6));
-        }
-        while let Some((pos, from)) = queue.pop_front() {
-            let Some(conn) = self.connectivity(c, pos) else { continue };
-            let exits = if from == 6 { 0x3F } else { crate::world::cube::exits(conn, from) };
-            let done = explored.entry(pos).or_default();
-            let new = exits & !*done;
-            *done |= new;
-            for f in 0..6 {
-                if new & (1 << f) == 0 {
-                    continue;
-                }
-                let n = pos + crate::world::DIRS[f];
-                if !in_range(n) {
-                    continue;
-                }
-                let first = seen.insert(n);
-                if !self.has(n) {
-                    if first {
-                        missing.push(n);
-                    }
-                    continue;
-                }
-                // Entered through the face opposite to `f`.
-                queue.push_back((n, f ^ 1));
-            }
-        }
-        (seen, missing)
-    }
-
     pub fn spawn_point(&self, c: &Content) -> DVec3 {
         let def = &c.dims[self.id as usize];
         let mut pos = def.spawn_at;

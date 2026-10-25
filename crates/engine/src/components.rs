@@ -33,6 +33,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::WORN, "{roles:u32,inflate:f32}"),
     (abi::comp::WORN_TEXTURE, "str"),
     (abi::comp::WEAR_PER_HIT, "u32"),
+    (abi::attribute::MAX_HEALTH, "f64"),
 ];
 
 /// One value as a mod registered it; `text` holds the copied string of a `str` value.
@@ -146,10 +147,6 @@ impl Components {
         self.names.len() as u32
     }
 
-    pub fn entries(&self, kind: usize) -> u32 {
-        self.tables[kind].entries
-    }
-
     #[inline]
     pub fn has(&self, kind: usize, entry: u32, comp: u32) -> bool {
         (comp as usize) < self.names.len() && self.tables[kind].has(entry, comp)
@@ -253,10 +250,6 @@ impl Builder {
 
     pub fn names(&self) -> &[String] {
         &self.names
-    }
-
-    pub fn has(&self, kind: usize, entry: u32, comp: u32) -> bool {
-        self.tables[kind].has(entry, comp)
     }
 
     /// Entries of `kind` carrying any of `comps`: one masked compare per row word.
@@ -366,7 +359,7 @@ impl Builder {
             let t = &tables[k];
             abi::KindTable { entries: t.entries, words: t.words, bits: t.bits.as_ptr(), columns: columns[k].as_ptr() }
         });
-        let abi = Box::new(abi::ComponentTable { size: size_of::<abi::ComponentTable>() as u32, components: names.len() as u32, kinds });
+        let abi = Box::new(abi::ComponentTable { components: names.len() as u32, kinds });
         Components { names, schemas, by_name: ids, tables, _texts: texts, _columns: columns, abi }
     }
 }

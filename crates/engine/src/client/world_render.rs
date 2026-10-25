@@ -162,9 +162,10 @@ pub struct WorldRenderer {
     tint_tiles: u32,
     tex_info: BufferId,
     anim: BufferId,
-    /// Start of the overlay table in `anim`, and of the glow map (by bindless index).
+    /// Start of the overlay table in `anim`.
     overlays: u32,
-    glows: u32,
+    /// `GameTextures::glow_buffer`, bound as it is.
+    glow: BufferId,
     /// `GameTextures::generation` the tables were built from.
     tex_generation: u64,
     /// (0 1 2)(0 2 3) for as many quads as one draw can hold; every face and quad draw shares it
@@ -183,7 +184,7 @@ impl WorldRenderer {
         let shader = world_shader().map_err(|e| e.0)?;
         let (face_pipes, quad_pipes) = Self::pipelines(gpu, &shader)?;
 
-        let (tex_info, anim, overlays, glows) = Self::texture_info(gpu, textures);
+        let (tex_info, anim, overlays) = Self::texture_info(gpu, textures);
 
         // Tint kind colours per biome, then the blended columns (`set_tint_tiles`).
         let biome_data: Vec<u32> = if c.biomes.is_empty() {
@@ -219,7 +220,7 @@ impl WorldRenderer {
             tex_info,
             anim,
             overlays,
-            glows,
+            glow: textures.glow_buffer(),
             tex_generation: textures.generation(),
             quad_index,
             drawn: 0,
@@ -228,24 +229,25 @@ impl WorldRenderer {
     }
 
     /// The block texture tables (`GameTextures::world_tables`) on the GPU.
-    fn texture_info(gpu: &mut dyn Backend, textures: &GameTextures) -> (BufferId, BufferId, u32, u32) {
-        let (info, frames, overlays, glows) = textures.world_tables();
+    fn texture_info(gpu: &mut dyn Backend, textures: &GameTextures) -> (BufferId, BufferId, u32) {
+        let (info, frames, overlays) = textures.world_tables();
         let tex_info = gpu.create_buffer((info.len().max(1) * 4) as u64, usage::STORAGE, "texture info");
         gpu.write_buffer(tex_info, 0, bytemuck::cast_slice(&info));
         let anim = gpu.create_buffer((frames.len() * 4) as u64, usage::STORAGE, "texture frames");
         gpu.write_buffer(anim, 0, bytemuck::cast_slice(&frames));
-        (tex_info, anim, overlays, glows)
+        (tex_info, anim, overlays)
     }
 
     /// Builds the texture tables again when textures were loaded since (cheap: a few words per
     /// block texture).
     pub fn set_textures(&mut self, gpu: &mut dyn Backend, textures: &GameTextures) {
+        self.glow = textures.glow_buffer();
         if self.tex_generation == textures.generation() {
             return;
         }
         gpu.destroy_buffer(self.tex_info);
         gpu.destroy_buffer(self.anim);
-        (self.tex_info, self.anim, self.overlays, self.glows) = Self::texture_info(gpu, textures);
+        (self.tex_info, self.anim, self.overlays) = Self::texture_info(gpu, textures);
         self.tex_generation = textures.generation();
     }
 
@@ -343,13 +345,6 @@ impl WorldRenderer {
         }
     }
 
-    pub fn clear(&mut self) {
-        let keys: Vec<MeshKey> = self.meshes.keys().copied().collect();
-        for k in keys {
-            self.remove(k);
-        }
-    }
-
     /// Every cube of structure `frame` goes (it left).
     pub fn remove_frame(&mut self, frame: u64) {
         let keys: Vec<MeshKey> = self.meshes.keys().copied().filter(|k| k.0 == frame).collect();
@@ -409,7 +404,7 @@ impl WorldRenderer {
             ids: [0, p.ambient, (self.biome_table.len() / crate::content::content().tint_kinds.len()) as u32, self.tint_tiles],
             look: [p.brightness, 0.0, 0.0, 0.0],
             cam_cube: cam_cube.extend(0).to_array(),
-            extra: [self.overlays, self.glows, crate::content::content().tint_kinds.len() as u32, 0],
+            extra: [self.overlays, 0, crate::content::content().tint_kinds.len() as u32, 0],
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));
@@ -565,6 +560,7 @@ impl WorldRenderer {
             list.bind(4, self.tex_info);
             list.bind(5, self.anim);
             list.bind(6, fbuf);
+            list.bind(7, self.glow);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: k as u64 * 20, count: (end - k) as u32 });
             k = end;
         }

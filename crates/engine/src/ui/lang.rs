@@ -62,8 +62,8 @@ impl Lang {
         Lang { code: code.to_string(), entries, fallback, dev, reported: RefCell::new(FxHashSet::default()) }
     }
 
-    /// Template for a key. A missing key falls back to English; if that is missing too, development
-    /// builds show the key itself (marked) so it gets noticed.
+    /// Template for a key. A missing key falls back to English; if that is missing too, the key
+    /// itself shows (and is logged once).
     pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
         if let Some(v) = self.entries.get(key).or_else(|| self.fallback.get(key)) {
             return v;

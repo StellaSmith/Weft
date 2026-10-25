@@ -92,10 +92,6 @@ impl Assets {
         v
     }
 
-    /// Directories to watch for hot reload.
-    pub fn roots(&self) -> Vec<PathBuf> {
-        self.mods.values().cloned().chain(self.packs.iter().cloned()).collect()
-    }
 }
 
 fn walk(dir: &Path, f: &mut impl FnMut(&Path)) {
@@ -173,8 +169,6 @@ pub struct LoadedTexture {
     pub frames: Vec<Vec<Vec<u8>>>,
     pub glow: Vec<Option<Vec<u8>>>,
     pub anim: Option<Anim>,
-    /// False for the stand-in of a missing file.
-    pub found: bool,
 }
 
 /// Emission like LabPBR, only that part of it: `<name>_s.png` (a LabPBR specular map) glows by
@@ -271,11 +265,11 @@ pub fn load_texture(assets: &Assets, name: &str) -> LoadedTexture {
     let glow = (0..count).map(|f| mask.as_ref().map(|m| mask_frame(m, f, size))).collect();
     let meta = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
     let anim = (count > 1 || meta.is_some()).then(|| parse_anim(meta.as_deref().unwrap_or(""), count, 0));
-    LoadedTexture { size, frames, glow, anim, found: true }
+    LoadedTexture { size, frames, glow, anim }
 }
 
 pub fn missing_texture() -> LoadedTexture {
-    LoadedTexture { size: 16, frames: vec![mip_chain(missing(16), 16)], glow: vec![None], anim: None, found: false }
+    LoadedTexture { size: 16, frames: vec![mip_chain(missing(16), 16)], glow: vec![None], anim: None }
 }
 
 /// A texture made of the top-left, top-right, bottom-left and bottom-right quarters of the first
@@ -292,7 +286,7 @@ pub fn composite_texture(parts: [&LoadedTexture; 4]) -> LoadedTexture {
             out[row..row + half * 4].copy_from_slice(&from[row..row + half * 4]);
         }
     }
-    LoadedTexture { size, frames: vec![mip_chain(out, size)], glow: vec![None], anim: None, found: true }
+    LoadedTexture { size, frames: vec![mip_chain(out, size)], glow: vec![None], anim: None }
 }
 
 /// Fingerprint of the files a texture is made of (image, `.anim`, glow masks): changes when any of

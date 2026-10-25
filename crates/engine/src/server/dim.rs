@@ -120,13 +120,20 @@ pub fn generate(c: &Content, dim: u32, seed: u64, pos: IVec3) -> Cube {
     }
     let mut blocks = vec![0u32; VOLUME];
     let mut biomes = [0u16; 256];
-    match (def.builtin, def.generator) {
-        (Some(f), _) => f(c, pos, &mut blocks),
-        (None, Some(gen_cb)) => {
-            let mut args = abi::GenArgs { seed, cube: pos.to_array(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
-            host::invoke(def.owner, gen_cb, &mut args);
+    match (def.builtin, &def.terrain, def.generator) {
+        (Some(f), _, _) => f(c, pos, &mut blocks),
+        (None, None, None) => return Cube::uniform(AIR, 0),
+        (None, terrain, generator) => {
+            let cols = terrain.as_ref().map(|t| t.generate(seed, pos.to_array(), &mut blocks, &mut biomes));
+            let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.cols.as_ptr());
+            let mut args = abi::GenArgs { seed, cube: pos.to_array(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
+            if let Some(cb) = generator {
+                host::invoke(def.owner, cb, &mut args);
+            }
+            for &(owner, cb) in terrain.iter().flat_map(|t| &t.decorations) {
+                host::invoke(owner, cb, &mut args);
+            }
         }
-        (None, None) => return Cube::uniform(AIR, 0),
     }
     let max = c.states.len() as u32;
     let mut bad = 0;
@@ -203,13 +210,22 @@ pub fn structure_in(def: &crate::content::DimensionDef, c: &Content, s: &crate::
     }
     let room = (s.spacing - s.extent.x.max(s.extent.z)).max(1) as u64;
     let (x, z) = (cell.0 * s.spacing + ((h >> 3) % room) as i32, cell.1 * s.spacing + ((h >> 29) % room) as i32);
-    let cb = def.column?;
-    let mut args = abi::ColumnArgs { seed, x: x + s.extent.x / 2, z: z + s.extent.z / 2, height: 0, biome: 0 };
-    host::invoke(def.owner, cb, &mut args);
-    if s.biome.is_some_and(|t| !c.components.has(comps::BIOME, args.biome, t)) {
+    let (cx, cz) = (x + s.extent.x / 2, z + s.extent.z / 2);
+    let (height, biome) = match &def.terrain {
+        Some(t) => {
+            let col = t.column(seed, cx, cz);
+            (col.height, col.biome)
+        }
+        None => {
+            let mut args = abi::ColumnArgs { seed, x: cx, z: cz, height: 0, biome: 0 };
+            host::invoke(def.owner, def.column?, &mut args);
+            (args.height, args.biome)
+        }
+    };
+    if s.biome.is_some_and(|t| !c.components.has(comps::BIOME, biome, t)) {
         return None;
     }
-    Some(IVec3::new(x, args.height + 1 - s.sink, z))
+    Some(IVec3::new(x, height + 1 - s.sink, z))
 }
 
 /// Structure blocks that fall into this cube.

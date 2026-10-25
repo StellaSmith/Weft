@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use voxide_sdk::abi::entry_kind as ek;
+use voxide_sdk::terrain::Column;
 use voxide_sdk::*;
 
 use super::add;
@@ -94,6 +96,46 @@ pub async fn load_benchmark(t: T) -> R {
     let b = t.bench(4.0, "idle").await?;
     t.check(b[2] < 50.0, format!("p99 frame {:.1} ms", b[2]));
     t.check(b[4] < 25.0, format!("server tick {:.1} ms", b[4]));
+    Ok(())
+}
+
+static OVERWORLD: Dimension = Dimension::named("base:overworld");
+
+/// Testmod edits base's overworld from outside: a biome of its own tried before base's desert,
+/// with its own surface and boulders, and a rock needle from a feature written in testmod.
+pub async fn foreign_terrain(t: T) -> R {
+    t.world(5).await?;
+    t.op("mode spectator").await?;
+    let seed = 5;
+    // testmod's `NEEDLE`.
+    let needle = OVERWORLD.column(seed, 1000, 1000);
+    let beside = OVERWORLD.column(seed, 1010, 1000);
+    t.note(format!("needle {} beside {}", needle.height, beside.height));
+    t.check(needle.height - beside.height > 60, "the needle rises from the land around it");
+    t.cmd(&format!("/tp 1000 {} 1000", needle.height + 3)).await?;
+    t.secs(0.5).await?;
+    t.loaded().await?;
+    let top = t.op(&format!("get 1000 {} 1000", needle.height)).await?;
+    t.check(top != "core:air", format!("the needle is generated where the terrain says ({top})"));
+
+    let grid: Vec<(i32, i32, Column)> = (-80..80).flat_map(|i| (-80..80).map(move |j| (i * 64, j * 64))).map(|(x, z)| (x, z, OVERWORLD.column(seed, x, z))).collect();
+    let count = |name: &str| grid.iter().filter(|g| name_of(ek::BIOME, g.2.biome) == name).count();
+    t.note(format!("of {} columns: desert {}, scorched {}", grid.len(), count("base:desert"), count("testmod:scorched")));
+    let scorched = grid
+        .into_iter()
+        .find(|&(x, z, c)| name_of(ek::BIOME, c.biome) == "testmod:scorched" && !OVERWORLD.surface_carved(seed, x, z));
+    let (x, z, c) = scorched.ok_or("no scorched biome in base's overworld")?;
+    t.note(format!("scorched at {x} {z}, height {}", c.height));
+    t.cmd(&format!("/tp {x} {} {z}", c.height + 3)).await?;
+    t.secs(0.5).await?;
+    t.loaded().await?;
+    let ground = t.op(&format!("get {x} {} {z}", c.height)).await?;
+    t.check(ground == "testmod:regolith" || ground == "testmod:basalt", format!("the scorched biome's surface ({ground})"));
+    let census = t.op("census 24 testmod:basalt,testmod:regolith").await?;
+    t.note(census.clone());
+    let n: Vec<u32> = census.split_whitespace().filter_map(|e| e.rsplit_once('=')?.1.parse().ok()).collect();
+    t.check(n.first().is_some_and(|&b| b > 0), "boulders from testmod's decoration");
+    t.check(n.get(1).is_some_and(|&r| r > 100), "the biome's regolith");
     Ok(())
 }
 
@@ -357,3 +399,4 @@ pub async fn worldgen(t: T) -> R {
     t.check(t.op("structure testmod:obelisk 3000").await? != "none", "another mod's obelisks are in the world too");
     Ok(())
 }
+

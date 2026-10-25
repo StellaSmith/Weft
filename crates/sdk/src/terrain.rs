@@ -1,67 +1,30 @@
-//! Terrain from presets: a base height plus height features, biomes picked by climate, surface
-//! layers per biome, water and caves. Features are plain functions, so a mod can ship its own next
-//! to the presets here. Like any generator, everything is a function of (seed, position).
+//! Terrain from parts: a base height plus height features, biome rules that pick each column's
+//! biome and surface, water and caves. The mod that owns a dimension describes its terrain and
+//! any mod can edit it afterwards (add a biome before another, a feature, a cave biome), so the
+//! engine evaluates the merged result. Features are presets or plain functions of the noise
+//! fields, so a mod can ship its own.
 //!
 //! ```ignore
-//! static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
-//!     Terrain::new(&STONE, 64.0)
-//!         .sea(63, &WATER)
-//!         .feature(preset::continents(14.0))
-//!         .feature(preset::hills(8.0, 120.0))
-//!         .feature(preset::mountains(60.0, 160.0).mask(Mask::noise(500.0, 0.2, 0.5)).named("mountains"))
-//!         .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.5, 9.0).surface(&STONE, &STONE, 1))
-//!         .biome(BiomeRule::new(&DESERT).temperature(0.35, 9.0).surface(&SAND, &SAND, 3))
-//!         .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
-//!         .caves(Caves::new(&LAVA, i32::MIN, 11))
-//! });
-//! r.dimension("overworld", &OVERWORLD).generator(|g| {
-//!     TERRAIN.generate(g);
-//! });
+//! r.terrain("mars")
+//!     .stone("basalt")
+//!     .base_height(60.0)
+//!     .feature(preset::hills(8.0, 220.0))
+//!     .feature(preset::mountains(60.0, 160.0).mask(Mask::noise(500.0, 0.2, 0.5)).named("mountains"))
+//!     .biome(BiomeRule::new("peaks").feature("mountains", 0.5, 9.0).surface("basalt", "basalt", 1))
+//!     .biome(BiomeRule::new("dust").surface("regolith", "regolith", 3));
+//! // Another mod:
+//! r.terrain("base:overworld").biome_before("base:desert", BiomeRule::new("savanna").temperature(0.2, 0.35).surface("base:grass", "base:dirt", 3));
 //! ```
 
-use std::sync::Arc;
+use std::marker::PhantomData;
 
-use crate::noise::*;
-use crate::{Biome, Block, ColumnCache, Gen};
+use crate::abi::{self, Slice, Str, rule_field as rf, terrain_op as op};
+use crate::{Dimension, Gen, Registry, callback, host, qualify};
 
-/// Noise fields of one seed, for features, masks and biome rules.
-pub struct Fields {
-    seed: u64,
-}
+pub use crate::noise::Fields;
 
-impl Fields {
-    pub fn seed(&self) -> u64 {
-        self.seed
-    }
-
-    /// About -1..1, `scale` blocks per bump.
-    pub fn fbm(&self, salt: u64, x: f64, z: f64, scale: f64, octaves: u32) -> f64 {
-        fbm2(self.seed ^ salt, x / scale, z / scale, octaves)
-    }
-
-    /// 1 along the zero lines of a noise field, 0 away from them: ridges, canyons, rivers.
-    pub fn ridge(&self, salt: u64, x: f64, z: f64, scale: f64) -> f64 {
-        1.0 - (self.fbm(salt, x, z, scale, 4) * 2.0).abs().min(1.0)
-    }
-
-    /// Land vs ocean, about -1.5..1.5; above 0.1 is inland.
-    pub fn continent(&self, x: f64, z: f64) -> f64 {
-        self.fbm(0x11, x, z, 900.0, 4) * 1.6 + 0.15
-    }
-
-    pub fn temperature(&self, x: f64, z: f64) -> f64 {
-        self.fbm(0x22, x, z, 1100.0, 3) * 1.4
-    }
-
-    pub fn humidity(&self, x: f64, z: f64) -> f64 {
-        self.fbm(0x33, x, z, 800.0, 3) * 1.4
-    }
-}
-
-/// 0 at `from`, 1 at `to`, linear in between; `from > to` gives a falling edge.
-fn ramp(v: f64, from: f64, to: f64) -> f64 {
-    ((v - from) / (to - from)).clamp(0.0, 1.0)
-}
+/// Surface `height` and `biome` id of a column.
+pub type Column = abi::TerrainColumn;
 
 /// Where a feature applies, 0..1.
 #[derive(Clone)]
@@ -102,33 +65,49 @@ impl Mask {
         }
     }
 
-    pub fn value(&self, f: &Fields, x: f64, z: f64) -> f64 {
+    fn steps(&self, out: &mut Vec<abi::MaskStep>) {
+        use abi::terrain_mask as k;
+        let step = abi::MaskStep::DEFAULT;
         match self {
-            Mask::Noise { salt, scale, octaves, from, to } => ramp(f.fbm(*salt, x, z, *scale, *octaves), *from, *to),
-            Mask::Continent(a, b) => ramp(f.continent(x, z), *a, *b),
-            Mask::Temperature(a, b) => ramp(f.temperature(x, z), *a, *b),
-            Mask::Humidity(a, b) => ramp(f.humidity(x, z), *a, *b),
-            Mask::All(v) => v.iter().fold(1.0, |acc, m| acc * m.value(f, x, z)),
-            Mask::Not(m) => 1.0 - m.value(f, x, z),
+            &Mask::Noise { salt, scale, octaves, from, to } => out.push(abi::MaskStep { kind: k::NOISE, salt, scale, octaves, from, to, ..step }),
+            &Mask::Continent(from, to) => out.push(abi::MaskStep { kind: k::CONTINENT, from, to, ..step }),
+            &Mask::Temperature(from, to) => out.push(abi::MaskStep { kind: k::TEMPERATURE, from, to, ..step }),
+            &Mask::Humidity(from, to) => out.push(abi::MaskStep { kind: k::HUMIDITY, from, to, ..step }),
+            Mask::All(v) => {
+                v.iter().for_each(|m| m.steps(out));
+                out.push(abi::MaskStep { kind: k::ALL, count: v.len() as u32, ..step });
+            }
+            Mask::Not(m) => {
+                m.steps(out);
+                out.push(abi::MaskStep { kind: k::NOT, ..step });
+            }
         }
     }
 }
 
-type HeightFn = dyn Fn(&Fields, f64, f64) -> f64 + Send + Sync;
-
 /// Adds to the height of every column, scaled by its mask.
 pub struct Feature {
     name: String,
-    height: Box<HeightFn>,
+    preset: u32,
+    params: [f64; 4],
+    height: abi::Callback,
     mask: Option<Mask>,
 }
 
 impl Feature {
+    /// A feature of your own: the height it adds at (x, z). It runs for every column, on many
+    /// threads at once, and like a generator it must be a pure function of its input.
     pub fn new(height: impl Fn(&Fields, f64, f64) -> f64 + Send + Sync + 'static) -> Feature {
-        Feature { name: String::new(), height: Box::new(height), mask: None }
+        let height = callback(move |a: &mut abi::FeatureArgs| a.height = height(&Fields::new(a.seed), a.x, a.z));
+        Feature { name: String::new(), preset: abi::terrain_preset::CUSTOM, params: [0.0; 4], height, mask: None }
     }
 
-    /// Biome rules can ask for the mask strength by this name.
+    fn preset(preset: u32, params: [f64; 4]) -> Feature {
+        Feature { name: String::new(), preset, params, height: abi::Callback::NONE, mask: None }
+    }
+
+    /// Biome rules can ask for the mask strength by this name, and other mods find the feature
+    /// by it.
     pub fn named(mut self, name: &str) -> Feature {
         self.name = name.to_string();
         self
@@ -140,615 +119,359 @@ impl Feature {
     }
 }
 
-/// Ready-made features. Each is a few lines; copy one to make a new kind.
+/// Ready-made features. Their code is in `voxide_noise::shape`; copy one into a `Feature::new` to
+/// make a new kind.
 pub mod preset {
     use super::*;
+    use crate::abi::terrain_preset as p;
 
     /// Oceans and land masses: `depth` blocks above or below the base height.
     pub fn continents(depth: f64) -> Feature {
-        Feature::new(move |f, x, z| (f.continent(x, z) * 2.5).clamp(-1.0, 1.0) * depth)
+        Feature::preset(p::CONTINENTS, [depth, 0.0, 0.0, 0.0])
     }
 
     /// Rolling hills.
     pub fn hills(height: f64, size: f64) -> Feature {
-        Feature::new(move |f, x, z| f.fbm(0x55, x, z, size, 4) * height)
+        Feature::preset(p::HILLS, [height, size, 0.0, 0.0])
     }
 
     /// Mountain ranges along ridge lines `width` blocks apart, with rough detail on top.
     pub fn mountains(height: f64, width: f64) -> Feature {
-        Feature::new(move |f, x, z| {
-            let r = f.ridge(0x66, x, z, width);
-            r * r * height + f.fbm(0x55, x, z, 60.0, 4) * height / 7.0
-        })
+        Feature::preset(p::MOUNTAINS, [height, width, 0.0, 0.0])
     }
 
     /// Flat-topped mesas `height` blocks high in terraces of `step`.
     pub fn plateaus(height: f64, size: f64, step: f64) -> Feature {
-        Feature::new(move |f, x, z| {
-            let v = ramp(f.fbm(0x77, x, z, size, 3), 0.0, 0.25) * height;
-            (v / step).floor() * step
-        })
+        Feature::preset(p::PLATEAUS, [height, size, step, 0.0])
     }
 
     /// Winding cuts `depth` deep and about `width` wide; below sea level they fill with water.
     pub fn canyons(depth: f64, width: f64) -> Feature {
-        Feature::new(move |f, x, z| {
-            let r = f.ridge(0x88, x, z, width * 40.0);
-            let edge = 1.0 - 1.0 / 40.0;
-            -ramp(r, edge, 1.0) * depth
-        })
+        Feature::preset(p::CANYONS, [depth, width, 0.0, 0.0])
     }
 
     /// Parallel sand waves `wavelength` blocks apart.
     pub fn dunes(height: f64, wavelength: f64) -> Feature {
-        Feature::new(move |f, x, z| {
-            let warp = f.fbm(0x99, x, z, wavelength * 4.0, 2) * wavelength;
-            let t = ((x + z * 0.5 + warp) / wavelength).rem_euclid(1.0);
-            // Gentle windward slope, steep lee side.
-            let profile = if t < 0.8 { t / 0.8 } else { (1.0 - t) / 0.2 };
-            profile * height
-        })
+        Feature::preset(p::DUNES, [height, wavelength, 0.0, 0.0])
     }
 
     /// Bowls with a raised rim, one per `spacing`-block cell at most.
     pub fn craters(radius: f64, depth: f64, spacing: f64) -> Feature {
-        Feature::new(move |f, x, z| {
-            let (cx, cz) = ((x / spacing).floor(), (z / spacing).floor());
-            let mut total = 0.0;
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    let h = hash(f.seed() ^ 0xC7A7, cx as i64 + dx, 0, cz as i64 + dz);
-                    if unit(h) > 0.6 {
-                        continue;
-                    }
-                    let r = radius * (0.5 + unit(h >> 7));
-                    let px = (cx + dx as f64 + unit(h >> 17)) * spacing;
-                    let pz = (cz + dz as f64 + unit(h >> 29)) * spacing;
-                    let d = ((x - px) * (x - px) + (z - pz) * (z - pz)) / (r * r);
-                    if d < 1.0 {
-                        total -= (1.0 - d) * depth;
-                    } else if d < 1.6 {
-                        total += (1.0 - (d - 1.3).abs() / 0.3).max(0.0) * depth * 0.25;
-                    }
-                }
-            }
-            total
-        })
+        Feature::preset(p::CRATERS, [radius, depth, spacing, 0.0])
     }
 }
 
-/// Surface layers and the climate a biome needs. Rules are tried in order; the first match wins.
+/// Surface layers and the climate a biome needs. Rules are tried in order; the first match wins
+/// and the last one is used where none does.
+#[derive(Clone)]
 pub struct BiomeRule {
-    biome: &'static Biome,
+    name: String,
+    fields: u32,
+    biome: String,
     temperature: (f64, f64),
     humidity: (f64, f64),
     continent: (f64, f64),
     height: (i32, i32),
-    feature: Option<(String, f64, f64)>,
-    top: Option<&'static Block>,
-    filler: Option<&'static Block>,
+    feature: (String, f64, f64),
+    top: String,
+    filler: String,
     depth: i32,
-    under: Option<(&'static Block, i32)>,
-    deep_top: Option<(&'static Block, i32)>,
-    bare_above: Option<i32>,
-    ice: Option<&'static Block>,
+    under: (String, i32),
+    deep_top: (String, i32),
+    bare_above: i32,
+    ice: String,
 }
 
 impl BiomeRule {
-    pub fn new(biome: &'static Biome) -> BiomeRule {
+    /// A rule for `biome`, named like it.
+    pub fn new(biome: &str) -> BiomeRule {
+        BiomeRule { fields: rf::BIOME, biome: biome.to_string(), ..BiomeRule::blank() }
+    }
+
+    fn blank() -> BiomeRule {
         let any = (f64::NEG_INFINITY, f64::INFINITY);
         BiomeRule {
-            biome,
+            name: String::new(),
+            fields: 0,
+            biome: String::new(),
             temperature: any,
             humidity: any,
             continent: any,
             height: (i32::MIN, i32::MAX),
-            feature: None,
-            top: None,
-            filler: None,
+            feature: (String::new(), 0.0, 0.0),
+            top: String::new(),
+            filler: String::new(),
             depth: 3,
-            under: None,
-            deep_top: None,
-            bare_above: None,
-            ice: None,
+            under: (String::new(), 0),
+            deep_top: (String::new(), i32::MIN),
+            bare_above: i32::MAX,
+            ice: String::new(),
         }
     }
 
+    /// A name of its own, for a second rule of the same biome (other mods find rules by name).
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+    /// In an edit: the rule picks this biome instead.
+    pub fn biome(mut self, biome: &str) -> Self {
+        (self.biome, self.fields) = (biome.to_string(), self.fields | rf::BIOME);
+        self
+    }
     /// Climate ranges are `min <= v < max`; fields are about -1.4..1.4.
     pub fn temperature(mut self, min: f64, max: f64) -> Self {
-        self.temperature = (min, max);
+        (self.temperature, self.fields) = ((min, max), self.fields | rf::TEMPERATURE);
         self
     }
     pub fn humidity(mut self, min: f64, max: f64) -> Self {
-        self.humidity = (min, max);
+        (self.humidity, self.fields) = ((min, max), self.fields | rf::HUMIDITY);
         self
     }
     pub fn continent(mut self, min: f64, max: f64) -> Self {
-        self.continent = (min, max);
+        (self.continent, self.fields) = ((min, max), self.fields | rf::CONTINENT);
         self
     }
     /// Surface height range, inclusive.
     pub fn height(mut self, min: i32, max: i32) -> Self {
-        self.height = (min, max);
+        (self.height, self.fields) = ((min, max), self.fields | rf::HEIGHT);
         self
     }
     /// Where the named feature's mask is in `min..max`.
     pub fn feature(mut self, name: &str, min: f64, max: f64) -> Self {
-        self.feature = Some((name.to_string(), min, max));
+        (self.feature, self.fields) = ((name.to_string(), min, max), self.fields | rf::FEATURE);
         self
     }
     /// Top block, then `depth` blocks of filler, then the terrain's stone.
-    pub fn surface(mut self, top: &'static Block, filler: &'static Block, depth: i32) -> Self {
-        (self.top, self.filler, self.depth) = (Some(top), Some(filler), depth);
+    pub fn surface(mut self, top: &str, filler: &str, depth: i32) -> Self {
+        (self.top, self.filler, self.depth) = (top.to_string(), filler.to_string(), depth);
+        self.fields |= rf::SURFACE;
         self
     }
     /// The lowest `layers` of the filler become `block` (sandstone under sand).
-    pub fn under(mut self, block: &'static Block, layers: i32) -> Self {
-        self.under = Some((block, layers));
+    pub fn under(mut self, block: &str, layers: i32) -> Self {
+        (self.under, self.fields) = ((block.to_string(), layers), self.fields | rf::UNDER);
         self
     }
     /// Top block for columns lower than `below` (gravel on deep sea floors).
-    pub fn deep_top(mut self, block: &'static Block, below: i32) -> Self {
-        self.deep_top = Some((block, below));
+    pub fn deep_top(mut self, block: &str, below: i32) -> Self {
+        (self.deep_top, self.fields) = ((block.to_string(), below), self.fields | rf::DEEP_TOP);
         self
     }
     /// Plain stone above this height (bare peaks).
     pub fn bare_above(mut self, y: i32) -> Self {
-        self.bare_above = Some(y);
+        (self.bare_above, self.fields) = (y, self.fields | rf::BARE_ABOVE);
         self
     }
     /// The water surface freezes into `block`.
-    pub fn frozen(mut self, block: &'static Block) -> Self {
-        self.ice = Some(block);
+    pub fn frozen(mut self, block: &str) -> Self {
+        (self.ice, self.fields) = (block.to_string(), self.fields | rf::FROZEN);
         self
     }
 }
 
-/// Two-noise tunnels plus large caverns. Below `lava_to` (and from `lava_from`) some layers of
-/// height hold lava lakes (see `lake`).
+/// Two-noise tunnels plus large caverns. Between `lava_from` and `lava_to` some layers of height
+/// hold flat lava lakes.
 pub struct Caves {
-    lava: &'static Block,
+    lava: String,
     lava_from: i32,
     lava_to: i32,
 }
 
 impl Caves {
-    pub fn new(lava: &'static Block, lava_from: i32, lava_to: i32) -> Caves {
-        Caves { lava, lava_from, lava_to }
-    }
-
-    /// Cave fields for the cube, sampled every 4 blocks on a grid aligned to the world and
-    /// trilinearly interpolated: whether a tunnel passes, and how far inside a cavern (> 0) the
-    /// block is.
-    fn fields(&self, seed: u64, ox: i32, oy: i32, oz: i32) -> Vec<(bool, f32)> {
-        const G: usize = 5;
-        let mut grid = [[[(0f64, 0f64); G]; G]; G];
-        for (gy, row) in grid.iter_mut().enumerate() {
-            for (gz, line) in row.iter_mut().enumerate() {
-                for (gx, v) in line.iter_mut().enumerate() {
-                    *v = cave_node(seed, ox + gx as i32 * 4, oy + gy as i32 * 4, oz + gz as i32 * 4);
-                }
-            }
-        }
-        let mut out = vec![(false, 0f32); 4096];
-        for y in 0..16 {
-            for z in 0..16 {
-                for x in 0..16 {
-                    let (t, c) = interpolate(|dy, dz, dx| grid[y / 4 + dy][z / 4 + dz][x / 4 + dx], x % 4, y % 4, z % 4);
-                    out[(y * 16 + z) * 16 + x] = (t > 0.0, c as f32);
-                }
-            }
-        }
-        out
+    pub fn new(lava: &str, lava_from: i32, lava_to: i32) -> Caves {
+        Caves { lava: lava.to_string(), lava_from, lava_to }
     }
 }
 
-/// Trilinear blend of grid nodes (`node(dy, dz, dx)`) at offset (x, y, z) inside a 4-block cell.
-fn interpolate(node: impl Fn(usize, usize, usize) -> (f64, f64), x: usize, y: usize, z: usize) -> (f64, f64) {
-    let (fx, fy, fz) = (x as f64 / 4.0, y as f64 / 4.0, z as f64 / 4.0);
-    let l = |a: f64, b: f64, t: f64| a + (b - a) * t;
-    let field = |k: usize| {
-        let c = |dy, dz, dx| {
-            let v = node(dy, dz, dx);
-            if k == 0 { v.0 } else { v.1 }
+impl Registry {
+    /// The terrain of a dimension: yours to describe, or another mod's to edit
+    /// (`r.terrain("base:overworld")`). Edits apply after the owner's description, in load order.
+    pub fn terrain<'a>(&'a mut self, dimension: &str) -> TerrainBuilder<'a> {
+        TerrainBuilder { raw: self.raw, ns: self.ns, dimension: qualify(self.ns, dimension), _p: PhantomData }
+    }
+}
+
+pub struct TerrainBuilder<'a> {
+    raw: *mut abi::Registrar,
+    ns: &'static str,
+    dimension: String,
+    _p: PhantomData<&'a mut Registry>,
+}
+
+/// One edit, owning everything its `TerrainDesc` points at while it is sent.
+struct Op {
+    op: u32,
+    anchor: String,
+    block: String,
+    level: i32,
+    to: i32,
+    value: f64,
+    size: f64,
+    feature: Option<Feature>,
+    rule: Option<BiomeRule>,
+    decorate: abi::Callback,
+}
+
+impl Op {
+    fn new(op: u32) -> Op {
+        Op { op, anchor: String::new(), block: String::new(), level: 0, to: 0, value: 0.0, size: 0.0, feature: None, rule: None, decorate: abi::Callback::NONE }
+    }
+}
+
+impl TerrainBuilder<'_> {
+    fn send(self, o: Op) -> Self {
+        let q = |s: &str| if s.is_empty() { String::new() } else { qualify(self.ns, s) };
+        let (anchor, block) = (q(&o.anchor), q(&o.block));
+        let mut steps = Vec::new();
+        let mut feature = abi::FeatureDesc::DEFAULT;
+        let fname = o.feature.as_ref().map_or(String::new(), |f| q(&f.name));
+        if let Some(f) = &o.feature {
+            if let Some(m) = &f.mask {
+                m.steps(&mut steps);
+            }
+            feature = abi::FeatureDesc { name: Str::new(&fname), preset: f.preset, params: f.params, height: f.height, mask: Slice::new(&steps) };
+        }
+        let r = o.rule.unwrap_or_else(BiomeRule::blank);
+        let names = [if r.name.is_empty() { &r.biome } else { &r.name }, &r.biome, &r.feature.0, &r.top, &r.filler, &r.under.0, &r.deep_top.0, &r.ice].map(|s| q(s));
+        let rule = abi::BiomeRuleDesc {
+            name: Str::new(&names[0]),
+            fields: r.fields,
+            biome: Str::new(&names[1]),
+            temperature: [r.temperature.0, r.temperature.1],
+            humidity: [r.humidity.0, r.humidity.1],
+            continent: [r.continent.0, r.continent.1],
+            height: [r.height.0, r.height.1],
+            feature: Str::new(&names[2]),
+            feature_range: [r.feature.1, r.feature.2],
+            top: Str::new(&names[3]),
+            filler: Str::new(&names[4]),
+            depth: r.depth,
+            under: Str::new(&names[5]),
+            under_layers: r.under.1,
+            deep_top: Str::new(&names[6]),
+            deep_below: r.deep_top.1,
+            bare_above: r.bare_above,
+            ice: Str::new(&names[7]),
         };
-        l(l(l(c(0, 0, 0), c(0, 0, 1), fx), l(c(0, 1, 0), c(0, 1, 1), fx), fz), l(l(c(1, 0, 0), c(1, 0, 1), fx), l(c(1, 1, 0), c(1, 1, 1), fx), fz), fy)
-    };
-    (field(0), field(1))
-}
-
-/// Whether a cave takes a block `depth` blocks under the smoothed surface. Near the surface a
-/// cavern needs to be ever deeper inside its noise, so its ceiling domes over instead of breaking
-/// through; where `cavern_roof` opens (`closed` < 1) it widens towards the surface into a pit.
-fn carves(tunnel: bool, cavern: f32, closed: f32, depth: f32) -> bool {
-    let need = closed * 0.25 * (1.0 - depth / 12.0).max(0.0) - (1.0 - closed) * PIT * (1.0 - depth / 24.0).max(0.0);
-    tunnel || cavern > need
-}
-
-/// What a cave holds at height `wy` instead of air: in about half of the 64-block bands of height
-/// a lake crosses every cave at one level, 4 blocks of lava on 2 of stone, so lakes are flat,
-/// span the whole cave and never hang over open space. `Some(true)` lava, `Some(false)` stone.
-fn lake(seed: u64, wy: i32) -> Option<bool> {
-    let band = wy.div_euclid(64);
-    let h = hash(seed ^ 0x1A7A, 0, band as i64, 0);
-    if h & 1 == 0 {
-        return None;
-    }
-    let level = band * 64 + 16 + ((h >> 8) % 32) as i32;
-    match level - wy {
-        1..=4 => Some(true),
-        5..=6 => Some(false),
-        _ => None,
-    }
-}
-
-/// One column's result, for decorations and spawn search.
-pub struct Column {
-    pub height: i32,
-    pub biome: &'static Biome,
-    rule: usize,
-}
-
-pub struct Terrain {
-    stone: &'static Block,
-    base: f64,
-    sea: Option<(i32, &'static Block)>,
-    features: Vec<Feature>,
-    biomes: Vec<BiomeRule>,
-    caves: Option<Caves>,
-    /// Biomes of cubes deep underground: (biome, depth under the surface, patch size, threshold).
-    cave_biomes: Vec<(&'static Biome, i32, f64, f64)>,
-    cache: ColumnCache<Vec<Column>>,
-    /// Column heights every 4 blocks over a cube's columns and its +X/+Z edge (5 x 5): caves
-    /// measure depth from this smoothed surface, so steep slopes do not leave single-column
-    /// pillars.
-    corners: ColumnCache<[f32; 25]>,
-}
-
-impl Terrain {
-    pub fn new(stone: &'static Block, base_height: f64) -> Terrain {
-        Terrain {
-            stone,
-            base: base_height,
-            sea: None,
-            features: Vec::new(),
-            biomes: Vec::new(),
-            caves: None,
-            cave_biomes: Vec::new(),
-            cache: ColumnCache::new(16384),
-            corners: ColumnCache::new(16384),
-        }
-    }
-
-    pub fn sea(mut self, level: i32, water: &'static Block) -> Self {
-        self.sea = Some((level, water));
+        let desc = abi::TerrainDesc {
+            dimension: Str::new(&self.dimension),
+            op: o.op,
+            anchor: Str::new(&anchor),
+            block: Str::new(&block),
+            level: o.level,
+            to: o.to,
+            value: o.value,
+            size: o.size,
+            feature,
+            rule,
+            decorate: o.decorate,
+        };
+        unsafe { (host().reg_terrain)(self.raw, &desc) }
         self
     }
 
-    pub fn feature(mut self, f: Feature) -> Self {
-        self.features.push(f);
-        self
+    /// The block the ground is made of.
+    pub fn stone(self, block: &str) -> Self {
+        self.send(Op { block: block.to_string(), ..Op::new(op::STONE) })
     }
-
-    pub fn biome(mut self, rule: BiomeRule) -> Self {
-        self.biomes.push(rule);
-        self
+    /// The ground height where no feature adds anything.
+    pub fn base_height(self, y: f64) -> Self {
+        self.send(Op { value: y, ..Op::new(op::BASE_HEIGHT) })
     }
-
+    /// Everything up to `level` that isn't ground is `water`.
+    pub fn sea(self, level: i32, water: &str) -> Self {
+        self.send(Op { level, block: water.to_string(), ..Op::new(op::SEA) })
+    }
+    pub fn caves(self, caves: Caves) -> Self {
+        self.send(Op { block: caves.lava, level: caves.lava_from, to: caves.lava_to, ..Op::new(op::CAVES) })
+    }
+    pub fn feature(self, f: Feature) -> Self {
+        self.send(Op { feature: Some(f), ..Op::new(op::FEATURE) })
+    }
+    pub fn remove_feature(self, name: &str) -> Self {
+        self.send(Op { anchor: name.to_string(), ..Op::new(op::REMOVE_FEATURE) })
+    }
+    /// Limits the named feature further: its mask is multiplied by `mask`.
+    pub fn mask_feature(self, name: &str, mask: Mask) -> Self {
+        self.send(Op { anchor: name.to_string(), feature: Some(Feature::preset(0, [0.0; 4]).mask(mask)), ..Op::new(op::MASK_FEATURE) })
+    }
+    /// A rule after all others.
+    pub fn biome(self, rule: BiomeRule) -> Self {
+        self.send(Op { rule: Some(rule), ..Op::new(op::BIOME) })
+    }
+    /// A rule tried right before the rule named `rule` (a biome's rule is named like the biome).
+    pub fn biome_before(self, rule: &str, new: BiomeRule) -> Self {
+        self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::BIOME_BEFORE) })
+    }
+    pub fn biome_after(self, rule: &str, new: BiomeRule) -> Self {
+        self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::BIOME_AFTER) })
+    }
+    pub fn replace_biome(self, rule: &str, new: BiomeRule) -> Self {
+        self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::REPLACE_BIOME) })
+    }
+    pub fn remove_biome(self, rule: &str) -> Self {
+        self.send(Op { anchor: rule.to_string(), ..Op::new(op::REMOVE_BIOME) })
+    }
+    /// Changes what the closure sets on the rule and keeps the rest:
+    /// `edit_biome("base:desert", |r| r.temperature(0.5, 9.0))`.
+    pub fn edit_biome(self, rule: &str, edit: impl FnOnce(BiomeRule) -> BiomeRule) -> Self {
+        self.send(Op { anchor: rule.to_string(), rule: Some(edit(BiomeRule::blank())), ..Op::new(op::EDIT_BIOME) })
+    }
     /// A biome in 3D: whole cubes at least `depth` blocks under the surface where a 3D noise of
     /// patches about `size` blocks across is above `threshold` (-1..1). Biomes are kept per
     /// column of each cube, so underground ones change every 16 blocks of height at most.
-    pub fn cave_biome(mut self, biome: &'static Biome, depth: i32, size: f64, threshold: f64) -> Self {
-        self.cave_biomes.push((biome, depth, size, threshold));
-        self
+    pub fn cave_biome(self, biome: &str, depth: i32, size: f64, threshold: f64) -> Self {
+        self.send(Op { rule: Some(BiomeRule::new(biome)), level: depth, size, value: threshold, ..Op::new(op::CAVE_BIOME) })
     }
-
-    pub fn caves(mut self, caves: Caves) -> Self {
-        self.caves = Some(caves);
-        self
+    pub fn remove_cave_biome(self, biome: &str) -> Self {
+        self.send(Op { anchor: biome.to_string(), ..Op::new(op::REMOVE_CAVE_BIOME) })
     }
-
-    pub fn sea_level(&self) -> Option<i32> {
-        self.sea.map(|s| s.0)
+    /// Runs after the terrain filled a cube (and after the owner's decorations): trees, plants,
+    /// anything placed on the ground. `g.columns()` has the surface of every column. Pure, like
+    /// a generator.
+    pub fn decorate(self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> Self {
+        let cb = callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a)));
+        self.send(Op { decorate: cb, ..Op::new(op::DECORATE) })
     }
+}
 
-    /// Height and biome of the block column at (`x`, `z`).
+impl Dimension {
+    /// Height and biome of the terrain's column (`x`, `z`) for `seed`, generated or not. A
+    /// dimension without a terrain gives height `i32::MIN`.
     pub fn column(&self, seed: u64, x: i32, z: i32) -> Column {
-        let f = Fields { seed };
-        let (fx, fz) = (x as f64, z as f64);
-        let mut h = self.base;
-        let mut strengths: Vec<(&str, f64)> = Vec::new();
-        for feat in &self.features {
-            let w = feat.mask.as_ref().map_or(1.0, |m| m.value(&f, fx, fz));
-            if !feat.name.is_empty() {
-                strengths.push((&feat.name, w));
-            }
-            if w > 0.0 {
-                h += w * (feat.height)(&f, fx, fz);
-            }
-        }
-        let height = h.floor() as i32;
-        let (temp, humid, cont) = (f.temperature(fx, fz), f.humidity(fx, fz), f.continent(fx, fz));
-        let inside = |v: f64, r: (f64, f64)| v >= r.0 && v < r.1;
-        let rule = self
-            .biomes
-            .iter()
-            .position(|b| {
-                height >= b.height.0
-                    && height <= b.height.1
-                    && inside(temp, b.temperature)
-                    && inside(humid, b.humidity)
-                    && inside(cont, b.continent)
-                    && b.feature.as_ref().is_none_or(|(name, lo, hi)| strengths.iter().find(|s| s.0 == name).is_some_and(|s| s.1 > *lo && s.1 <= *hi))
-            })
-            .unwrap_or(self.biomes.len().saturating_sub(1));
-        Column { height, biome: self.biomes.get(rule).map_or(&EMPTY, |b| b.biome), rule }
+        let mut out = Column { height: i32::MIN, biome: 0 };
+        unsafe { (host().terrain_column)(self.id(), seed, x, z, &mut out) };
+        out
     }
 
-    /// Whether caves took the block at the surface of column (`x`, `z`): decorations placed from
-    /// outside the cube (trees) and spawn search check it so they do not float over pits.
+    /// Whether caves took the surface block of column (`x`, `z`): decorations placed from
+    /// outside the cube (trees) and spawn search check it so they don't float over pits.
     pub fn surface_carved(&self, seed: u64, x: i32, z: i32) -> bool {
-        if self.caves.is_none() {
-            return false;
-        }
-        let h = self.column(seed, x, z).height;
-        if self.sea.is_some_and(|s| h <= s.0) {
-            return false;
-        }
-        let (gx, gy, gz) = (x.div_euclid(4) * 4, h.div_euclid(4) * 4, z.div_euclid(4) * 4);
-        let (t, c) = interpolate(|dy, dz, dx| cave_node(seed, gx + dx as i32 * 4, gy + dy as i32 * 4, gz + dz as i32 * 4), (x - gx) as usize, (h - gy) as usize, (z - gz) as usize);
-        let corner = |dx: i32, dz: i32| self.column(seed, gx + dx * 4, gz + dz * 4).height as f32;
-        let (fx, fz) = ((x - gx) as f32 / 4.0, (z - gz) as f32 / 4.0);
-        let smooth = (corner(0, 0) * (1.0 - fx) + corner(1, 0) * fx) * (1.0 - fz) + (corner(0, 1) * (1.0 - fx) + corner(1, 1) * fx) * fz;
-        carves(t > 0.0, c as f32, cavern_roof(seed, x, z), smooth - h as f32)
-    }
-
-    /// Smoothed surface height at local column (x, z) from the cube's corner grid.
-    fn smooth(corners: &[f32; 25], x: usize, z: usize) -> f32 {
-        let (cx, cz, fx, fz) = (x / 4, z / 4, (x % 4) as f32 / 4.0, (z % 4) as f32 / 4.0);
-        let c = |dx: usize, dz: usize| corners[(cz + dz) * 5 + cx + dx];
-        (c(0, 0) * (1.0 - fx) + c(1, 0) * fx) * (1.0 - fz) + (c(0, 1) * (1.0 - fx) + c(1, 1) * fx) * fz
-    }
-
-    /// Fills the cube with stone, surface layers, water and caves and sets its biomes. Returns the
-    /// columns for decorating, or `None` when the cube is above everything.
-    pub fn generate(&self, g: &mut Gen) -> Option<Arc<Vec<Column>>> {
-        let seed = g.seed();
-        let [ox, oy, oz] = g.origin();
-        let [cx, _, cz] = g.cube();
-        let cols = self.cache.get(seed, cx, cz, || {
-            let mut cols = Vec::with_capacity(256);
-            for z in 0..16 {
-                for x in 0..16 {
-                    cols.push(self.column(seed, ox + x, oz + z));
-                }
-            }
-            cols
-        });
-        for (i, c) in cols.iter().enumerate() {
-            let (x, z) = ((ox + (i % 16) as i32) as f64, (oz + (i / 16) as i32) as f64);
-            let mid = (oy + 8) as f64;
-            let deep = self.cave_biomes.iter().enumerate().find(|&(k, &(_, depth, size, threshold))| {
-                oy + 15 < c.height - depth && perlin3(seed ^ 0xCB10 ^ k as u64, x / size, mid / size, z / size) > threshold
-            });
-            g.biomes()[i] = deep.map_or(c.biome, |(_, b)| b.0).id() as u16;
-        }
-        let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
-        let sea = self.sea.map_or(i32::MIN, |s| s.0);
-        if oy > max_h.max(sea) + 16 {
-            return None;
-        }
-        // Decided per block from its column alone, so neighbouring cubes agree: tunnels may open
-        // onto the surface, caverns close up under it except where `cavern_roof` lets them out.
-        let cave = match &self.caves {
-            Some(c) if oy <= max_h => Some(c.fields(seed, ox, oy, oz)),
-            _ => None,
-        };
-        let corners = self.corners.get(seed, cx, cz, || std::array::from_fn(|i| self.column(seed, ox + (i % 5) as i32 * 4, oz + (i / 5) as i32 * 4).height as f32));
-        let stone = self.stone.id();
-        let water = self.sea.map_or(0, |s| s.1.id());
-        for z in 0..16usize {
-            for x in 0..16usize {
-                let col = &cols[z * 16 + x];
-                let h = col.height;
-                let rule = self.biomes.get(col.rule);
-                let bare = rule.and_then(|r| r.bare_above).is_some_and(|y| h > y);
-                let mut top = rule.and_then(|r| r.top).map_or(stone, |b| b.id());
-                if let Some((b, below)) = rule.and_then(|r| r.deep_top) {
-                    if h < below {
-                        top = b.id();
-                    }
-                }
-                let filler = rule.and_then(|r| r.filler).map_or(stone, |b| b.id());
-                let depth = rule.map_or(0, |r| r.depth);
-                let under = rule.and_then(|r| r.under);
-                let ice = rule.and_then(|r| r.ice).map(|b| b.id());
-                let closed = if cave.is_some() { cavern_roof(seed, ox + x as i32, oz + z as i32) } else { 0.0 };
-                let smooth = Self::smooth(&corners, x, z);
-                // Keeps a seal under water so seas and canyons do not drain into caves.
-                let carved = |ly: usize| {
-                    let Some(cave) = &cave else { return false };
-                    let wy = oy + ly as i32;
-                    let (tunnel, cavern) = cave[(ly * 16 + z) * 16 + x];
-                    wy <= h && !(h <= sea && wy > h - 4) && carves(tunnel, cavern, closed, smooth - wy as f32)
-                };
-                for y in 0..16usize {
-                    let wy = oy + y as i32;
-                    let mut s = if wy > h {
-                        if wy <= sea {
-                            if wy == sea { ice.unwrap_or(water) } else { water }
-                        } else {
-                            0
-                        }
-                    } else if bare {
-                        stone
-                    } else if wy == h {
-                        top
-                    } else if wy >= h - depth {
-                        match under {
-                            Some((b, layers)) if wy < h - depth + layers => b.id(),
-                            _ => filler,
-                        }
-                    } else {
-                        stone
-                    };
-                    if let Some(c) = self.caves.as_ref().filter(|_| carved(y)) {
-                        s = match lake(seed, wy).filter(|_| (c.lava_from..c.lava_to).contains(&wy)) {
-                            Some(true) => c.lava.id(),
-                            Some(false) => stone,
-                            None => 0,
-                        };
-                    }
-                    g.set(x, y, z, s);
-                }
-            }
-        }
-        Some(cols)
+        unsafe { (host().terrain_carved)(self.id(), seed, x, z) != 0 }
     }
 }
 
-/// Cave fields at a grid node (every 4 blocks): tunnels, caverns.
-fn cave_node(seed: u64, x: i32, y: i32, z: i32) -> (f64, f64) {
-    let (x, y, z) = (x as f64, y as f64, z as f64);
-    let a = perlin3(seed ^ 0xC1, x / 48.0, y / 32.0, z / 48.0);
-    let b = perlin3(seed ^ 0xC2, x / 48.0, y / 32.0, z / 48.0);
-    // Two thin noise zero-crossings intersect into winding tunnels.
-    let spaghetti = 0.08 - (a.abs() + b.abs());
-    let cheese = perlin3(seed ^ 0xC3, x / 90.0, y / 50.0, z / 90.0) - 0.42;
-    (spaghetti, cheese)
-}
-
-/// 1 where caverns stay under a roof, falling to 0 in patches where they may open into wide pits
-/// like vanilla's cave entrances.
-const PIT: f32 = 0.12;
-
-fn cavern_roof(seed: u64, x: i32, z: i32) -> f32 {
-    let n = perlin2(seed ^ 0xC4, x as f64 / 120.0, z as f64 / 120.0);
-    ramp(n, 0.4, 0.25) as f32
-}
-
-static EMPTY: Biome = Biome::new();
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn masks_ramp_both_ways() {
-        assert_eq!(ramp(0.5, 0.0, 1.0), 0.5);
-        assert_eq!(ramp(-0.2, 0.0, -0.4), 0.5);
-        assert_eq!(ramp(2.0, 0.0, 1.0), 1.0);
+impl Gen {
+    /// The dimension being generated.
+    pub fn dimension(&self) -> u32 {
+        self.args.dim
     }
 
-    /// Caverns end under a roof, not at the bottom of the surface cube (that leaves flat stone
-    /// slabs hanging over open space).
-    #[test]
-    fn caverns_keep_a_roof() {
-        static S: Block = Block::new();
-        let t = Terrain::new(&S, 64.0).feature(preset::hills(16.0, 110.0)).feature(preset::mountains(150.0, 260.0)).caves(Caves::new(&S, 1, 11));
-        let (mut columns, mut breached) = (0, 0);
-        for cx in -3..3 {
-            for cz in -3..3 {
-                let heights: Vec<i32> = (0..256).map(|i| t.column(7, cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32).height).collect();
-                let top = heights.iter().max().unwrap() >> 4;
-                let bottom = (heights.iter().min().unwrap() >> 4) - 1;
-                // Air within the column, by height.
-                let mut air = std::collections::HashMap::new();
-                for cy in bottom..=top {
-                    let mut blocks = vec![0u32; 4096];
-                    let mut biomes = vec![0u16; 256];
-                    let mut args = crate::abi::GenArgs { seed: 7, cube: [cx, cy, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
-                    t.generate(Gen::wrap(&mut args));
-                    for (i, &b) in blocks.iter().enumerate() {
-                        if b == 0 {
-                            air.insert((i % 256, cy * 16 + (i / 256) as i32), ());
-                        }
-                    }
-                }
-                for (i, &h) in heights.iter().enumerate() {
-                    if cavern_roof(7, cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32) < 1.0 {
-                        continue;
-                    }
-                    columns += 1;
-                    // Open space in the 8 blocks under the surface means the cave reached up.
-                    let open = (h - 8..h).filter(|&y| air.contains_key(&(i, y))).count();
-                    if open >= 6 {
-                        breached += 1;
-                    }
-                }
-            }
-        }
-        assert!(breached * 50 < columns, "{breached} of {columns} columns open under the surface");
+    /// With a terrain: the surface of the cube's 256 columns, index `z * 16 + x`.
+    pub fn columns(&self) -> Option<&[Column; 256]> {
+        unsafe { self.args.columns.cast::<[Column; 256]>().as_ref() }
     }
 
-    /// The point check trees use agrees with what generation carved.
-    #[test]
-    fn surface_carved_matches_generation() {
-        static S: Block = Block::new();
-        let t = Terrain::new(&S, 64.0).feature(preset::hills(16.0, 110.0)).caves(Caves::new(&S, 1, 11));
-        let mut checked = 0;
-        for cx in -4..4 {
-            for cz in -4..4 {
-                for i in 0..256 {
-                    let (x, z) = (cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32);
-                    let h = t.column(3, x, z).height;
-                    let mut blocks = vec![0u32; 4096];
-                    let mut biomes = vec![0u16; 256];
-                    let mut args = crate::abi::GenArgs { seed: 3, cube: [cx, h >> 4, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
-                    t.generate(Gen::wrap(&mut args));
-                    let air = blocks[((h & 15) as usize * 16 + i / 16) * 16 + i % 16] == 0;
-                    assert_eq!(air, t.surface_carved(3, x, z), "at {x} {z}");
-                    checked += 1;
-                }
-            }
-        }
-        assert_eq!(checked, 16384);
+    /// Any column of this dimension's terrain, in world coordinates.
+    pub fn column(&self, x: i32, z: i32) -> Column {
+        let mut out = Column { height: i32::MIN, biome: 0 };
+        unsafe { (host().terrain_column)(self.args.dim, self.args.seed, x, z, &mut out) };
+        out
     }
 
-    /// Lava lakes lie on stone, not in every open block between two heights (lava hanging
-    /// over caves below).
-    #[test]
-    fn lava_lakes_rest_on_stone() {
-        static S: Block = Block::new();
-        static L: Block = Block::new();
-        unsafe { (*L.cell()).store(7, std::sync::atomic::Ordering::Relaxed) };
-        let t = Terrain::new(&S, 64.0).feature(preset::hills(16.0, 110.0)).caves(Caves::new(&L, i32::MIN, 11));
-        let (mut lava, mut hanging) = (0, 0);
-        for cx in -3..3 {
-            for cz in -3..3 {
-                let mut column: std::collections::HashMap<i32, Vec<u32>> = std::collections::HashMap::new();
-                for cy in -32..1 {
-                    let mut blocks = vec![0u32; 4096];
-                    let mut biomes = vec![0u16; 256];
-                    let mut args = crate::abi::GenArgs { seed: 9, cube: [cx, cy, cz], blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr() };
-                    t.generate(Gen::wrap(&mut args));
-                    column.insert(cy, blocks);
-                }
-                let at = |i: usize, y: i32| column.get(&(y >> 4)).map(|b| b[((y & 15) as usize * 16 + i / 16) * 16 + i % 16]);
-                for i in 0..256 {
-                    for y in -511..16 {
-                        if at(i, y) == Some(7) {
-                            lava += 1;
-                            if at(i, y - 1) == Some(0) {
-                                hanging += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        assert!(lava > 0, "no lakes at all");
-        assert_eq!(hanging, 0, "{hanging} of {lava} lava blocks over air");
-    }
-
-    #[test]
-    fn first_matching_rule_wins() {
-        static A: Biome = Biome::new();
-        static B: Biome = Biome::new();
-        static S: Block = Block::new();
-        let t = Terrain::new(&S, 70.0).biome(BiomeRule::new(&A).height(i32::MIN, 60)).biome(BiomeRule::new(&B));
-        assert!(std::ptr::eq(t.column(1, 0, 0).biome, &B));
-        let t = Terrain::new(&S, 50.0).biome(BiomeRule::new(&A).height(i32::MIN, 60)).biome(BiomeRule::new(&B));
-        assert!(std::ptr::eq(t.column(1, 0, 0).biome, &A));
+    /// Whether caves took the surface block of column (`x`, `z`), in world coordinates.
+    pub fn surface_carved(&self, x: i32, z: i32) -> bool {
+        unsafe { (host().terrain_carved)(self.args.dim, self.args.seed, x, z) != 0 }
     }
 }

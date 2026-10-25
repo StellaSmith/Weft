@@ -1306,7 +1306,7 @@ impl Drop for OreBuilder<'_> {
 
 /// Generation context for one cube.
 pub struct Gen {
-    args: abi::GenArgs,
+    pub(crate) args: abi::GenArgs,
 }
 
 impl Gen {

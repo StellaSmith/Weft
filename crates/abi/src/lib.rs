@@ -491,6 +491,11 @@ pub struct GenArgs {
     pub blocks: *mut u32,
     /// 256 biome ids per column, index = z * 16 + x.
     pub biomes: *mut u16,
+    /// The dimension being generated.
+    pub dim: u32,
+    /// With a terrain (`Host::reg_terrain`): its 256 columns of this cube, index = z * 16 + x,
+    /// already filled in. Null otherwise.
+    pub columns: *const TerrainColumn,
 }
 
 #[repr(C)]
@@ -1492,6 +1497,13 @@ pub struct Host {
     /// Sets a block of moving structure `entity` like `set_block` (updates, callbacks); 0 if it
     /// is none.
     pub set_structure_block: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const [i32; 3], state: u32) -> u32,
+    /// Describes or edits the terrain of a dimension, see `TerrainDesc`.
+    pub reg_terrain: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TerrainDesc),
+    /// Column (`x`, `z`) of the terrain of dimension `dim` for `seed`, generated or not. Returns
+    /// 0 if the dimension has no terrain.
+    pub terrain_column: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32, out: *mut TerrainColumn) -> u32,
+    /// 1 if caves took the surface block of column (`x`, `z`), so nothing should stand there.
+    pub terrain_carved: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32) -> u32,
 }
 
 /// Natural spawning around players (`Host::reg_spawn`). Every two seconds the engine tries a few
@@ -2335,6 +2347,218 @@ pub struct OreDesc {
     pub biome: Str,
 }
 defaults!(OreDesc { dimension: Str::EMPTY, block: Str::EMPTY, replace: Str::EMPTY, min_y: i32::MIN, max_y: i32::MAX, veins: 4, blocks: 8, biome: Str::EMPTY });
+
+/// Surface height and biome of one column of a terrain.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerrainColumn {
+    /// The top solid block of the terrain itself (water, caves and decorations aside).
+    pub height: i32,
+    pub biome: u32,
+}
+
+/// One step of a terrain mask, the steps of a whole mask in postfix order: `ALL` and `NOT` take
+/// the masks just before them.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MaskStep {
+    /// `terrain_mask`.
+    pub kind: u32,
+    /// `ALL`: how many masks it combines.
+    pub count: u32,
+    pub salt: u64,
+    pub scale: f64,
+    pub octaves: u32,
+    pub from: f64,
+    pub to: f64,
+}
+defaults!(MaskStep { kind: 0, count: 0, salt: 0, scale: 1.0, octaves: 3, from: 0.0, to: 1.0 });
+
+pub mod terrain_mask {
+    /// Its own noise (`salt`, `scale`, `octaves`), ramping from `from` to `to`.
+    pub const NOISE: u32 = 0;
+    pub const CONTINENT: u32 = 1;
+    pub const TEMPERATURE: u32 = 2;
+    pub const HUMIDITY: u32 = 3;
+    /// The product of the `count` masks before it.
+    pub const ALL: u32 = 4;
+    /// 1 minus the mask before it.
+    pub const NOT: u32 = 5;
+}
+
+/// The engine's terrain presets; `params` in the order of `voxide_noise::shape`.
+pub mod terrain_preset {
+    /// `height` is a callback (`FeatureArgs`).
+    pub const CUSTOM: u32 = 0;
+    pub const CONTINENTS: u32 = 1;
+    pub const HILLS: u32 = 2;
+    pub const MOUNTAINS: u32 = 3;
+    pub const PLATEAUS: u32 = 4;
+    pub const CANYONS: u32 = 5;
+    pub const DUNES: u32 = 6;
+    pub const CRATERS: u32 = 7;
+}
+
+/// Adds height to every column of a terrain, scaled by its mask.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FeatureDesc {
+    /// Full name, empty for none: biome rules and other mods' edits find it by this.
+    pub name: Str,
+    /// `terrain_preset`.
+    pub preset: u32,
+    pub params: [f64; 4],
+    /// `FeatureArgs`, for `terrain_preset::CUSTOM`. Called from worker threads, pure.
+    pub height: Callback,
+    /// Empty: everywhere at full strength.
+    pub mask: Slice<MaskStep>,
+}
+defaults!(FeatureDesc { name: Str::EMPTY, preset: 0, params: [0.0; 4], height: Callback::NONE, mask: Slice::EMPTY });
+
+#[repr(C)]
+pub struct FeatureArgs {
+    pub seed: u64,
+    pub x: f64,
+    pub z: f64,
+    /// Output: the height added at (x, z) at full strength.
+    pub height: f64,
+}
+
+/// Which fields of a `BiomeRuleDesc` are given (all of them count for a new rule; an edit
+/// changes only these).
+pub mod rule_field {
+    pub const BIOME: u32 = 1;
+    pub const TEMPERATURE: u32 = 2;
+    pub const HUMIDITY: u32 = 4;
+    pub const CONTINENT: u32 = 8;
+    pub const HEIGHT: u32 = 16;
+    pub const FEATURE: u32 = 32;
+    pub const SURFACE: u32 = 64;
+    pub const UNDER: u32 = 128;
+    pub const DEEP_TOP: u32 = 256;
+    pub const BARE_ABOVE: u32 = 512;
+    pub const FROZEN: u32 = 1024;
+}
+
+/// Picks a biome and its surface where its conditions hold. Rules are tried in order; the first
+/// that fits wins and the last one is used where none does.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BiomeRuleDesc {
+    /// Full name; other mods' edits find the rule by it.
+    pub name: Str,
+    /// `rule_field`.
+    pub fields: u32,
+    pub biome: Str,
+    /// `min <= v < max`.
+    pub temperature: [f64; 2],
+    pub humidity: [f64; 2],
+    pub continent: [f64; 2],
+    /// Surface height, inclusive.
+    pub height: [i32; 2],
+    /// Where the named feature's mask is in `min < v <= max`.
+    pub feature: Str,
+    pub feature_range: [f64; 2],
+    /// Top block, `depth` blocks of filler, then stone. Empty: stone.
+    pub top: Str,
+    pub filler: Str,
+    pub depth: i32,
+    /// The lowest `under_layers` of the filler become `under`.
+    pub under: Str,
+    pub under_layers: i32,
+    /// Top block of columns lower than `deep_below`.
+    pub deep_top: Str,
+    pub deep_below: i32,
+    /// Plain stone above this height.
+    pub bare_above: i32,
+    /// The water surface freezes into this block.
+    pub ice: Str,
+}
+defaults!(BiomeRuleDesc {
+    name: Str::EMPTY,
+    fields: 0,
+    biome: Str::EMPTY,
+    temperature: [f64::NEG_INFINITY, f64::INFINITY],
+    humidity: [f64::NEG_INFINITY, f64::INFINITY],
+    continent: [f64::NEG_INFINITY, f64::INFINITY],
+    height: [i32::MIN, i32::MAX],
+    feature: Str::EMPTY,
+    feature_range: [0.0, 0.0],
+    top: Str::EMPTY,
+    filler: Str::EMPTY,
+    depth: 3,
+    under: Str::EMPTY,
+    under_layers: 0,
+    deep_top: Str::EMPTY,
+    deep_below: i32::MIN,
+    bare_above: i32::MAX,
+    ice: Str::EMPTY
+});
+
+pub mod terrain_op {
+    /// `block`: the stone everything is made of.
+    pub const STONE: u32 = 0;
+    /// `value`: the ground height before features.
+    pub const BASE_HEIGHT: u32 = 1;
+    /// `block` fills everything up to `level`.
+    pub const SEA: u32 = 2;
+    /// Tunnels and caverns; lava lakes (`block`) between `level` and `to`.
+    pub const CAVES: u32 = 3;
+    pub const FEATURE: u32 = 4;
+    /// The feature named `anchor` goes away.
+    pub const REMOVE_FEATURE: u32 = 5;
+    /// The mask of `feature` is multiplied into the one of the feature named `anchor`.
+    pub const MASK_FEATURE: u32 = 6;
+    /// `rule` after all others.
+    pub const BIOME: u32 = 7;
+    pub const BIOME_BEFORE: u32 = 8;
+    pub const BIOME_AFTER: u32 = 9;
+    pub const REPLACE_BIOME: u32 = 10;
+    pub const REMOVE_BIOME: u32 = 11;
+    /// The given fields of `rule` replace those of the rule named `anchor`.
+    pub const EDIT_BIOME: u32 = 12;
+    /// `rule.biome` in whole cubes at least `level` blocks under the surface, where a 3D noise
+    /// of patches `size` across is above `value`.
+    pub const CAVE_BIOME: u32 = 13;
+    /// The cave biome `anchor` goes away.
+    pub const REMOVE_CAVE_BIOME: u32 = 14;
+    /// `decorate` (`GenArgs`) runs after the terrain filled a cube, in every cube.
+    pub const DECORATE: u32 = 15;
+}
+
+/// One part of a dimension's terrain (`Host::reg_terrain`). The mod that owns the dimension
+/// describes it; others edit it, applied after the owner's in load order.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TerrainDesc {
+    /// Full dimension name.
+    pub dimension: Str,
+    /// `terrain_op`.
+    pub op: u32,
+    /// The full name of the feature, rule or cave biome an op refers to.
+    pub anchor: Str,
+    pub block: Str,
+    pub level: i32,
+    pub to: i32,
+    pub value: f64,
+    pub size: f64,
+    pub feature: FeatureDesc,
+    pub rule: BiomeRuleDesc,
+    pub decorate: Callback,
+}
+defaults!(TerrainDesc {
+    dimension: Str::EMPTY,
+    op: 0,
+    anchor: Str::EMPTY,
+    block: Str::EMPTY,
+    level: 0,
+    to: 0,
+    value: 0.0,
+    size: 0.0,
+    feature: FeatureDesc::DEFAULT,
+    rule: BiomeRuleDesc::DEFAULT,
+    decorate: Callback::NONE
+});
 
 /// One command argument; kinds in `command_value`.
 #[repr(C)]

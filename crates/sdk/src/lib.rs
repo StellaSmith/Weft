@@ -6,7 +6,7 @@ pub mod ai;
 mod cache;
 pub mod client;
 mod component;
-pub mod noise;
+pub use voxide_noise as noise;
 pub mod terrain;
 mod command;
 mod config;

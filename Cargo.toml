@@ -11,6 +11,7 @@ rust-version = "1.90"
 [workspace.dependencies]
 voxide_abi = { path = "crates/abi" }
 voxide_sdk = { path = "crates/sdk" }
+voxide_noise = { path = "crates/noise" }
 voxide_render = { path = "crates/render" }
 voxide_engine = { path = "crates/engine" }
 voxide_vulkan = { path = "backends/vulkan" }

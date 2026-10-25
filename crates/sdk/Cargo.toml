@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 voxide_abi.workspace = true
+voxide_noise.workspace = true

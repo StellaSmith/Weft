@@ -213,13 +213,15 @@ Reactions: `r.liquid_reaction("#hot", "#water").source("obsidian")`.
 
 ### World
 - `r.biome(..)`
-- `r.dimension(..)` (`generator`, `spawn`, `column`, `height`, `gravity`, `fixed_time`, `sky`)
+- `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, or `generator` + `column` to fill it in code)
+- `r.terrain(dim)` for its terrain, yours or another mod's
 - `r.ore(dim, block)`
 - `r.structure(dim, name)` with layers
 - `r.spawn(entity).biome("animals").light(7, 15)`
 
-The `terrain` module has presets like hills, canyons, dunes, caves, lava lakes if you don't want to write noise by hand.\
-Mars in testmod is built from presets only.
+The terrain has presets like hills, canyons, dunes, caves, lava lakes if you don't want to write noise by hand.\
+Mars in testmod is built from presets only.\
+It works on other mods' dimensions too, so adding a biome to base's overworld is a `biome_before("base:desert", ..)` away.
 
 ### Recipes
 - `r.shaped(&KIND, out, count, &["iii", " s ", " s "], &[('i', "#ingots/iron"), ('s', "base:stick")])`
@@ -328,7 +330,7 @@ You can contact me on Discord: `@vortex_so`
 - [Textures](textures.md): animation, glow, tinted overlays
 - [CTM](ctm.md): connected and varied block textures (glass, logs, random stone)
 - [Tooltips](tooltips.md): item tooltips, rich text and effects, adding them from other mods and packs
-- [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain presets
+- [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain, also in other mods' dimensions
 - [Models and animations](models.md): mob models in code or Blockbench, keyframes, the first-person hand, armor
 - [UI](ui.md): screens, HUD, menus, themes, GUI textures
 - [Machines](machines.md): blocks with inventories, recipes, energy

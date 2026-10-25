@@ -4800,10 +4800,15 @@ dependencies = [
  "serde_json",
  "tokio",
  "voxide_abi",
+ "voxide_noise",
  "voxide_render",
  "winit",
  "zip",
 ]
+
+[[package]]
+name = "voxide_noise"
+version = "0.1.0"
 
 [[package]]
 name = "voxide_render"
@@ -4819,6 +4824,7 @@ name = "voxide_sdk"
 version = "0.1.0"
 dependencies = [
  "voxide_abi",
+ "voxide_noise",
 ]
 
 [[package]]

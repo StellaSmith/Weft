@@ -39,14 +39,10 @@ fn init(r: &mut Registry) {
     sounds::register(r);
     mobs::register(r);
     worldgen::register(r);
+    // Its terrain is described in `worldgen`.
     r.dimension("overworld").handle(&OVERWORLD)
-        .generator(worldgen::overworld)
         .spawn(worldgen::spawn)
         .player_spawn()
-        .column(|seed, x, z| {
-            let c = worldgen::column(seed, x, z);
-            (c.height, c.biome.id())
-        })
         .sky_above(16)
         .day_length(24000);
     // Second dimension on purpose: nothing in the engine may assume there is only one world.

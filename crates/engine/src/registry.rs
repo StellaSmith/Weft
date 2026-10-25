@@ -350,6 +350,7 @@ pub struct RawGame {
     /// (kind, component, its starting value on that kind).
     pub attach: Vec<(String, String, Option<Vec<u8>>)>,
     pub ores: Vec<RawOre>,
+    pub terrain: Vec<crate::server::terrain::RawTerrain>,
     pub structures: Vec<RawStructure>,
     /// (name, icon item) in registration order.
     pub creative_tabs: Vec<(String, String)>,

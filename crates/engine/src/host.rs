@@ -175,6 +175,9 @@ pub static HOST: Host = Host {
     set_entity_look,
     structure_block,
     set_structure_block,
+    reg_terrain,
+    terrain_column,
+    terrain_carved,
 };
 
 unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u64 {
@@ -997,6 +1000,28 @@ unsafe extern "C" fn reg_creative_tab(r: *mut abi::Registrar, name: Str, icon: S
         let r = reg(r);
         r.game.creative_tabs.push((name.as_str().to_string(), icon.as_str().to_string()));
     }
+}
+
+unsafe extern "C" fn reg_terrain(r: *mut abi::Registrar, d: *const abi::TerrainDesc) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.terrain.push(crate::server::terrain::copy(owner, &*d));
+    }
+}
+
+fn terrain_of(dim: u32) -> Option<&'static crate::server::terrain::Terrain> {
+    content().dims.get(dim as usize)?.terrain.as_deref()
+}
+
+unsafe extern "C" fn terrain_column(dim: u32, seed: u64, x: i32, z: i32, out: *mut abi::TerrainColumn) -> u32 {
+    let Some(t) = terrain_of(dim) else { return 0 };
+    unsafe { *out = t.column(seed, x, z) };
+    1
+}
+
+unsafe extern "C" fn terrain_carved(dim: u32, seed: u64, x: i32, z: i32) -> u32 {
+    terrain_of(dim).is_some_and(|t| t.surface_carved(seed, x, z)) as u32
 }
 
 unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {

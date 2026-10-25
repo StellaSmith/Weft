@@ -4,8 +4,8 @@
 
 use voxide_sdk::*;
 
+use crate::OVERWORLD;
 use crate::blocks::*;
-use std::sync::LazyLock;
 
 use voxide_sdk::noise::*;
 use voxide_sdk::terrain::*;
@@ -59,38 +59,32 @@ pub fn register(r: &mut Registry) {
     for (ore, max_y, veins, size) in [("coal_ore", 128, 8, 12), ("iron_ore", 64, 6, 8), ("gold_ore", 32, 2, 7), ("diamond_ore", 16, 1, 6)] {
         r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
     }
-}
 
-/// The overworld shape.
-static TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
-    Terrain::new(&STONE, SEA as f64)
-        .sea(SEA, &WATER)
+    // The overworld's shape. Other mods add to it by these names (`base:desert`, `base:mountains`).
+    let (low, high) = (f64::NEG_INFINITY, f64::INFINITY);
+    r.terrain("overworld")
+        .stone("stone")
+        .base_height(SEA as f64)
+        .sea(SEA, "water")
         .feature(preset::continents(18.0))
         // Biomes shape the land through their climate, not their borders, so nothing seams:
         // the cold flattens hills into tundra, deserts get dunes.
         .feature(preset::hills(16.0, 110.0).mask(Mask::Temperature(-0.35, -0.6).not()))
         .feature(preset::dunes(4.0, 26.0).mask(Mask::Temperature(0.25, 0.45).and(Mask::Humidity(0.1, -0.05))))
-        .feature(
-            preset::mountains(150.0, 260.0)
-                .mask(Mask::noise(700.0, -0.1, 0.3).salt(0x44).and(Mask::Continent(0.0, 0.2)))
-                .named("mountains"),
-        )
-        .biome(BiomeRule::new(&OCEAN).height(i32::MIN, SEA - 2).surface(&SAND, &SAND, 3).deep_top(&GRAVEL, SEA - 8))
-        .biome(BiomeRule::new(&SNOWY).height(i32::MIN, SEA + 1).continent(f64::NEG_INFINITY, 0.1).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
-        .biome(BiomeRule::new(&BEACH).height(i32::MIN, SEA + 1).continent(f64::NEG_INFINITY, 0.1).surface(&SAND, &SAND, 3))
-        .biome(BiomeRule::new(&MOUNTAINS).feature("mountains", 0.45, f64::INFINITY).surface(&GRASS, &DIRT, 3).bare_above(130))
-        .biome(BiomeRule::new(&SNOWY).temperature(f64::NEG_INFINITY, -0.45).surface(&SNOWY_GRASS, &DIRT, 3).frozen(&ICE))
-        .biome(BiomeRule::new(&TAIGA).temperature(f64::NEG_INFINITY, -0.15).surface(&GRASS, &DIRT, 3))
-        .biome(BiomeRule::new(&DESERT).temperature(0.35, f64::INFINITY).humidity(f64::NEG_INFINITY, 0.0).surface(&SAND, &SAND, 3).under(&SANDSTONE, 1))
-        .biome(BiomeRule::new(&FOREST).humidity(0.25, f64::INFINITY).surface(&GRASS, &DIRT, 3))
-        .biome(BiomeRule::new(&BIRCH_FOREST).humidity(0.05, f64::INFINITY).temperature(f64::NEG_INFINITY, 0.1).surface(&GRASS, &DIRT, 3))
-        .biome(BiomeRule::new(&PLAINS).surface(&GRASS, &DIRT, 3))
-        .cave_biome(&DEEP_CAVES, 24, 96.0, 0.25)
-        .caves(Caves::new(&LAVA, i32::MIN, 11))
-});
-
-pub fn column(seed: u64, x: i32, z: i32) -> Column {
-    TERRAIN.column(seed, x, z)
+        .feature(preset::mountains(150.0, 260.0).mask(Mask::noise(700.0, -0.1, 0.3).salt(0x44).and(Mask::Continent(0.0, 0.2))).named("mountains"))
+        .biome(BiomeRule::new("ocean").height(i32::MIN, SEA - 2).surface("sand", "sand", 3).deep_top("gravel", SEA - 8))
+        .biome(BiomeRule::new("snowy_plains").named("snowy_coast").height(i32::MIN, SEA + 1).continent(low, 0.1).temperature(low, -0.45).surface("snowy_grass", "dirt", 3).frozen("ice"))
+        .biome(BiomeRule::new("beach").height(i32::MIN, SEA + 1).continent(low, 0.1).surface("sand", "sand", 3))
+        .biome(BiomeRule::new("mountains").feature("mountains", 0.45, high).surface("grass", "dirt", 3).bare_above(130))
+        .biome(BiomeRule::new("snowy_plains").temperature(low, -0.45).surface("snowy_grass", "dirt", 3).frozen("ice"))
+        .biome(BiomeRule::new("taiga").temperature(low, -0.15).surface("grass", "dirt", 3))
+        .biome(BiomeRule::new("desert").temperature(0.35, high).humidity(low, 0.0).surface("sand", "sand", 3).under("sandstone", 1))
+        .biome(BiomeRule::new("forest").humidity(0.25, high).surface("grass", "dirt", 3))
+        .biome(BiomeRule::new("birch_forest").humidity(0.05, high).temperature(low, 0.1).surface("grass", "dirt", 3))
+        .biome(BiomeRule::new("plains").surface("grass", "dirt", 3))
+        .cave_biome("deep_caves", 24, 96.0, 0.25)
+        .caves(Caves::new("lava", i32::MIN, 11))
+        .decorate(decorate);
 }
 
 const TREE_CELL: i32 = 5;
@@ -136,9 +130,9 @@ fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {
     let h = hash(seed ^ 0x7733, cx as i64, 0, cz as i64);
     let x = cx * TREE_CELL + (h % TREE_CELL as u64) as i32;
     let z = cz * TREE_CELL + ((h >> 8) % TREE_CELL as u64) as i32;
-    let col = column(seed, x, z);
-    let b = col.biome.id();
-    if col.height < SEA || unit(h.rotate_left(17)) >= TREES.on_biome(b).unwrap_or(0.0) as f64 || TERRAIN.surface_carved(seed, x, z) {
+    let col = OVERWORLD.column(seed, x, z);
+    let b = col.biome;
+    if col.height < SEA || unit(h.rotate_left(17)) >= TREES.on_biome(b).unwrap_or(0.0) as f64 || OVERWORLD.surface_carved(seed, x, z) {
         return None;
     }
     let log = pick(TREE_KINDS.on_biome(b).map_or("base:oak_log", |t| t.as_str()), h >> 40)?;
@@ -200,8 +194,9 @@ pub fn grow_tree(w: World, p: [i32; 3]) {
     });
 }
 
-pub fn overworld(g: &mut Gen) {
-    let Some(cols) = TERRAIN.generate(g) else { return };
+/// Trees and plants, after the terrain filled the cube.
+fn decorate(g: &mut Gen) {
+    let Some(&cols) = g.columns() else { return };
     let seed = g.seed();
     let [ox, oy, oz] = g.origin();
     let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
@@ -245,7 +240,7 @@ pub fn overworld(g: &mut Gen) {
             let h = hash(seed ^ 0xF10, (ox + x as i32) as i64, 0, (oz + z as i32) as i64);
             let roll = unit(h);
             // Plants go where they could be planted (soil tags); the biome decides how many.
-            let b = col.biome.id();
+            let b = col.biome;
             if SNOWY_TAG.on_biome(b) {
                 continue;
             }
@@ -279,8 +274,8 @@ pub fn spawn(seed: u64) -> [i32; 3] {
         for k in 0..8 {
             let a = k as f64 / 8.0 * std::f64::consts::TAU;
             let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
-            let c = column(seed, x, z);
-            if c.height > SEA + 1 && std::ptr::eq(c.biome, &PLAINS) && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
+            let c = OVERWORLD.column(seed, x, z);
+            if c.height > SEA + 1 && c.biome == PLAINS.id() && tree_free(seed, x, z) && !OVERWORLD.surface_carved(seed, x, z) {
                 return [x, c.height, z];
             }
         }
@@ -289,13 +284,13 @@ pub fn spawn(seed: u64) -> [i32; 3] {
         for k in 0..8 {
             let a = k as f64 / 8.0 * std::f64::consts::TAU;
             let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
-            let c = column(seed, x, z);
-            if c.height > SEA + 1 && [&OCEAN, &BEACH, &MOUNTAINS].iter().all(|b| !std::ptr::eq(c.biome, *b)) && tree_free(seed, x, z) && !TERRAIN.surface_carved(seed, x, z) {
+            let c = OVERWORLD.column(seed, x, z);
+            if c.height > SEA + 1 && [&OCEAN, &BEACH, &MOUNTAINS].iter().all(|b| c.biome != b.id()) && tree_free(seed, x, z) && !OVERWORLD.surface_carved(seed, x, z) {
                 return [x, c.height, z];
             }
         }
     }
-    [0, column(seed, 0, 0).height.max(SEA), 0]
+    [0, OVERWORLD.column(seed, 0, 0).height.max(SEA), 0]
 }
 
 fn tree_free(seed: u64, x: i32, z: i32) -> bool {
@@ -333,37 +328,5 @@ pub fn flat(g: &mut Gen) {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn name(b: &'static Biome) -> &'static str {
-        let all: [(&Biome, &str); 9] = [
-            (&PLAINS, "Plains"),
-            (&FOREST, "Forest"),
-            (&BIRCH_FOREST, "Birch"),
-            (&TAIGA, "Taiga"),
-            (&SNOWY, "Snowy"),
-            (&DESERT, "Desert"),
-            (&MOUNTAINS, "Mountains"),
-            (&OCEAN, "Ocean"),
-            (&BEACH, "Beach"),
-        ];
-        all.iter().find(|(h, _)| std::ptr::eq(*h, b)).map_or("?", |a| a.1)
-    }
-
-    #[test]
-    fn biome_mix() {
-        let mut counts = std::collections::BTreeMap::new();
-        for x in (-4000..4000).step_by(64) {
-            for z in (-4000..4000).step_by(64) {
-                *counts.entry(name(column(7, x, z).biome)).or_insert(0) += 1;
-            }
-        }
-        println!("{counts:?}");
-        assert!(counts.get("Plains").copied().unwrap_or(0) > 100);
     }
 }

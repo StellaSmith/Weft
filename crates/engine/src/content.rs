@@ -184,6 +184,8 @@ pub struct DimensionDef {
     /// Placed by the engine after `generator`, in name order.
     pub ores: Vec<OreDef>,
     pub structures: Vec<StructureDef>,
+    /// Described with `Host::reg_terrain`: fills cubes before `generator` runs.
+    pub terrain: Option<Box<crate::server::terrain::Terrain>>,
 }
 
 impl DimensionDef {
@@ -629,6 +631,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 spawn_at: [0, 64, 0],
                 ores: Vec::new(),
                 structures: Vec::new(),
+                terrain: None,
             },
             d.cell as usize,
             RawValue::list(d.components),
@@ -663,6 +666,7 @@ fn void_dimension() -> DimensionDef {
         spawn_at: [0, 64, 0],
         ores: Vec::new(),
         structures: Vec::new(),
+        terrain: None,
     }
 }
 
@@ -1384,6 +1388,39 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let extent = blocks.iter().fold(glam::IVec3::ZERO, |m, (p, _)| m.max(*p + glam::IVec3::ONE));
         let salt = s.name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
         dim_defs[d as usize].structures.push(StructureDef { name: s.name, blocks, extent, spacing: s.spacing.max(1) as i32, chance: s.chance, biome, sink: s.sink, salt });
+    }
+    // Terrains: the owner's description first, then other mods' edits in load order.
+    let mut raw_terrain: Vec<crate::server::terrain::RawTerrain> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.terrain)).collect();
+    raw_terrain.retain(|t| {
+        let known = dim_names.contains_key(&t.dimension);
+        if !known {
+            log::warn!("{}: terrain edit for {}, which no mod adds", mods[t.owner.0 as usize].id, t.dimension);
+        }
+        known
+    });
+    raw_terrain.sort_by_key(|t| {
+        let d = &dim_defs[dim_names[&t.dimension] as usize];
+        (t.dimension.clone(), t.owner != d.owner, mods[t.owner.0 as usize].order)
+    });
+    let mut by_dim: Vec<Vec<crate::server::terrain::RawTerrain>> = (0..dim_defs.len()).map(|_| Vec::new()).collect();
+    for t in raw_terrain {
+        by_dim[dim_names[&t.dimension] as usize].push(t);
+    }
+    for (d, ops) in by_dim.into_iter().enumerate() {
+        if ops.is_empty() {
+            continue;
+        }
+        let def = &dim_defs[d];
+        if ops[0].owner != def.owner {
+            log::warn!("{}: edits the terrain of {}, which has none (its mod generates it in code), edits skipped", mods[ops[0].owner.0 as usize].id, def.name);
+            continue;
+        }
+        let names = crate::server::terrain::Names {
+            block: &|n| block_names.get(n).map(|&b| block_defs[b as usize].first_state),
+            biome: &|n| biome_names.get(n).copied(),
+        };
+        let t = crate::server::terrain::build(&def.name, &|m| mods[m.0 as usize].id.clone(), ops, &names, &mut errors);
+        dim_defs[d].terrain = Some(Box::new(t));
     }
     let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
     for (name, usage, _) in crate::server::BUILTIN_COMMANDS {

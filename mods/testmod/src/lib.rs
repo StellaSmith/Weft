@@ -15,8 +15,6 @@
 mod bodies;
 mod looks;
 
-use std::sync::LazyLock;
-
 use voxide_sdk::abi::slot_flags as sf;
 use voxide_sdk::terrain::*;
 use voxide_sdk::*;
@@ -35,20 +33,11 @@ static SMELTING_RECIPES: RecipeKind = RecipeKind::named("base:smelting");
 static VOID: Dimension = Dimension::new();
 static MARS: Dimension = Dimension::new();
 static DUST: Biome = Biome::new();
+static SCORCHED: Biome = Biome::new();
 static REGOLITH: Block = Block::new();
 static BASALT: Block = Block::new();
 static TIN_ORE: Block = Block::new();
 static TIN_INGOT: Item = Item::new();
-
-static MARS_TERRAIN: LazyLock<Terrain> = LazyLock::new(|| {
-    Terrain::new(&BASALT, 60.0)
-        .feature(preset::hills(8.0, 220.0))
-        .feature(preset::plateaus(24.0, 320.0, 6.0).mask(Mask::noise(900.0, 0.1, 0.4)))
-        .feature(preset::canyons(26.0, 9.0).mask(Mask::noise(1200.0, -0.2, 0.1)))
-        .feature(preset::craters(32.0, 16.0, 150.0))
-        .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
-        .biome(BiomeRule::new(&DUST).surface(&REGOLITH, &REGOLITH, 3))
-});
 
 value! {
     #[derive(Default)]
@@ -159,13 +148,26 @@ fn init(r: &mut Registry) {
         .tab("base:building");
     r.block("reinforced_stone").hardness(4.0).mineable("pickaxe").needs_tool(250).tab("base:building");
     r.biome("dust").handle(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
+    r.biome("scorched").handle(&SCORCHED).colors(0xbf8a50, 0xae7a3a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
+    // Base's overworld, edited from outside: a biome in the hottest, driest deserts, a rock needle
+    // from a feature of this mod's own, and boulders on the new biome.
+    r.terrain("base:overworld")
+        .biome_before("base:desert", BiomeRule::new("scorched").temperature(0.4, f64::INFINITY).humidity(f64::NEG_INFINITY, -0.1).surface("regolith", "regolith", 2))
+        .feature(Feature::new(|_, x, z| if (x - NEEDLE[0]).abs().max((z - NEEDLE[1]).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"))
+        .decorate(boulders);
     r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
     r.ore("mars", "tin_ore").y(-64, 90).veins(6).size(8).replace("#stone_ore_replaceables");
+    r.terrain("mars")
+        .stone("basalt")
+        .base_height(60.0)
+        .feature(preset::hills(8.0, 220.0))
+        .feature(preset::plateaus(24.0, 320.0, 6.0).mask(Mask::noise(900.0, 0.1, 0.4)))
+        .feature(preset::canyons(26.0, 9.0).mask(Mask::noise(1200.0, -0.2, 0.1)))
+        .feature(preset::craters(32.0, 16.0, 150.0))
+        .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
+        .biome(BiomeRule::new("dust").surface("regolith", "regolith", 3));
     r.dimension("mars").handle(&MARS)
-        .generator(|g| {
-            MARS_TERRAIN.generate(g);
-        })
-        .spawn(|seed| [8, MARS_TERRAIN.column(seed, 8, 8).height + 1, 8])
+        .spawn(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])
         .height(-4, 12)
         .sky_above(11)
         .gravity(12.0)
@@ -364,6 +366,27 @@ static CHEST: Block = Block::named("base:chest");
 pub const ISLAND_CHEST: [i32; 3] = [4, 64, 0];
 
 /// A floating island of stone and grass in an empty void, with a chest on it.
+/// Where the needle stands in base's overworld.
+pub const NEEDLE: [f64; 2] = [1000.0, 1000.0];
+
+/// Basalt boulders on the scorched biome of base's overworld.
+fn boulders(g: &mut Gen) {
+    let Some(&cols) = g.columns() else { return };
+    let [ox, oy, oz] = g.origin();
+    let (scorched, basalt) = (SCORCHED.id(), BASALT.id());
+    for (i, c) in cols.iter().enumerate() {
+        let y = c.height + 1 - oy;
+        if c.biome != scorched || !(1..16).contains(&y) {
+            continue;
+        }
+        let (x, y, z) = (i % 16, y as usize, i / 16);
+        let h = noise::hash(g.seed() ^ 0xB0, (ox + x as i32) as i64, 0, (oz + z as i32) as i64);
+        if h % 40 == 0 && g.get(x, y, z) == 0 && g.get(x, y - 1, z) != 0 {
+            g.set(x, y, z, basalt);
+        }
+    }
+}
+
 fn island(g: &mut Gen) {
     let [ox, oy, oz] = g.origin();
     let (stone, grass, dirt) = (STONE.id(), GRASS.id(), DIRT.id());

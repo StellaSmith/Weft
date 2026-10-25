@@ -40,6 +40,7 @@ pub fn all() -> Vec<TestDef> {
         world::dimensions,
         world::virtual_menus,
         world::worldgen,
+        world::foreign_terrain,
         world::tick_control,
         world::growth,
         gameplay::crafting_table_tags,

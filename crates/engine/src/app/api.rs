@@ -207,6 +207,9 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.player = cl.player_id;
             s.pos = p.pos.to_array();
             s.shown = cl.smooth_pos().to_array();
+            if let Some(h) = cl.target {
+                (s.target, s.target_frame) = (h.block.to_array(), h.frame);
+            }
             s.vel = p.vel.to_array();
             s.yaw = p.yaw;
             s.pitch = p.pitch;

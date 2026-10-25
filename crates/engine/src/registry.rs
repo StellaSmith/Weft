@@ -703,7 +703,7 @@ pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entiti
     entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false, components: Vec::new() });
     entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE), replace: false, components: Vec::new() });
     entities.push(RawEntity { name: VIRTUAL.into(), cell: 0, desc: builtin(VIRTUAL, 0.0, 0.0, ef::INVULNERABLE | ef::NO_GRAVITY), replace: false, components: Vec::new() });
-    entities.push(RawEntity { name: FALLING.into(), cell: 0, desc: builtin(FALLING, 0.98, 0.98, ef::INVULNERABLE), replace: false, components: Vec::new() });
+    entities.push(RawEntity { name: FALLING.into(), cell: 0, desc: builtin(FALLING, 0.98, 1.0, ef::INVULNERABLE | ef::SOLID), replace: false, components: Vec::new() });
     entities.sort_by(|a, b| a.name.cmp(&b.name).then(a.replace.cmp(&b.replace)));
     let mut kept: Vec<RawEntity> = Vec::with_capacity(entities.len());
     let mut replaced_cells: Vec<(usize, String)> = Vec::new();

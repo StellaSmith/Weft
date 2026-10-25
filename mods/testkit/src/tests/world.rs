@@ -372,3 +372,45 @@ pub async fn structures(t: T) -> R {
     t.shot("well").await?;
     Ok(())
 }
+
+/// Falling sand is drawn falling all the way down: in the frame its block appears it is drawn
+/// on the ground, not a block above; while falling it is solid (stood on, jumped off).
+pub async fn sand_lands_exactly(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let ground = add(f, [3, 0, 2]);
+    t.set(add(ground, [0, 12, 0]), "sand").await?;
+    let sand = t.c().block(ground).unwrap_or(0);
+    let column = |p: [f64; 3]| (p[0] - ground[0] as f64 - 0.5).abs() < 0.1 && (p[2] - ground[2] as f64 - 0.5).abs() < 0.1;
+    let (mut last, mut landed, mut lowest) = (None::<f64>, None, f64::MAX);
+    for _ in 0..600 {
+        t.frames(1).await?;
+        let y = t.c().entities().into_iter().filter_map(|id| t.c().entity(id)).find(|e| column(e.pos)).map(|e| e.pos[1]);
+        if let Some(y) = y {
+            lowest = lowest.min(y);
+        }
+        if t.c().block(ground).is_some_and(|b| b != sand && b != 0) {
+            landed = last;
+            break;
+        }
+        last = y.or(last);
+    }
+    let landed = landed.ok_or("the sand never became a block")?;
+    t.note(format!("drawn at {:.3} the frame before its block appeared (ground {})", landed, ground[1]));
+    t.check((landed - ground[1] as f64).abs() < 0.05, "the falling sand reached the ground before turning into a block");
+    t.check(lowest > ground[1] as f64 - 0.01, "and never sank into it");
+    // Solid while it falls: a player put on it rides it down and ends up standing on the sand.
+    let top = add(ground, [0, 16, 0]);
+    t.set(top, "sand").await?;
+    t.secs(0.1).await?;
+    let near = t.op(&format!("near {} {} {} 4", top[0], top[1], top[2])).await?;
+    let id = near.split_whitespace().find(|e| e.ends_with(":core:falling_block")).and_then(|e| e.split(':').next()).ok_or(format!("no falling block ({near})"))?.to_string();
+    t.op(&format!("onto #{id} 1.0")).await?;
+    t.secs(0.6).await?;
+    let mid = t.state().pos[1];
+    t.secs(2.5).await?;
+    let me = t.state().pos[1];
+    t.check(mid < top[1] as f64 + 0.5, format!("the player went down with the falling sand (y {mid:.2})"));
+    t.check((me - (ground[1] as f64 + 2.0)).abs() < 0.01, format!("and stands on it once it landed (y {me:.2})"));
+    Ok(())
+}

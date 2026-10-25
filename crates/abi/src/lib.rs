@@ -2298,6 +2298,10 @@ pub struct ClientState {
     pub sounds: u32,
     /// Where the player is drawn this frame (between physics ticks), unlike `pos`.
     pub shown: [f64; 3],
+    /// The block looked at and the structure (entity) it is part of, 0 for the world;
+    /// `target_frame` `u64::MAX` when nothing is looked at.
+    pub target: [i32; 3],
+    pub target_frame: u64,
 }
 versioned!(ClientState {
     flags: 0,
@@ -2336,6 +2340,8 @@ versioned!(ClientState {
     particles: 0,
     sounds: 0,
     shown: [0.0; 3],
+    target: [0; 3],
+    target_frame: u64::MAX,
 });
 
 /// `Host::client_input` operations. Keys and buttons are held for `x` seconds (0 = one tap).

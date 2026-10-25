@@ -106,6 +106,11 @@ pub struct ClientEntity {
     pub rel_target: Option<DVec3>,
     /// A moving structure's blocks, in its own coordinates (meshed like the world's).
     pub structure: Option<Box<ClientWorld>>,
+    /// Falling blocks: where the server last had it, its velocity and when that arrived (client
+    /// clock). It is shown where the server's physics takes it from there by now
+    /// (`falling_at`), so it reaches the ground when its block appears; drawn from server
+    /// positions it lagged a tick and more and the block showed up a block above it.
+    pub fall: Option<(DVec3, DVec3, f64)>,
 }
 
 /// A picked up item reaches the taker's feet in three ticks (vanilla's pickup animation).
@@ -130,6 +135,33 @@ impl ClientEntity {
         let [w, h, eye] = self.size.unwrap_or([k.width, k.height, k.eye]).map(|v| v as f64);
         let (h, eye) = if self.crouched { physics::crouched(h, eye) } else { (h, eye) };
         (w / 2.0, h, eye)
+    }
+
+    /// Where a falling block is at client time `clock`: the server's physics run on from its
+    /// last known state (at most a few ticks: past that the server has said more).
+    pub fn falling_at(&self, world: &ClientWorld, gravity: f64, clock: f64) -> DVec3 {
+        let Some((mut pos, mut vel, at)) = self.fall else { return self.pos };
+        let (hw, h, _) = self.dims();
+        let c = content();
+        let solid = |p: IVec3| world.block_or_air(p);
+        let steps = ((clock - at) / STEP).clamp(0.0, 4.0);
+        let mut left = steps;
+        while left > 0.0 {
+            let part = left.min(1.0);
+            let r = physics::move_box(c, &solid, pos, hw, h, vel * STEP * part, 0.0);
+            pos = r.pos;
+            if part < 1.0 {
+                break;
+            }
+            for i in 0..3 {
+                if r.hit[i] {
+                    vel[i] = 0.0;
+                }
+            }
+            vel.y = (vel.y - gravity * STEP) * 0.98;
+            left -= 1.0;
+        }
+        pos
     }
 
     /// The kind whose model, texture and animations draw it.
@@ -513,6 +545,7 @@ on: {on}", list.join("
                                 rel: DVec3::ZERO,
                                 rel_target: None,
                                 structure: None,
+                                fall: (e.kind == content().game.falling_kind).then_some((e.pos, DVec3::ZERO, self.body_clock - STEP + self.accum)),
                             },
                         );
                     }
@@ -532,6 +565,13 @@ on: {on}", list.join("
                             e.target_yaw = yaw;
                             e.pitch = pitch;
                             e.frame = frame;
+                            if let Some((last, _, _)) = e.fall {
+                                // The server moves, then pulls by gravity (`entity::step`).
+                                let g = content().dims[self.world.dim as usize].gravity as f64;
+                                let mut vel = (pos - last) / STEP;
+                                vel.y = (vel.y - g * STEP) * 0.98;
+                                e.fall = Some((pos, vel, self.body_clock - STEP + self.accum));
+                            }
                             if solid(e.kind) {
                                 e.track.push_back((tick as f64, pos));
                                 while e.track.len() > 8 {
@@ -870,8 +910,14 @@ on: {on}", list.join("
                 for (&id, e) in &self.entities {
                     let k = &c.game.entities[e.kind as usize];
                     if k.is(voxide_abi::entity_flags::SOLID) {
-                        let now = e.pose(at);
-                        let delta = now - e.pose(at - 1.0);
+                        // A falling block collides where it falls here (and is drawn).
+                        let (now, delta) = match e.fall {
+                            Some(_) => {
+                                let now = e.falling_at(&self.world, gravity, self.body_clock);
+                                (now, now - e.falling_at(&self.world, gravity, self.body_clock - STEP))
+                            }
+                            None => (e.pose(at), e.pose(at) - e.pose(at - 1.0)),
+                        };
                         let aabb = physics::Aabb::around(now, k.width as f64 / 2.0, k.height as f64);
                         let built = e.structure.as_deref();
                         let aabb = match built {
@@ -921,7 +967,9 @@ on: {on}", list.join("
             }
         }
 
-        let eye = self.player.pos + DVec3::Y * self.player.eye;
+        // From the eye as drawn, the moment structures are drawn at too: from the physics step's
+        // eye, a block on a structure the player rides flickered between its neighbours.
+        let eye = self.camera().pos;
         let look = self.camera().forward().as_dvec3();
         self.target = if spectator { None } else { self.raycast(eye, look, 5.0) };
         if input.captured && !spectator && input.pressed("core:pick") {
@@ -1065,7 +1113,9 @@ on: {on}", list.join("
             let before = e.pos;
             let body = e.rel_target.and_then(|t| frames.iter().find(|f| f.0 == e.frame).map(|f| (f.1, t)));
             let mut walked = None;
-            e.pos = if c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID) {
+            e.pos = if e.fall.is_some() {
+                e.falling_at(&self.world, c.dims[self.world.dim as usize].gravity as f64, shown)
+            } else if c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID) {
                 e.pose(at)
             } else if let Some((at, rel_target)) = body {
                 let rel_before = e.rel;
@@ -1272,9 +1322,10 @@ on: {on}", list.join("
         let world = &self.world;
         let block = |p: IVec3| world.block_or_air(p);
         let mut best = physics::raycast(c, &block, eye, look, reach, false).map(|h| (h, (h.block.as_dvec3() + DVec3::splat(0.5) - eye).length()));
+        let now = self.body_tick(self.body_clock - STEP + self.accum);
         for (&id, e) in &self.entities {
             let Some(s) = e.structure.as_deref() else { continue };
-            let o = crate::server::structure_origin(e.pos);
+            let o = crate::server::structure_origin(e.pose(now));
             let block = |p: IVec3| Some(physics::Blocks::block(s, p));
             if let Some(mut h) = physics::raycast(c, &block, eye - o, look, reach, false) {
                 h.frame = id;
@@ -1374,6 +1425,7 @@ on: {on}", list.join("
             rel: DVec3::ZERO,
             rel_target: None,
             structure: None,
+            fall: None,
         }
     }
 

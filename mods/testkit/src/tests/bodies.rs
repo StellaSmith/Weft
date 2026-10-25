@@ -266,6 +266,22 @@ pub async fn skiff_blocks(t: T) -> R {
     t.press("core:use");
     t.secs(0.5).await?;
     t.check_eq(t.op(&sb([0, 1, -1])).await?, "base:stone".to_string(), "a stone placed on the flying deck");
+    // Looking at a spot of the deck 0.02 from the edge between two planks (along the way it
+    // flies) while riding, the same block stays targeted.
+    let st = t.state();
+    let o = t.c().entity(id).map_or([0.0; 3], |e| e.pos);
+    let spot = [o[0] - 0.5 + 0.98, o[1] + 1.0, o[2] - 0.5 + 0.5 - 1.0];
+    let eye = [st.shown[0], st.shown[1] + 1.62, st.shown[2]];
+    let (dx, dy, dz) = (spot[0] - eye[0], spot[1] - eye[1], spot[2] - eye[2]);
+    t.c().look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
+    t.frames(2).await?;
+    let mut targets = std::collections::BTreeSet::new();
+    for _ in 0..60 {
+        t.frames(1).await?;
+        let s = t.state();
+        targets.insert((s.target, s.target_frame));
+    }
+    t.check(targets.len() == 1, format!("one block looked at while riding ({targets:?})"));
     let (a, sa) = (pos_of(&t, &format!("#{id}")).await?, t.op(&sb([0, 1, -1])).await?);
     t.secs(1.0).await?;
     let b = pos_of(&t, &format!("#{id}")).await?;

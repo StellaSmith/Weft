@@ -36,6 +36,7 @@ pub fn all() -> Vec<TestDef> {
         world::dimensions,
         world::virtual_menus,
         world::sand_and_support,
+        world::sand_lands_exactly,
         world::deep_caves,
         world::flora,
         world::item_farm,

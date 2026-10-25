@@ -10,6 +10,8 @@ CTM is created without code and works from both mods and resource packs, a pack'
 It works on cube faces only, so no CTM on items, entities or block models made with `model_box`.\
 Examples to copy from are in `mods/base/assets/textures/block/`: `glass.ctm`, `log_oak.ctm`, `stone.ctm`.
 
+Check [textures guide](textures.md) for more texturing options like overlays, glow and animation.
+
 ## Quick links
 [method](#method) | [tiles](#tiles) | [connect](#connect) | [faces](#faces) | [inner_seams](#inner_seams) | [blocks](#blocks) | [heights](#heights) | [biomes](#biomes) | [weights](#weights) | [symmetry](#symmetry) | [width and height](#width-and-height)
 
@@ -209,17 +211,6 @@ Needs `width * height` tiles.
 
 ### fixed
 always 1 tile. Handy together with `blocks`, `heights` or `biomes` to swap the texture there.
-
-## Overlays
-Not CTM but lives in the same place: if `<texture>_overlay.png` exists, it is drawn over the face
-and takes the block's tint instead of the face itself.\
-There is exactly one overlay per texture and it is always tinted, (there are no `_overlay1` or conditions).\
-That's how grass sides are done: the dirt side stays brown, the grass fringe gets the biome's color.
-
-## LabPBR emission
-Any texture can have a `<texture>_e.png` file, which defines which parts of the texture should be highlighted and how brightly.\
-For example furnace has `furnace_front_lit.png` and `furnace_front_lit_e.png`\
-Brightness of a pixel in `_e` defines how bright the same pixel on original texture is, 0 is no light, 255 is full brightness
 
 ## Examples
 

@@ -99,7 +99,7 @@ Other mods' content: `Block::named("base:stone")`. Hot code works only with ids.
 ### Textures
 `.texture("ruby")` for a block means `mymod:block/ruby`, for an item it means `mymod:item/ruby`.\
 A full path stays as written. Resource packs can replace any of them.\
-Textures can also be animated, connected (see the [CTM guide](ctm.md)) and glow, those are described in their own guides.
+Textures can also be [animated, glow and have overlays](textures.md), or [be connected](ctm.md)).
 
 ### Translations
 Format: `type.modname.name = value`, e.g. `item.examplemod.example_item = Example Item`\
@@ -324,5 +324,6 @@ Tell me about this instead of building a hack, so I can adjust the engine for th
 
 You can contact me on Discord: `@vortex_so`
 
-## Guides for bigger systems
+## Guides for other systems
+- [Textures](textures.md): animation, glow, tinted overlays
 - [CTM](ctm.md): connected and varied block textures (glass, logs, random stone)

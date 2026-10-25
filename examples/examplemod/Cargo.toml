@@ -1,0 +1,39 @@
+[package]
+# Your mod id. The library file gets this name and the game looks for a file named after
+# the mod's folder, so keep it lowercase letters, digits and underscores without dashes since cargo
+# turns them into underscores in the file name and the game would not find it, e.g. my-mod will become my_mod.dll
+name = "examplemod"
+# Your mod's own version, free to choose; the game shows it in the mod list.
+version = "0.1.0"
+# Rust language edition for YOUR code only, has nothing to do with the game. 2024 needs
+# rustc 1.85 or newer.
+edition = "2024"
+
+[lib]
+# Mandatory
+crate-type = ["cdylib"]
+# Only if the library must be named differently from the package:
+# name = "examplemod"
+
+[dependencies]
+# Must be the SDK of the same engine build your players run: a mod built against different build refuses to load.
+# In your own repository point it at a copy of `crates/sdk` with `crates/abi`, or at the game's git repository.
+# Here the SDK sits two folders up
+voxide_sdk = { path = "../../crates/sdk" }
+# Anything else you need is yours to add linked into your library.
+
+# Makes this folder its own cargo root so it is not part of the game's build. Needed only
+# while the mod lives inside another cargo project, remove in a repository of its own.
+# Several mods in one repository: `members = ["mod_a", "mod_b"]`
+# shared settings in `[workspace.package]` and `[workspace.dependencies]`.
+[workspace]
+
+[profile.release]
+# How much debug information to keep. "line-tables-only" is enough for crash reports and
+# panics to name the line. false = none, true = everything (big).
+debug = "line-tables-only"
+# Do not set `panic = "abort"`: the SDK catches panics in your callbacks and switches the
+# broken callback off instead of crashing the game, which only works with the default value.
+# opt-level = 3        # 0-3, "s", "z" (size)
+# lto = "thin"         # false, "thin", true
+# strip = "none"       # "symbols" removes function names from crash reports

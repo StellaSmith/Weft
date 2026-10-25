@@ -56,20 +56,6 @@ pub fn register(r: &mut Registry) {
     // Underground (3D): whole cubes deep under the surface; spiders like it there.
     r.biome("deep_caves").handle(&DEEP_CAVES).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("cave").tag("dark");
 
-    // Wells now and then where animals live.
-    r.structure("overworld", "well")
-        .layer(&["ccc", "cwc", "ccc"])
-        .layer(&["c.c", "...", "c.c"])
-        .layer(&["c.c", "...", "c.c"])
-        .layer(&["ccc", "ccc", "ccc"])
-        .key('c', "cobblestone")
-        .key('.', "air")
-        .key('w', "water")
-        .spacing(96)
-        .chance(0.35)
-        .biome("animals")
-        .sink(1);
-
     for (ore, max_y, veins, size) in [("coal_ore", 128, 8, 12), ("iron_ore", 64, 6, 8), ("gold_ore", 32, 2, 7), ("diamond_ore", 16, 1, 6)] {
         r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
     }

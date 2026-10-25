@@ -1143,6 +1143,11 @@ pub fn freeze(
 }
 
 impl Game {
+    /// Entities of `kind` belong to a block (machines, chests): they come and go with it.
+    pub fn is_block_entity(&self, kind: u32) -> bool {
+        self.block_entities.values().any(|&k| k == kind)
+    }
+
     pub fn component(&self, name: &str) -> Option<u32> {
         self.component_names.get(name).copied()
     }

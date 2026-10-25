@@ -15,7 +15,7 @@
 9. [Client side](#client-side)
 10. [Debugging](#debugging)
 11. [Things that make your and other modders' life easier](#things-that-make-your-and-other-modders-life-easier)
-12. [Guides for bigger systems](#guides-for-bigger-systems)
+12. [Guides for bigger systems](#guides-for-other-systems)
 
 ## Introduction
 This is a guide describing how the base game itself is written.\
@@ -103,7 +103,7 @@ Textures can also be [animated, glow and have overlays](textures.md), or [be con
 
 ### Translations
 Format: `type.modname.name = value`, e.g. `item.examplemod.example_item = Example Item`\
-Any item can have a tooltip using `type.modname.name.tooltip = Some tooltip`\
+Any item can have a tooltip using `type.modname.name.tooltip = Some tooltip`, more in the [tooltips guide](tooltips.md).\
 If the player's language doesn't have a key (or a whole file), English is shown, so `en_us.lang` is the one you always need.
 
 Text can carry colors and effects:
@@ -327,3 +327,10 @@ You can contact me on Discord: `@vortex_so`
 ## Guides for other systems
 - [Textures](textures.md): animation, glow, tinted overlays
 - [CTM](ctm.md): connected and varied block textures (glass, logs, random stone)
+- [Tooltips](tooltips.md): item tooltips, rich text and effects, adding them from other mods and packs
+- [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain presets
+- [Models and animations](models.md): mob models in code or Blockbench, keyframes, the first-person hand, armor
+- [UI](ui.md): screens, HUD, menus, themes, GUI textures
+- [Machines](machines.md): blocks with inventories, recipes, energy
+- [Shaders](shaders.md): text effects, panels, mobs, particles, screen effects, shader packs
+- [Resource packs](resourcepacks.md): what a pack can replace and how it is laid out

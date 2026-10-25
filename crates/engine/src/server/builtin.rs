@@ -125,6 +125,9 @@ fn summon(s: &mut Server, x: &Ctx) -> String {
     let count = a.int("count").unwrap_or(1).clamp(1, 100_000);
     let pos = a.pos("pos").unwrap_or(here);
     let (kind, kname) = (a.id("entity").unwrap_or(0), a.text("entity").unwrap_or_default().to_string());
+    if c.game.is_block_entity(kind) {
+        return format!("{kname} belongs to a block, place the block instead");
+    }
     let r = s.dims[me.0 as usize].ensure_region(c, pos);
     for _ in 0..count {
         r.spawn(c, kind, pos);

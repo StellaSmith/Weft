@@ -359,8 +359,11 @@ fn tick_furnaces(t: &EntityTick) {
 static STONE: Block = Block::named("base:stone");
 static GRASS: Block = Block::named("base:grass");
 static DIRT: Block = Block::named("base:dirt");
+static CHEST: Block = Block::named("base:chest");
+/// Where the island's chest stands: a block entity's block placed by a generator.
+pub const ISLAND_CHEST: [i32; 3] = [4, 64, 0];
 
-/// A floating island of stone and grass in an empty void.
+/// A floating island of stone and grass in an empty void, with a chest on it.
 fn island(g: &mut Gen) {
     let [ox, oy, oz] = g.origin();
     let (stone, grass, dirt) = (STONE.id(), GRASS.id(), DIRT.id());
@@ -377,6 +380,11 @@ fn island(g: &mut Gen) {
                 }
             }
         }
+    }
+    let [cx, cy, cz] = ISLAND_CHEST;
+    let (lx, ly, lz) = (cx - ox, cy - oy, cz - oz);
+    if (0..16).contains(&lx) && (0..16).contains(&ly) && (0..16).contains(&lz) {
+        g.set(lx as usize, ly as usize, lz as usize, CHEST.id());
     }
 }
 

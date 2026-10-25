@@ -159,11 +159,19 @@ impl DimSet {
             if d.entities.get(id).is_some() {
                 continue;
             }
+            if c.game.is_block_entity(e.kind) && !d.block_entity_fits(c, &e) {
+                // Its block is gone (or it never had one): what it held stays in the world.
+                for s in inv.into_iter().flatten() {
+                    d.spawn_item(c, e.pos, s);
+                }
+                continue;
+            }
             if let Some(blocks) = blocks {
                 d.structures.insert(id, Box::new(super::dim::Dim::new_structure(c, d.id, d.seed, self.next_id.clone(), &blocks)));
             }
             d.entities.insert_with(c, e, inv, comps);
         }
+        d.add_missing_block_entities(c, pos);
     }
 
     pub fn connectivity(&mut self, c: &Content, pos: IVec3) -> Option<u16> {

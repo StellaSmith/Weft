@@ -401,7 +401,7 @@ pub fn item_name(lang: &Lang, item: u32) -> String {
 }
 
 /// The name, then the `<name key>.tooltip` translation in grey (details usually behind
-/// `{on_key:core:sneak}`), then durability for damaged tools.
+/// `{on_key:core:sneak}`) and the mods' own lines under it, then durability for damaged tools.
 pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi::ItemStack) -> Vec<text::Span> {
     const GREY: u32 = 0xA8A8A8;
     let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
@@ -415,8 +415,19 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: voxide_abi:
             s.color = s.color.or(Some(GREY));
         }
     };
-    if let Some(key) = item_key(lang, stack.item).map(|k| format!("{k}.tooltip")).filter(|k| lang.has(k)) {
-        line(lang.get(&key), &[], &mut out);
+    if let Some(key) = item_key(lang, stack.item).map(|k| format!("{k}.tooltip")) {
+        if lang.has(&key) {
+            line(lang.get(&key), &[], &mut out);
+        }
+        // Every mod can add lines of its own under `<tooltip key>.<mod id>`, in load order.
+        let mut mods: Vec<_> = content().mods.iter().collect();
+        mods.sort_by_key(|m| m.order);
+        for m in mods {
+            let extra = format!("{key}.{}", m.id);
+            if lang.has(&extra) {
+                line(lang.get(&extra), &[], &mut out);
+            }
+        }
     }
     let max = content().items.get(stack.item as usize).map_or(0, |d| d.durability);
     let damage = crate::stack::damage(&stack);

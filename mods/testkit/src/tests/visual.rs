@@ -82,6 +82,11 @@ pub async fn tooltips(t: T) -> R {
         // The tooltip opens to the right of the cursor.
         let v = changed(&plain, &now, w, h, cx + 0.02, cy - 0.02, cx + 0.15, cy + 0.05);
         t.probe(&format!("{name} tooltip drawn"), v, v > 0.3);
+        // Another mod's line under coal's own (`item.base.coal.tooltip.testmod`), in red.
+        if name == "coal" {
+            let red = t.shot("coal_lines").await?.share(cx + 0.02, cy - 0.05, cx + 0.3, cy + 0.12, probe::red);
+            t.probe("the test mod's red line under coal's tooltip", red, red > 0.002);
+        }
     }
     t.c().close_screen();
     t.no_screen().await

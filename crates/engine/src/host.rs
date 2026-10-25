@@ -433,6 +433,10 @@ unsafe extern "C" fn entity_spawn(w: *mut abi::WorldCtx, kind: u32, pos: *const 
         misuse("entity_spawn", || format!("no entity kind {kind}"));
         return 0;
     }
+    if content().game.is_block_entity(kind) {
+        misuse("entity_spawn", || format!("{} belongs to a block, set the block instead", content().game.entities[kind as usize].name));
+        return 0;
+    }
     unsafe { dim(w).spawn(content(), kind, DVec3::from_array(*pos)) }
 }
 

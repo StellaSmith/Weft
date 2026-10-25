@@ -524,7 +524,7 @@ pub fn complete(c: &Content, line: &str, players: &[String]) -> Completion {
             }
             Kind::Item => names_from(c.item_names.keys().collect()),
             Kind::Block => names_from(c.block_names.keys().collect()),
-            Kind::Entity => names_from(c.game.entity_names.keys().collect()),
+            Kind::Entity => names_from(c.game.entity_names.iter().filter(|(_, k)| !c.game.is_block_entity(**k)).map(|(n, _)| n).collect()),
             Kind::Dim => names_from(c.dim_names.keys().collect()),
             Kind::Player => players.iter().filter(|n| n.starts_with(partial)).cloned().collect(),
             Kind::Targets => ["@p", "@a", "@e", "@s", "@r"].iter().map(|s| s.to_string()).chain(players.iter().cloned()).filter(|n| n.starts_with(partial)).collect(),

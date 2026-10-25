@@ -181,6 +181,13 @@ pub async fn persistence(t: T) -> R {
     let skiff = skiff.trim().trim_start_matches('#').to_string();
     t.op(&format!("sblock #{skiff} 0 1 0 base:glass")).await?;
     t.op("put me 0 iron_sword 1").await?;
+    // A machine's contents are kept, and its entity can't be made without the block.
+    let chest = add(p, [-3, 0, 0]);
+    t.set(chest, "chest").await?;
+    t.op(&format!("insert {} {} {} coal 5", chest[0], chest[1], chest[2])).await?;
+    t.check_eq(t.op(&format!("spawn base:chest {} {} {}", p[0], p[1] + 2, p[2])).await?, "0".to_string(), "no chest entity without a chest");
+    let said = t.cmd("/summon base:furnace").await?;
+    t.check(said.contains("belongs to a block"), format!("/summon refuses a furnace: {said}"));
     t.op("secret me 0 1234").await?;
     t.check_eq(t.op("secret me 0").await?, "1234".into(), "server keeps the secret");
     t.frames(5).await?;
@@ -205,6 +212,7 @@ pub async fn persistence(t: T) -> R {
     t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "inventory after reload");
     t.check_eq(t.op(&format!("sblock #{skiff} 0 1 0")).await?, "base:glass".to_string(), "the structure and its added block after reload");
     t.check_eq(t.slot("me", 0).await?.0, "base:iron_sword".into(), "the sword was saved");
+    t.check_eq(t.op(&format!("inv {} {} {}", chest[0], chest[1], chest[2])).await?, "0:base:coal:5".to_string(), "the chest kept its coal");
     t.check_eq(t.op("secret me 0").await?, "none".into(), "the secret was not");
     t.check_eq(value(&t.op("attr me max_health").await?), 30.0, "max health modifier after reload");
     // One maximum everywhere: /heal fills to it and the client hears the same.
@@ -267,6 +275,10 @@ pub async fn dimensions(t: T) -> R {
         if let Some(look) = look {
             let (v, ok) = look(&shot);
             t.probe(&format!("{dim} drawn as itself"), v, ok);
+        }
+        if dim == "testmod:void" {
+            // testmod's island generator places a chest (`ISLAND_CHEST`) without its entity.
+            t.check_eq(t.op("insert 4 64 0 coal 3").await, Ok("3".to_string()), "a chest placed by a generator has its block entity");
         }
     }
 

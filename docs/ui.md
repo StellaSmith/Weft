@@ -1,0 +1,158 @@
+# UI guide
+
+Screens, HUD parts and the menus of inventories and machines, plus the theme system that decides how all of it looks.\
+Base's inventory, furnace, chest and health bars are built from the same small set of parts you get, so anything you see in the game you can make.
+
+## Note
+Examples to copy from:
+- `mods/base/src/player.rs`: the HUD bars, the inventory and the crafting table
+- `mods/base/src/machines.rs`: the furnace and the chest, with bars that follow data
+- `mods/testmod/src/lib.rs`: a screen of its own (`about`), machine screens on a themed panel, an F3 panel
+- `mods/base/assets/ui/theme.theme` and `mods/testmod/assets/ui/theme.theme`
+
+## Quick links
+[the parts](#the-parts) | [layout](#layout) | [live values](#live-values) | [screens](#screens) | [HUD](#hud) | [menus](#menus) | [themes](#themes) | [GUI textures](#gui-textures) | [shaders and animations](#shaders-and-animations)
+
+## The parts
+A screen is a tree of parts built by a function that receives a `Ui`. Parts that hold others take a closure for their children:
+
+```rust
+ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+    ui.text("examplemod.title");
+    ui.row(S::row().gap(8.0), |ui| {
+        ui.slot(0);
+        ui.button("examplemod.go", S::default(), |_| {});
+    });
+});
+```
+
+| part | what it is |
+|---|---|
+| `column(s, ..)`, `row(s, ..)` | children one under another, or side by side |
+| `panel(class, s, ..)` | a column with a themed background, `"panel"` is the usual window |
+| `text(key)` | a translation. `text_args(key, &[Arg::Int(5)])` fills `{0}` and the rest |
+| `button(key, s, on_click)` | a button with a translated label, the closure runs on click |
+| `image(texture, w, h)` | a GUI texture such as `base:gui/arrow_bg` |
+| `spacer()` | an empty part that grows, to push others apart or center them |
+| `slot(n)`, `slots(start, count, per_row)` | menu slots, see [menus](#menus) |
+| `player_model(w, h)` | the player with what they wear, the figure in the inventory |
+| `progress_bind`, `icons` | bars and icon rows driven by live values |
+
+Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](tooltips.md). Tooltips on the parts of your own screens are the one thing missing: the engine can show them, but the `Ui` builder has no way to set one yet (see [other tooltips](tooltips.md#other-tooltips)).
+
+## Layout
+Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in the settings makes them bigger or smaller. `S` describes one part, starting from `S::col()` or `S::row()` (rows center their children vertically, columns start at the top left):
+- `gap(n)` is the space between children and `pad(n)` the space around them inside
+- `size(w, h)` and `w(n)` fix a size, otherwise a part is as big as its content
+- `grow()` takes whatever space is left in the parent
+- `center()` and `end()` position the children along the main axis
+- `stretch()` makes children fill the other axis, so rows get as wide as their column and a `spacer()` can center things
+
+## Live values
+Text and bars can change while a screen is open. A binding's closure runs every frame, and the part is redrawn when the value changed.
+- `text_bind(|view, out| out.set("examplemod.energy", &[Arg::Int(stored), Arg::Int(capacity)]))` for text from data
+- `progress_bind(class, s, |view| 0.0..1.0)` for a bar, and `progress_bind_dir(.., dir, ..)` to fill another way, `abi::ui_dir::UP` for a flame
+- `icons(class, count, |view| value)` for a row of icons that shows a number in half-icon steps, like hearts. `icons_rtl` fills from the right, like hunger. A negative value hides the row
+
+`view` is a read-only look at the client: `view.me()` has your health and position, `view.component(&C)` a synced component of yours, `view.creative()` the game mode, and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
+
+```rust
+r.hud_element("health", hud_anchor::HOTBAR_LEFT, 0, |ui| {
+    ui.icons("hearts", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
+});
+```
+The `class` ("hearts", "arrow", "flame") is a theme class, which is where the textures come from.
+
+## Screens
+`r.screen(name, |ui| ..)` registers a screen of your own that opens by name:
+```rust
+r.screen("about", |ui| {
+    ui.panel("panel", S::col().pad(8.0).gap(4.0), |ui| {
+        ui.text("examplemod.about.title");
+    });
+});
+r.client_command("about", "", |c| { if let Some(cl) = c.client() { cl.open_screen("examplemod:about"); } });
+```
+`open_screen("examplemod:about")` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
+
+Naming a screen like an engine one replaces it, so `r.screen("core:pause", ..)` is your own pause screen. The engine's are `core:title`, `core:pause`, `core:settings`, `core:language`, `core:controls`, `core:mod_settings`, `core:worlds`, `core:create_world`, `core:chat` and `core:death`. Replacing is all you can do to them, a mod can't add a part to an engine screen.
+
+## HUD
+`r.hud_element(name, anchor, order, |ui| ..)` puts a part on the in-game overlay. The anchor says where, and `order` 0 sits nearest the anchor's edge.
+
+| anchor (`hud_anchor::..`) | where |
+|---|---|
+| `TOP_LEFT`, `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT` | the corners of the window |
+| `HOTBAR`, `HOTBAR_LEFT`, `HOTBAR_RIGHT` | over the hotbar, on its left and right (health and hunger live there) |
+| `DEBUG_LEFT`, `DEBUG_RIGHT` | a panel of the F3 overlay, titled by the element's name as a translation key |
+
+F3 panels from mods take the key numbers after the engine's five, so the first one is F3+6.
+
+## Menus
+A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu("inventory")` picks the one the inventory key opens. Here is the crafting table:
+
+```rust
+r.menu("crafting_table").handle(&CRAFTING)
+    .temp_slots(10)
+    .setup(|m| {
+        m.slots(TEMP, 0, 9, 0);                  // the grid, slots 0..9
+        m.slots(TEMP, 9, 1, slot_flags::OUTPUT); // the result, slot 9
+        m.player_slots();                        // inventory and hotbar after those
+    })
+    .on_change(|m| /* a slot changed: work out the result */ {})
+    .on_take(|m| /* the result was taken: use up the grid */ {})
+    .screen(|ui| {
+        ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+            ui.slots(0, 9, 3);
+            ui.slot_big(9);
+            ui.player_inventory(10, true);
+        });
+    });
+```
+Slots are numbered in the order `setup` adds them, and the screen refers to the same numbers. `slots(owner, start, count, flags)` takes `TEMP` for the menu's own scratch space, `PLAYER` for the player's inventory, or an entity id for a machine's. `slots_for(.., "fuel")` makes slots accept only items with a tag or component, and `slot_flags::OUTPUT` marks slots nothing can be put into.
+
+On the screen side, `slot_icon(n, texture)` shows an icon in an empty slot (the armor slots), `slot_big(n)` is the large result slot, and `player_inventory(start, title)` draws the player's inventory and hotbar starting at menu slot `start`.
+
+Machines are menus tied to a block, with their own data and tick. The [machines guide](machines.md) covers them, including the component flags that their screens read.
+
+## Themes
+How a screen looks comes from themes: the `ui/theme.theme` of each mod, merged together. A pack's file replaces the one of the mod it's made for. Lines are `class.property = value`, and comments are whole lines starting with `#`:
+```
+panel.texture = base:gui/panel
+panel.text = #404040
+button.hover = base:gui/button_hover
+```
+A part asks for its class, so `ui.panel("panel", ..)` looks up `panel.texture`, `panel.text` and so on, and a property the class doesn't have comes from `default.<property>`. Colors are `#rrggbb`, or `#rrggbbaa` when they need transparency. Base sets these, and your own classes can use the same properties (`testmod_panel` is one):
+
+| class | properties |
+|---|---|
+| `panel` | `texture`, `text`, `dim_text`, `shadow` (`none` for no text shadow) |
+| `button` | `texture`, `hover`, `pressed`, `disabled`, `text`, `hover_text`, `disabled_text`, `shadow` |
+| `slider` | `track`, `knob`, `knob_hover` |
+| `input` | `texture`, `focused`, `text`, `selection` |
+| `slot` | `fill`, `light`, `dark` |
+| `tooltip` | `texture`, `frame`, `text` |
+| `background` | `texture`, `color` (behind menus) |
+| `hearts`, `food`, `armor` | `full`, `half`, `empty` |
+| `arrow`, `flame` | `background`, `fill_texture` |
+| `air` | `fill` |
+| `chat`, `debug` | `text`, `shadow` |
+
+A bar of your own needs two textures and a line each, `energy.background = mymod:gui/energy_bg` and `energy.fill_texture = mymod:gui/energy_fill`, and then `ui.progress_bind("energy", ..)` draws it. A resource pack restyles everything the same way, with its own theme file.
+
+## GUI textures
+A texture used as a background has to be stretched over parts of any size, and a `.gui` file next to it says how (`panel.gui` for `panel.png`):
+```
+scaling = nine_slice
+border = 4
+```
+`scaling` is `nine_slice` (the corners keep their size, the edges and middle stretch), `tile` or `stretch`. `border` is one number for all sides or `left top right bottom`, in GUI pixels. Two more keys exist for special cases: `size = w h` for an image with more pixels than the GUI pixels it stands for, and `outset = n` for textures that reach outside their box, like shadows. Vanilla's `.png.mcmeta` with `gui.scaling` is understood too, so vanilla packs keep their slicing, and an image with neither is simply stretched.
+
+## Shaders and animations
+A theme class can have `shader = <name>`, and the panel is then filled by `shaders/gui/<name>.wgsl` instead of a texture:
+```
+testmod_panel.shader = testmod:circuit
+```
+The file defines `fn fill(p: GuiPixel) -> vec4<f32>`, where `p` has the position across the panel, its size in pixels and the time. The circuit board of the testmod machines is one, see the [shaders guide](shaders.md) for the details.
+
+A class can also have `animation = <name>`, pointing at `animations/<name>.animation.json`. An animation called `open` plays once when the screen opens and `idle` loops afterwards. Both move one bone named `node`, with `position` (GUI pixels, y up), `rotation` (z only, clockwise degrees) and `scale`, around the center of the part. Testmod's panel grows from 85% and rises 10 pixels this way, and the file format is the one from the [models guide](models.md#animations). Item icons inside an animated panel don't follow it yet.

@@ -496,16 +496,48 @@ impl Dim {
                 self.entities.remove(id);
             }
             if let Some(&kind) = c.game.block_entities.get(&nb) {
-                let id = self.new_id();
-                let mut e = Entity::new(id, kind, p.as_dvec3() + DVec3::splat(0.5), 1.0);
-                e.anchor = Some(p);
-                self.entities.insert(c, e);
+                self.add_block_entity(c, p, kind);
             }
         }
         Some(old)
     }
 
+    fn add_block_entity(&mut self, c: &Content, p: IVec3, kind: u32) {
+        let id = self.new_id();
+        let mut e = Entity::new(id, kind, p.as_dvec3() + DVec3::splat(0.5), 1.0);
+        e.anchor = Some(p);
+        self.entities.insert(c, e);
+    }
+
+    /// Whether a saved block entity still has its block: the block at its anchor is one that
+    /// has this kind, and no other entity took the place.
+    pub fn block_entity_fits(&self, c: &Content, e: &Entity) -> bool {
+        e.anchor.is_some_and(|a| {
+            !self.entities.anchors.contains_key(&a) && self.get(a).and_then(|s| c.game.block_entities.get(&c.states[s as usize].block)) == Some(&e.kind)
+        })
+    }
+
+    /// Gives every block of the cube that has a block entity one, if it has none: blocks a
+    /// generator placed, or a block a mod gave an entity after the world was saved.
+    pub fn add_missing_block_entities(&mut self, c: &Content, pos: IVec3) {
+        let Some(cube) = self.cubes.get(&pos).cloned() else { return };
+        if !cube.palette().iter().any(|&s| c.game.block_entities.contains_key(&c.states[s as usize].block)) {
+            return;
+        }
+        for i in 0..VOLUME {
+            let Some(&kind) = c.game.block_entities.get(&c.states[cube.get(i) as usize].block) else { continue };
+            let p = pos * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
+            if !self.entities.anchors.contains_key(&p) {
+                self.add_block_entity(c, p, kind);
+            }
+        }
+    }
+
+    /// 0 for kinds that belong to a block: those come only with their block.
     pub fn spawn(&mut self, c: &Content, kind: u32, pos: DVec3) -> u64 {
+        if c.game.is_block_entity(kind) {
+            return 0;
+        }
         let id = self.new_id();
         let k = &c.game.entities[kind as usize];
         if let Some(blocks) = super::structure::template(c, kind) {

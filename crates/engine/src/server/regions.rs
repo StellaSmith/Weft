@@ -154,10 +154,13 @@ impl DimSet {
         let d = &mut self.regions[r];
         d.insert(c, pos, cube, prelit);
         d.conn.insert(pos, conn);
-        for (e, inv, comps) in super::persist::read(c, entities) {
+        for (e, inv, comps, blocks) in super::persist::read(c, entities) {
             let id = e.id;
             if d.entities.get(id).is_some() {
                 continue;
+            }
+            if let Some(blocks) = blocks {
+                d.structures.insert(id, Box::new(super::dim::Dim::new_structure(c, d.id, d.seed, self.next_id.clone(), &blocks)));
             }
             d.entities.insert_with(c, e, inv, comps);
         }

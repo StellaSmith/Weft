@@ -310,6 +310,10 @@ pub mod comp {
     /// Items: durability lost per hit on a mob (`u32`); without it tools lose 2, like vanilla's
     /// tools made for blocks (swords set 1).
     pub const WEAR_PER_HIT: &str = "wear_per_hit";
+    /// Entity kinds: blocks it is built of, a moving structure (`str`): `;`-separated
+    /// `<block> x y z [x2 y2 z2]` boxes in its own coordinates, block (0, 0, 0) centred on the
+    /// entity's position. Players place and break blocks on it like in the world.
+    pub const BLOCKS: &str = "blocks";
     /// Tags of items worn in the armour slots, head to feet.
     pub const ARMOR: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
 }
@@ -1563,6 +1567,11 @@ pub struct Host {
     /// Draws an entity with another kind's model, texture and animations (it stays what it is);
     /// empty goes back to its own.
     pub set_entity_look: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, kind: Str),
+    /// A block of moving structure `entity` (its own coordinates); `u32::MAX` if it is none.
+    pub structure_block: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const [i32; 3]) -> u32,
+    /// Sets a block of moving structure `entity` like `set_block` (updates, callbacks); 0 if it
+    /// is none.
+    pub set_structure_block: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const [i32; 3], state: u32) -> u32,
 }
 
 /// Natural spawning around players (`Host::reg_spawn`). Every two seconds the engine tries a few

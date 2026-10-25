@@ -12,7 +12,7 @@ pub mod world_render;
 use std::time::Instant;
 
 use glam::{DVec2, DVec3, IVec3, Vec3};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use voxide_abi::{ItemStack, block_flags as bf};
 use voxide_render::{Backend, CommandList, FrameInfo};
 
@@ -104,6 +104,8 @@ pub struct ClientEntity {
     pub frame: u64,
     pub rel: DVec3,
     pub rel_target: Option<DVec3>,
+    /// A moving structure's blocks, in its own coordinates (meshed like the world's).
+    pub structure: Option<Box<ClientWorld>>,
 }
 
 /// A picked up item reaches the taker's feet in three ticks (vanilla's pickup animation).
@@ -204,6 +206,8 @@ pub struct Client {
     /// evenly: moving it by each arrival's jitter stepped bodies back and forth by millimetres.
     tick_offset: Option<f64>,
     offset_target: f64,
+    /// Structures whose cubes are uploaded for drawing.
+    drawn_frames: FxHashSet<u64>,
     start: Instant,
     pub target: Option<Hit>,
     pub target_entity: Option<u64>,
@@ -280,7 +284,8 @@ pub struct Client {
     pub gizmo_fills: Vec<gizmo::Fill>,
     pub gizmo_labels: Vec<gizmo::Label>,
     /// Block being broken and progress 0..1.
-    pub breaking: Option<(IVec3, f32)>,
+    /// The block being broken (frame, block as in `Hit`) and how far.
+    pub breaking: Option<(u64, IVec3, f32)>,
     /// Hotbar contents last frame, so the HUD knows when to redraw.
     pub hotbar: Vec<u32>,
 }
@@ -372,6 +377,7 @@ on: {on}", list.join("
             body_clock: 0.0,
             tick_offset: None,
             offset_target: 0.0,
+            drawn_frames: FxHashSet::default(),
             start: Instant::now(),
             target: None,
             target_entity: None,
@@ -506,6 +512,7 @@ on: {on}", list.join("
                                 frame: 0,
                                 rel: DVec3::ZERO,
                                 rel_target: None,
+                                structure: None,
                             },
                         );
                     }
@@ -546,6 +553,20 @@ on: {on}", list.join("
                             }
                             None => e.rel_target = None,
                         }
+                    }
+                }
+                ToClient::Structure { id, cubes, full } => {
+                    let dim = self.world.dim;
+                    if let Some(e) = self.entities.get_mut(&id) {
+                        if full || e.structure.is_none() {
+                            e.structure = Some(Box::new(ClientWorld::structure(dim)));
+                            self.render.remove_frame(id);
+                        }
+                        let s = e.structure.as_mut().unwrap();
+                        for (pos, cube) in cubes {
+                            s.insert(pos, cube, 0);
+                        }
+                        s.scan_bounds();
                     }
                 }
                 ToClient::Shapes(list) => {
@@ -718,7 +739,7 @@ on: {on}", list.join("
             self.disconnected = Some("connection lost".into());
         }
         for pos in std::mem::take(&mut self.world.removed) {
-            self.render.remove(pos);
+            self.render.remove((0, pos));
         }
     }
 
@@ -852,7 +873,17 @@ on: {on}", list.join("
                         let now = e.pose(at);
                         let delta = now - e.pose(at - 1.0);
                         let aabb = physics::Aabb::around(now, k.width as f64 / 2.0, k.height as f64);
-                        bodies.push(physics::Body { id, aabb, delta, carry: k.carry_height as f64, crushes: false });
+                        let built = e.structure.as_deref();
+                        let aabb = match built {
+                            Some(s) => {
+                                let Some((lo, hi)) = s.bounds else { continue };
+                                let o = crate::server::structure_origin(now);
+                                physics::Aabb { min: o + lo.as_dvec3(), max: o + (hi + IVec3::ONE).as_dvec3() }
+                            }
+                            None => aabb,
+                        };
+                        let blocks = built.map(|s| (s as &dyn physics::Blocks, crate::server::structure_origin(now)));
+                        bodies.push(physics::Body { id, aabb, delta, carry: k.carry_height as f64, crushes: false, blocks });
                     } else if k.is(voxide_abi::entity_flags::PUSHABLE) && e.item.is_empty() && e.dying.is_none() {
                         let d = self.player.pos - e.pos;
                         let ((ehw, eh, _), (hw, h, _)) = (e.dims(), self.player.dims());
@@ -892,7 +923,7 @@ on: {on}", list.join("
 
         let eye = self.player.pos + DVec3::Y * self.player.eye;
         let look = self.camera().forward().as_dvec3();
-        self.target = if spectator { None } else { physics::raycast(c, &block, eye, look, 5.0, false) };
+        self.target = if spectator { None } else { self.raycast(eye, look, 5.0) };
         if input.captured && !spectator && input.pressed("core:pick") {
             if let Some(item) = self.target.and_then(|h| c.pick_item(h.state)) {
                 let hotbar = &self.inventory[..content().game.player_layout.hotbar as usize];
@@ -944,17 +975,24 @@ on: {on}", list.join("
                     let (time, _) = crate::server::break_time(c, hit.state, held);
                     let time = if self.mode == GameMode::Creative { 0.0 } else { time };
                     let progress = match self.breaking {
-                        Some((p, v)) if p == hit.block => v,
+                        Some((f, p, v)) if (f, p) == (hit.frame, hit.block) => v,
                         _ => 0.0,
                     } + dt as f32 / time.max(0.001);
                     if progress >= 1.0 && self.cooldown <= 0.0 {
                         send_look(&mut self.conn);
-                        self.conn.send(ToServer::Break { pos: hit.block });
-                        self.world.set_block(hit.block, crate::content::AIR);
+                        self.conn.send(ToServer::Break { pos: hit.block, frame: hit.frame });
+                        match hit.frame {
+                            0 => self.world.set_block(hit.block, crate::content::AIR),
+                            f => {
+                                if let Some(s) = self.entities.get_mut(&f).and_then(|e| e.structure.as_mut()) {
+                                    s.set_block(hit.block, crate::content::AIR);
+                                }
+                            }
+                        }
                         self.breaking = None;
                         self.cooldown = 0.15;
                     } else if time > 0.0 {
-                        self.breaking = Some((hit.block, progress.min(1.0)));
+                        self.breaking = Some((hit.frame, hit.block, progress.min(1.0)));
                     } else {
                         // Instant breaks (creative, grass) show no cracks while the next waits.
                         self.breaking = None;
@@ -971,7 +1009,7 @@ on: {on}", list.join("
                     self.conn.send(ToServer::Interact(id));
                 } else if let Some(hit) = self.target {
                     let sneak = input.held("core:sneak");
-                    self.conn.send(ToServer::Use { pos: hit.block, face: hit.face, look: look.as_vec3().to_array(), sneak });
+                    self.conn.send(ToServer::Use { pos: hit.block, face: hit.face, look: look.as_vec3().to_array(), sneak, frame: hit.frame });
                 } else {
                     self.conn.send(ToServer::UseItem { target: None });
                 }
@@ -1065,12 +1103,12 @@ on: {on}", list.join("
         }
         // Hitting a block chips pieces off the face being hit, one per tick like vanilla.
         self.hit_dust -= dt as f32;
-        if let (Some((pos, _)), Some(hit)) = (self.breaking, self.target) {
-            if self.hit_dust <= 0.0 && hit.block == pos {
+        if let (Some((frame, pos, _)), Some(hit)) = (self.breaking, self.target) {
+            if self.hit_dust <= 0.0 && (hit.frame, hit.block) == (frame, pos) {
                 self.hit_dust = 0.05;
                 if let Some(&kind) = c.game.particle_names.get(voxide_abi::particle::BLOCK) {
                     let normal = crate::world::DIRS[hit.face as usize].as_vec3();
-                    let at = pos.as_dvec3() + DVec3::splat(0.5) + (normal * 0.55).as_dvec3();
+                    let at = pos.as_dvec3() + self.frame_origin(frame) + DVec3::splat(0.5) + (normal * 0.55).as_dvec3();
                     let spread = (glam::Vec3::splat(0.45) * (glam::Vec3::ONE - normal.abs())).to_array();
                     let velocity = (normal * 0.6).to_array();
                     self.particles.spawn(&voxide_abi::ParticleBurst { kind, pos: at.to_array(), spread, velocity, speed: 0.4, count: 1, block: hit.state, ..voxide_abi::Versioned::DEFAULT });
@@ -1094,7 +1132,25 @@ on: {on}", list.join("
         // Enough jobs that meshing keeps up at 60 frames per second too, not only at thousands.
         self.world.schedule_meshing(center, rayon::current_num_threads() * 16);
         for r in self.world.take_meshes() {
-            self.render.upload(gpu, textures, r.pos, &r.mesh);
+            self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
+        }
+        // Structures: meshed in their own coordinates, a changed cube at a time.
+        for (&id, e) in self.entities.iter_mut() {
+            let Some(s) = e.structure.as_mut() else { continue };
+            s.schedule_meshing(IVec3::ZERO, 64);
+            for r in s.take_meshes() {
+                self.render.upload(gpu, textures, (id, r.pos), &r.mesh);
+            }
+            for pos in std::mem::take(&mut s.removed) {
+                self.render.remove((id, pos));
+            }
+            self.drawn_frames.insert(id);
+        }
+        let entities = &self.entities;
+        let gone: Vec<u64> = self.drawn_frames.iter().copied().filter(|id| !entities.get(id).is_some_and(|e| e.structure.is_some())).collect();
+        for id in gone {
+            self.render.remove_frame(id);
+            self.drawn_frames.remove(&id);
         }
         self.render.set_textures(gpu, textures);
     }
@@ -1147,12 +1203,12 @@ on: {on}", list.join("
             }
         }
         self.hit_sound -= dt;
-        if let Some(hit) = self.target.filter(|h| self.breaking.is_some_and(|(p, _)| p == h.block)) {
+        if let Some(hit) = self.target.filter(|h| self.breaking.is_some_and(|(f, p, _)| (f, p) == (h.frame, h.block))) {
             if self.hit_sound <= 0.0 {
                 // Vanilla knocks every four ticks while mining.
                 self.hit_sound = 0.2;
                 let sound = c.states[hit.state as usize].sounds[3];
-                self.sounds.push(Play { sound, pos: Some(hit.block.as_dvec3() + DVec3::splat(0.5)), volume: 0.4, pitch: 0.0 });
+                self.sounds.push(Play { sound, pos: Some(hit.block.as_dvec3() + self.frame_origin(hit.frame) + DVec3::splat(0.5)), volume: 0.4, pitch: 0.0 });
             }
         }
         self.sounds.retain(|p| p.sound != u32::MAX);
@@ -1179,7 +1235,8 @@ on: {on}", list.join("
     fn pick_entity(&self, eye: DVec3, dir: DVec3, max: f64) -> Option<u64> {
         let mut best: Option<(f64, u64)> = None;
         for (&id, e) in &self.entities {
-            if !e.item.is_empty() || id == self.player_id {
+            // Structures are aimed at by their blocks.
+            if !e.item.is_empty() || id == self.player_id || e.structure.is_some() {
                 continue;
             }
             let (hw, h, _) = e.dims();
@@ -1199,6 +1256,35 @@ on: {on}", list.join("
         let w = &c.game.player_layout.worn;
         let slots = self.inventory.get(w.start as usize..w.end as usize).unwrap_or_default();
         slots.iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()
+    }
+
+    /// Where the block (0, 0, 0) of `frame`'s space is drawn: a structure's pose, the world at 0.
+    pub fn frame_origin(&self, frame: u64) -> DVec3 {
+        match frame {
+            0 => DVec3::ZERO,
+            f => self.entities.get(&f).map_or(DVec3::ZERO, |e| crate::server::structure_origin(e.pos)),
+        }
+    }
+
+    /// The block looked at: the world's or a structure's, whichever is nearer.
+    fn raycast(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<Hit> {
+        let c = content();
+        let world = &self.world;
+        let block = |p: IVec3| world.block_or_air(p);
+        let mut best = physics::raycast(c, &block, eye, look, reach, false).map(|h| (h, (h.block.as_dvec3() + DVec3::splat(0.5) - eye).length()));
+        for (&id, e) in &self.entities {
+            let Some(s) = e.structure.as_deref() else { continue };
+            let o = crate::server::structure_origin(e.pos);
+            let block = |p: IVec3| Some(physics::Blocks::block(s, p));
+            if let Some(mut h) = physics::raycast(c, &block, eye - o, look, reach, false) {
+                h.frame = id;
+                let d = (h.block.as_dvec3() + DVec3::splat(0.5) + o - eye).length();
+                if best.is_none_or(|b| d < b.1) {
+                    best = Some((h, d));
+                }
+            }
+        }
+        best.map(|b| b.0)
     }
 
     /// Server tick (fractional) bodies are shown at when the client clock reads `clock`.
@@ -1287,6 +1373,7 @@ on: {on}", list.join("
             frame: 0,
             rel: DVec3::ZERO,
             rel_target: None,
+            structure: None,
         }
     }
 
@@ -1333,7 +1420,8 @@ on: {on}", list.join("
         let cam = self.render_camera();
         // Opaque blocks, then entities and cutout particles, then what is seen through:
         // translucent blocks, cracks and gizmo fills, blended particles, and the hand.
-        self.render.draw(gpu, list, frame, &cam, &params);
+        let frames: Vec<(u64, DVec3)> = self.entities.iter().filter(|(_, e)| e.structure.is_some()).map(|(&id, e)| (id, crate::server::structure_origin(e.pos))).collect();
+        self.render.draw(gpu, list, frame, &cam, &params, &frames);
         list.push(voxide_render::Cmd::Mark);
         let mut late = std::mem::take(&mut self.late);
         late.clear();
@@ -1351,7 +1439,7 @@ on: {on}", list.join("
         let look = particles::Look { fog_color: params.fog_color.extend(1.0).to_array(), fog: (params.fog_start, params.fog_end), daylight: day, ambient: def.ambient as f32 / 15.0, brightness: self.brightness };
         let mut hand_late = std::mem::take(&mut self.hand_late);
         hand_late.clear();
-        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, day, self.target, self.breaking, &self.gizmo_lines, &self.gizmo_fills, &mut hand_late);
+        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, day, self.target.map(|h| (h, self.frame_origin(h.frame))), self.breaking.map(|(f, p, v)| (p, v, self.frame_origin(f))), &self.gizmo_lines, &self.gizmo_fills, &mut hand_late);
         self.particles.draw(gpu, list, &mut late, frame, &cam, textures, &look);
         list.append(&mut late);
         list.append(&mut hand_late);
@@ -1402,7 +1490,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         if let Some(d) = ride.released {
             p.vel += d;
         }
-        let (shift, _) = physics::push(p.pos, hw, h, bodies, 0, p.support);
+        let (shift, _) = physics::push(c, p.pos, hw, h, bodies, 0, p.support);
         if shift != DVec3::ZERO {
             p.pos = physics::move_box(c, block, p.pos, hw, h, shift, 0.0).pos;
         }
@@ -1531,7 +1619,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         let r = physics::move_box_with(c, block, bodies, 0, p.pos, hw, height, p.vel, step_h);
         p.pos = r.pos;
         if r.on_ground {
-            if let Some(b) = physics::standing_on(p.pos, hw, bodies, 0) {
+            if let Some(b) = physics::standing_on(c, p.pos, hw, bodies, 0) {
                 p.support = Some(b);
             }
         }

@@ -103,6 +103,7 @@ pub fn all() -> Vec<TestDef> {
         bodies::ride_frames,
         bodies::skiff,
         bodies::skiff_smooth,
+        bodies::skiff_blocks,
         bodies::crate_and_crowd,
         bodies::natural_spawning,
         bodies::pathfinding,

@@ -170,6 +170,15 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
         }
         "get" => Ok(block_name(w.get(a.pos()?)).to_string()),
+        "sblock" => {
+            // `sblock #id x y z [block]`: a block of a moving structure, or set it.
+            let id = a.owner(w, player)?;
+            let p = a.pos()?;
+            match a.word() {
+                Ok(b) => Ok((w.set_structure_block(id, p, block_state(b)?) as u32).to_string()),
+                Err(_) => w.structure_block(id, p).map(|s| block_name(s).to_string()).ok_or_else(|| "not a structure".to_string()),
+            }
+        }
         "light" => Ok(w.light(a.pos()?).to_string()),
         "slot" => {
             let owner = a.owner(w, player)?;

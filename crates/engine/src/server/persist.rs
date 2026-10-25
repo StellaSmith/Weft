@@ -7,7 +7,10 @@ use voxide_abi::{ItemStack, component_flags as cf};
 use super::entity::Entity;
 use crate::content::Content;
 
-pub type Saved = (Entity, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
+/// An entity read back: itself, its inventory, components and, for a moving structure, its
+/// blocks.
+pub type Saved = (Entity, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>, Option<Vec<(IVec3, u32)>>);
+pub type ToSave<'a> = (&'a Entity, Option<&'a Vec<ItemStack>>, Vec<(u32, &'a [u8])>, Option<Vec<(IVec3, String)>>);
 
 struct W<'a>(&'a mut Vec<u8>);
 
@@ -103,10 +106,10 @@ impl R<'_> {
     }
 }
 
-pub fn write(c: &Content, out: &mut Vec<u8>, list: &[(&Entity, Option<&Vec<ItemStack>>, Vec<(u32, &[u8])>)]) {
+pub fn write(c: &Content, out: &mut Vec<u8>, list: &[ToSave<'_>]) {
     let mut w = W(out);
     w.u32(list.len() as u32);
-    for (e, inv, comps) in list {
+    for (e, inv, comps, blocks) in list {
         w.str(&c.game.entities[e.kind as usize].name);
         w.u64(e.id);
         for v in e.pos.to_array().into_iter().chain(e.vel.to_array()) {
@@ -141,6 +144,18 @@ pub fn write(c: &Content, out: &mut Vec<u8>, list: &[(&Entity, Option<&Vec<ItemS
             w.str(&c.game.components[*id as usize].name);
             w.u16(bytes.len() as u16);
             w.0.extend_from_slice(bytes);
+        }
+        match blocks {
+            Some(list) => {
+                w.u32(list.len() as u32);
+                for (p, name) in list {
+                    for v in p.to_array() {
+                        w.u32(v as u32);
+                    }
+                    w.str(name);
+                }
+            }
+            None => w.u32(u32::MAX),
         }
     }
 }
@@ -201,6 +216,20 @@ fn read_one(c: &Content, r: &mut R) -> Option<Option<Saved>> {
             comps.push((id, b.into_boxed_slice()));
         }
     }
+    let nb = r.u32()?;
+    let blocks = if nb == u32::MAX {
+        None
+    } else {
+        let mut v = Vec::with_capacity(nb as usize);
+        for _ in 0..nb {
+            let p = IVec3::new(r.u32()? as i32, r.u32()? as i32, r.u32()? as i32);
+            // Blocks of removed mods are left out.
+            if let Some(s) = c.state_by_name(&r.str()?) {
+                v.push((p, s));
+            }
+        }
+        Some(v)
+    };
     let Some(&kind) = c.game.entity_names.get(&kind_name) else { return Some(None) };
     let mut e = Entity::new(id, kind, DVec3::new(v[0], v[1], v[2]), health);
     e.vel = DVec3::new(v[3], v[4], v[5]);
@@ -212,7 +241,7 @@ fn read_one(c: &Content, r: &mut R) -> Option<Option<Saved>> {
     if kind == c.game.item_kind && item.is_empty() {
         return Some(None);
     }
-    Some(Some((e, inv, comps)))
+    Some(Some((e, inv, comps, blocks)))
 }
 
 pub fn hex(bytes: &[u8]) -> String {

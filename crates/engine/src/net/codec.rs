@@ -221,6 +221,17 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.u64(*by);
             }
         }
+        ToClient::Structure { id, cubes, full } => {
+            w.u64(*id);
+            w.u8(*full as u8);
+            w.len(cubes.len());
+            for (pos, cube) in cubes {
+                w.ivec(*pos);
+                let mut raw = Vec::new();
+                cube.write(&mut raw, |s| s);
+                w.bytes(&raw);
+            }
+        }
         ToClient::Shapes(list) => {
             w.len(list.len());
             for (id, size, look) in list {
@@ -426,6 +437,17 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             }
             ToClient::Hurt(list)
         }
+        ClientTag::Structure => {
+            let (id, full, n) = (r.u64()?, r.u8()? != 0, r.len()?);
+            let max = crate::content::content().states.len() as u32;
+            let mut cubes = Vec::with_capacity(n);
+            for _ in 0..n {
+                let pos = r.ivec()?;
+                let raw = r.bytes()?;
+                cubes.push((pos, Arc::new(Cube::read(&mut &raw[..], |s| if s < max { s } else { 0 })?)));
+            }
+            ToClient::Structure { id, cubes, full }
+        }
         ClientTag::Shapes => {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
@@ -581,16 +603,18 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.u64(body);
             w.dvec(rel);
         }
-        ToServer::Break { pos } => {
+        ToServer::Break { pos, frame } => {
             w.ivec(*pos);
+            w.u64(*frame);
         }
-        ToServer::Use { pos, face, look, sneak } => {
+        ToServer::Use { pos, face, look, sneak, frame } => {
             w.ivec(*pos);
             w.u8(*face);
             for v in look {
                 w.f32(*v);
             }
             w.u8(*sneak as u8);
+            w.u64(*frame);
         }
         ToServer::UseItem { target } => {
             match target {
@@ -662,8 +686,8 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
             let (pos, yaw, pitch, flags, body, rel) = (r.dvec()?, r.f32()?, r.f32()?, r.u8()?, r.u64()?, r.dvec()?);
             ToServer::Move { pos, yaw, pitch, on_ground: flags & 1 != 0, crouched: flags & 2 != 0, frame: (body != 0).then_some((body, rel)) }
         }
-        ServerTag::Break => ToServer::Break { pos: r.ivec()? },
-        ServerTag::Use => ToServer::Use { pos: r.ivec()?, face: r.u8()?.min(5), look: [r.f32()?, r.f32()?, r.f32()?], sneak: r.u8()? != 0 },
+        ServerTag::Break => ToServer::Break { pos: r.ivec()?, frame: r.u64()? },
+        ServerTag::Use => ToServer::Use { pos: r.ivec()?, face: r.u8()?.min(5), look: [r.f32()?, r.f32()?, r.f32()?], sneak: r.u8()? != 0, frame: r.u64()? },
         ServerTag::UseItem => ToServer::UseItem {
             target: match r.u8()? {
                 1 => Some((r.ivec()?, r.u8()?.min(5))),

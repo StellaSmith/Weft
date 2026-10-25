@@ -68,6 +68,9 @@ pub enum ToClient {
     /// `hidden`: faces whose neighbour the server will not send (not visible from the player);
     /// `KEEP_HIDDEN` on resends keeps what the client already knows.
     Cube { dim: u32, pos: IVec3, cube: Arc<Cube>, hidden: u8 },
+    /// Cubes of a moving structure (entity `id`), in its own coordinates; `full`: all of them
+    /// (the structure was not known), otherwise the ones that changed.
+    Structure { id: u64, cubes: Vec<(IVec3, Arc<Cube>)>, full: bool },
     Unload { dim: u32, pos: IVec3 },
     Blocks { dim: u32, changes: Vec<(IVec3, u32)> },
     Time { dim: u32, time: u64 },
@@ -128,10 +131,12 @@ pub enum ToServer {
     /// `frame`: the body it rides and its position relative to that body as the client shows it
     /// (the client shows bodies behind the server; only the relative position agrees).
     Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, crouched: bool, frame: Option<(u64, DVec3)> },
-    Break { pos: IVec3 },
+    /// `frame`: the structure (entity) the block is part of, its position in the structure's
+    /// coordinates; 0 for the world.
+    Break { pos: IVec3, frame: u64 },
     /// Right click on a block: the block reacts first (chests), otherwise the held item is used or
-    /// placed against the clicked face.
-    Use { pos: IVec3, face: u8, look: [f32; 3], sneak: bool },
+    /// placed against the clicked face. `frame` like `Break`'s; `look` in world space.
+    Use { pos: IVec3, face: u8, look: [f32; 3], sneak: bool, frame: u64 },
     UseItem { target: Option<(IVec3, u8)> },
     Select(u32),
     Attack(u64),
@@ -191,7 +196,7 @@ messages!(ToClient, ClientTag, false, [
     Welcome, Cube, Unload, Blocks, Time, Teleport, Spawn, Moves, Despawn, Hurt, Burning, Worn,
     GameMode, Players, Inventory, Components, Health, Knockback, OpenMenu, MenuSlots,
     Cursor, CloseMenu, Died, Chat, Disconnect, Gizmos, Packet, EntityComponents, Particles,
-    Configs, Sounds, Animate, Taken, Swing, Shapes,
+    Configs, Sounds, Animate, Taken, Swing, Shapes, Structure,
 ]);
 
 messages!(ToServer, ServerTag, true, [

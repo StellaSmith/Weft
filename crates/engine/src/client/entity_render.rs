@@ -574,8 +574,8 @@ impl EntityRenderer {
         textures: &GameTextures,
         light: &impl Fn(IVec3) -> u32,
         day: f32,
-        target: Option<Hit>,
-        breaking: Option<(IVec3, f32)>,
+        target: Option<(Hit, DVec3)>,
+        breaking: Option<(IVec3, f32, DVec3)>,
         gizmo_lines: &[super::gizmo::Line],
         gizmo_fills: &[super::gizmo::Fill],
         late: &mut CommandList,
@@ -671,7 +671,7 @@ impl EntityRenderer {
         self.models.draw(gpu, list, frame, self.model_pipe, vb);
 
         // Selection outline: twelve thin dark boxes along the edges of the target's shape.
-        if let Some(hit) = target {
+        if let Some((hit, at)) = target {
             let s = &c.states[hit.state as usize];
             let (mn, mx) = match s.collision.first() {
                 Some(b) if s.model != Model::Cube => (Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])),
@@ -680,7 +680,7 @@ impl EntityRenderer {
                     _ => (Vec3::ZERO, Vec3::ONE),
                 },
             };
-            let o = rel(hit.block.as_dvec3());
+            let o = rel(hit.block.as_dvec3() + at);
             let t = 0.006;
             let (a, b) = (o + mn - Vec3::splat(t), o + mx + Vec3::splat(t));
             for axis in 0..3 {
@@ -724,21 +724,21 @@ impl EntityRenderer {
             let ch = |s: u32| ((color >> s) & 255) as f32 / 255.0;
             boxes.push(GpuBox { rows: rows(m), color: [ch(24), ch(16), ch(8), 0.0], ids: [0, box_mode::FILLED, ch(0).to_bits(), 0], ..Default::default() });
         }
-        if let Some((p, progress)) = breaking {
+        if let Some((p, progress, at)) = breaking {
             if progress > 0.0 {
                 // Over the faces of the block's model (a ladder's board, not its whole cube),
                 // textured like the block's own faces there.
                 let stage = ((progress * 10.0) as usize).min(9);
                 let l = textures.block(c.crack_textures[stage]);
-                let lit = shade(p.as_dvec3() + DVec3::splat(0.5));
-                let state = target.filter(|h| h.block == p).map(|h| &c.states[h.state as usize]);
+                let lit = shade(p.as_dvec3() + at + DVec3::splat(0.5));
+                let state = target.filter(|h| h.0.block == p).map(|h| &c.states[h.0.state as usize]);
                 let shape: Vec<(Vec3, Vec3)> = match state {
                     Some(s) if s.model == Model::Boxes && !s.boxes.is_empty() => s.boxes.iter().map(|b| (Vec3::from_array(b.min), Vec3::from_array(b.max))).collect(),
                     _ => vec![(Vec3::ZERO, Vec3::ONE)],
                 };
                 for (mn, mx) in shape {
                     let (a, b) = (mn - Vec3::splat(0.004), mx + Vec3::splat(0.004));
-                    let m = Mat4::from_translation(rel(p.as_dvec3()) + a) * Mat4::from_scale(b - a);
+                    let m = Mat4::from_translation(rel(p.as_dvec3() + at) + a) * Mat4::from_scale(b - a);
                     boxes.push(GpuBox {
                         rows: rows(m),
                         dims: mn.extend(1.0).to_array(),

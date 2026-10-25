@@ -36,6 +36,10 @@ pub async fn save_and_reload(t: T) -> R {
     let p = add(t.feet(), [2, 0, 2]);
     t.set(p, "gold_block").await?;
     t.op("put me 3 diamond 5").await?;
+    // A moving structure with a block added, in a cube nothing else changed.
+    let skiff = t.op(&format!("spawn testmod:skiff {} {} {}", p[0], p[1] + 6, p[2] + 8)).await?;
+    let skiff = skiff.trim().trim_start_matches('#').to_string();
+    t.op(&format!("sblock #{skiff} 0 1 0 base:glass")).await?;
     let name = format!("test-{}", t.name());
     t.c().leave_world();
     t.screen("core:title").await?;
@@ -44,6 +48,7 @@ pub async fn save_and_reload(t: T) -> R {
     t.loaded().await?;
     t.check_eq(t.block(p).await?, "base:gold_block".into(), "placed block after reload");
     t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "inventory after reload");
+    t.check_eq(t.op(&format!("sblock #{skiff} 0 1 0")).await?, "base:glass".to_string(), "the structure and its added block after reload");
     t.sync_inventory().await
 }
 

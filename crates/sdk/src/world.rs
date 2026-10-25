@@ -25,6 +25,18 @@ impl World {
         unsafe { (host().set_block)(self.raw, &pos, state) != 0 }
     }
 
+    /// A block of moving structure `entity` (in its own coordinates; block (0, 0, 0) is centred
+    /// on the entity); `None` if the entity is not one.
+    pub fn structure_block(&self, entity: u64, pos: [i32; 3]) -> Option<u32> {
+        let s = unsafe { (host().structure_block)(self.raw, entity, &pos) };
+        (s != u32::MAX).then_some(s)
+    }
+
+    /// Sets a block of moving structure `entity`, like `set` in the world.
+    pub fn set_structure_block(&self, entity: u64, pos: [i32; 3], state: u32) -> bool {
+        unsafe { (host().set_structure_block)(self.raw, entity, &pos, state) != 0 }
+    }
+
     pub fn schedule(&self, pos: [i32; 3], delay_ticks: u32) {
         unsafe { (host().schedule_tick)(self.raw, &pos, delay_ticks) }
     }

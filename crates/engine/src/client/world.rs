@@ -35,6 +35,19 @@ pub struct ClientWorld {
     columns: FxHashMap<IVec2, Column>,
     /// Columns whose blended biome colours are out of date.
     tints_dirty: FxHashSet<IVec2>,
+    /// A moving structure's blocks: cubes that are not there are air (the server sends all of
+    /// them), and the block bounds (inclusive), for collisions.
+    pub bounded: bool,
+    pub bounds: Option<(IVec3, IVec3)>,
+}
+
+impl crate::physics::Blocks for ClientWorld {
+    fn block(&self, p: IVec3) -> u32 {
+        match self.block(p) {
+            u32::MAX => AIR,
+            s => s,
+        }
+    }
 }
 
 /// Biomes of a block column, taken from the first of its cubes that has them; cubes store none
@@ -72,13 +85,37 @@ impl ClientWorld {
             filler: content().states.iter().position(|s| s.flags & voxide_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
             columns: FxHashMap::default(),
             tints_dirty: FxHashSet::default(),
+            bounded: false,
+            bounds: None,
         }
+    }
+
+    /// A moving structure's blocks (in its own coordinates).
+    pub fn structure(dim: u32) -> Self {
+        ClientWorld { bounded: true, ..ClientWorld::new(dim) }
+    }
+
+    /// Recomputes `bounds` from the blocks (structures, after their cubes changed).
+    pub fn scan_bounds(&mut self) {
+        let mut out: Option<(IVec3, IVec3)> = None;
+        for (&cp, cube) in &self.cubes {
+            if cube.uniform_state() == Some(AIR) {
+                continue;
+            }
+            for i in 0..crate::world::cube::VOLUME {
+                if cube.get(i) != AIR {
+                    let p = cp * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
+                    out = Some(out.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
+                }
+            }
+        }
+        self.bounds = out;
     }
 
     /// Whether the neighbour of `p` in direction `d` is present or never coming.
     fn neighbour_known(&self, p: IVec3, d: usize, min_y: i32, max_y: i32) -> bool {
         let n = p + crate::world::DIRS[d];
-        self.cubes.contains_key(&n) || n.y < min_y || n.y > max_y || self.hidden.get(&p).is_some_and(|h| h & (1 << d) != 0)
+        self.bounded || self.cubes.contains_key(&n) || n.y < min_y || n.y > max_y || self.hidden.get(&p).is_some_and(|h| h & (1 << d) != 0)
     }
 
     /// Updates whether `p` is meshable now.

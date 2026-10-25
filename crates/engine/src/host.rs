@@ -177,6 +177,8 @@ pub static HOST: Host = Host {
     reg_words,
     set_entity_size,
     set_entity_look,
+    structure_block,
+    set_structure_block,
 };
 
 unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u64 {
@@ -391,6 +393,23 @@ unsafe extern "C" fn set_block(w: *mut abi::WorldCtx, pos: *const [i32; 3], stat
         return 0;
     }
     unsafe { dim(w).set(content(), ip(pos), state).is_some() as u32 }
+}
+
+unsafe extern "C" fn structure_block(w: *mut abi::WorldCtx, entity: u64, pos: *const [i32; 3]) -> u32 {
+    unsafe {
+        let d = dim(w);
+        match d.structures.get(&entity) {
+            Some(s) if entity != 0 => s.get(ip(pos)).unwrap_or(crate::content::AIR),
+            _ => u32::MAX,
+        }
+    }
+}
+
+unsafe extern "C" fn set_structure_block(w: *mut abi::WorldCtx, entity: u64, pos: *const [i32; 3], state: u32) -> u32 {
+    if state as usize >= content().states.len() || entity == 0 {
+        return 0;
+    }
+    unsafe { dim(w).with_space(content(), entity, |d, _| d.set(content(), ip(pos), state).is_some()).unwrap_or(false) as u32 }
 }
 
 unsafe extern "C" fn schedule_tick(w: *mut abi::WorldCtx, pos: *const [i32; 3], delay: u32) {

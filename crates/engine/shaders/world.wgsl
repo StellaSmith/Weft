@@ -28,6 +28,9 @@ struct Globals {
 @group(1) @binding(4) var<storage, read> tex_info: array<u32>;
 // Animated frames: texture | ticks << 16; then the overlay table and the glow map.
 @group(1) @binding(5) var<storage, read> frames: array<u32>;
+// Camera-relative positions of moving structures drawn this frame (0: none, the world's cubes):
+// a cube's `origin.w` picks one, its `origin.xyz` is then the cube in the structure.
+@group(1) @binding(6) var<storage, read> offsets: array<vec4<f32>>;
 
 var<private> TRI_FLIP: array<u32, 6> = array<u32, 6>(1u, 2u, 3u, 1u, 3u, 0u);
 var<private> AO: array<f32, 4> = array<f32, 4>(0.42, 0.62, 0.8, 1.0);
@@ -130,7 +133,7 @@ fn unpack_corner_light(l: u32) -> vec4<f32> {
 }
 
 fn finish(local: vec3<f32>, origin: vec4<i32>) -> vec4<f32> {
-    let pos = vec3<f32>(origin.xyz) * 16.0 + local - g.cam_frac.xyz;
+    let pos = vec3<f32>(origin.xyz) * 16.0 + local - g.cam_frac.xyz + offsets[origin.w].xyz;
     return vec4(pos, 1.0);
 }
 

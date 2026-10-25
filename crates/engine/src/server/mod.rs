@@ -13,6 +13,8 @@ pub use extend::{MAX_HEALTH, MOVEMENT_SPEED, explanation};
 pub mod menu;
 pub mod persist;
 pub mod regions;
+mod structure;
+pub use structure::origin as structure_origin;
 mod visibility;
 
 use std::sync::Arc;
@@ -643,7 +645,13 @@ impl Server {
         let mut n = 0;
         for d in &mut self.dims {
             for r in &mut d.regions {
-                for pos in std::mem::take(&mut r.modified) {
+                // Cubes where something happened, and the ones entities are in (they move and
+                // spawn in untouched cubes too; those were lost on quitting).
+                let mut cubes: Vec<IVec3> = std::mem::take(&mut r.modified).into_iter().collect();
+                cubes.extend(r.entities.list.iter().filter(|e| !e.removed && !e.player && e.kind != c.game.virtual_kind).map(|e| cube_of(e.pos.floor().as_ivec3())));
+                cubes.sort_unstable_by_key(|p| (p.x, p.y, p.z));
+                cubes.dedup();
+                for pos in cubes {
                     if let Some(cube) = r.cubes.get(&pos) {
                         let bytes = entities_in(c, r, pos);
                         s.save(c, r.id, pos, cube, &bytes);
@@ -765,50 +773,72 @@ impl Server {
                 }
             }
             ToServer::Break { .. } if self.mode(pi) == GameMode::Spectator => {}
-            ToServer::Break { pos } => {
+            ToServer::Break { pos, frame } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                if !within(e.pos + DVec3::Y * e.eye(c), pos) {
-                    return;
-                }
-                let sel = e.selected;
+                let (eye, sel, creative) = (e.pos + DVec3::Y * e.eye(c), e.selected, e.mode == GameMode::Creative);
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
-                let free = c.states.get(r.get(pos).unwrap_or(0) as usize).is_some_and(|s| s.hardness <= 0.0);
-                if r.player_break(c, pos, entity, held) && !free {
+                let worn = r.with_space(c, frame, |d, o| {
+                    if !within(eye - o, pos) {
+                        return false;
+                    }
+                    let free = c.states.get(d.get(pos).unwrap_or(0) as usize).is_some_and(|s| s.hardness <= 0.0);
+                    let done = d.break_block(c, pos, held, entity, !creative);
+                    d.flush_neighbors(c);
+                    d.finish_tick(c);
+                    done && !free
+                });
+                if worn == Some(true) {
                     wear(c, r, entity, sel, 1);
                 }
             }
             ToServer::Use { .. } if self.mode(pi) == GameMode::Spectator => {}
-            ToServer::Use { pos, face, look, sneak } => {
+            ToServer::Use { pos, face, look, sneak, frame } => {
+                enum Did {
+                    Used,
+                    Placed,
+                    Nothing,
+                    NoBlock,
+                }
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                if !within(e.pos + DVec3::Y * e.eye(c), pos) {
-                    return;
-                }
-                let (sel, player_box) = (e.selected, e.aabb(c));
-                if !sneak && r.player_use(c, pos, face, entity) {
-                    self.dim_events(c);
-                    self.players[pi].conn.send(ToClient::Swing);
-                    return;
-                }
+                let (eye, sel, player_box, creative) = (e.pos + DVec3::Y * e.eye(c), e.selected, e.aabb(c), e.mode == GameMode::Creative);
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
-                match c.items.get(held.item as usize).and_then(|i| i.block) {
-                    Some(state) if !held.is_empty() => {
-                        let target = if r.get(pos).is_some_and(|s| c.states[s as usize].flags & abi::block_flags::REPLACEABLE != 0) {
-                            pos
-                        } else {
-                            pos + crate::world::DIRS[face as usize]
-                        };
-                        let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
-                        let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
-                        if (!solid || !player_box.intersects(&block_box)) && r.place(c, target, face, state, look, entity, held.item) {
-                            if !r.entities.get(entity).is_some_and(|e| e.mode == GameMode::Creative) {
-                                r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
-                            }
-                            self.players[pi].conn.send(ToClient::Swing);
-                        }
+                let did = r.with_space(c, frame, |d, o| {
+                    if !within(eye - o, pos) {
+                        return Did::Nothing;
                     }
-                    _ => self.handle(c, pi, ToServer::UseItem { target: Some((pos, face)) }),
+                    if !sneak && d.player_use(c, pos, face, entity) {
+                        return Did::Used;
+                    }
+                    let Some(state) = c.items.get(held.item as usize).and_then(|i| i.block).filter(|_| !held.is_empty()) else { return Did::NoBlock };
+                    let target = if d.get(pos).is_some_and(|s| c.states[s as usize].flags & abi::block_flags::REPLACEABLE != 0) {
+                        pos
+                    } else {
+                        pos + crate::world::DIRS[face as usize]
+                    };
+                    let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
+                    let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
+                    if (!solid || !player_box.shifted(-o).intersects(&block_box)) && d.place(c, target, face, state, look, entity, held.item) {
+                        Did::Placed
+                    } else {
+                        Did::Nothing
+                    }
+                });
+                match did {
+                    Some(Did::Used) => {
+                        self.dim_events(c);
+                        self.players[pi].conn.send(ToClient::Swing);
+                    }
+                    Some(Did::Placed) => {
+                        if !creative {
+                            r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
+                        }
+                        self.players[pi].conn.send(ToClient::Swing);
+                    }
+                    // Items used on a block (buckets) work on the world's blocks only, so far.
+                    Some(Did::NoBlock) => self.handle(c, pi, ToServer::UseItem { target: (frame == 0).then_some((pos, face)) }),
+                    _ => {}
                 }
             }
             ToServer::UseItem { .. } if self.mode(pi) == GameMode::Spectator => {}
@@ -1583,8 +1613,22 @@ impl Server {
             if let Some(me) = dim.regions.iter().find(|r| r.entities.reshaped.contains(&p.entity)).and_then(|r| r.entities.get(p.entity)) {
                 shapes.push((p.entity, me.size.unwrap_or([0.0; 3]), me.look.unwrap_or(u32::MAX)));
             }
+            // Structures: all their cubes with the entity, then the cubes that change.
+            let mut structures = Vec::new();
+            for reg in &dim.regions {
+                for (&id, st) in &reg.structures {
+                    if spawn.iter().any(|v| v.id == id) {
+                        structures.push(ToClient::Structure { id, cubes: st.cubes.iter().map(|(p, c)| (*p, c.clone())).collect(), full: true });
+                    } else if !st.resend.is_empty() && p.known.contains(&id) && visible.contains(&id) {
+                        structures.push(ToClient::Structure { id, cubes: st.resend.clone(), full: false });
+                    }
+                }
+            }
             if !spawn.is_empty() {
                 p.conn.send(ToClient::Spawn(spawn));
+            }
+            for m in structures {
+                p.conn.send(m);
             }
             if !shapes.is_empty() {
                 p.conn.send(ToClient::Shapes(shapes));
@@ -1750,6 +1794,11 @@ impl Server {
         self.shared.pending.store(pending as u64, Ordering::Relaxed);
         for d in &mut self.dims {
             for r in &mut d.regions {
+                for st in r.structures.values_mut() {
+                    st.resend.clear();
+                    st.changes.clear();
+                    st.edited.clear();
+                }
                 r.resend.clear();
                 r.changes.clear();
                 r.entities.hurt.clear();
@@ -1913,13 +1962,13 @@ fn wear(c: &Content, d: &mut Dim, player: u64, slot: u32, amount: u32) {
 }
 
 fn serialize(c: &Content, d: &Dim, ids: &[u64]) -> Vec<u8> {
-    let list: Vec<(&Entity, Option<&Vec<ItemStack>>, Vec<(u32, &[u8])>)> = ids
+    let list: Vec<persist::ToSave> = ids
         .iter()
         .filter_map(|&id| {
             // Virtual inventories are never saved.
             let e = d.entities.get(id).filter(|e| e.kind != c.game.virtual_kind)?;
             let comps = d.entities.comps.iter().filter(|((eid, _), _)| *eid == id).map(|((_, k), v)| (*k, &v[..])).collect();
-            Some((e, d.entities.inventories.get(&id), comps))
+            Some((e, d.entities.inventories.get(&id), comps, d.structures.get(&id).map(|s| s.structure_blocks(c))))
         })
         .collect();
     let mut out = Vec::new();

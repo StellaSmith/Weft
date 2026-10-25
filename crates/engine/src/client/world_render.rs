@@ -1,5 +1,8 @@
 //! Draws meshed cubes. All face records live in a few big storage-buffer pages; each frame the CPU
 //! culls cubes and writes one indirect draw per (cube, layer) plus the cube origin it uses.
+//! Cubes of moving structures are meshed in the structure's own coordinates and drawn moved
+//! by its pose (an offset per structure, `origin.w` in the shader): a block placed on one
+//! remeshes only its cube.
 
 use glam::{DVec3, IVec3, Mat4, Vec3, Vec4};
 use rustc_hash::FxHashMap;
@@ -128,24 +131,30 @@ pub struct FrameParams {
     pub brightness: f32,
 }
 
-/// One indirect draw: kind (0 faces, 1 quads), layer, page, arguments, cube origin.
-type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4]);
+/// One indirect draw: kind (0 faces, 1 quads), layer, page, arguments, cube origin (w: offset
+/// index), cube centre relative to the camera.
+type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4], Vec3);
+
+/// A mesh's place: the structure (entity) it belongs to, 0 for the world, and its cube.
+pub type MeshKey = (u64, IVec3);
 
 pub struct WorldRenderer {
     face_pipes: [PipelineId; 3],
     quad_pipes: [PipelineId; 3],
     faces: Pool,
     quads: Pool,
-    meshes: FxHashMap<IVec3, GpuMesh>,
+    meshes: FxHashMap<MeshKey, GpuMesh>,
     globals: Vec<BufferId>,
     origins: Vec<(BufferId, u32)>,
+    /// Per frame: camera-relative positions of the structures drawn (index 0: none, the world).
+    offsets: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
     /// `draw`'s lists, kept between frames.
-    scratch: (Vec<(IVec3, f32)>, Vec<DrawRecord>, Vec<usize>),
+    scratch: (Vec<(MeshKey, f32, Vec3, i32)>, Vec<DrawRecord>, Vec<usize>),
     /// Of the last `draw`: where its translucent draws start in `scratch.2`, and the buffers
-    /// they use (globals, origins, indirect).
+    /// they use (globals, origins, indirect, offsets).
     translucent: usize,
-    buffers: Option<(BufferId, BufferId, BufferId)>,
+    buffers: Option<(BufferId, BufferId, BufferId, BufferId)>,
     /// Biome table, then per block column of the loaded area its blended colours: tiles of
     /// 16x16 blocks addressed by column position modulo `tint_tiles`.
     biomes: BufferId,
@@ -197,6 +206,7 @@ impl WorldRenderer {
             faces: Pool { words: FACE_WORDS, pages: Vec::new(), label: "face page" },
             quads: Pool { words: QUAD_WORDS, pages: Vec::new(), label: "quad page" },
             meshes: FxHashMap::default(),
+            offsets: Vec::new(),
             globals,
             origins: Vec::new(),
             indirect: Vec::new(),
@@ -306,8 +316,8 @@ impl WorldRenderer {
         gpu.write_buffer(self.biomes, ((self.biome_table.len() + slot * tints.len()) * 4) as u64, bytemuck::cast_slice(tints));
     }
 
-    pub fn remove(&mut self, pos: IVec3) {
-        if let Some(m) = self.meshes.remove(&pos) {
+    pub fn remove(&mut self, key: MeshKey) {
+        if let Some(m) = self.meshes.remove(&key) {
             if let Some(a) = m.faces {
                 self.faces.free(a);
             }
@@ -325,7 +335,7 @@ impl WorldRenderer {
         for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index]) {
             gpu.destroy_buffer(b);
         }
-        for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)) {
+        for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)).chain(self.offsets.drain(..)) {
             gpu.destroy_buffer(b);
         }
         for p in self.face_pipes.into_iter().chain(self.quad_pipes) {
@@ -334,14 +344,22 @@ impl WorldRenderer {
     }
 
     pub fn clear(&mut self) {
-        let keys: Vec<IVec3> = self.meshes.keys().copied().collect();
+        let keys: Vec<MeshKey> = self.meshes.keys().copied().collect();
         for k in keys {
             self.remove(k);
         }
     }
 
-    pub fn upload(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, pos: IVec3, mesh: &Mesh) {
-        self.remove(pos);
+    /// Every cube of structure `frame` goes (it left).
+    pub fn remove_frame(&mut self, frame: u64) {
+        let keys: Vec<MeshKey> = self.meshes.keys().copied().filter(|k| k.0 == frame).collect();
+        for k in keys {
+            self.remove(k);
+        }
+    }
+
+    pub fn upload(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, key: MeshKey, mesh: &Mesh) {
+        self.remove(key);
         if mesh.is_empty() {
             return;
         }
@@ -372,10 +390,11 @@ impl WorldRenderer {
             gpu.write_buffer(self.quads.pages[a.page as usize].0, a.offset as u64 * 32, bytemuck::cast_slice(&data));
             a
         });
-        self.meshes.insert(pos, GpuMesh { faces, face_counts, quads, quad_counts });
+        self.meshes.insert(key, GpuMesh { faces, face_counts, quads, quad_counts });
     }
 
-    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, cam: &Camera, p: &FrameParams) {
+    /// `frames`: structures to draw and where their block (0, 0, 0) is in the world.
+    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, cam: &Camera, p: &FrameParams, frames: &[(u64, DVec3)]) {
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
         let view_proj = cam.proj(aspect) * cam.view();
         let cam_block = cam.pos.floor();
@@ -400,24 +419,31 @@ impl WorldRenderer {
         visible.clear();
         draws.clear();
         sorted.clear();
-        for (&pos, _) in &self.meshes {
-            let rel = (pos - cam_cube).as_vec3() * 16.0 - cam_frac;
-            let center = rel + Vec3::splat(8.0);
+        // Camera-relative offset of each structure drawn (k + 1 its index; 0 the world).
+        let frame_offsets: Vec<Vec3> = frames.iter().map(|f| (f.1 - (cam_cube * 16).as_dvec3()).as_vec3()).collect();
+        for (&key, _) in &self.meshes {
+            let (lo, k) = if key.0 == 0 {
+                ((key.1 - cam_cube).as_vec3() * 16.0 - cam_frac, 0)
+            } else {
+                let Some(k) = frames.iter().position(|f| f.0 == key.0) else { continue };
+                (frame_offsets[k] + key.1.as_vec3() * 16.0 - cam_frac, k as i32 + 1)
+            };
+            let center = lo + Vec3::splat(8.0);
             if planes.iter().all(|pl| pl.dot(center.extend(1.0)) > -13.86) {
-                visible.push((pos, center.length_squared()));
+                visible.push((key, center.length_squared(), lo, k));
             }
         }
         visible.sort_by(|a, b| a.1.total_cmp(&b.1));
 
         let mut faces_drawn = 0u64;
-        for &(pos, _) in &visible {
-            let m = &self.meshes[&pos];
-            let rel = pos - cam_cube;
-            let origin = [rel.x, rel.y, rel.z, 0];
+        for &(key, _, lo, k) in &visible {
+            let m = &self.meshes[&key];
+            let rel = if k == 0 { key.1 - cam_cube } else { key.1 };
+            let origin = [rel.x, rel.y, rel.z, k];
+            let center = lo + Vec3::splat(8.0);
             if let Some(a) = m.faces {
                 // Directions by rank: +X +Y +Z -X -Y -Z. A face direction can be seen only from
                 // the side its normal points to; contiguous visible runs become one draw.
-                let lo = (pos - cam_cube).as_vec3() * 16.0 - cam_frac;
                 let seen = [lo.x < 0.0, lo.y < 0.0, lo.z < 0.0, lo.x > -16.0, lo.y > -16.0, lo.z > -16.0];
                 let mut off = a.offset;
                 for layer in 0..3 {
@@ -433,13 +459,13 @@ impl WorldRenderer {
                             });
                         } else if n > 0 {
                             if let Some((s, len)) = run.take() {
-                                draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin));
+                                draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin, center));
                             }
                         }
                         off += n;
                     }
                     if let Some((s, len)) = run {
-                        draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin));
+                        draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin, center));
                     }
                 }
             }
@@ -448,7 +474,7 @@ impl WorldRenderer {
                 for layer in 0..3 {
                     let n = m.quad_counts[layer];
                     if n > 0 {
-                        draws.push((1, layer as u8, a.page, DrawIndexedArgs { indices: n * 6, instances: 1, first_index: 0, vertex_offset: (off * 4) as i32, first_instance: 0 }, origin));
+                        draws.push((1, layer as u8, a.page, DrawIndexedArgs { indices: n * 6, instances: 1, first_index: 0, vertex_offset: (off * 4) as i32, first_instance: 0 }, origin, center));
                     }
                     off += n;
                 }
@@ -461,7 +487,7 @@ impl WorldRenderer {
         sorted.extend(0..draws.len());
         sorted.sort_by_key(|&i| order(&draws[i]));
         let translucent_start = sorted.iter().position(|&i| draws[i].1 == 2).unwrap_or(sorted.len());
-        let center = |d: &DrawRecord| IVec3::new(d.4[0], d.4[1], d.4[2]).as_vec3() * 16.0 + Vec3::splat(8.0) - cam_frac;
+        let center = |d: &DrawRecord| d.5;
         sorted[translucent_start..].sort_by(|&a, &b| {
             let (ca, cb) = (center(&draws[a]), center(&draws[b]));
             let rank = |d: &DrawRecord, c: Vec3| if c.y < 0.0 { d.0 == 0 } else { d.0 == 1 };
@@ -478,6 +504,12 @@ impl WorldRenderer {
             return;
         }
         let obuf = crate::gpu_layout::frame_buffer(gpu, &mut self.origins, frame.slot, n, 16, usage::STORAGE, "origins");
+        let fbuf = crate::gpu_layout::frame_buffer(gpu, &mut self.offsets, frame.slot, frames.len() as u32 + 1, 16, usage::STORAGE, "frame offsets");
+        let offs = gpu.mapped(fbuf);
+        offs[..16].fill(0);
+        for (k, o) in frame_offsets.iter().enumerate() {
+            offs[(k + 1) * 16..(k + 1) * 16 + 12].copy_from_slice(bytemuck::cast_slice(&o.to_array()));
+        }
         let ibuf = crate::gpu_layout::frame_buffer(gpu, &mut self.indirect, frame.slot, n, 20, usage::INDIRECT, "indirect");
         // Straight into the mapped buffers.
         for (out, &i) in gpu.mapped(obuf)[..n as usize * 16].chunks_exact_mut(16).zip(&sorted) {
@@ -489,7 +521,7 @@ impl WorldRenderer {
             out.copy_from_slice(bytemuck::bytes_of(&a));
         }
 
-        self.buffers = Some((gbuf, obuf, ibuf));
+        self.buffers = Some((gbuf, obuf, ibuf, fbuf));
         self.scratch = (visible, draws, sorted);
         self.emit(list, 0..self.translucent);
     }
@@ -503,7 +535,7 @@ impl WorldRenderer {
     }
 
     fn emit(&self, list: &mut CommandList, range: std::ops::Range<usize>) {
-        let Some((gbuf, obuf, ibuf)) = self.buffers else { return };
+        let Some((gbuf, obuf, ibuf, fbuf)) = self.buffers else { return };
         let (_, draws, sorted) = &self.scratch;
         if range.is_empty() {
             return;
@@ -532,6 +564,7 @@ impl WorldRenderer {
             list.bind(3, self.biomes);
             list.bind(4, self.tex_info);
             list.bind(5, self.anim);
+            list.bind(6, fbuf);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: k as u64 * 20, count: (end - k) as u32 });
             k = end;
         }

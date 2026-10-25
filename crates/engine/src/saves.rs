@@ -26,7 +26,7 @@ const REGION: i32 = 8;
 const ENTRIES: usize = (REGION * REGION * REGION) as usize;
 
 /// Save layout version: worlds of another one are not opened (no conversions before release).
-pub const SAVE_FORMAT: u32 = 2;
+pub const SAVE_FORMAT: u32 = 3;
 
 #[derive(Clone, Debug)]
 pub struct WorldMeta {

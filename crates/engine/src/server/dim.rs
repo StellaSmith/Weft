@@ -92,6 +92,14 @@ pub struct Dim {
     pub rules: Arc<[i64]>,
     /// Event values waiting for delivery, by event id (ordered, so delivery is deterministic).
     pub event_queue: std::collections::BTreeMap<u32, Vec<u8>>,
+    /// A moving structure's own space (`structure.rs`): blocks in its own coordinates, lit as
+    /// open to the sky, entities spawned in it handed to the world it moves in.
+    pub framed: bool,
+    /// The structures of entities of this region, by entity id.
+    pub structures: rustc_hash::FxHashMap<u64, Box<Dim>>,
+    /// A structure's block bounds (inclusive) and cubes to light again.
+    pub bounds: Option<(IVec3, IVec3)>,
+    pub relight: FxHashSet<IVec3>,
 }
 
 struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
@@ -277,6 +285,10 @@ impl Dim {
             settled_gen: 0,
             newly_settled: Vec::new(),
             section_cubes: FxHashMap::default(),
+            framed: false,
+            structures: FxHashMap::default(),
+            bounds: None,
+            relight: FxHashSet::default(),
             edited: FxHashSet::default(),
             conn: FxHashMap::default(),
             gizmos: Vec::new(),
@@ -297,9 +309,14 @@ impl Dim {
             .list
             .iter()
             .filter(|e| !e.removed && !e.player && c.game.entities[e.kind as usize].is(ef::SOLID))
-            .map(|e| crate::physics::Body { id: e.id, aabb: e.aabb(c), delta: DVec3::ZERO, carry: 0.0, crushes: false })
+            .filter_map(|e| {
+                let built = self.structures.get(&e.id);
+                let aabb = built.map_or(Some(e.aabb(c)), |s| s.structure_box(e.pos))?;
+                let blocks = built.map(|s| (&**s as &dyn crate::physics::Blocks, super::structure::origin(e.pos)));
+                Some(crate::physics::Body { id: e.id, aabb, delta: DVec3::ZERO, carry: 0.0, crushes: false, blocks })
+            })
             .collect();
-        let id = crate::physics::body_below(pos, half_width, &bodies, 0.6)?;
+        let id = crate::physics::body_below(c, pos, half_width, &bodies, 0.6)?;
         self.entities.get(id).map(|e| (id, e.pos))
     }
 
@@ -347,9 +364,7 @@ impl Dim {
                 }
             }
         }
-        if self.cubes.insert(pos, Arc::new(cube)).is_none() {
-            *self.section_cubes.entry(section_of_cube(pos)).or_default() += 1;
-        }
+        self.add_cube(pos, Arc::new(cube));
         let mut map = Cubes(&mut self.cubes);
         let mut lighter = Lighter::new(&mut map, c, def.sky_light);
         if prelit {
@@ -442,6 +457,9 @@ impl Dim {
             return None;
         }
         let cp = cube_of(p);
+        if self.framed && state != AIR {
+            self.structure_cube(c, cp);
+        }
         let cube = Arc::make_mut(self.cubes.get_mut(&cp)?);
         let old = cube.set(local_index(p), state);
         if old == state {
@@ -451,12 +469,17 @@ impl Dim {
         self.modified.insert(cp);
         self.conn.remove(&cp);
         self.edited.insert(cp);
-        let def = &c.dims[self.id as usize];
-        let mut map = Cubes(&mut self.cubes);
-        let mut lighter = Lighter::new(&mut map, c, def.sky_light);
-        lighter.block_changed(p, old);
-        let changed = std::mem::take(&mut lighter.changed);
-        self.light_dirty.extend(changed);
+        if self.framed {
+            self.grow_bounds(p, state);
+            self.relight.insert(cp);
+        } else {
+            let def = &c.dims[self.id as usize];
+            let mut map = Cubes(&mut self.cubes);
+            let mut lighter = Lighter::new(&mut map, c, def.sky_light);
+            lighter.block_changed(p, old);
+            let changed = std::mem::take(&mut lighter.changed);
+            self.light_dirty.extend(changed);
+        }
         // The new block hears about itself too (like vanilla's onBlockAdded): a liquid starts
         // flowing, a plant without support drops, whoever set it.
         self.neighbor_queue.push_back((p, p));
@@ -492,6 +515,9 @@ impl Dim {
     pub fn spawn(&mut self, c: &Content, kind: u32, pos: DVec3) -> u64 {
         let id = self.new_id();
         let k = &c.game.entities[kind as usize];
+        if let Some(blocks) = super::structure::template(c, kind) {
+            self.structures.insert(id, Box::new(Dim::new_structure(c, self.id, self.seed, self.next_id.clone(), blocks)));
+        }
         let mut e = Entity::new(id, kind, pos, k.max_health);
         // Solid bodies collide as axis-aligned boxes, so they start square to the world.
         if !k.is(ef::SOLID) {
@@ -703,10 +729,27 @@ impl Dim {
 
         self.natural_spawns(c);
         self.tick_entities(c);
+        self.tick_structures(c);
         self.grid.tick(&mut self.entities, c);
         self.flush_neighbors(c);
         self.entities.compact();
         self.finish_tick(c);
+    }
+
+    /// Structures tick like the world (scheduled ticks, neighbour updates, growth) at its time;
+    /// what they let go of comes over here. Structures whose entity is gone go with it.
+    fn tick_structures(&mut self, c: &'static Content) {
+        let entities = &self.entities;
+        self.structures.retain(|id, _| entities.get(*id).is_some());
+        let mut ids: Vec<u64> = self.structures.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let s = self.structures.get_mut(&id).unwrap();
+            s.time = self.time - 1;
+            s.rules = self.rules.clone();
+            s.tick(c);
+            self.hand_over(c, id);
+        }
     }
 
     /// Starts or retargets `id`'s walk to `target`. A target close to the current one only
@@ -866,6 +909,7 @@ impl Dim {
         // Solid bodies move first, in list order, so riders and whatever they run into see where
         // they ended up; a body may ride one moved before it.
         let mut bodies: Vec<crate::physics::Body> = Vec::new();
+        let structures = &self.structures;
         for e in self.entities.list.iter_mut() {
             let k = &c.game.entities[e.kind as usize];
             if e.removed || e.player || !k.is(ef::SOLID) {
@@ -874,8 +918,11 @@ impl Dim {
             let before = e.pos;
             step(c, e, gravity, &block, &bodies);
             e.last_move = e.pos - before;
-            let aabb = e.aabb(c);
-            bodies.push(crate::physics::Body { id: e.id, aabb, delta: e.pos - before, carry: k.carry_height as f64, crushes: k.is(ef::CRUSHES) });
+            // A structure collides as its blocks, an empty one not at all.
+            let built = structures.get(&e.id);
+            let Some(aabb) = built.map_or(Some(e.aabb(c)), |s| s.structure_box(e.pos)) else { continue };
+            let blocks = built.map(|s| (&**s as &dyn crate::physics::Blocks, super::structure::origin(e.pos)));
+            bodies.push(crate::physics::Body { id: e.id, aabb, delta: e.pos - before, carry: k.carry_height as f64, crushes: k.is(ef::CRUSHES), blocks });
         }
         let bodies = &bodies;
         // Physics only reads blocks and bodies and writes its own entity, so entities move in
@@ -1099,6 +1146,9 @@ impl Dim {
     }
 
     pub fn finish_tick(&mut self, c: &'static Content) {
+        if self.framed {
+            self.relight();
+        }
         self.deliver_events(c);
         for cp in std::mem::take(&mut self.light_dirty) {
             if let Some(cube) = self.cubes.get(&cp) {
@@ -1301,12 +1351,19 @@ type Taken = (Entity, Option<Vec<ItemStack>>, Vec<(u32, Box<[u8]>)>);
 pub struct Parcel {
     cubes: Vec<(IVec3, Arc<Cube>, bool, bool)>,
     entities: Vec<Taken>,
+    structures: Vec<(u64, Box<Dim>)>,
     scheduled: Vec<Reverse<(u64, i32, i32, i32)>>,
     growth: Vec<(IVec3, u64)>,
 }
 
 impl Dim {
     /// Sections this region occupies: loaded cubes plus where its entities stand.
+    pub fn add_cube(&mut self, pos: IVec3, cube: Arc<Cube>) {
+        if self.cubes.insert(pos, cube).is_none() {
+            *self.section_cubes.entry(section_of_cube(pos)).or_default() += 1;
+        }
+    }
+
     fn cube_gone(&mut self, pos: IVec3) {
         let s = section_of_cube(pos);
         if let Some(n) = self.section_cubes.get_mut(&s) {
@@ -1339,6 +1396,9 @@ impl Dim {
             if let Some(t) = self.entities.take(id) {
                 p.entities.push(t);
             }
+            if let Some(st) = self.structures.remove(&id) {
+                p.structures.push((id, st));
+            }
         }
         let (moved, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.scheduled)
             .into_iter()
@@ -1355,9 +1415,7 @@ impl Dim {
     pub fn absorb(&mut self, c: &Content, p: Parcel) {
         for (pos, cube, modified, settled) in p.cubes {
             self.grid.cube_loaded(c, pos, &cube);
-            if self.cubes.insert(pos, cube).is_none() {
-                *self.section_cubes.entry(section_of_cube(pos)).or_default() += 1;
-            }
+            self.add_cube(pos, cube);
             if modified {
                 self.modified.insert(pos);
             }
@@ -1369,6 +1427,7 @@ impl Dim {
         for (e, inv, comps) in p.entities {
             self.entities.insert_with(c, e, inv, comps);
         }
+        self.structures.extend(p.structures);
         self.entities.sort_by_id();
         self.scheduled.extend(p.scheduled);
         for (q, at) in p.growth {

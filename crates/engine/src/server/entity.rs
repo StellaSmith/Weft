@@ -352,7 +352,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
     if let Some(d) = ride.released {
         e.vel += d / DT;
     }
-    let (shift, crushes) = physics::push(e.pos, hw, h, bodies, e.id, e.support);
+    let (shift, crushes) = physics::push(c, e.pos, hw, h, bodies, e.id, e.support);
     if shift != DVec3::ZERO {
         // Blocks stop the push; a crushing body hurts what it cannot push away.
         let to = physics::move_box(c, block, e.pos, hw, h, shift, 0.0).pos;
@@ -411,7 +411,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
     let was_ground = e.on_ground;
     e.on_ground = r.on_ground;
     if r.on_ground {
-        if let Some(b) = physics::standing_on(e.pos, hw, bodies, e.id) {
+        if let Some(b) = physics::standing_on(c, e.pos, hw, bodies, e.id) {
             e.support = Some(b);
         }
     }

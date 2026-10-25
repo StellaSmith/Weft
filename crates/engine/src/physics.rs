@@ -32,6 +32,15 @@ impl Aabb {
     pub fn intersects(&self, o: &Aabb) -> bool {
         self.min.cmplt(o.max).all() && self.max.cmpgt(o.min).all()
     }
+
+    pub fn shifted(&self, by: DVec3) -> Aabb {
+        Aabb { min: self.min + by, max: self.max + by }
+    }
+}
+
+/// Blocks a moving structure is built of, in its own coordinates (outside it: air).
+pub trait Blocks: Sync {
+    fn block(&self, p: IVec3) -> u32;
 }
 
 /// Collision boxes of a state in block-local coordinates.
@@ -47,15 +56,45 @@ pub fn boxes(c: &Content, state: u32, out: &mut Vec<[f64; 6]>) {
     }
 }
 
-/// A solid body this step: its box after its move, how far it moved, how high above it riders
-/// still move with it, and whether it crushes what it squeezes.
-#[derive(Clone, Copy, Debug)]
-pub struct Body {
+/// A solid body this step: its box after its move (around all its blocks for a structure), how
+/// far it moved, how high above it riders still move with it, whether it crushes what it
+/// squeezes, and the blocks it is built of with where its block (0, 0, 0) starts.
+#[derive(Clone, Copy)]
+pub struct Body<'a> {
     pub id: u64,
     pub aabb: Aabb,
     pub delta: DVec3,
     pub carry: f64,
     pub crushes: bool,
+    pub blocks: Option<(&'a dyn Blocks, DVec3)>,
+}
+
+impl Body<'_> {
+    /// Its solid boxes touching `area`, in world space (until `f` returns true).
+    pub fn solids(&self, c: &Content, area: Aabb, mut f: impl FnMut(Aabb) -> bool) -> bool {
+        if !self.aabb.intersects(&area) {
+            return false;
+        }
+        match self.blocks {
+            None => f(self.aabb),
+            Some((blocks, origin)) => each_solid(c, &|p| Some(blocks.block(p)), area.shifted(-origin), |b| f(b.shifted(origin))),
+        }
+    }
+
+    /// The highest top of its solid boxes under a box with feet at `pos`, at most `reach` below
+    /// the feet (and not above them).
+    fn top_below(&self, c: &Content, pos: DVec3, half_width: f64, reach: f64) -> Option<f64> {
+        let area = Aabb { min: DVec3::new(pos.x - half_width, pos.y - reach - 1e-3, pos.z - half_width), max: DVec3::new(pos.x + half_width, pos.y + 1e-3, pos.z + half_width) };
+        let mut top: Option<f64> = None;
+        self.solids(c, area, |b| {
+            let inside = b.min.x < area.max.x && b.max.x > area.min.x && b.min.z < area.max.z && b.max.z > area.min.z;
+            if inside && b.max.y <= pos.y + 1e-3 && b.max.y >= pos.y - reach - 1e-3 {
+                top = Some(top.map_or(b.max.y, |t: f64| t.max(b.max.y)));
+            }
+            false
+        });
+        top
+    }
 }
 
 /// What a rider's support does to it before its own move: carries it by `carry`, or lets go
@@ -69,7 +108,7 @@ pub struct Ride {
 /// A rider moves with the body it stands on, and keeps doing so while in the air above it up to
 /// the body's carry height (its own motion stays relative to the body, like inside a moving
 /// ship); further away it lets go.
-pub fn ride(pos: DVec3, half_width: f64, support: &mut Option<u64>, bodies: &[Body]) -> Ride {
+pub fn ride(pos: DVec3, half_width: f64, support: &mut Option<u64>, bodies: &[Body<'_>]) -> Ride {
     let Some(id) = *support else { return Ride::default() };
     let Some(b) = bodies.iter().find(|b| b.id == id) else {
         *support = None;
@@ -80,8 +119,8 @@ pub fn ride(pos: DVec3, half_width: f64, support: &mut Option<u64>, bodies: &[Bo
     // A rider right at the edge stays on (exact edges come and go with rounding).
     let e = half_width + 1e-6;
     let over = pos.x + e > lo.x && pos.x - e < hi.x && pos.z + e > lo.z && pos.z - e < hi.z;
-    let above = pos.y - hi.y;
-    if over && above > -0.25 && above <= b.carry.max(0.01) {
+    // Anywhere from its bottom (inside a structure's cabin, say) up to its carry height.
+    if over && pos.y > lo.y - 0.25 && pos.y - hi.y <= b.carry.max(0.01) {
         Ride { carry: b.delta, released: None }
     } else {
         *support = None;
@@ -91,35 +130,13 @@ pub fn ride(pos: DVec3, half_width: f64, support: &mut Option<u64>, bodies: &[Bo
 
 /// The body under a box with feet at `pos`, its top at most `reach` below the feet: the frame
 /// a position put there belongs to.
-pub fn body_below(pos: DVec3, half_width: f64, bodies: &[Body], reach: f64) -> Option<u64> {
-    bodies
-        .iter()
-        .filter(|b| {
-            let gap = pos.y - b.aabb.max.y;
-            gap > -1e-3
-                && gap <= reach
-                && pos.x + half_width > b.aabb.min.x
-                && pos.x - half_width < b.aabb.max.x
-                && pos.z + half_width > b.aabb.min.z
-                && pos.z - half_width < b.aabb.max.z
-        })
-        .min_by(|a, b| (pos.y - a.aabb.max.y).total_cmp(&(pos.y - b.aabb.max.y)))
-        .map(|b| b.id)
+pub fn body_below(c: &Content, pos: DVec3, half_width: f64, bodies: &[Body<'_>], reach: f64) -> Option<u64> {
+    bodies.iter().filter_map(|b| b.top_below(c, pos, half_width, reach).map(|t| (b.id, t))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0)
 }
 
 /// The body whose top a box with feet at `pos` rests on.
-pub fn standing_on(pos: DVec3, half_width: f64, bodies: &[Body], skip: u64) -> Option<u64> {
-    bodies
-        .iter()
-        .find(|b| {
-            b.id != skip
-                && (pos.y - b.aabb.max.y).abs() < 1e-3
-                && pos.x + half_width > b.aabb.min.x
-                && pos.x - half_width < b.aabb.max.x
-                && pos.z + half_width > b.aabb.min.z
-                && pos.z - half_width < b.aabb.max.z
-        })
-        .map(|b| b.id)
+pub fn standing_on(c: &Content, pos: DVec3, half_width: f64, bodies: &[Body<'_>], skip: u64) -> Option<u64> {
+    bodies.iter().find(|b| b.id != skip && b.top_below(c, pos, half_width, 0.0).is_some()).map(|b| b.id)
 }
 
 /// How far bodies that moved this step and overlap a box push it out of them, along each body's
@@ -127,17 +144,23 @@ pub fn standing_on(pos: DVec3, half_width: f64, bodies: &[Body], skip: u64) -> O
 /// (like vanilla's shulker boxes): a body that showed up around a rider, or a rider put on a
 /// deck the client draws ahead of the server, must not stay stuck in it. The body it rides and
 /// `skip` (itself) do not push.
-pub fn push(pos: DVec3, half_width: f64, height: f64, bodies: &[Body], skip: u64, support: Option<u64>) -> (DVec3, bool) {
+pub fn push(c: &Content, pos: DVec3, half_width: f64, height: f64, bodies: &[Body<'_>], skip: u64, support: Option<u64>) -> (DVec3, bool) {
     let me = Aabb::around(pos, half_width, height);
     let (mut shift, mut crushes) = (DVec3::ZERO, false);
     for b in bodies.iter().filter(|b| b.id != skip && Some(b.id) != support && b.delta != DVec3::ZERO) {
-        if !me.intersects(&b.aabb) {
-            continue;
-        }
         let d = b.delta.abs();
         let axis = if d.y >= d.x && d.y >= d.z { 1 } else if d.x >= d.z { 0 } else { 2 };
-        shift[axis] = if b.delta[axis] > 0.0 { b.aabb.max[axis] - me.min[axis] } else { b.aabb.min[axis] - me.max[axis] };
-        crushes |= b.crushes;
+        let up = b.delta[axis] > 0.0;
+        b.solids(c, me, |s| {
+            if s.intersects(&me) {
+                let need = if up { s.max[axis] - me.min[axis] } else { s.min[axis] - me.max[axis] };
+                if need.abs() > shift[axis].abs() {
+                    shift[axis] = need;
+                }
+                crushes |= b.crushes;
+            }
+            false
+        });
     }
     (shift, crushes)
 }
@@ -219,7 +242,7 @@ pub fn move_box(
 pub fn move_box_with(
     c: &Content,
     block: &impl Fn(IVec3) -> Option<u32>,
-    bodies: &[Body],
+    bodies: &[Body<'_>],
     skip: u64,
     pos: DVec3,
     half_width: f64,
@@ -243,7 +266,12 @@ pub fn move_box_with(
         solids.push(b);
         false
     });
-    solids.extend(bodies.iter().filter(|b| b.id != skip && b.aabb.intersects(&sweep)).map(|b| b.aabb));
+    for b in bodies.iter().filter(|b| b.id != skip) {
+        b.solids(c, sweep, |s| {
+            solids.push(s);
+            false
+        });
+    }
 
     let try_move = |from: Aabb, delta: DVec3| -> (Aabb, [bool; 3], DVec3) {
         let mut b = from;
@@ -296,7 +324,10 @@ pub fn move_box_with(
 
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
+    /// In the coordinates of `frame`: the moving structure (entity) the block is part of, 0 for
+    /// the world.
     pub block: IVec3,
+    pub frame: u64,
     /// Face index (-X, +X, -Y, +Y, -Z, +Z) that was entered.
     pub face: u8,
     pub state: u32,
@@ -330,7 +361,7 @@ pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3
                 let local = origin - p.as_dvec3();
                 let best = shape.iter().filter_map(|b| ray_box(local, dir, b, max)).min_by(|a, b| a.0.total_cmp(&b.0));
                 if let Some((_, face)) = best {
-                    return Some(Hit { block: p, face, state });
+                    return Some(Hit { frame: 0, block: p, face, state });
                 }
             }
         }

@@ -37,7 +37,7 @@ pub struct Entity {
     /// Hotbar slot the player holds.
     pub selected: u32,
     pub anchor: Option<IVec3>,
-    pub sent: Option<(DVec3, f32, f32, DVec3, bool)>,
+    pub sent: Option<(DVec3, f32, f32, bool)>,
     /// Worn items as last sent to clients.
     pub worn: Vec<u32>,
     /// The solid body it rides (stands on, or flies above within its carry height).

@@ -60,6 +60,9 @@ pub struct LocalPlayer {
     /// of what it stands on is the position less this (walking, bobbing).
     pub carried: DVec3,
     pub carried_prev: DVec3,
+    /// Riding a body: its id and the position relative to it at the previous and the last
+    /// step. Drawn on the body as shown, so a rider and its deck never drift apart.
+    pub riding: Option<(u64, DVec3, DVec3)>,
 }
 
 pub struct ClientEntity {
@@ -88,14 +91,9 @@ pub struct ClientEntity {
     pub crouched: bool,
     /// Falling blocks: the state drawn.
     pub block: u32,
-    /// Velocity the server last sent (blocks/s) and when (`Client::body_clock`): solid bodies
-    /// are predicted from them, so riding one does not lag behind it.
-    pub vel: DVec3,
-    pub received: f64,
-    /// Where the prediction was off when the last update came (turns, stops) and when: it fades
-    /// out over a tenth of a second instead of the body jumping back.
-    pub correction: DVec3,
-    pub corrected: f64,
+    /// Solid bodies: where the server had them at its last ticks (tick, position), oldest
+    /// first; they are shown `INTERP_TICKS` behind the server (`pose`).
+    pub track: std::collections::VecDeque<(f64, DVec3)>,
     /// A picked up item flying to who took it: where it started, the taker, seconds so far.
     pub pulled: Option<(DVec3, u64, f32)>,
     /// Its own box (width, height, eye) and the kind it looks like, when a mod set them.
@@ -137,10 +135,29 @@ impl ClientEntity {
         self.look.unwrap_or(self.kind)
     }
 
-    /// Where a solid body is at `clock`, extrapolated from the last update (at most 0.25 s on,
-    /// and back when the update counts as later than `clock`).
-    pub fn predicted(&self, clock: f64) -> DVec3 {
-        self.target + self.vel * (clock - self.received).clamp(-0.1, 0.25) + self.correction * (-(clock - self.corrected).max(0.0) / 0.1).exp()
+    /// Where a solid body was at server tick `tick` (fractional): between the two positions
+    /// around it; past the newest one it goes on as it last moved for at most a tick (the
+    /// server sends bodies every tick, so a stop shows as two equal positions, no overshoot).
+    pub fn pose(&self, tick: f64) -> DVec3 {
+        let n = self.track.len();
+        let Some(&(last_t, last)) = self.track.back() else { return self.target };
+        if tick >= last_t {
+            return match n {
+                1 => last,
+                _ => {
+                    let (pt, prev) = self.track[n - 2];
+                    last + (last - prev) / (last_t - pt).max(1e-6) * (tick - last_t).min(1.0)
+                }
+            };
+        }
+        let mut before = self.track[0];
+        for &(t, p) in &self.track {
+            if tick < t {
+                return if t > before.0 { before.1.lerp(p, ((tick - before.0) / (t - before.0)).max(0.0)) } else { p };
+            }
+            before = (t, p);
+        }
+        last
     }
 }
 
@@ -163,6 +180,9 @@ pub enum ClientEvent {
 /// Crouching, like modern versions: fits under 1.5 block gaps.
 /// Player physics runs at vanilla's tick rate; the camera is interpolated between ticks.
 const STEP: f64 = 1.0 / 20.0;
+/// How far behind the newest server tick bodies are shown (Sable, under Create: Aeronautics,
+/// uses 1.5): late moves still find two positions to show between.
+const INTERP_TICKS: f64 = 1.5;
 
 pub struct Client {
     conn: ClientConn,
@@ -176,14 +196,14 @@ pub struct Client {
     self_anim: Option<(String, f32, bool)>,
     accum: f64,
     tick_accum: f64,
-    /// Seconds of physics steps taken, the clock solid bodies are predicted by.
+    /// Seconds of physics steps taken, the clock solid bodies are shown by.
     body_clock: f64,
-    /// Where each solid body was at the last step.
-    body_pos: FxHashMap<u64, DVec3>,
-    /// `body_clock` time at which a server tick's moves count as current: arrival time less
-    /// the tick's time, smoothed. Stamping moves with their arrival instead made bodies stand
-    /// still for a tick and then jump whenever moves arrived just after a physics step.
+    /// Client clock (`body_clock`) less server time (ticks x `STEP`): maps the client's clock
+    /// onto the server's timeline bodies are shown on. It follows `offset_target` (arrival
+    /// times, averaged) by stretching time at most 5%, so that timeline only ever goes on
+    /// evenly: moving it by each arrival's jitter stepped bodies back and forth by millimetres.
     tick_offset: Option<f64>,
+    offset_target: f64,
     start: Instant,
     pub target: Option<Hit>,
     pub target_entity: Option<u64>,
@@ -338,6 +358,7 @@ on: {on}", list.join("
                 size: [0.6, 1.8, 1.62],
                 carried: DVec3::ZERO,
                 carried_prev: DVec3::ZERO,
+                riding: None,
                 flying: false,
                 noclip: false,
                 fly_speed: 1.0,
@@ -349,8 +370,8 @@ on: {on}", list.join("
             accum: 0.0,
             tick_accum: 0.0,
             body_clock: 0.0,
-            body_pos: FxHashMap::default(),
             tick_offset: None,
+            offset_target: 0.0,
             start: Instant::now(),
             target: None,
             target_entity: None,
@@ -446,7 +467,8 @@ on: {on}", list.join("
                         self.world.dim = dim;
                         self.entities.clear();
                     }
-                    let on = frame.and_then(|(id, rel)| self.entities.get(&id).map(|b| (id, b.predicted(self.body_clock) + rel)));
+                    let at = self.body_tick(self.body_clock);
+                    let on = frame.and_then(|(id, rel)| self.entities.get(&id).map(|b| (id, b.pose(at) + rel)));
                     let pos = on.map_or(pos, |o| o.1);
                     self.player.support = on.map(|o| o.0);
                     self.player.pos = pos;
@@ -477,10 +499,7 @@ on: {on}", list.join("
                                 anim: None,
                                 crouched: false,
                                 block: e.block,
-                                vel: DVec3::ZERO,
-                                received: self.body_clock,
-                                correction: DVec3::ZERO,
-                                corrected: 0.0,
+                                track: Default::default(),
                                 pulled: None,
                                 size: None,
                                 look: None,
@@ -492,31 +511,25 @@ on: {on}", list.join("
                     }
                 }
                 ToClient::Moves(tick, list) => {
-                    // Network and tick jitter only delay moves: an early one pulls the offset
-                    // down at once, late ones raise it slowly; a long pause starts over.
-                    let at = tick as f64 * STEP;
-                    let sample = self.body_clock - STEP + self.accum - at;
-                    let off = match self.tick_offset {
-                        Some(o) if (sample - o).abs() < 0.25 => o + (sample - o) * if sample < o { 0.5 } else { 0.02 },
-                        _ => sample,
-                    };
-                    self.tick_offset = Some(off);
-                    let now = self.body_clock - STEP + self.accum;
-                    for &(id, pos, yaw, pitch, vel, crouched, frame) in &list {
+                    // A long stall (or the first move) starts the timeline over.
+                    let sample = self.body_clock - STEP + self.accum - tick as f64 * STEP;
+                    match self.tick_offset {
+                        Some(o) if (sample - o).abs() < 0.25 => self.offset_target += (sample - self.offset_target) * 0.1,
+                        _ => (self.tick_offset, self.offset_target) = (Some(sample), sample),
+                    }
+                    let solid = |k: u32| content().game.entities[k as usize].is(voxide_abi::entity_flags::SOLID);
+                    for &(id, pos, yaw, pitch, crouched, frame) in &list {
                         if let Some(e) = self.entities.get_mut(&id) {
-                            let was = e.predicted(now);
                             e.crouched = crouched;
                             e.target = pos;
                             e.target_yaw = yaw;
                             e.pitch = pitch;
                             e.frame = frame;
-                            (e.vel, e.received) = (glam::Vec3::from_array(vel).as_dvec3(), at + off);
-                            // Bodies continue smoothly from where they were drawn (a far jump is
-                            // a teleport and is taken as it is).
-                            e.correction = DVec3::ZERO;
-                            let miss = was - e.predicted(now);
-                            if miss.length_squared() < 4.0 {
-                                (e.correction, e.corrected) = (miss, now);
+                            if solid(e.kind) {
+                                e.track.push_back((tick as f64, pos));
+                                while e.track.len() > 8 {
+                                    e.track.pop_front();
+                                }
                             }
                         }
                     }
@@ -718,6 +731,9 @@ on: {on}", list.join("
 
     pub fn update(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, input: &Input, dt: f64) {
         self.receive();
+        if let Some(o) = &mut self.tick_offset {
+            *o += (self.offset_target - *o).clamp(-0.05 * dt, 0.05 * dt);
+        }
         let c = content();
         if input.captured {
             let sens = 0.0022 * input.sensitivity;
@@ -815,6 +831,11 @@ on: {on}", list.join("
             self.accum += dt.min(0.25);
             while self.accum >= STEP {
                 self.accum -= STEP;
+                // A rider is where it is on its body: if moves arrived late and the body's past
+                // changed, the rider moves with it, not over the deck.
+                if let Some(e) = self.player.riding.and_then(|(b, _, now)| self.entities.get(&b).map(|e| e.pose(self.body_tick(self.body_clock)) + now)) {
+                    self.player.pos = e;
+                }
                 self.player.prev = self.player.pos;
                 self.player.carried_prev = self.player.carried;
                 let flying = self.player.flying || self.player.noclip;
@@ -822,13 +843,14 @@ on: {on}", list.join("
                 // Solid bodies at this step (predicted like the server moves them) and soft
                 // ones nudging the player aside.
                 self.body_clock += STEP;
+                let at = self.body_tick(self.body_clock);
                 let mut bodies = Vec::new();
                 let mut push = DVec3::ZERO;
                 for (&id, e) in &self.entities {
                     let k = &c.game.entities[e.kind as usize];
                     if k.is(voxide_abi::entity_flags::SOLID) {
-                        let now = e.predicted(self.body_clock);
-                        let delta = self.body_pos.insert(id, now).map_or(DVec3::ZERO, |b| now - b);
+                        let now = e.pose(at);
+                        let delta = now - e.pose(at - 1.0);
                         let aabb = physics::Aabb::around(now, k.width as f64 / 2.0, k.height as f64);
                         bodies.push(physics::Body { id, aabb, delta, carry: k.carry_height as f64, crushes: false });
                     } else if k.is(voxide_abi::entity_flags::PUSHABLE) && e.item.is_empty() && e.dying.is_none() {
@@ -841,8 +863,6 @@ on: {on}", list.join("
                         }
                     }
                 }
-                let entities = &self.entities;
-                self.body_pos.retain(|id, _| entities.contains_key(id));
                 if !ready {
                     continue;
                 }
@@ -854,6 +874,9 @@ on: {on}", list.join("
                 } else {
                     step_player(&mut self.player, input, &block, gravity, &bodies);
                 }
+                let entities = &self.entities;
+                let p = &self.player;
+                self.player.riding = p.support.and_then(|b| entities.get(&b).map(|e| (b, p.prev - e.pose(at - 1.0), p.pos - e.pose(at))));
                 if crate::log::on(crate::log::Channel::Physics, log::Level::Trace) {
                     let p = &self.player;
                     let feet = p.pos.floor().as_ivec3() - glam::IVec3::Y;
@@ -892,7 +915,9 @@ on: {on}", list.join("
         self.cooldown -= dt as f32;
         // The server judges actions by where the player looks, which it only hears 20 times a
         // second: a turn made just before a click must arrive first.
+        let frame = self.player.riding.map(|(b, _, now)| (b, now));
         let look_now = ToServer::Move {
+            frame,
             pos: self.player.pos,
             yaw: self.player.yaw,
             pitch: self.player.pitch,
@@ -962,6 +987,7 @@ on: {on}", list.join("
             if self.joined && !self.dead {
                 let landed = std::mem::replace(&mut self.player.landed, false);
                 self.conn.send(ToServer::Move {
+                    frame,
                     pos: self.player.pos,
                     yaw: self.player.yaw,
                     pitch: self.player.pitch,
@@ -995,13 +1021,14 @@ on: {on}", list.join("
         // Bodies first: riders are drawn relative to where their body is drawn.
         let mut frames = std::mem::take(&mut self.frames);
         frames.clear();
-        frames.extend(self.entities.iter().filter(|(_, e)| c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID)).map(|(&id, e)| (id, e.predicted(shown))));
+        let at = self.body_tick(shown);
+        frames.extend(self.entities.iter().filter(|(_, e)| c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID)).map(|(&id, e)| (id, e.pose(at))));
         for e in self.entities.values_mut().filter(|e| e.pulled.is_none()) {
             let before = e.pos;
             let body = e.rel_target.and_then(|t| frames.iter().find(|f| f.0 == e.frame).map(|f| (f.1, t)));
             let mut walked = None;
             e.pos = if c.game.entities[e.kind as usize].is(voxide_abi::entity_flags::SOLID) {
-                e.predicted(shown)
+                e.pose(at)
             } else if let Some((at, rel_target)) = body {
                 let rel_before = e.rel;
                 e.rel = e.rel.lerp(rel_target, k);
@@ -1174,9 +1201,20 @@ on: {on}", list.join("
         slots.iter().filter(|s| !s.is_empty() && c.worn(s.item).is_some()).map(|s| s.item).collect()
     }
 
-    /// Position drawn this frame, between the last two physics ticks.
+    /// Server tick (fractional) bodies are shown at when the client clock reads `clock`.
+    fn body_tick(&self, clock: f64) -> f64 {
+        (clock - self.tick_offset.unwrap_or(clock)) / STEP - INTERP_TICKS
+    }
+
+    /// Position drawn this frame, between the last two physics ticks; on a body, on the body as
+    /// it is shown now.
     pub fn smooth_pos(&self) -> DVec3 {
         let t = (self.accum / STEP).clamp(0.0, 1.0);
+        if let Some((b, before, now)) = self.player.riding {
+            if let Some(e) = self.entities.get(&b) {
+                return e.pose(self.body_tick(self.body_clock - STEP + self.accum)) + before.lerp(now, t);
+            }
+        }
         self.player.prev.lerp(self.player.pos, t)
     }
 
@@ -1242,10 +1280,7 @@ on: {on}", list.join("
             anim: self.self_anim.clone(),
             crouched: self.player.crouched,
             block: 0,
-            vel: self.player.vel * 20.0,
-            received: self.body_clock,
-            correction: DVec3::ZERO,
-            corrected: 0.0,
+            track: Default::default(),
             pulled: None,
             size: None,
             look: self.self_look,

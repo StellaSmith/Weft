@@ -186,14 +186,11 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
         ToClient::Moves(tick, list) => {
             w.u64(*tick);
             w.len(list.len());
-            for (id, p, y, pi, v, crouched, frame) in list {
+            for (id, p, y, pi, crouched, frame) in list {
                 w.u64(*id);
                 w.dvec(*p);
                 w.f32(*y);
                 w.f32(*pi);
-                for c in v {
-                    w.f32(*c);
-                }
                 w.u8(*crouched as u8);
                 w.u64(*frame);
             }
@@ -409,7 +406,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
-                list.push((r.u64()?, r.dvec()?, r.f32()?, r.f32()?, [r.f32()?, r.f32()?, r.f32()?], r.u8()? != 0, r.u64()?));
+                list.push((r.u64()?, r.dvec()?, r.f32()?, r.f32()?, r.u8()? != 0, r.u64()?));
             }
             ToClient::Moves(tick, list)
         }
@@ -575,11 +572,14 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.str(name);
             w.str(key);
         }
-        ToServer::Move { pos, yaw, pitch, on_ground, crouched } => {
+        ToServer::Move { pos, yaw, pitch, on_ground, crouched, frame } => {
             w.dvec(*pos);
             w.f32(*yaw);
             w.f32(*pitch);
             w.u8(*on_ground as u8 | (*crouched as u8) << 1);
+            let (body, rel) = frame.unwrap_or_default();
+            w.u64(body);
+            w.dvec(rel);
         }
         ToServer::Break { pos } => {
             w.ivec(*pos);
@@ -659,8 +659,8 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
     Some(match *ServerTag::ALL.get(r.u8()? as usize)? {
         ServerTag::Join => ToServer::Join { name: r.str()?, key: r.str()? },
         ServerTag::Move => {
-            let (pos, yaw, pitch, flags) = (r.dvec()?, r.f32()?, r.f32()?, r.u8()?);
-            ToServer::Move { pos, yaw, pitch, on_ground: flags & 1 != 0, crouched: flags & 2 != 0 }
+            let (pos, yaw, pitch, flags, body, rel) = (r.dvec()?, r.f32()?, r.f32()?, r.u8()?, r.u64()?, r.dvec()?);
+            ToServer::Move { pos, yaw, pitch, on_ground: flags & 1 != 0, crouched: flags & 2 != 0, frame: (body != 0).then_some((body, rel)) }
         }
         ServerTag::Break => ToServer::Break { pos: r.ivec()? },
         ServerTag::Use => ToServer::Use { pos: r.ivec()?, face: r.u8()?.min(5), look: [r.f32()?, r.f32()?, r.f32()?], sneak: r.u8()? != 0 },

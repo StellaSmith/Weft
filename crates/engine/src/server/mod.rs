@@ -715,10 +715,14 @@ impl Server {
     fn handle(&mut self, c: &'static Content, pi: usize, msg: ToServer) {
         match msg {
             ToServer::Join { name, key } => self.join(c, pi, name, key),
-            ToServer::Move { pos, yaw, pitch, on_ground, crouched } => {
+            ToServer::Move { pos, yaw, pitch, on_ground, crouched, frame } => {
                 if !pos.is_finite() || self.players[pi].dead {
                     return;
                 }
+                // On a body: where the client has the player on it, on the body as it is here.
+                let dim = &self.dims[self.players[pi].dim as usize];
+                let on = frame.filter(|f| f.1.is_finite()).and_then(|(b, rel)| dim.entity_region_ref(b).and_then(|r| r.entities.get(b)).map(|e| (b, e.pos + rel)));
+                let pos = on.map_or(pos, |o| o.1);
                 let p = &mut self.players[pi];
                 if let Some(t) = p.teleported {
                     if (pos - t).length_squared() > 16.0 {
@@ -746,6 +750,7 @@ impl Server {
                 if let Some(e) = r.entities.get_mut(entity) {
                     e.moved = ((pos.x - e.pos.x).powi(2) + (pos.z - e.pos.z).powi(2)).sqrt() as f32;
                     e.pos = pos;
+                    e.support = on.map(|o| o.0);
                     e.yaw = yaw;
                     e.pitch = pitch;
                     e.on_ground = on_ground;
@@ -1470,12 +1475,13 @@ impl Server {
                     }
                 }
                 for e in r.entities.list.iter_mut().filter(|e| !e.removed && e.anchor.is_none()) {
-                    // Clients predict solid bodies from their velocity: a body that stops must say so.
-                    let vel = if c.game.entities[e.kind as usize].is(abi::entity_flags::SOLID) { e.last_move * 20.0 } else { DVec3::ZERO };
-                    let now = (e.pos, e.yaw, e.pitch, vel, e.crouched);
-                    if e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01 || s.3 != now.3 || s.4 != now.4) {
+                    let now = (e.pos, e.yaw, e.pitch, e.crouched);
+                    // Solid bodies every tick: clients show them between server positions, and a
+                    // body that stops must say so (two equal positions).
+                    let solid = c.game.entities[e.kind as usize].is(abi::entity_flags::SOLID);
+                    if solid || e.sent.is_none_or(|s| (s.0 - now.0).length_squared() > 1e-6 || (s.1 - now.1).abs() > 0.01 || (s.2 - now.2).abs() > 0.01 || s.3 != now.3) {
                         if e.sent.is_some() {
-                            m.push((e.id, e.pos, e.yaw, e.pitch, vel.as_vec3().to_array(), e.crouched, e.support.unwrap_or(0)));
+                            m.push((e.id, e.pos, e.yaw, e.pitch, e.crouched, e.support.unwrap_or(0)));
                         }
                         e.sent = Some(now);
                     }

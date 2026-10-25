@@ -83,56 +83,45 @@ pub async fn skiff_smooth(t: T) -> R {
     // Into a leg, away from its turn (it turns every 3 seconds of its age).
     t.secs(0.5).await?;
     let x = |t: &T, id| t.c().entity(id).map_or(0.0, |e| e.pos[0]);
-    // Per frame: the skiff's speed, and how far the rider moved on its deck.
-    let (mut speeds, mut slips) = (Vec::new(), Vec::new());
-    let (mut last, mut rel, mut at) = (x(&t, skiff), x(&t, idol) - x(&t, skiff), std::time::Instant::now());
-    for _ in 0..90 {
-        t.frames(1).await?;
-        let (now, now_rel, when) = (x(&t, skiff), x(&t, idol) - x(&t, skiff), std::time::Instant::now());
-        let dt = (when - at).as_secs_f64();
-        if dt > 0.0005 {
-            speeds.push((now - last).abs() / dt);
-        }
-        slips.push((now_rel - rel).abs());
-        (last, rel, at) = (now, now_rel, when);
-    }
-    // The turn may fall into the window: judge 90% of the frames.
-    let tail = |v: &mut Vec<f64>| {
-        v.sort_by(|a, b| a.total_cmp(b));
-        (v[v.len() / 20], v[v.len() - 1 - v.len() / 20])
-    };
-    let ((lo, hi), (_, slip)) = (tail(&mut speeds), tail(&mut slips));
-    t.note(format!("skiff speed over {} frames {lo:.2}..{hi:.2} blocks/s, rider moves on the deck up to {slip:.4} a frame", speeds.len()));
-    t.check(lo > 3.0 && hi < 9.0, "the skiff glides (no stops or jumps)");
-    t.check(slip < 0.02, "its rider stays on its spot of the deck");
-    // Through a turn (every 3 seconds): no jump back, the fastest frame stays near its speed.
-    let (mut fastest, mut last, mut at) = (0.0f64, x(&t, skiff), std::time::Instant::now());
+    // For 3.5 seconds (a turn is in it): it reverses once (overshooting and coming back would
+    // reverse three times, jitter many times), never jumps, and its rider stays on its spot.
+    let (mut turns, mut dir, mut jump, mut slip) = (0, 0.0f64, 0.0f64, 0.0f64);
+    let (mut last, mut rel) = (x(&t, skiff), x(&t, idol) - x(&t, skiff));
     let start = std::time::Instant::now();
     while start.elapsed().as_secs_f64() < 3.5 {
         t.frames(1).await?;
-        let (now, when) = (x(&t, skiff), std::time::Instant::now());
-        let dt = (when - at).as_secs_f64();
-        if dt > 0.002 {
-            fastest = fastest.max((now - last).abs() / dt);
+        let (now, now_rel) = (x(&t, skiff), x(&t, idol) - x(&t, skiff));
+        let d = now - last;
+        if d.abs() > 1e-6 {
+            if dir != 0.0 && d.signum() != dir {
+                turns += 1;
+            }
+            dir = d.signum();
         }
-        (last, at) = (now, when);
+        (jump, slip) = (jump.max(d.abs()), slip.max((now_rel - rel).abs()));
+        (last, rel) = (now, now_rel);
     }
-    t.note(format!("fastest frame through a turn: {fastest:.1} blocks/s"));
-    t.check(fastest < 15.0, "the skiff turns without jumping");
+    t.note(format!("{turns} reversals in 3.5 s, largest step {jump:.3}, rider moves on the deck up to {slip:.4} a frame"));
+    t.check_eq(turns, 1, "the skiff turns once, without overshooting or jitter");
+    t.check(jump < 0.15, "the skiff glides (no jumps)");
+    t.check(slip < 0.02, "its rider stays on its spot of the deck");
     // Riding it too: the deck keeps its place in front of the camera.
     t.op(&format!("onto #{skiff} 0.5")).await?;
     t.secs(0.5).await?;
+    // For 3.5 seconds, so a turn is in it.
     let mut steps = Vec::new();
     let mut last = x(&t, skiff) - t.state().shown[0];
-    for _ in 0..90 {
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs_f64() < 3.5 {
         t.frames(1).await?;
         let now = x(&t, skiff) - t.state().shown[0];
         steps.push((now - last).abs());
         last = now;
     }
-    let (_, big) = tail(&mut steps);
+    steps.sort_by(|a, b| a.total_cmp(b));
+    let big = steps.last().copied().unwrap_or(0.0);
     t.note(format!("skiff seen from its rider: steps up to {big:.4}"));
-    t.check(big < 0.02, "the skiff stays put in front of a rider");
+    t.check(big < 0.01, "the skiff stays put in front of a rider, turns included");
     Ok(())
 }
 

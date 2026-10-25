@@ -58,10 +58,9 @@ pub struct GizmoShape {
     pub text: String,
 }
 
-/// An entity's move: id, position, yaw, pitch, velocity (blocks/s; clients predict solid bodies
-/// with it), crouching, and its frame: the solid body it stands on (0: the world), which clients
-/// draw it relative to.
-pub type Move = (u64, DVec3, f32, f32, [f32; 3], bool, u64);
+/// An entity's move: id, position, yaw, pitch, crouching, and its frame: the solid body it
+/// stands on (0: the world), which clients draw it relative to.
+pub type Move = (u64, DVec3, f32, f32, bool, u64);
 
 #[derive(Clone)]
 pub enum ToClient {
@@ -126,7 +125,9 @@ pub enum ToClient {
 pub enum ToServer {
     /// `key`: the player's public key, their identity across sessions and addresses.
     Join { name: String, key: String },
-    Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, crouched: bool },
+    /// `frame`: the body it rides and its position relative to that body as the client shows it
+    /// (the client shows bodies behind the server; only the relative position agrees).
+    Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, crouched: bool, frame: Option<(u64, DVec3)> },
     Break { pos: IVec3 },
     /// Right click on a block: the block reacts first (chests), otherwise the held item is used or
     /// placed against the clicked face.

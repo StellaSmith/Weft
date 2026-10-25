@@ -240,6 +240,27 @@ pub async fn break_overlay(t: T) -> R {
     Ok(())
 }
 
+/// The player figure in the inventory stays while mobs are drawn in the world behind it (both
+/// once shared the model buffers of a frame).
+pub async fn inventory_figure(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    for dz in -2..=2 {
+        t.op(&format!("spawn testmod:idol {} {} {}", f[0] + 4, f[1], f[2] + dz)).await?;
+    }
+    t.look_at(add(f, [4, 1, 0]));
+    t.secs(0.5).await?;
+    t.press("core:inventory");
+    t.screen("core:menu").await?;
+    t.frames(4).await?;
+    let Some([x, y, w, h]) = t.c().ui_rect("entity") else { return Err("no player figure in the inventory".into()) };
+    let shot = t.shot("figure").await?;
+    let v = shot.share(x, y, x + w, y + h, probe::skin);
+    t.probe("skin in the figure's box", v, v > 0.03);
+    t.press("core:inventory");
+    Ok(())
+}
+
 /// Right click swings the arm only when it did something: on grass with an empty hand the
 /// picture stays as it was, placing a block swings.
 pub async fn use_swing(t: T) -> R {

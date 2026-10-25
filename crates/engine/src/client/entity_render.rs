@@ -557,7 +557,7 @@ impl EntityRenderer {
         let v = View { view_proj: proj.to_cols_array_2d(), fog_color: [0.0; 4], fog: [1e9, 2e9, 0.0, crate::shaders::time()], light: [1.0, 0.0, 0.0, 0.0] };
         gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
         list.push(Cmd::BeginPass { color: Some((Target::Texture(col), Some([0.0; 4]))), depth: Some((dep, Some(0.0))) });
-        self.models.draw(gpu, list, frame, self.preview_pipe, vb);
+        self.models.draw(gpu, list, frame, super::models::Batch::Preview, self.preview_pipe, vb);
         list.push(Cmd::EndPass);
         Some(index)
     }
@@ -669,7 +669,7 @@ impl EntityRenderer {
         self.models.begin();
         self.models.add_many(&posed);
         self.posed = posed;
-        self.models.draw(gpu, list, frame, self.model_pipe, vb);
+        self.models.draw(gpu, list, frame, super::models::Batch::World, self.model_pipe, vb);
 
         // Selection outline: twelve thin dark boxes along the edges of the target's shape.
         if let Some((hit, at)) = target {

@@ -277,6 +277,43 @@ pub async fn creative_and_invulnerable(t: T) -> R {
     Ok(())
 }
 
+/// Every creative click breaks a block, also at over 1000 frames a second (instant breaks once
+/// needed a frame longer than 1 ms), and a held button keeps breaking.
+pub async fn creative_clicks(t: T) -> R {
+    t.flat().await?;
+    t.op("mode creative").await?;
+    t.c().setting("vsync", "false");
+    let r = creative_clicks_fast(&t).await;
+    t.c().setting("vsync", "true");
+    r
+}
+
+async fn creative_clicks_fast(t: &T) -> R {
+    let f = t.feet();
+    let row = [add(f, [2, 1, 0]), add(f, [3, 1, 0]), add(f, [4, 1, 0])];
+    let build = async || {
+        for b in row {
+            t.set(b, "stone").await?;
+        }
+        t.until("the row on the client", Duration::from_secs(2), |t| row.iter().all(|&b| t.c().block(b).is_some_and(|s| s != 0))).await?;
+        t.look_at(row[0]);
+        t.frames(2).await
+    };
+    let gone = |t: &T, i: usize| t.c().block(row[i]) == Some(0);
+    build().await?;
+    for i in 0..row.len() {
+        t.press("core:attack");
+        t.until(&format!("click {} breaks a block", i + 1), Duration::from_secs(1), |t| gone(t, i)).await?;
+        t.secs(0.3).await?;
+    }
+    for b in row {
+        t.check_eq(t.block(b).await?, "core:air".into(), "the server broke it as well");
+    }
+    build().await?;
+    t.hold("core:attack", 1.0);
+    t.until("holding breaks the whole row", Duration::from_secs(2), |t| (0..row.len()).all(|i| gone(t, i))).await
+}
+
 /// Food: eating raises hunger, and another mod's component on the base game's food plus the
 /// `eaten` event heals (the owner's example).
 pub async fn food(t: T) -> R {

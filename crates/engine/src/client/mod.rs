@@ -1008,9 +1008,9 @@ on: {on}", list.join("
             }
         };
         if input.captured && !self.dead {
-            if input.held_button(0) {
+            if input.held("core:attack") {
                 if let Some(id) = self.target_entity {
-                    if input.pressed_button(0) || self.cooldown <= 0.0 {
+                    if input.pressed("core:attack") || self.cooldown <= 0.0 {
                         send_look(&mut self.conn);
                         self.conn.send(ToServer::Attack(id));
                         self.cooldown = 0.4;
@@ -1020,10 +1020,11 @@ on: {on}", list.join("
                     let held = self.held().item;
                     let (time, _) = crate::server::break_time(c, hit.state, held);
                     let time = if self.mode == GameMode::Creative { 0.0 } else { time };
-                    let progress = match self.breaking {
+                    let done = match self.breaking {
                         Some((f, p, v)) if (f, p) == (hit.frame, hit.block) => v,
                         _ => 0.0,
-                    } + dt as f32 / time.max(0.001);
+                    };
+                    let progress = if time <= 0.0 { 1.0 } else { done + dt as f32 / time };
                     if progress >= 1.0 && self.cooldown <= 0.0 {
                         send_look(&mut self.conn);
                         self.conn.send(ToServer::Break { pos: hit.block, frame: hit.frame });
@@ -1049,7 +1050,7 @@ on: {on}", list.join("
             } else {
                 self.breaking = None;
             }
-            if input.held_button(1) && self.cooldown <= 0.0 {
+            if input.held("core:use") && self.cooldown <= 0.0 {
                 send_look(&mut self.conn);
                 if let Some(id) = self.target_entity {
                     self.conn.send(ToServer::Interact(id));

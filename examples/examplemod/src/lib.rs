@@ -7,8 +7,9 @@
 //! - `assets/lang/*.lang`: the keys start with your mod id.
 //!
 //! Build: `cargo build --release`. Then make `run/mods/<your id>/` with the library from
-//! `target/release/` and the `assets` folder next to it, or pack both with
-//! `voxide --pack-mod <this folder>` into a zip that you can share.
+//! `target/release/` and the `assets` folder next to it.
+//! To share it, run `voxide --pack-mod run/mods/<your id>`,
+//! it packs that folder (library included) into a zip.
 //!
 //! This example adds one item, a setting, and a gift for joined players.
 //! Everything else is commented examples. The full cheat sheet is at `docs/modding.md`.
@@ -37,7 +38,7 @@ fn init(r: &mut Registry) {
     client(r);
 }
 
-/// Settings show up in Options > Mod Settings by themselves and are saved to
+/// Settings show up in Settings > Mod Settings by themselves and are saved to
 /// `config/examplemod.txt`. Name and tooltip come from `config.examplemod.<key>` in the lang file.
 fn config(r: &mut Registry) {
     r.config("gift_on_join").bool(true).handle(&GIFT_ON_JOIN);
@@ -67,7 +68,7 @@ fn blocks(_r: &mut Registry) {
 }
 
 /// Your items, texture is `item/<name>.png`, translation is `item.examplemod.<name>`
-/// Gray tooltip with `item.examplemod.<name>.tooltip`, for more tooltip options `check mods/base/assets/lang/en_us.lang`
+/// Gray tooltip with `item.examplemod.<name>.tooltip`, for more tooltip options check `mods/base/assets/lang/en_us.lang`
 fn items(r: &mut Registry) {
     r.item("example_item").handle(&EXAMPLE_ITEM).tab("base:ingredients").tag("gems/example");
     // Tools, weapons, food, fuel are all components or tags, so other mods can use them:

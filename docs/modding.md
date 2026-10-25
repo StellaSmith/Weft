@@ -1,8 +1,25 @@
 # Voxide modding cheat sheet
 
+## Contents
+1. [Introduction](#introduction)
+2. [Creating a mod in two minutes](#creating-a-mod-in-two-minutes)
+3. [Names and paths](#names-and-paths)
+   - [Names](#names), [Tags](#tags), [Handles](#handles), [Textures](#textures), [Translations](#translations)
+4. [Components and tags as inter-mod communication](#components-and-tags-as-inter-mod-communication)
+5. [Content builders](#content-builders)
+   - [Blocks](#blocks), [Items](#items), [Entities](#entities), [Machines](#machines), [Liquids](#liquids), [World](#world), [Recipes](#recipes), [Loot](#loot), [Replacing something of another mod](#replacing-something-of-another-mod)
+6. [Hooking into the game](#hooking-into-the-game)
+   - [Built-in events](#built-in-events), [Systems and energy](#systems-and-energy)
+7. [Commands](#commands)
+8. [World API](#world-api)
+9. [Client side](#client-side)
+10. [Debugging](#debugging)
+11. [Things that make your and other modders' life easier](#things-that-make-your-and-other-modders-life-easier)
+12. [Guides for bigger systems](#guides-for-bigger-systems)
+
 ## Introduction
-This is a guide describing how the base game itself is written\
-the game is a mod called `base`, which has no private hooks or priorities from engine, so if base can do something, 
+This is a guide describing how the base game itself is written.\
+The game is a mod called `base`, which has no private hooks or priorities from the engine, so if base can do something,
 your mod can too.\
 When in doubt, check `mods/base` and `mods/testmod` and copy from there.\
 testmod exists to prove you don't have to touch the engine.
@@ -10,7 +27,7 @@ testmod exists to prove you don't have to touch the engine.
 ## Creating a mod in two minutes
 
 Fastest way to begin is to copy `examples/examplemod`.\
-It is a ready mod with one item, a setting and an event\
+It is a ready mod with one item, a setting and an event.\
 Every kind of registration is written out there as a commented example with a pointer to where the base game uses it.\
 Rename three things listed at the top of its `lib.rs` and you can begin creating your mod.\
 The bare minimum looks like this:
@@ -19,12 +36,18 @@ The bare minimum looks like this:
 # Cargo.toml
 [package]
 name = "mymod"            # the library name must be your mod id
+version = "0.1.0"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-voxide_sdk = { path = "../crates/sdk" }
+# you want to replace this path with the one to the SDK after copying this folder somewhere else
+voxide_sdk = { path = "../../crates/sdk" }
+
+# only while the mod folder lies inside another cargo project (like this repository), see examples/examplemod/Cargo.toml
+[workspace]
 ```
 
 ```rust
@@ -43,7 +66,7 @@ fn init(r: &mut Registry) {
 }
 ```
 
-Build with `cargo build --release`, then put a folder in `run/mods/`:
+Build with `cargo build --release`, then make a folder in `run/mods/` and copy the library from `target/release/` into it:
 
 ```
 run/mods/mymod/
@@ -54,16 +77,16 @@ run/mods/mymod/
         lang/en_us.lang
 ```
 
-`voxide --pack-mod path/to/mymod` makes a `mymod.zip` of the same thing, which is what you can send to anyone.
+`voxide --pack-mod run/mods/mymod` makes a `mymod.zip` of the same thing, which is what you can send to anyone.\
+The folder has to hold the library that's what gets packed.
 
 A word on versioning: the mod interface is checked by a hash of its source. If your mod was built
 using another engine version, it just refuses to load and tells you to rebuild.
 
-## Namings and paths
+## Names and paths
 ### Names
-Everything has a name `namespace:path`. In your own mod you write just `ruby`, it becomes
-  `mymod:ruby`.\
-For other mods' things you have to write full name: `base:furnace`.
+Everything has a name `namespace:path`. In your own mod you write just `ruby`, it becomes `mymod:ruby`.\
+For other mods' things you have to write the full name: `base:furnace`.
 
 ### Tags
 `#tag` in a recipe, an ore replace list or a loot condition means "anything with this tag".\
@@ -74,18 +97,21 @@ Handles like `static RUBY: Item = Item::new()` are bound with `.handle(&RUBY)` a
 Other mods' content: `Block::named("base:stone")`. Hot code works only with ids.
 
 ### Textures
-`.texture("ruby")` for block means `mymod:block/ruby`, for items `.texture("ruby")` means `mymod:item/ruby`\
-A full path stays as written. Resource packs can replace any of them.
+`.texture("ruby")` for a block means `mymod:block/ruby`, for an item it means `mymod:item/ruby`.\
+A full path stays as written. Resource packs can replace any of them.\
+Textures can also be animated, connected (see the [CTM guide](ctm.md)) and glow, those are described in their own guides.
 
 ### Translations
 Format: `type.modname.name = value`, e.g. `item.examplemod.example_item = Example Item`\
-Any item can have tooltip using `type.modname.name.tooltip = Some tooltip`\
-Text can carry colors and effects:\
-`{#ff8080}This text is red{/}`\
-`{fx:core:wave}wavy{/fx}` (fx can be added from your mod too)\
-`{on_key:!core:sneak}This text will appear when binded key is NOT pressed{/on_key}`\
-`{on_key:core:sneak}This text will appear only when binded key is pressed{/on_key}`\
-`{if:creative}This text will appear if player is in creative mode{/if}`
+Any item can have a tooltip using `type.modname.name.tooltip = Some tooltip`\
+If the player's language doesn't have a key (or a whole file), English is shown, so `en_us.lang` is the one you always need.
+
+Text can carry colors and effects:
+- `{#ff8080}This text is red{/}`
+- `{fx:core:wave}wavy{/fx}` (new fx can be added from your mod too)
+- `{on_key:!core:sneak}This text will appear when the bound key is NOT pressed{/on_key}`
+- `{on_key:core:sneak}This text will appear only when the bound key is pressed{/on_key}`
+- `{if:creative}This text will appear if the player is in creative mode{/if}`
 
 ## Components and tags as inter-mod communication
 
@@ -122,91 +148,94 @@ value! {
 static MACHINE: Component<Machine> = Component::new("mymod:machine");
 ```
 
-Per-entity components like a state of a machine, hunger or anything else that changes in time go through\
-`r.entity_component(&COMP, default, flags, &["core:player"])` or the `.attach_with(..)` of a builder\
-Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`.
-You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send
+Per-entity components like a state of a machine, hunger or anything else that changes in time go through
+`r.entity_component(&COMP, default, flags, &["core:player"])` or the `.attach_with(..)` of a builder.\
+Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`.\
+You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.
 
 ## Content builders
 
 All of them are `r.<thing>("name")` followed by settings. The registration happens when the builder
 is dropped.
 
-### `r.block(..)`
-`hardness`\
-`mineable("pickaxe")`\
-`needs_tool(tier)`\
-`drops(item, n)` or `drops_nothing()`\
-`light(15)` or `light_rgb(r, g, b)`\
-`cutout()`\
-`translucent()`\
-`model_box(min, max, texture)`\
-`collision(..)`\
-`needs_below("soil")`\
-`grows(seconds, min_light)` + `on_grow(..)` for plants\
-`random_ticks(..)`\
-`on_use`, `on_placed`, `on_broken`, `on_neighbor`, `on_scheduled`,\
-`facing(Facings::HORIZONTAL, Toward::Player, |dir, state| ..)` for rotated blocks\
-`states(n, |i, s| ..)` for anything else with states.
+### Blocks
+`r.block("name")` and then:
+- `hardness`
+- `mineable("pickaxe")`
+- `needs_tool(tier)`
+- `drops(item, n)` or `drops_nothing()`
+- `light(15)` or `light_rgb(r, g, b)`
+- `cutout()`, `translucent()`
+- `model_box(min, max, texture)`, `collision(..)`
+- `needs_below("soil")`
+- `grows(seconds, min_light)` + `on_grow(..)` for plants
+- `random_ticks(..)`
+- `on_use`, `on_placed`, `on_broken`, `on_neighbor`, `on_scheduled`
+- `facing(Facings::HORIZONTAL, Toward::Player, |dir, state| ..)` for rotated blocks
+- `states(n, |i, s| ..)` for anything else with states
 
-### `r.item(..)`
-`texture`\
-`stack(N)`\
-`durability`\
-`tool("pickaxe", tier, speed)`\
-`attack`\
-`places(block)`\
-`worn(..)` for armor\
-`on_use`
+### Items
+`r.item("name")` and then:
+- `texture`
+- `stack(N)`
+- `durability`
+- `tool("pickaxe", tier, speed)`
+- `attack`
+- `places(block)`
+- `worn(..)` for armor
+- `on_use`
 
-### `r.entity(..)`
-`size(w, h)`\
-`health`\ `speed`\
-`hostile()` or `passive()` or `category(..)`\
-`texture`\
-`model(biped(..))` or `model_file("thing")` (Blockbench geo.json)\
-`animations(..)`\
-`goals(..)` for AI (see `voxide_sdk::ai`)\
-`on_tick`, `on_hurt`, `on_death`, `on_interact`\
+### Entities
+`r.entity("name")` and then:
+- `size(w, h)`, `health`, `speed`
+- `hostile()` or `passive()` or `category(..)`
+- `texture`
+- `model(biped(..))` or `model_file("thing")` (Blockbench geo.json)
+- `animations(..)`
+- `goals(..)` for AI (see `voxide_sdk::ai`)
+- `on_tick`, `on_hurt`, `on_death`, `on_interact`
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
-  `blocks(&[("base:oak_planks", from, to)])` makes a flying structure players can build on.
+`blocks(&[("base:oak_planks", from, to)])` makes a flying structure players can build on.
 
-### `r.machine(name, &MENU)`
-block + block entity + inventory + menu + screen in one go. Look at testmod's generator for example.
+### Machines
+`r.machine(name, &MENU)` is block + block entity + inventory + menu + screen in one go.\
+Look at testmod's generator for an example.
 
-### `r.liquid(..)`
-`delay`\
-`drop_off`\
-`slope_find`\
-`infinite`\
-`temperature`\
-`bucket(..)`\
+### Liquids
+`r.liquid("name")` and then:
+- `delay`, `drop_off`, `slope_find`
+- `infinite`
+- `temperature`
+- `bucket(..)`
+
 Reactions: `r.liquid_reaction("#hot", "#water").source("obsidian")`.
 
 ### World
-`r.biome(..)`\
-`r.dimension(..)` (`generator`, `spawn`, `column`, `height`,`gravity`, `fixed_time`, `sky`)\
-`r.ore(dim, block)`\
-`r.structure(dim, name)` with layers\
-`r.spawn(entity).biome("animals").light(7, 15)`\
+- `r.biome(..)`
+- `r.dimension(..)` (`generator`, `spawn`, `column`, `height`, `gravity`, `fixed_time`, `sky`)
+- `r.ore(dim, block)`
+- `r.structure(dim, name)` with layers
+- `r.spawn(entity).biome("animals").light(7, 15)`
+
 The `terrain` module has presets like hills, canyons, dunes, caves, lava lakes if you don't want to write noise by hand.\
 Mars in testmod is built from presets only.
 
 ### Recipes
-`r.shaped(&KIND, out, count, &["iii", " s ", " s "], &[('i', "#ingots/iron"), ('s', "base:stick")])`\
-`r.shapeless(..)`\
-Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a
-  kind with stations.
+- `r.shaped(&KIND, out, count, &["iii", " s ", " s "], &[('i', "#ingots/iron"), ('s', "base:stick")])`
+- `r.shapeless(..)`
+
+Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with stations.
+
 ### Loot
 `r.loot("name").pool(Pool::new().rolls(1, 2).item("ruby"))`\
 and other mods' tables without replacing them: `r.loot_modify("base:zombie").add_pool(..)`.
 
 ### Replacing something of another mod
-register the same name with `.replace()`\
+Register the same name with `.replace()`.\
 Their handle, item and recipes now point at yours. testmod does it with the torch.
 
-# Hooking into the game
+## Hooking into the game
 There are four mechanisms, try them in this order:
 
 ```rust
@@ -218,7 +247,7 @@ w.emit(&MY_EVENT, value);
 // Questions, anyone may say no, any deny wins.
 r.intercept(question::BREAK_BLOCK, |q| if is_protected(q.pos()) { Verdict::Deny } else { Verdict::Abstain });
 
-// Value chains for damage, attack damage, or your own. stages order them, `w.explain(..)` and
+// Value chains for damage, attack damage, or your own. Stages order them, `w.explain(..)` and
 // `--log modifiers=debug` show what changed what.
 r.modify(chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 
@@ -226,11 +255,11 @@ r.modify(chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 r.attribute("mymod:mana", 100.0, 0.0, 1000.0);
 ```
 
-## Engine's built-in events
-`BLOCK_BROKEN`, `BLOCK_PLACED`, `ITEM_PICKED_UP`, `ENTITY_HURT`,
-`ENTITY_DIED`, `PLAYER_JOINED`\
+### Built-in events
+`BLOCK_BROKEN`, `BLOCK_PLACED`, `ITEM_PICKED_UP`, `ENTITY_HURT`, `ENTITY_DIED`, `PLAYER_JOINED`\
 base adds `eaten` and `smelted`.
 
+### Systems and energy
 Systems run over every entity with a component all at once, which is what you want for
 thousands of machines: `r.system(&MACHINE, |batch| for (id, m) in batch.iter_mut() { .. })`.
 
@@ -238,59 +267,62 @@ Energy is a built-in engine contract, you can give a block entity the `core:ener
 cables with `conductor`, and every mod's generators and machines will work together.\
 Networks balance once per tick.
 
+## Commands
+`r.command("heal", "[amount:int] [who:targets]", |cmd| ..)`\
+The usage string is the whole spec: the engine parses it, checks types, completes it with Tab and shows it in `/help`.\
+Reading values by name: `cmd.int("amount")`, `cmd.targets("who")`.\
+`r.client_command` is the same for commands that run on the client that typed them.
+
 ## World API
 
-Inside any callback you get a `World` (`w`):\
-blocks (`get`, `set`, `schedule`)\
-entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `navigate`, `walk`)\
-inventories (`inventory(id).get/set/insert`)\
-components, energy, menus\
-particles (`w.particles(&SPARK, pos).count(20)`)\
-sounds (`w.play_sound(&S, pos, volume)`)\
-rules (`w.rule("mymod:hard_mode")`)\
-gizmos for debugging (`w.gizmo_line/box/text`)
+Inside any callback you get a `World` (`w`):
+- blocks (`get`, `set`, `schedule`)
+- entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `navigate`, `walk`)
+- inventories (`inventory(id).get/set/insert`)
+- components, energy, menus
+- particles (`w.particles(&SPARK, pos).count(20)`)
+- sounds (`w.play_sound(&S, pos, volume)`)
+- rules (`w.rule("mymod:hard_mode")`)
+- gizmos for debugging (`w.gizmo_line/box/text`)
 
 ## Client side
 
-UI is built in code: `r.screen("about", |ui| ui.panel(..))`\
-HUD elements are built with`r.hud_element(name, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`\
-F3 panels are at `hud_anchor::DEBUG_LEFT`. 
-Looks come from themes and 9-slice sprites in `assets/ui`, so a resource pack can reskin screens.
-Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`
+- UI is built in code: `r.screen("about", |ui| ui.panel(..))`
+- HUD elements are built with `r.hud_element(name, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`
+- F3 panels are at `hud_anchor::DEBUG_LEFT`
+- Looks come from themes and 9-slice sprites in `assets/ui`, so a resource pack can reskin screens
+- Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`
 
-### Also:
-key bindings (`r.key("dash", "R")`)\
-client commands (`r.client_command`),\
-packets both ways (`r.packet` on the server, `r.client_packet` on the client, `w.send` / `client.send`)\
-frame hooks (`r.client_frame`)\
-particles and screen effects from shader snippets in `assets/shaders`\
-sounds with `r.sound(..).category(..)` (every category gets its own volume slider)\
-music, settings that show up in Mod Settings by themselves (`r.config("sparks").bool(true).handle(&SPARKS)`)\
-
-### Commands
-`r.command("heal", "[amount:int] [who:targets]", |cmd| ..)`.\
-The usage string is the whole spec which the engine parses, checks types, completes it with Tab and shows it in `/help`.
-Reading values by name: `cmd.int("amount")`, `cmd.targets("who")`.
+Also:
+- key bindings (`r.key("dash", "R")`)
+- packets both ways (`r.packet` on the server, `r.client_packet` on the client, `w.send` / `client.send`)
+- frame hooks (`r.client_frame`)
+- particles and screen effects from shader snippets in `assets/shaders`
+- sounds with `r.sound(..).category(..)` (every category gets its own volume slider), music
+- settings that show up in Mod Settings by themselves (`r.config("sparks").bool(true).handle(&SPARKS)`)
 
 ## Debugging
 
-`--log mod:mymod=debug` (or `/log` in chat) turns on your `debug!` / `trace!` lines\
+`--log mod:mymod=debug` (or `/log` in chat) turns on your `debug!` / `trace!` lines.\
 `info!(target: "pipes", ..)` gives you `mod:mymod::pipes` to filter on.
 
-F3 shows your mod's time per tick. `/gizmo` draws debug shapes, your own groups included (`r.gizmo_group("pipes")`)
+F3 shows your mod's time per tick. `/gizmo` draws debug shapes, your own groups included (`r.gizmo_group("pipes")`).
 
-A panic in your callback disables that callback and names your mod in the log instead of taking the game down\
+A panic in your callback disables that callback and names your mod in the log instead of taking the game down.\
 Native crashes write a report into `run/crash-reports/` with the mod that was running.
 
 F3+T reloads textures, lang, shaders and UI without restarting.
 
 ## Things that make your and other modders' life easier
-Don't hardcode other mods' blocks, use a tag or a component\
-tag `#sand` allows other mods to work with your mod, whereas `base:sand` does not. 
+Don't hardcode other mods' blocks, use a tag or a component.\
+Tag `#sand` allows other mods to work with your mod, whereas `base:sand` does not.
 
 Don't do per-object work across the mod boundary in hot paths if a batch exists (systems, events, entity ticks get all entities of a kind at once).
 
 If you had to work around the engine to do something reasonable, that is an engine flaw.\
-Tell me about this instead of building a hack, so i can modify engine for that scenarios\
+Tell me about this instead of building a hack, so I can adjust the engine for those cases.
 
-You can contact me in Discord: `@vortex_so`
+You can contact me on Discord: `@vortex_so`
+
+## Guides for bigger systems
+- [CTM](ctm.md): connected and varied block textures (glass, logs, random stone)

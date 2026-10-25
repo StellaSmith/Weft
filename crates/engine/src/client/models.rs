@@ -101,12 +101,20 @@ pub struct Posed {
     pub layer_count: usize,
 }
 
+#[derive(Clone, Copy)]
+pub enum Batch {
+    World,
+    Preview,
+}
+
 pub struct Models {
     pub kinds: Vec<KindModel>,
     cuboids: BufferId,
     corners: BufferId,
-    instances: Vec<(BufferId, u32)>,
-    bones: Vec<(BufferId, u32)>,
+    /// Per frame slot, one set per [`Batch`]: the GPU reads them only when the frame's list
+    /// runs, so two batches drawn in one frame can't share them.
+    instances: [Vec<(BufferId, u32)>; 2],
+    bones: [Vec<(BufferId, u32)>; 2],
     /// This frame: (kind, instance) and bone rows.
     queued: Vec<(u32, Instance)>,
     rows: Vec<[[f32; 4]; 3]>,
@@ -147,8 +155,8 @@ impl Models {
             kinds: Vec::new(),
             cuboids: gpu.create_buffer(16, usage::STORAGE, "model cuboids"),
             corners: gpu.create_buffer(16, usage::STORAGE, "model corners"),
-            instances: Vec::new(),
-            bones: Vec::new(),
+            instances: Default::default(),
+            bones: Default::default(),
             queued: Vec::new(),
             rows: Vec::new(),
             scratch: Vec::new(),
@@ -191,7 +199,7 @@ impl Models {
     }
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
-        for b in [self.cuboids, self.corners].into_iter().chain(self.instances.drain(..).map(|b| b.0)).chain(self.bones.drain(..).map(|b| b.0)) {
+        for b in [self.cuboids, self.corners].into_iter().chain(self.instances.iter_mut().chain(&mut self.bones).flat_map(|v| v.drain(..)).map(|b| b.0)) {
             gpu.destroy_buffer(b);
         }
     }
@@ -265,14 +273,14 @@ impl Models {
 
     /// Draws what was queued since `begin`, one instanced draw per kind, with `pipe` and the
     /// view in `view`.
-    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, pipe: PipelineId, view: BufferId) {
+    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, batch: Batch, pipe: PipelineId, view: BufferId) {
         if self.queued.is_empty() {
             return;
         }
         self.queued.sort_by_key(|q| q.0);
         let grow = crate::gpu_layout::frame_buffer;
-        let ib = grow(gpu, &mut self.instances, frame.slot, self.queued.len() as u32, size_of::<Instance>() as u64, usage::STORAGE, "model instances");
-        let bb = grow(gpu, &mut self.bones, frame.slot, self.rows.len().max(1) as u32, 48, usage::STORAGE, "model bones");
+        let ib = grow(gpu, &mut self.instances[batch as usize], frame.slot, self.queued.len() as u32, size_of::<Instance>() as u64, usage::STORAGE, "model instances");
+        let bb = grow(gpu, &mut self.bones[batch as usize], frame.slot, self.rows.len().max(1) as u32, 48, usage::STORAGE, "model bones");
         let insts: Vec<Instance> = self.queued.iter().map(|q| q.1).collect();
         gpu.mapped(ib)[..insts.len() * size_of::<Instance>()].copy_from_slice(bytemuck::cast_slice(&insts));
         gpu.mapped(bb)[..self.rows.len() * 48].copy_from_slice(bytemuck::cast_slice(&self.rows));

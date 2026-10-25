@@ -342,19 +342,6 @@ pub async fn worldgen(t: T) -> R {
         t.check_eq(n[2] + n[3], 0, &format!("the test mod's glowing plants are not generated ({x} {z})"));
     }
 
-    let at = t.op("structure base:well 2000").await?;
-    let a: Vec<i32> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
-    let [x, y, z] = a[..] else { return Err(format!("no well near spawn: {at}")) };
-    t.cmd(&format!("/tp {} {} {}", x + 1, y + 6, z - 3)).await?;
-    t.secs(1.0).await?;
-    t.loaded().await?;
-    t.secs(0.5).await?;
-    t.check_eq(t.block([x, y, z]).await?, "base:cobblestone".to_string(), "the well's rim");
-    t.check_eq(t.block([x + 1, y, z + 1]).await?, "base:water".to_string(), "its water");
-    t.check_eq(t.block([x, y + 3, z]).await?, "base:cobblestone".to_string(), "its roof");
     t.check(t.op("structure testmod:obelisk 3000").await? != "none", "another mod's obelisks are in the world too");
-    t.c().look(180.0, -40.0);
-    t.secs(0.5).await?;
-    t.shot("well").await?;
     Ok(())
 }

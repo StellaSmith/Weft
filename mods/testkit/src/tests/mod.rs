@@ -5,6 +5,8 @@ mod extend;
 mod gameplay;
 mod liquids;
 mod looks;
+mod probe;
+mod scene;
 mod sync;
 mod ui;
 mod visual;
@@ -14,69 +16,50 @@ use std::time::Duration;
 
 use crate::runner::{R, T, TestDef};
 
+pub fn add(p: [i32; 3], d: [i32; 3]) -> [i32; 3] {
+    [p[0] + d[0], p[1] + d[1], p[2] + d[2]]
+}
+
+pub fn at(p: [i32; 3]) -> String {
+    format!("{} {} {}", p[0], p[1], p[2])
+}
+
 pub fn all() -> Vec<TestDef> {
     crate::tests![
-        ui::title_screens,
-        ui::f3_overlay,
-        ui::f3_russian_large,
-        ui::f3_mod_panel,
-        ui::mod_screen,
+        scene::scene,
+        ui::screens,
+        ui::f3,
         ui::inventory_crafting,
         ui::creative_inventory,
-        ui::chat_completion,
-        ui::slash_opens_commands,
-        ui::client_command_completion,
+        ui::chat,
         ui::mod_settings,
         ui::recipe_viewer,
         ui::inventory_hotkeys,
-        world::flatlands_sync,
-        world::save_and_reload,
+        world::persistence,
         world::missing_dimension,
-        world::void_dimension,
         world::dimensions,
         world::virtual_menus,
-        world::sand_and_support,
-        world::sand_lands_exactly,
-        world::deep_caves,
-        world::flora,
-        world::item_farm,
-        world::debug_blocks,
+        world::worldgen,
         world::tick_control,
         world::growth,
-        world::structures,
-        gameplay::furnace,
         gameplay::crafting_table_tags,
         gameplay::mining_and_wear,
         gameplay::creative_and_invulnerable,
         gameplay::armor,
         gameplay::slot_accepts,
         gameplay::bucket,
-        liquids::water_flow,
-        liquids::water_finds_hole,
-        liquids::infinite_water,
-        liquids::lava_and_water,
-        liquids::lava_burns,
-        liquids::mod_liquid_bucket,
-        liquids::mod_sand_soil,
+        gameplay::battery,
+        gameplay::burning,
         gameplay::fall_damage,
         gameplay::sneak_edge,
-        gameplay::commands,
-        gameplay::mobs,
-        gameplay::energy,
-        gameplay::eating,
+        gameplay::food,
         gameplay::drop_and_pickup,
         gameplay::sounds,
         extend::events_batched,
-        extend::interceptor_protects,
-        extend::damage_chain,
-        extend::attributes,
-        extend::loot_tables,
-        extend::tool_tiers,
-        extend::facing_states,
-        extend::healing_food,
+        extend::facing_placement,
+        liquids::mod_liquid_bucket,
+        liquids::mod_sand_soil,
         sync::menu_sync,
-        sync::watcher_sync,
-        sync::server_only_stack_data,
         visual::held_items,
         visual::liquid_layers,
         visual::break_overlay,
@@ -105,13 +88,15 @@ pub fn all() -> Vec<TestDef> {
         bodies::skiff,
         bodies::skiff_smooth,
         bodies::skiff_blocks,
-        bodies::crate_and_crowd,
         bodies::natural_spawning,
-        bodies::pathfinding,
         bodies::zombie_chases,
         bodies::morph,
-        world::load_benchmark,
     ]
+}
+
+/// Measurements without a verdict worth failing a run over; `--test bench`.
+pub fn bench() -> Vec<TestDef> {
+    crate::tests![world::load_benchmark, world::item_farm, looks::particle_crowd]
 }
 
 impl T {

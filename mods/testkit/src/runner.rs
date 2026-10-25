@@ -41,13 +41,15 @@ pub struct Inner {
     notes: Vec<String>,
 }
 
-/// Handle a test uses for everything; cheap to clone, only touched on the main thread.
+/// Handle a test uses for everything; cheap to clone, only touched on the main thread. A
+/// scenario of a shared scene gets a copy labelled with its name (`scoped`).
 #[derive(Clone)]
-pub struct T(Rc<RefCell<Inner>>);
+pub struct T(Rc<RefCell<Inner>>, Option<Rc<str>>);
 
 impl T {
     fn new(name: &str) -> T {
-        T(Rc::new(RefCell::new(Inner {
+        T(
+            Rc::new(RefCell::new(Inner {
             client: None,
             state: ClientState::DEFAULT,
             screen: String::new(),
@@ -56,7 +58,30 @@ impl T {
             name: name.to_string(),
             failures: Vec::new(),
             notes: Vec::new(),
-        })))
+            })),
+            None,
+        )
+    }
+
+    /// The same test, its failures and notes labelled with `label`.
+    pub fn scoped(&self, label: &str) -> T {
+        T(self.0.clone(), Some(Rc::from(label)))
+    }
+
+    fn labelled(&self, m: String) -> String {
+        match &self.1 {
+            Some(l) => format!("{l}: {m}"),
+            None => m,
+        }
+    }
+
+    /// Whether this scenario (or the whole test, unlabelled) has failed a check.
+    pub fn failed(&self) -> bool {
+        let i = self.0.borrow();
+        match &self.1 {
+            Some(l) => i.failures.iter().any(|f| f.starts_with(&format!("{l}: "))),
+            None => !i.failures.is_empty(),
+        }
     }
 
     /// The client of the frame being polled.
@@ -78,13 +103,13 @@ impl T {
 
     /// A failed check that does not stop the test.
     pub fn fail(&self, msg: impl Into<String>) {
-        let m = msg.into();
+        let m = self.labelled(msg.into());
         voxide_sdk::warn!("[{}] FAIL {m}", self.name());
         self.0.borrow_mut().failures.push(m);
     }
 
     pub fn note(&self, msg: impl Into<String>) {
-        let m = msg.into();
+        let m = self.labelled(msg.into());
         voxide_sdk::info!("[{}] {m}", self.name());
         self.0.borrow_mut().notes.push(m);
     }
@@ -98,6 +123,41 @@ impl T {
 
     pub fn check_eq<V: PartialEq + std::fmt::Debug>(&self, got: V, want: V, what: &str) -> bool {
         self.check(got == want, format!("{what}: got {got:?}, want {want:?}"))
+    }
+
+    /// A measured value always goes to the report (to tune limits); fails when not `ok`.
+    pub fn probe(&self, what: &str, value: f32, ok: bool) -> bool {
+        if ok {
+            self.note(format!("{what}: {value:.4}"));
+        }
+        self.check(ok, format!("{what}: {value:.4}"))
+    }
+
+    /// Where world point `p` is drawn this frame (fractions of the window), seen from the eyes
+    /// of the standing local player in first person; `None` behind the camera.
+    pub fn on_screen(&self, p: [f64; 3]) -> Option<(f32, f32)> {
+        let s = self.state();
+        let eye = [s.shown[0], s.shown[1] + 1.62, s.shown[2]];
+        let (sy, cy) = (s.yaw as f64).sin_cos();
+        let (sp, cp) = (s.pitch as f64).sin_cos();
+        let fwd = [-sy * cp, sp, -cy * cp];
+        let right = [cy, 0.0, -sy];
+        let up = [right[1] * fwd[2] - right[2] * fwd[1], right[2] * fwd[0] - right[0] * fwd[2], right[0] * fwd[1] - right[1] * fwd[0]];
+        let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+        let dot = |a: [f64; 3]| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+        let z = dot(fwd);
+        if z <= 0.05 {
+            return None;
+        }
+        let tan = (70f64.to_radians() / 2.0).tan();
+        let aspect = s.window[0] as f64 / s.window[1].max(1) as f64;
+        let (x, y) = (dot(right) / (z * tan * aspect), dot(up) / (z * tan));
+        Some(((0.5 + 0.5 * x) as f32, (0.5 - 0.5 * y) as f32))
+    }
+
+    /// Where the middle of block `b` (offset by `d` blocks) is drawn.
+    pub fn block_on_screen(&self, b: [i32; 3], d: [f64; 3]) -> Option<(f32, f32)> {
+        self.on_screen([b[0] as f64 + 0.5 + d[0], b[1] as f64 + 0.5 + d[1], b[2] as f64 + 0.5 + d[2]])
     }
 
     // ------------------------------------------------ waiting
@@ -277,6 +337,18 @@ impl T {
         }
     }
 
+    /// Every element is on the top screen (or the HUD) and fully inside the window.
+    pub fn laid_out(&self, queries: &[&str]) {
+        for q in queries {
+            match self.c().ui_rect(q) {
+                None => self.fail(format!("no UI element {q} on {}", self.0.borrow().screen)),
+                Some([x, y, w, h]) => {
+                    self.check(x >= 0.0 && y >= 0.0 && x + w <= 1.001 && y + h <= 1.001, format!("{q} sticks out of the window ({x:.3} {y:.3} {w:.3} {h:.3})"));
+                }
+            }
+        }
+    }
+
     /// Clicks a UI element (`slot:N`, `id:x`, `text:words`) of the top screen.
     pub fn click_ui(&self, query: &str, button: u32) -> bool {
         let ok = self.c().click_ui(query, button);
@@ -288,90 +360,38 @@ impl T {
 
     // ------------------------------------------------ evidence
 
-    /// Screenshot `name` into `run/test-shots/<test>/`, compared with `run/test-refs/<test>/` when
-    /// a reference exists (a missing one is recorded from this run).
-    pub async fn shot(&self, name: &str) -> R {
-        self.shot_within(name, 0.01).await
+    /// Saves the whole frame as `run/test-shots/<test>/<name>.png` (for looking at after a
+    /// failure) and returns it; tests decide with probes on it, never by comparing pictures.
+    pub async fn shot(&self, name: &str) -> Result<Shot, String> {
+        self.capture(name).await
     }
 
-    /// `shot` allowing a larger share of pixels to differ (live numbers on screen).
-    pub async fn shot_within(&self, name: &str, allowed: f64) -> R {
-        let run = self.c().run_dir();
-        let file = format!("{name}.png");
-        let path = format!("{run}/test-shots/{}/{file}", self.name());
+    async fn capture(&self, name: &str) -> Result<Shot, String> {
+        let path = format!("{}/test-shots/{}/{name}.png", self.c().run_dir(), self.name());
         let id = self.c().screenshot(&path);
-        let mut px = None;
+        let mut shot = None;
         self.until(&format!("screenshot {name}"), Duration::from_secs(10), |_| {
-            px = client::image(id);
-            px.is_some()
+            shot = client::image(id).map(|(w, h, p)| Shot { w, h, px: p.to_vec() });
+            shot.is_some()
         })
         .await?;
-        let (w, h, shot) = px.unwrap();
-        let reference = format!("{run}/test-refs/{}/{file}", self.name());
-        let record = launch_option("test-record").is_some();
-        match client::image_load(&reference).filter(|_| !record) {
-            Some(rid) => {
-                let (rw, rh, refpx) = client::image(rid).unwrap();
-                if (rw, rh) != (w, h) {
-                    self.fail(format!("screenshot {name}: {w}x{h}, reference {rw}x{rh}"));
-                } else {
-                    let (diff, mask) = compare(shot, refpx);
-                    let share = diff as f64 / (w * h) as f64;
-                    if share > allowed {
-                        let dpath = format!("{run}/test-shots/{}/{name}.diff.png", self.name());
-                        client::image_save(&dpath, w, h, &mask);
-                        self.fail(format!("screenshot {name} differs from the reference in {:.2}% of pixels (diff: {dpath})", share * 100.0));
-                    } else {
-                        self.note(format!("screenshot {name} matches the reference ({:.3}% differ)", share * 100.0));
-                    }
-                }
-                client::image_free(rid);
-            }
-            None => {
-                let dir = format!("{run}/test-refs/{}", self.name());
-                let _ = std::fs::create_dir_all(&dir);
-                client::image_save(&reference, w, h, shot);
-                self.note(format!("screenshot {name} recorded as the reference"));
-            }
-        }
         client::image_free(id);
-        Ok(())
+        Ok(shot.unwrap())
     }
 
     /// This frame's pixels (RGBA), for comparing frames within a test.
     pub async fn grab(&self) -> Result<Vec<u8>, String> {
-        let path = format!("{}/test-shots/{}/grab.png", self.c().run_dir(), self.name());
-        let id = self.c().screenshot(&path);
-        let mut px = None;
-        self.until("grab", Duration::from_secs(10), |_| {
-            px = client::image(id).map(|p| p.2.to_vec());
-            px.is_some()
-        })
-        .await?;
-        client::image_free(id);
-        Ok(px.unwrap())
+        Ok(self.capture("grab").await?.px)
     }
 
     /// This frame's colour at (x, y), fractions of the window size.
     pub async fn pixel(&self, x: f32, y: f32) -> Result<[u8; 3], String> {
-        let path = format!("{}/test-shots/{}/pixel.png", self.c().run_dir(), self.name());
-        let id = self.c().screenshot(&path);
-        let mut px = None;
-        self.until("pixel", Duration::from_secs(10), |_| {
-            px = client::image(id).map(|(w, h, p)| {
-                let i = (((y * h as f32) as u32).min(h - 1) * w + ((x * w as f32) as u32).min(w - 1)) as usize * 4;
-                [p[i], p[i + 1], p[i + 2]]
-            });
-            px.is_some()
-        })
-        .await?;
-        client::image_free(id);
-        Ok(px.unwrap())
+        Ok(self.capture("pixel").await?.at(x, y))
     }
 
     /// Share of pixels that differ between two grabs.
     pub fn differ(a: &[u8], b: &[u8]) -> f64 {
-        compare(a, b).0 as f64 / (a.len() / 4).max(1) as f64
+        compare(a, b) as f64 / (a.len() / 4).max(1) as f64
     }
 
     /// Frame/GPU/server numbers over `secs`: [fps, avg ms, p99 ms, gpu ms, server ms].
@@ -440,21 +460,103 @@ impl T {
     }
 }
 
-/// Pixels whose colour differs noticeably, and a mask image showing them in red.
-fn compare(a: &[u8], b: &[u8]) -> (u32, Vec<u8>) {
-    let mut n = 0;
-    let mut mask = Vec::with_capacity(a.len());
-    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
-        let d = (0..3).map(|i| (p[i] as i32 - q[i] as i32).abs()).max().unwrap_or(0);
-        if d > 40 {
-            n += 1;
-            mask.extend_from_slice(&[255, 0, 0, 255]);
-        } else {
-            let g = (p[0] as u32 + p[1] as u32 + p[2] as u32) / 9;
-            mask.extend_from_slice(&[g as u8, g as u8, g as u8, 255]);
+/// A screenshot kept for looking at; checks probe it. Coordinates are fractions of the frame.
+pub struct Shot {
+    pub w: u32,
+    pub h: u32,
+    pub px: Vec<u8>,
+}
+
+impl Shot {
+    pub fn at(&self, x: f32, y: f32) -> [u8; 3] {
+        let i = self.index(x, y);
+        [self.px[i], self.px[i + 1], self.px[i + 2]]
+    }
+
+    fn index(&self, x: f32, y: f32) -> usize {
+        let (px, py) = (((x * self.w as f32) as u32).min(self.w - 1), ((y * self.h as f32) as u32).min(self.h - 1));
+        (py * self.w + px) as usize * 4
+    }
+
+    fn each(&self, x0: f32, y0: f32, x1: f32, y1: f32, mut f: impl FnMut([u8; 3])) {
+        let (ax, ay) = (((x0 * self.w as f32) as u32).min(self.w - 1), ((y0 * self.h as f32) as u32).min(self.h - 1));
+        let (bx, by) = (((x1 * self.w as f32) as u32).clamp(ax + 1, self.w), ((y1 * self.h as f32) as u32).clamp(ay + 1, self.h));
+        for y in ay..by {
+            for x in ax..bx {
+                let i = ((y * self.w + x) * 4) as usize;
+                f([self.px[i], self.px[i + 1], self.px[i + 2]]);
+            }
         }
     }
-    (n, mask)
+
+    /// Average colour of the box from (x0, y0) to (x1, y1).
+    pub fn avg(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> [f32; 3] {
+        let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
+        self.each(x0, y0, x1, y1, |c| {
+            for k in 0..3 {
+                sum[k] += c[k] as f32;
+            }
+            n += 1.0;
+        });
+        sum.map(|v| v / n.max(1.0))
+    }
+
+    /// Share of the box's pixels for which `f` holds.
+    pub fn share(&self, x0: f32, y0: f32, x1: f32, y1: f32, mut f: impl FnMut([u8; 3]) -> bool) -> f32 {
+        let (mut hit, mut n) = (0.0f32, 0.0f32);
+        self.each(x0, y0, x1, y1, |c| {
+            hit += f(c) as u8 as f32;
+            n += 1.0;
+        });
+        hit / n.max(1.0)
+    }
+}
+
+/// Perceived brightness 0..255.
+pub fn lum(c: [f32; 3]) -> f32 {
+    0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+}
+
+/// Pixels whose colour differs noticeably.
+fn compare(a: &[u8], b: &[u8]) -> u32 {
+    let n = a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(p, q)| (0..3).any(|i| (p[i] as i32 - q[i] as i32).abs() > 40)).count();
+    n as u32
+}
+
+/// Runs the futures side by side (each polled every frame); the first error of each is reported
+/// by `timed`, so this only waits for all of them.
+pub struct All(Vec<Option<BoxTest>>);
+
+pub fn all(parts: Vec<BoxTest>) -> All {
+    All(parts.into_iter().map(Some).collect())
+}
+
+impl Future for All {
+    type Output = R;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<R> {
+        for slot in self.0.iter_mut() {
+            if let Some(f) = slot {
+                if f.as_mut().poll(cx).is_ready() {
+                    *slot = None;
+                }
+            }
+        }
+        if self.0.iter().all(Option::is_none) { Poll::Ready(Ok(())) } else { Poll::Pending }
+    }
+}
+
+/// One scenario of a scene: labelled failures, its error reported as a failure, its time noted.
+pub fn scenario<F: Future<Output = R> + 'static>(t: &T, name: &str, f: impl FnOnce(T) -> F) -> BoxTest {
+    let t = t.scoped(name);
+    let fut = f(t.clone());
+    Box::pin(async move {
+        let start = Instant::now();
+        if let Err(e) = fut.await {
+            t.fail(e);
+        }
+        t.note(format!("{} in {:.1} s", if t.failed() { "FAILED" } else { "ok" }, start.elapsed().as_secs_f32()));
+        Ok(())
+    })
 }
 
 pub struct Wait<F> {
@@ -531,6 +633,10 @@ pub fn frame(c: &Client) {
             return;
         }
         if run.warmup > 0 {
+            // Each run's screenshots only.
+            if run.warmup == 3 {
+                let _ = std::fs::remove_dir_all(format!("{}/test-shots", c.run_dir()));
+            }
             run.warmup -= 1;
             return;
         }

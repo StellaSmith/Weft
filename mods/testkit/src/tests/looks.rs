@@ -1,16 +1,13 @@
-//! Stage 6 and 7: particles, text effects and conditions, shaders from mods, glow masks, models.
+//! Particles, text effects and conditions, shaders from mods, glow masks, models.
 
 use std::time::Duration;
 
 use voxide_sdk::*;
 
+use super::{add, probe};
 use crate::runner::{R, T};
 
 static SPARK: Particle = Particle::named("testmod:spark");
-
-fn add(p: [i32; 3], d: [i32; 3]) -> [i32; 3] {
-    [p[0] + d[0], p[1] + d[1], p[2] + d[2]]
-}
 
 /// Bursts from the client and from the server (a broken block's dust) live and die out.
 pub async fn particles(t: T) -> R {
@@ -27,7 +24,14 @@ pub async fn particles(t: T) -> R {
     // Vanilla's 4x4x4 pieces, sent by the server.
     t.until("block dust", Duration::from_secs(3), |t| t.state().particles >= 60).await?;
     t.until("dust settled", Duration::from_secs(4), |t| t.state().particles == 0).await?;
-    // Huge counts stay cheap: simulated in parallel, drawn in one instanced draw.
+    Ok(())
+}
+
+/// Huge counts stay cheap: simulated in parallel, drawn in one instanced draw.
+pub async fn particle_crowd(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let pos = [f[0] as f64 + 0.5, f[1] as f64 + 1.5, f[2] as f64 - 2.5];
     for _ in 0..10 {
         drop(t.c().particles(&SPARK, pos).count(10_000).spread(4.0).speed(1.0));
     }
@@ -39,8 +43,8 @@ pub async fn particles(t: T) -> R {
     Ok(())
 }
 
-/// Texture edges at a distance, where mip levels mix texels: snowy grass over dirt, grass sides
-/// (an overlay) and tall grass must not show lines along block edges. Also a 64x64 texture.
+/// Texture edges at a distance, where mip levels mix texels: no light line along the edge of a
+/// snowy grass block over dirt; a 64x64 texture shows its own colours among 16x16 ones.
 pub async fn texture_seams(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
@@ -50,10 +54,34 @@ pub async fn texture_seams(t: T) -> R {
     t.fill(add(f, [-8, 3, -12]), add(f, [8, 3, -12]), "grass").await?;
     t.fill(add(f, [-8, 0, -9]), add(f, [8, 0, -9]), "tall_grass").await?;
     // 64x64 next to 16x16 textures.
-    t.fill(add(f, [1, 0, -5]), add(f, [2, 1, -5]), "testmod:mosaic").await?;
+    let mosaic = add(f, [1, 0, -5]);
+    t.fill(mosaic, add(mosaic, [1, 1, 0]), "testmod:mosaic").await?;
     t.c().look(35.0, 8.0);
     t.settled().await?;
-    t.shot("seams").await?;
+    let shot = t.shot("seams").await?;
+    // Just below and above the edge between the dirt and the snowy grass on top of it, on the
+    // face the camera sees.
+    let mut light = 0;
+    let mut seen = 0;
+    for x in -7..=7 {
+        for dy in [0.96, 1.04] {
+            if let Some((sx, sy)) = t.on_screen([(f[0] + x) as f64 + 0.5, f[1] as f64 + dy, (f[2] - 11) as f64 + 0.01]) {
+                if (0.0..1.0).contains(&sx) && (0.0..1.0).contains(&sy) {
+                    seen += 1;
+                    light += (probe::lum(shot.at(sx, sy)) > 170.0) as u32;
+                }
+            }
+        }
+    }
+    t.check(seen > 6, format!("the wall's edge is in view ({seen} points)"));
+    t.probe("light points along the snowy grass edge", light as f32, light == 0);
+    // The middle of the 2x2 mosaic face the camera sees.
+    let p = t.on_screen([(mosaic[0] + 1) as f64, (mosaic[1] + 1) as f64, mosaic[2] as f64 + 1.01]).unwrap_or((0.5, 0.5));
+    let colours = shot.share(p.0 - 0.03, p.1 - 0.05, p.0 + 0.03, p.1 + 0.05, |c| {
+        let (hi, lo) = (*c.iter().max().unwrap() as i32, *c.iter().min().unwrap() as i32);
+        hi - lo > 80
+    });
+    t.probe("the mosaic's saturated colours", colours, colours > 0.3);
     Ok(())
 }
 
@@ -79,14 +107,19 @@ pub async fn tint_kinds(t: T) -> R {
             t.idle().await?;
         }
         let f = t.feet();
-        t.fill(add(f, [-3, 0, -3]), add(f, [3, 3, -3]), "testmod:glow_moss").await?;
+        let (a, b) = (add(f, [-3, 0, -3]), add(f, [3, 3, -3]));
+        t.fill(a, b, "testmod:glow_moss").await?;
+        let moss = find_block("testmod:glow_moss");
+        // Every block of the wall must reach the client before its colour can be looked at.
+        t.until("the moss wall on the client", Duration::from_secs(5), |t| (a[1]..=b[1]).all(|y| (a[0]..=b[0]).all(|x| t.c().block([x, y, a[2]]) == moss))).await?;
         t.c().look(0.0, 0.0);
         t.settled().await?;
         let [r, g, b] = t.pixel(0.5, 0.45).await?;
         let ok = if teal { g > r + 40 && b > r + 30 } else { r > g + 20 && b > r };
         t.check(ok, format!("{} moss, got {r} {g} {b}", if teal { "teal" } else { "violet" }));
+        t.shot(if teal { "plains" } else { "flatlands" }).await?;
     }
-    t.shot("plains").await
+    Ok(())
 }
 
 /// Reloading assets picks up a resource pack's texture and later changes to that file.
@@ -147,8 +180,8 @@ pub async fn broken_shader_pack(t: T) -> R {
     Ok(())
 }
 
-/// The test mod's looks in one picture: a glow crystal at night (veins glowing, no light),
-/// wisps drawn by an entity shader, sparks, the rune's reach box and the daydream screen effect.
+/// The test mod's looks at night: a glow crystal's veins glow without lighting the floor next to
+/// it, a wisp floats nearby, and the daydream screen effect changes the picture.
 pub async fn shaders_and_glow(t: T) -> R {
     t.world(9).await?;
     t.idle().await?;
@@ -157,6 +190,7 @@ pub async fn shaders_and_glow(t: T) -> R {
     // A level stage of its own, so terrain changes do not move the picture.
     t.fill(add(f, [-4, -1, -7]), add(f, [4, -1, 3]), "stone").await?;
     t.fill(add(f, [-4, 0, -7]), add(f, [4, 5, 3]), "air").await?;
+    let crystal = add(f, [0, 1, -4]);
     t.fill(add(f, [-1, 0, -4]), add(f, [1, 2, -4]), "testmod:glow_crystal").await?;
     // Off to the side and back a little: it drifts, so it stays small in the picture.
     t.op(&format!("spawn testmod:wisp {} {} {}", f[0] + 3, f[1] + 1, f[2] - 5)).await?;
@@ -166,11 +200,25 @@ pub async fn shaders_and_glow(t: T) -> R {
     t.c().look(0.0, -5.0);
     t.settled().await?;
     t.secs(1.0).await?;
-    t.shot("night_glow").await?;
+    let night = t.shot("night_glow").await?;
+    let veins = match t.block_on_screen(crystal, [0.0, 0.0, 0.51]) {
+        Some((x, y)) => night.share(x - 0.12, y - 0.15, x + 0.12, y + 0.15, |c| probe::cyan(c) && probe::lum(c) > 100.0),
+        None => 0.0,
+    };
+    t.probe("the crystal's veins glow", veins, veins > 0.03);
+    let floor = match t.on_screen([f[0] as f64 + 0.5, f[1] as f64, f[2] as f64 - 2.5]) {
+        Some((x, y)) => crate::runner::lum(night.avg(x - 0.02, y - 0.02, x + 0.02, y + 0.02)),
+        None => 255.0,
+    };
+    t.probe("the floor in front of it stays dark (glow is not light)", floor, floor < 60.0);
+    let before = t.grab().await?;
     t.check(t.c().post_effect("testmod:dream", 1.0), "the daydream effect exists");
     t.check(!t.c().post_effect("testmod:nonexistent", 1.0), "an unknown effect is refused");
     t.frames(3).await?;
     t.shot("dream").await?;
+    let after = t.grab().await?;
+    let d = T::differ(&before, &after) as f32;
+    t.probe("the daydream effect changes the picture", d, d > 0.03);
     t.c().post_effect("testmod:dream", 0.0);
     Ok(())
 }
@@ -211,7 +259,8 @@ pub async fn models(t: T) -> R {
     Ok(())
 }
 
-/// Tooltip parts behind `{on_key}` and `{if}` appear while their condition holds; effects run.
+/// Tooltip parts behind `{on_key}` and `{if}` appear while their condition holds: a hurt player
+/// sees the rune's red line, sneaking swaps "more" for its long text.
 pub async fn rich_text(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 testmod:rune 1").await?;
@@ -224,16 +273,23 @@ pub async fn rich_text(t: T) -> R {
     let Some([x, y, w, h]) = t.c().ui_rect("slot:36") else { return Err("no hotbar slot in the inventory".into()) };
     t.c().cursor(x + w / 2.0, y + h / 2.0);
     t.frames(4).await?;
-    t.shot("rune").await?;
+    let rune = t.shot("rune").await?;
+    let wound = |c: [u8; 3]| c[0] > 200 && (100..170).contains(&c[1]) && (100..170).contains(&c[2]);
+    // The tooltip opens beside the cursor.
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let v = rune.share(cx, cy - 0.15, cx + 0.3, cy + 0.15, wound);
+    t.probe("the {if:testmod:hurt} line (light red)", v, v > 0.003);
     t.hold("core:sneak", 2.0);
     t.frames(4).await?;
-    t.shot("rune_sneak").await?;
+    let sneak = t.shot("rune_sneak").await?;
+    let d = T::differ(&rune.px, &sneak.px) as f32;
+    t.probe("sneaking changes the tooltip ({on_key})", d, d > 0.002);
     t.c().release_all();
     t.c().close_screen();
     t.no_screen().await
 }
 
-/// The machine screen's panel is drawn by the test mod's GUI shader.
+/// The machine screen's panel is drawn by the test mod's GUI shader (teal circuit lines).
 pub async fn gui_shader(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
@@ -242,7 +298,10 @@ pub async fn gui_shader(t: T) -> R {
     t.op(&format!("menu testmod:generator {} {} {}", p[0], p[1], p[2])).await?;
     t.screen("core:menu").await?;
     t.frames(3).await?;
-    t.shot("generator").await?;
+    let shot = t.shot("generator").await?;
+    let Some([x, y, _, h]) = t.c().ui_rect("text:Generator") else { return Err("no Generator title".into()) };
+    let v = shot.share(x, y + h, x + 0.2, y + 0.12, probe::teal);
+    t.probe("circuit lines in the panel", v, v > 0.01);
     t.c().close_screen();
     t.no_screen().await
 }

@@ -1,10 +1,7 @@
 //! Stage 8: moving collisions with the test mod's lift, skiff and crate.
 
+use super::add;
 use crate::runner::{R, T};
-
-fn add(p: [i32; 3], d: [i32; 3]) -> [i32; 3] {
-    [p[0] + d[0], p[1] + d[1], p[2] + d[2]]
-}
 
 async fn spawn(t: &T, kind: &str, p: [i32; 3]) -> Result<u64, String> {
     let id = t.op(&format!("spawn {kind} {} {} {}", p[0], p[1], p[2])).await?;
@@ -147,26 +144,6 @@ pub async fn skiff(t: T) -> R {
     Ok(())
 }
 
-/// A crate falls like any entity, can be stood on, and mobs (soft bodies) standing in one spot
-/// drift apart.
-pub async fn crate_and_crowd(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let id = spawn(&t, "testmod:crate", add(f, [0, 3, -3])).await?;
-    let a = spawn(&t, "testmod:idol", add(f, [3, 0, -3])).await?;
-    let b = spawn(&t, "testmod:idol", add(f, [3, 0, -3])).await?;
-    t.secs(1.5).await?;
-    let c = pos_of(&t, &format!("#{id}")).await?;
-    t.check((c[1] - f[1] as f64).abs() < 0.01, format!("the crate landed (y {:.2})", c[1]));
-    let (pa, pb) = (pos_of(&t, &format!("#{a}")).await?, pos_of(&t, &format!("#{b}")).await?);
-    t.check(((pa[0] - pb[0]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt() > 0.4, "two idols in one spot pushed each other apart");
-    t.cmd(&format!("/tp {} {} {}", c[0], c[1] + 1.1, c[2])).await?;
-    t.secs(1.0).await?;
-    let me = t.state().pos;
-    t.check((me[1] - (c[1] + 1.0)).abs() < 0.01, format!("the player stands on the crate (feet {:.2})", me[1]));
-    Ok(())
-}
-
 /// Natural spawning runs from rules: at night monsters appear around the player (in the
 /// overworld; the flatlands stay at noon), and the rule switch stops it.
 pub async fn natural_spawning(t: T) -> R {
@@ -180,25 +157,6 @@ pub async fn natural_spawning(t: T) -> R {
     t.check(monsters > 0, format!("monsters spawned at night ({near})"));
     t.check(!near.contains("base:pig") && !near.contains("base:cow"), "no animals at night or outside `animals` biomes");
     t.cmd("/rule core:mob_spawning 0").await?;
-    Ok(())
-}
-
-/// Navigation finds the way around a wall through its only gap, where walking straight at the
-/// target would stop at the wall.
-pub async fn pathfinding(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    // A wall 3 high across z -6..6 at x + 4, open at z + 5.
-    t.fill(add(f, [4, 0, -6]), add(f, [4, 2, 6]), "cobblestone").await?;
-    t.fill(add(f, [4, 0, 5]), add(f, [4, 1, 5]), "air").await?;
-    let id = spawn(&t, "testmod:idol", add(f, [1, 0, 0])).await?;
-    let goal = add(f, [8, 0, 0]);
-    let found = t.op(&format!("navigate #{id} {} {} {}", goal[0], goal[1], goal[2])).await?;
-    t.check_eq(found, "1".to_string(), "the walk is accepted");
-    t.secs(8.0).await?;
-    let p = pos_of(&t, &format!("#{id}")).await?;
-    let d = ((p[0] - goal[0] as f64 - 0.5).powi(2) + (p[2] - goal[2] as f64 - 0.5).powi(2)).sqrt();
-    t.check(d < 1.5, format!("the idol walked around the wall ({:.1} {:.1}, {d:.1} from the target)", p[0], p[2]));
     Ok(())
 }
 
@@ -220,7 +178,7 @@ pub async fn morph(t: T) -> R {
     t.secs(1.0).await?;
     let z = t.state().pos[2];
     t.check(z < f[2] as f64 - 2.5, format!("the morphed player went into the low tunnel (z {z:.2})"));
-    t.shot_within("pig", 0.03).await?;
+    t.shot("pig").await?;
     t.cmd("/morph").await?;
     t.cmd(&format!("/tp {} {} {}", f[0], f[1], f[2] + 3)).await?;
     t.secs(0.3).await?;

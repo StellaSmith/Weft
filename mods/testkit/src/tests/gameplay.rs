@@ -2,18 +2,11 @@ use std::time::Duration;
 
 use voxide_sdk::*;
 
+use super::{add, at};
 use crate::runner::{R, T};
-
-fn add(p: [i32; 3], d: [i32; 3]) -> [i32; 3] {
-    [p[0] + d[0], p[1] + d[1], p[2] + d[2]]
-}
 
 fn item(name: &str) -> u32 {
     find_item(name).unwrap_or(u32::MAX)
-}
-
-fn at(p: [i32; 3]) -> String {
-    format!("{} {} {}", p[0], p[1], p[2])
 }
 
 value! {
@@ -22,36 +15,6 @@ value! {
     pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub armor: f32, pub timer: u32 }
 }
 static HUNGER: Component<Hunger> = Component::new("base:hunger");
-
-/// Smelting with coal, the lit state, and a lava bucket leaving its bucket behind.
-pub async fn furnace(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let a = add(f, [2, 0, -2]);
-    let b = add(f, [-2, 0, -2]);
-    t.set(a, "furnace").await?;
-    t.set(b, "furnace").await?;
-    t.op("events reset").await?;
-    t.op(&format!("insert {} raw_iron 1", at(a))).await?;
-    t.op(&format!("insert {} coal 1", at(a))).await?;
-    t.op(&format!("insert {} sand 1", at(b))).await?;
-    t.op(&format!("insert {} lava_bucket 1", at(b))).await?;
-    t.secs(1.0).await?;
-    let lit = t.block(a).await?;
-    t.check(lit.starts_with("base:furnace#") && lit.trim_start_matches("base:furnace#").parse::<u32>().unwrap_or(0) >= 4, format!("burning furnace is {lit}"));
-    t.check_eq(t.wait_slot(&at(a), 2, 20.0).await?, ("base:iron_ingot".into(), 1, 0), "furnace output");
-    t.check_eq(t.wait_slot(&at(b), 2, 5.0).await?.0, "base:glass".into(), "sand smelted with lava");
-    t.check_eq(t.slot(&at(b), 1).await?.0, "base:bucket".into(), "lava bucket leaves the bucket");
-    let events = t.op("events").await?;
-    t.check(events.contains("smelted=2"), format!("smelted events: {events}"));
-    t.look_at(a);
-    t.frames(2).await?;
-    t.press("core:use");
-    t.screen("core:menu").await?;
-    t.shot("menu").await?;
-    t.c().close_screen();
-    t.no_screen().await
-}
 
 /// Shaped crafting with tag ingredients (`#planks`) at a crafting table.
 pub async fn crafting_table_tags(t: T) -> R {
@@ -74,11 +37,6 @@ pub async fn crafting_table_tags(t: T) -> R {
     let stick = item("base:stick");
     let made = t.until("sticks in the result", Duration::from_secs(5), |t| t.c().menu_slot(9).item == stick).await;
     t.check(made.is_ok(), "two planks in a column give no sticks (tag ingredient #planks)");
-    t.click_ui("slot:4", 1);
-    t.click_ui("slot:6", 1);
-    t.click_ui("slot:7", 1);
-    t.frames(5).await?;
-    t.click_ui("slot:37", 0);
     t.c().close_screen();
     t.no_screen().await
 }
@@ -234,81 +192,6 @@ pub async fn sneak_edge(t: T) -> R {
     Ok(())
 }
 
-pub async fn commands(t: T) -> R {
-    t.world(3).await?;
-    let help = t.cmd("/help give").await?;
-    t.check(help.contains("/give"), format!("/help give said '{help}'"));
-    let bad = t.cmd("/give nothing_here").await?;
-    t.check(bad.contains("usage") || bad.contains("unknown"), format!("bad item reply '{bad}'"));
-    t.cmd("/summon pig 3").await?;
-    t.frames(3).await?;
-    t.check_eq(t.count_near("base:pig", 8.0).await?, 3, "summoned pigs");
-    let feed = t.cmd("/feed 9").await?;
-    t.check(feed.contains('9'), format!("/feed said '{feed}'"));
-    let time = t.cmd("/time query").await?;
-    t.check(time.contains("time is"), format!("/time query said '{time}'"));
-    Ok(())
-}
-
-pub async fn mobs(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    for (kind, d) in [("zombie", [0, 0, -5]), ("pig", [3, 0, -5]), ("cow", [-3, 0, -5]), ("spider", [5, 0, -6])] {
-        t.op(&format!("spawn {kind} {}", at(add(f, d)))).await?;
-    }
-    t.until("client sees four mobs", Duration::from_secs(5), |t| t.c().entities().len() >= 4).await?;
-    let kinds: Vec<&str> = t.c().entities().iter().filter_map(|&id| t.c().entity(id)).map(|e| name_of(abi::entry_kind::ENTITY, e.kind)).collect();
-    for k in ["base:zombie", "base:pig", "base:cow", "base:spider"] {
-        t.check(kinds.contains(&k), format!("client has no {k} ({kinds:?})"));
-    }
-    // No screenshot: their AI wanders from the first tick, so no two frames agree.
-    Ok(())
-}
-
-/// The test mod's generator powers its electric furnace through cables.
-pub async fn energy(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let g = add(f, [2, 0, -3]);
-    t.set(g, "testmod:generator").await?;
-    t.set(add(g, [-1, 0, 0]), "testmod:cable").await?;
-    t.set(add(g, [-2, 0, 0]), "testmod:cable").await?;
-    let e = add(g, [-3, 0, 0]);
-    t.set(e, "testmod:electric_furnace").await?;
-    t.op(&format!("insert {} coal 4", at(g))).await?;
-    t.op(&format!("insert {} iron_ore 2", at(e))).await?;
-    let out = t.wait_slot(&at(e), 1, 20.0).await?;
-    t.check_eq(out.0, "base:iron_ingot".into(), "electric furnace output");
-    // A battery has no tick: only the grid changes its energy, and its open menu still sees it.
-    // The furnace is cut off first, it would take everything the generator makes.
-    t.set(add(g, [-1, 0, 0]), "air").await?;
-    t.set(add(g, [1, 0, 0]), "testmod:cable").await?;
-    let b = add(g, [2, 0, 0]);
-    t.set(b, "testmod:battery").await?;
-    t.look_at(b);
-    t.frames(2).await?;
-    t.press("core:use");
-    t.screen("core:menu").await?;
-    let stored = |t: &T| t.c().view().menu_component(&ENERGY).map_or(0, |e| e.stored);
-    let first = stored(&t);
-    t.until("the battery's bar moves", Duration::from_secs(5), |t| stored(t) > first).await?;
-    t.check(t.c().view().menu_component(&ENERGY).is_some_and(|e| e.capacity == 100_000), "the battery starts with its own capacity");
-    t.c().close_screen();
-    t.no_screen().await
-}
-
-pub async fn eating(t: T) -> R {
-    t.flat().await?;
-    t.cmd("/feed 10").await?;
-    t.op("put me 0 cooked_beef 3").await?;
-    t.c().select(0);
-    t.until("hunger synced", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food == 10.0)).await?;
-    t.press("core:use");
-    t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 2).await?;
-    t.until("food went up", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food == 18.0)).await?;
-    Ok(())
-}
-
 pub async fn drop_and_pickup(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 cobblestone 10").await?;
@@ -339,9 +222,6 @@ pub async fn drop_and_pickup(t: T) -> R {
 /// `/music` starts a track. Only checks that sounds start; without a sound device it is skipped.
 pub async fn sounds(t: T) -> R {
     t.flat().await?;
-    if t.state().sounds == 0 {
-        // Nothing has played yet; the first break tells whether there is a device at all.
-    }
     let f = t.feet();
     let b = [f[0], f[1], f[2] - 2];
     t.set(b, "stone").await?;
@@ -394,5 +274,68 @@ pub async fn creative_and_invulnerable(t: T) -> R {
     let after = t.op(&format!("entity #{}", idol.trim())).await?;
     let hp = |s: &str| s.rsplit(' ').next().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
     t.check(hp(&after) < hp(&before), format!("an idol is hurt by the same hits ({before} -> {after})"));
+    Ok(())
+}
+
+/// Food: eating raises hunger, and another mod's component on the base game's food plus the
+/// `eaten` event heals (the owner's example).
+pub async fn food(t: T) -> R {
+    t.flat().await?;
+    let s = t.state();
+    t.c().teleport([s.pos[0], s.pos[1] + 8.0, s.pos[2]]);
+    t.until("falling", Duration::from_secs(5), |t| !t.flag(client::client_flags::ON_GROUND)).await?;
+    t.until("landed", Duration::from_secs(10), |t| t.flag(client::client_flags::ON_GROUND)).await?;
+    t.until("hurt", Duration::from_secs(3), |t| t.state().health < 20.0).await?;
+    let before = t.state().health;
+    t.cmd("/feed 10").await?;
+    t.op("put me 0 cooked_beef 3").await?;
+    t.c().select(0);
+    t.until("hunger synced", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food == 10.0)).await?;
+    t.secs(0.3).await?;
+    t.press("core:use");
+    t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 2).await?;
+    t.until("food went up", Duration::from_secs(5), |t| t.c().view().component(&HUNGER).is_some_and(|h| h.food == 18.0)).await?;
+    t.until("healed", Duration::from_secs(3), |t| t.state().health >= before + 2.0).await?;
+    let after = t.state().health;
+    t.check(after <= before + 3.0, format!("health {before} -> {after}: two from testmod's food_heal (plus maybe a regen tick)"));
+    Ok(())
+}
+
+/// A battery has no tick: only the grid changes its energy, and its open menu still sees it.
+pub async fn battery(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let g = add(f, [2, 0, -3]);
+    t.set(g, "testmod:generator").await?;
+    t.set(add(g, [1, 0, 0]), "testmod:cable").await?;
+    let b = add(g, [2, 0, 0]);
+    t.set(b, "testmod:battery").await?;
+    t.op(&format!("insert {} coal 4", at(g))).await?;
+    t.look_at(b);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.screen("core:menu").await?;
+    let stored = |t: &T| t.c().view().menu_component(&ENERGY).map_or(0, |e| e.stored);
+    let first = stored(&t);
+    t.until("the battery's bar moves", Duration::from_secs(5), |t| stored(t) > first).await?;
+    t.check(t.c().view().menu_component(&ENERGY).is_some_and(|e| e.capacity == 100_000), "the battery starts with its own capacity");
+    t.c().close_screen();
+    t.no_screen().await
+}
+
+/// Lava hurts the player, who keeps burning after getting out.
+pub async fn burning(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let pool = add(f, [6, -1, 0]);
+    t.fill(pool, add(pool, [1, 0, 1]), "lava").await?;
+    t.c().teleport([pool[0] as f64 + 0.5, pool[1] as f64 + 0.1, pool[2] as f64 + 0.5]);
+    t.until("hurt by lava", Duration::from_secs(5), |t| t.state().health <= 16.0).await?;
+    t.c().teleport([f[0] as f64 + 0.5, f[1] as f64, f[2] as f64 + 0.5]);
+    t.secs(0.5).await?;
+    let out = t.state().health;
+    t.secs(2.5).await?;
+    let later = t.state().health;
+    t.check(later < out, format!("still burning after leaving lava: health {out} -> {later}"));
     Ok(())
 }

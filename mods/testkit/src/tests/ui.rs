@@ -4,72 +4,67 @@ use voxide_sdk::*;
 
 use crate::runner::{R, T};
 
-/// Main menu screens open, lay out and look like their references.
-pub async fn title_screens(t: T) -> R {
+/// Screens open by name and lay out inside the window: the engine's menus and a mod's own.
+pub async fn screens(t: T) -> R {
     t.screen("core:title").await?;
     t.shot("title").await?;
-    for name in ["core:settings", "core:language", "core:controls", "core:worlds"] {
+    t.laid_out(&["text:Singleplayer", "text:Multiplayer", "text:Settings", "text:Quit Game"]);
+    for (name, texts) in [
+        ("core:settings", &["text:View distance", "text:Language", "text:Controls", "text:Shader Packs", "text:Done"][..]),
+        ("core:language", &["text:English", "text:Done"][..]),
+        ("core:controls", &["text:Reset All", "text:Done"][..]),
+        ("core:worlds", &["text:Create New World"][..]),
+    ] {
         t.check(t.c().open_screen(name), format!("cannot open {name}"));
         t.screen(name).await?;
-        // The world list shows the player's own saves: no fixed picture.
-        if name != "core:worlds" {
-            t.shot(name.trim_start_matches("core:")).await?;
-        }
+        t.shot(name.trim_start_matches("core:")).await?;
+        t.laid_out(texts);
         t.c().close_screen();
         t.screen("core:title").await?;
     }
-    Ok(())
-}
-
-pub async fn f3_overlay(t: T) -> R {
-    t.world(5).await?;
-    t.idle().await?;
-    t.debug(true).await?;
-    t.frames(10).await?;
-    // Frame times and memory change from run to run.
-    t.shot_within("f3", 0.03).await?;
-    t.debug(false).await?;
-    Ok(())
-}
-
-/// The widest case of F3: Russian at GUI scale 3, the CPU and GPU panels side by side must stay
-/// on screen.
-pub async fn f3_russian_large(t: T) -> R {
-    t.world(5).await?;
-    t.idle().await?;
-    t.c().setting("language", "ru_ru");
-    t.c().setting("gui_scale", "3");
-    t.c().look(0.0, 0.0);
-    t.debug(true).await?;
-    t.frames(10).await?;
-    t.shot_within("f3_ru_3", 0.03).await?;
-    t.debug(false).await?;
-    t.c().setting("language", "en_us");
-    t.c().setting("gui_scale", "2");
-    Ok(())
-}
-
-/// A mod's screen opens by name, here from its client command.
-pub async fn mod_screen(t: T) -> R {
     t.flat().await?;
     t.c().chat("/about");
     t.screen("testmod:about").await?;
     t.until("its text", Duration::from_secs(2), |t| t.c().ui_rect("text:opened by name").is_some()).await?;
     t.shot("about").await?;
+    t.laid_out(&["text:Test Mod", "text:opened by name"]);
     t.c().close_screen();
     t.no_screen().await
 }
 
-/// A mod's own F3 panel shows with the overlay and hides with its group bit (F3+6).
-pub async fn f3_mod_panel(t: T) -> R {
+/// F3 shows its panels inside the window, also in the widest case (Russian at GUI scale 3), the
+/// engine's on the left and right halves and a mod's own panel, which its group bit hides.
+pub async fn f3(t: T) -> R {
     t.world(5).await?;
     t.idle().await?;
+    t.c().look(0.0, 0.0);
     t.debug(true).await?;
+    t.frames(10).await?;
+    t.shot("f3").await?;
+    let sides = |t: &T| {
+        for q in ["text:XYZ", "text:base:overworld"] {
+            t.check(t.c().ui_rect(q).is_some_and(|r| r[0] < 0.5), format!("{q} on the left"));
+        }
+        for q in ["text:calls", "text:1600x900"] {
+            t.check(t.c().ui_rect(q).is_some_and(|r| r[0] + r[2] > 0.5), format!("{q} on the right"));
+        }
+    };
+    t.laid_out(&["text:XYZ", "text:base:overworld", "text:calls", "text:1600x900"]);
+    sides(&t);
     t.until("testmod panel shown", Duration::from_secs(2), |t| t.c().ui_rect("text:fall").is_some()).await?;
+    t.laid_out(&["text:fall"]);
     t.c().setting("debug_groups", &(u32::MAX & !(1 << 5)).to_string());
     t.until("testmod panel hidden", Duration::from_secs(2), |t| t.c().ui_rect("text:fall").is_none()).await?;
-    t.check(t.c().ui_rect("text:server").is_some(), "engine panels stay");
+    t.check(t.c().ui_rect("text:XYZ").is_some(), "engine panels stay");
     t.c().setting("debug_groups", &u32::MAX.to_string());
+    t.c().setting("language", "ru_ru");
+    t.c().setting("gui_scale", "3");
+    t.frames(10).await?;
+    t.shot("f3_ru_3").await?;
+    t.laid_out(&["text:XYZ", "text:base:overworld", "text:calls", "text:1600x900"]);
+    sides(&t);
+    t.c().setting("language", "en_us");
+    t.c().setting("gui_scale", "2");
     t.debug(false).await
 }
 
@@ -123,47 +118,31 @@ pub async fn creative_inventory(t: T) -> R {
     Ok(())
 }
 
-pub async fn chat_completion(t: T) -> R {
+/// The chat: `/` opens it with the command list shown; Tab completes items, client commands,
+/// word sets and other mods' branches; commands run.
+pub async fn chat(t: T) -> R {
     t.world(3).await?;
-    t.press("core:chat");
-    t.screen("core:chat").await?;
-    t.c().type_text("/give @p birch_lo");
-    t.frames(2).await?;
-    t.c().key("Tab", 0.0);
-    t.frames(3).await?;
-    let text = t.c().input_text();
-    t.check(text.contains("birch_log"), format!("Tab completed to '{text}'"));
-    t.c().key("Enter", 0.0);
-    t.no_screen().await?;
-    t.until("logs given", Duration::from_secs(5), |t| t.c().inventory_slot(0).item == id("base:birch_log")).await?;
-    Ok(())
-}
-
-/// `/` opens the chat with the command list already shown.
-pub async fn slash_opens_commands(t: T) -> R {
-    t.flat().await?;
     t.press("core:command");
     t.screen("core:chat").await?;
     t.until("the command list", Duration::from_secs(2), |t| t.c().ui_rect("text:gamemode").is_some()).await?;
     t.check_eq(t.c().input_text(), "/".to_string(), "the line");
-    t.c().close_screen();
-    t.no_screen().await
-}
-
-/// Commands the client handles itself (`/gizmo`, `/log`) complete like the others; word
-/// parameters complete from word sets (`/rule` from the registered rules, `/gizmo` from the
-/// groups mods registered).
-pub async fn client_command_completion(t: T) -> R {
-    t.world(3).await?;
-    t.press("core:chat");
-    t.screen("core:chat").await?;
-    for (typed, want) in [("/giz", "/gizmo"), ("/gizmo cu", "/gizmo cubes"), ("/gizmo testm", "/gizmo testmod:energy"), ("/gizmo pro", "/gizmo probe"), ("/probe al", "/probe alpha"), ("/rule mob", "/rule core:mob_spawning")] {
+    t.c().key("Backspace", 0.0);
+    t.frames(2).await?;
+    for (typed, want) in [("/give @p birch_lo", "/give @p base:birch_log"), ("/giz", "/gizmo"), ("/gizmo cu", "/gizmo cubes"), ("/gizmo testm", "/gizmo testmod:energy"), ("/gizmo pro", "/gizmo probe"), ("/probe al", "/probe alpha"), ("/rule mob", "/rule core:mob_spawning")] {
         t.c().type_text(typed);
         t.frames(2).await?;
         t.c().key("Tab", 0.0);
         t.frames(3).await?;
         let text = t.c().input_text();
-        t.check(text.starts_with(want), format!("Tab completed {typed} to '{text}', want {want}"));
+        t.check(text.starts_with(want) || (typed.starts_with("/give") && text.contains("birch_log")), format!("Tab completed {typed} to '{text}', want {want}"));
+        if typed.starts_with("/give") {
+            t.c().key("Enter", 0.0);
+            t.no_screen().await?;
+            t.until("logs given", Duration::from_secs(5), |t| t.c().inventory_slot(0).item == id("base:birch_log")).await?;
+            t.press("core:chat");
+            t.screen("core:chat").await?;
+            continue;
+        }
         for _ in 0..text.chars().count() {
             t.c().key("Backspace", 0.0);
             t.frames(1).await?;

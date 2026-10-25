@@ -1,9 +1,10 @@
 //! Automated tests and scripted runs, written on the public client and server mod API.
 //!
-//! `voxide --test all` runs every test (`--test furnace,armor` some, `--test list` names them),
-//! each in a fresh throwaway world, then writes `run/test-reports/report.txt` and exits with the
-//! number of failed tests. `--test-record` re-records screenshot references, `--test-keep` keeps
-//! the test worlds. `voxide --world w --script file.txt` runs a line script (see `script.rs`).
+//! `voxide --test all` runs every test (`--test furnace,armor` some, `--test list` names them,
+//! `--test bench` the benchmarks), each in a fresh throwaway world, then writes
+//! `run/test-reports/report.txt` and exits with the number of failed tests. Screenshots of the
+//! run go to `run/test-shots/` for looking at; checks never compare pictures with references.
+//! `--test-keep` keeps the test worlds. `voxide --world w --script file.txt` runs a line script (see `script.rs`).
 //! Without those options the mod only registers its message channels.
 
 mod runner;
@@ -65,11 +66,13 @@ fn start(c: &Client) {
         return;
     }
     // Same conditions on every machine; nothing of this is saved.
-    for (k, v) in [("language", "en_us"), ("gui_scale", "2"), ("view_distance", "12"), ("fov", "70"), ("brightness", "0.5"), ("vsync", "true")] {
+    for (k, v) in [("language", "en_us"), ("gui_scale", "2"), ("view_distance", "12"), ("fov", "70"), ("brightness", "0.5"), ("vsync", "true"), ("resource_packs", ""), ("shader_pack", ""), ("debug_groups", "4294967295")] {
         c.setting(k, v);
     }
-    let all = tests::all();
+    // The player's packs would change every picture.
+    c.reload_assets();
     let want = test.as_deref().unwrap_or("all");
+    let all = if want == "bench" { tests::bench() } else { tests::all() };
     if want == "list" {
         for t in &all {
             info!("test {}", t.name);
@@ -77,7 +80,7 @@ fn start(c: &Client) {
         c.quit(0);
         return;
     }
-    let queue: Vec<runner::TestDef> = if want == "all" {
+    let queue: Vec<runner::TestDef> = if want == "all" || want == "bench" {
         all
     } else {
         let names: Vec<&str> = want.split(',').map(str::trim).collect();

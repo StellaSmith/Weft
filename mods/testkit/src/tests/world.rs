@@ -2,55 +2,9 @@ use std::time::Duration;
 
 use voxide_sdk::*;
 
+use super::add;
+use super::probe;
 use crate::runner::{R, T};
-
-fn add(p: [i32; 3], d: [i32; 3]) -> [i32; 3] {
-    [p[0] + d[0], p[1] + d[1], p[2] + d[2]]
-}
-
-/// Edits on the server reach the client block for block; entities show up on both sides.
-pub async fn flatlands_sync(t: T) -> R {
-    t.flat().await?;
-    let o = add(t.feet(), [3, 0, 3]);
-    t.fill(o, add(o, [4, 2, 4]), "cobblestone").await?;
-    t.fill(add(o, [1, 1, 1]), add(o, [3, 1, 3]), "glass").await?;
-    t.set(add(o, [2, 2, 2]), "furnace#5").await?;
-    t.set(add(o, [0, 2, 0]), "air").await?;
-    t.frames(5).await?;
-    t.sync_blocks(o, add(o, [4, 2, 4])).await?;
-    let pig = t.op(&format!("spawn pig {} {} {}", o[0] - 6, o[1], o[2])).await?;
-    let pig: u64 = pig.parse().map_err(|_| format!("spawn gave '{pig}'"))?;
-    t.until("client sees the pig", Duration::from_secs(5), |t| t.c().entities().contains(&pig)).await?;
-    t.frames(20).await?;
-    let server = t.op(&format!("entity {pig}")).await?;
-    let sp: Vec<f64> = server.split_whitespace().skip(1).take(3).filter_map(|v| v.parse().ok()).collect();
-    if let (Some(e), [x, y, z]) = (t.c().entity(pig), sp.as_slice()) {
-        let d = ((e.pos[0] - x).powi(2) + (e.pos[1] - y).powi(2) + (e.pos[2] - z).powi(2)).sqrt();
-        t.check(d < 1.5, format!("pig is {d:.2} blocks off between server and client"));
-    }
-    Ok(())
-}
-
-pub async fn save_and_reload(t: T) -> R {
-    t.world(7).await?;
-    let p = add(t.feet(), [2, 0, 2]);
-    t.set(p, "gold_block").await?;
-    t.op("put me 3 diamond 5").await?;
-    // A moving structure with a block added, in a cube nothing else changed.
-    let skiff = t.op(&format!("spawn testmod:skiff {} {} {}", p[0], p[1] + 6, p[2] + 8)).await?;
-    let skiff = skiff.trim().trim_start_matches('#').to_string();
-    t.op(&format!("sblock #{skiff} 0 1 0 base:glass")).await?;
-    let name = format!("test-{}", t.name());
-    t.c().leave_world();
-    t.screen("core:title").await?;
-    t.c().open_world(&name, 7);
-    t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED)).await?;
-    t.loaded().await?;
-    t.check_eq(t.block(p).await?, "base:gold_block".into(), "placed block after reload");
-    t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "inventory after reload");
-    t.check_eq(t.op(&format!("sblock #{skiff} 0 1 0")).await?, "base:glass".to_string(), "the structure and its added block after reload");
-    t.sync_inventory().await
-}
 
 /// A player saved in a dimension that is gone (its mod removed) keeps everything and starts at
 /// the spawn; the world remembers the mods it was played with.
@@ -87,43 +41,6 @@ pub async fn missing_dimension(t: T) -> R {
     t.loaded().await?;
     t.check_eq(t.state().dim, find_dimension("base:overworld").unwrap_or(u32::MAX), "the player is in the spawn dimension");
     t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "and kept the inventory");
-    Ok(())
-}
-
-/// The engine's void is always there: empty, without gravity, nothing can be placed in it.
-pub async fn void_dimension(t: T) -> R {
-    t.world(3).await?;
-    let void = find_dimension("core:void").ok_or("no core:void")?;
-    t.cmd("/dim core:void").await?;
-    t.until("in the void", Duration::from_secs(20), |t| t.state().dim == void).await?;
-    t.loaded().await?;
-    let said = (0..4).any(|i| t.c().chat_line(i).contains("nothing here can be changed"));
-    t.check(said, "chat says where the player is");
-    let p = add(t.feet(), [0, -1, 0]);
-    t.check(t.set(p, "stone").await.is_err(), "no block can be set");
-    t.check(t.block(p).await? != "base:stone", "the block stays empty");
-    let y = t.state().pos[1];
-    t.secs(1.0).await?;
-    t.check((t.state().pos[1] - y).abs() < 0.01, format!("no gravity (y {y:.2} -> {:.2})", t.state().pos[1]));
-    Ok(())
-}
-
-pub async fn dimensions(t: T) -> R {
-    t.world(11).await?;
-    for (dim, shot) in [("base:flatlands", "flatlands"), ("testmod:mars", "mars"), ("testmod:void", "void"), ("base:overworld", "overworld")] {
-        let Some(id) = find_dimension(dim) else {
-            t.fail(format!("no dimension {dim}"));
-            continue;
-        };
-        t.cmd(&format!("/dim {dim}")).await?;
-        t.until(&format!("in {dim}"), Duration::from_secs(20), |t| t.state().dim == id).await?;
-        t.loaded().await?;
-        t.idle().await?;
-        t.settled().await?;
-        t.c().look(30.0, -20.0);
-        t.frames(3).await?;
-        t.shot(shot).await?;
-    }
     Ok(())
 }
 
@@ -166,32 +83,6 @@ pub async fn virtual_menus(t: T) -> R {
     t.no_screen().await
 }
 
-/// Sand falls, a torch drops when its block goes.
-pub async fn sand_and_support(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let air = add(f, [3, 4, -2]);
-    t.set(air, "sand").await?;
-    let mut falling = false;
-    for _ in 0..20 {
-        falling |= t.count_near("falling_block", 8.0).await? == 1;
-        t.frames(2).await?;
-    }
-    t.check(falling, "the sand falls as an entity");
-    t.secs(2.0).await?;
-    t.check_eq(t.block(air).await?, "core:air".into(), "sand left the air");
-    t.check_eq(t.block(add(f, [3, 0, -2])).await?, "base:sand".into(), "sand landed on the ground");
-    let stone = add(f, [-3, 0, 2]);
-    t.set(stone, "stone").await?;
-    t.set(add(stone, [0, 1, 0]), "torch").await?;
-    t.set(stone, "air").await?;
-    t.frames(5).await?;
-    t.check_eq(t.block(add(stone, [0, 1, 0])).await?, "core:air".into(), "torch without support");
-    let items = t.count_near("item", 6.0).await?;
-    t.check(items >= 1, "the torch dropped no item");
-    Ok(())
-}
-
 /// Fresh world load time and idle frame time on this machine (thresholds are generous: they
 /// catch large regressions, the numbers themselves go to the report).
 pub async fn load_benchmark(t: T) -> R {
@@ -203,26 +94,6 @@ pub async fn load_benchmark(t: T) -> R {
     let b = t.bench(4.0, "idle").await?;
     t.check(b[2] < 50.0, format!("p99 frame {:.1} ms", b[2]));
     t.check(b[4] < 25.0, format!("server tick {:.1} ms", b[4]));
-    Ok(())
-}
-
-/// The engine's debug dimension shows every block state on a floor and nothing in it updates:
-/// its water does not flow and blocks cannot be set.
-pub async fn debug_blocks(t: T) -> R {
-    t.flat().await?;
-    t.cmd("/dim core:debug_blocks").await?;
-    t.secs(0.5).await?;
-    t.loaded().await?;
-    let at = t.op("find 40 base:water").await?;
-    let p: Vec<i32> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
-    t.secs(1.0).await?;
-    t.check_eq(t.block([p[0] + 1, p[1], p[2]]).await?, "core:air".to_string(), "water next to the source");
-    t.cmd(&format!("/setblock {} {} {} base:stone", p[0] + 1, p[1], p[2])).await?;
-    t.check_eq(t.block([p[0] + 1, p[1], p[2]]).await?, "core:air".to_string(), "after /setblock");
-    t.cmd("/tp -3 1 -3").await?;
-    t.c().look(225.0, -25.0);
-    t.frames(20).await?;
-    t.shot_within("grid", 0.03).await?;
     Ok(())
 }
 
@@ -255,64 +126,9 @@ pub async fn item_farm(t: T) -> R {
     t.c().look(0.0, -30.0);
     t.secs(2.0).await?;
     t.note(format!("{} entities on the client", t.c().entities().len()));
-    // Dropped items spin and bob with their age: only a rough match.
-    t.shot_within("farm", 0.3).await?;
+    t.shot("farm").await?;
     let b = t.bench(4.0, "item_farm").await?;
     t.note(format!("fps {:.0}, frame {:.2} ms, p99 {:.2} ms (in tests the hidden window's presents are throttled: compare the log's cpu record ms)", b[0], b[1], b[2]));
-    Ok(())
-}
-
-/// Underground (3D) biomes: deep under the surface whole cubes turn into deep caves, and the
-/// test mod's glow crystals (an ore limited to the `cave` biome tag) grow only there.
-pub async fn deep_caves(t: T) -> R {
-    t.world(5).await?;
-    t.op("mode spectator").await?;
-    let (mut caves, mut inside, mut outside) = (0, 0, 0);
-    for (i, x) in [0, 200].into_iter().enumerate() {
-        t.cmd(&format!("/tp {x} -60 {}", i * 150)).await?;
-        t.secs(0.5).await?;
-        t.loaded().await?;
-        let survey = t.op("survey 12").await?;
-        let (biomes, crystals) = survey.split_once(" | crystals ").ok_or(format!("survey: {survey}"))?;
-        caves += biomes.split_whitespace().filter_map(|e| e.strip_prefix("base:deep_caves=")).filter_map(|n| n.parse::<u32>().ok()).sum::<u32>();
-        let n: Vec<u32> = crystals.split_whitespace().filter_map(|n| n.parse().ok()).collect();
-        inside += n.first().copied().unwrap_or(0);
-        outside += n.get(1).copied().unwrap_or(0);
-        t.note(format!("{x}: {survey}"));
-    }
-    t.check(caves > 0, "deep caves were found underground");
-    t.check(inside > 0, format!("glow crystals grow in deep caves ({inside})"));
-    t.check_eq(outside, 0, "glow crystals outside deep caves");
-    Ok(())
-}
-
-/// Trees and flowers are data: birch forests grow the base birches; the test mod's glowing birch
-/// and flower are not generated.
-pub async fn flora(t: T) -> R {
-    t.world(5).await?;
-    t.op("mode spectator").await?;
-    let blocks = "testmod:glow_log,testmod:glow_flower,base:birch_log,base:oak_log";
-    let (mut glow_in, mut glow_out) = (0, 0);
-    // Birch forests of seed 5 (found from the base generator's columns), and plains.
-    for [x, y, z] in [[100, 83, 0], [-550, 87, 550], [0, 84, -900], [0, 90, 0], [-400, 90, -400]] {
-        t.cmd(&format!("/tp {x} {y} {z}")).await?;
-        t.secs(0.5).await?;
-        t.loaded().await?;
-        let survey = t.op("survey 2").await?;
-        let birch = survey.contains("base:birch_forest");
-        let census = t.op(&format!("census 28 {blocks}")).await?;
-        t.note(format!("{x} {z}: {} | {census}", survey.split(" | ").next().unwrap_or("")));
-        let n: Vec<u32> = census.split_whitespace().filter_map(|e| e.rsplit_once('=')?.1.parse().ok()).collect();
-        let glow = n[0] + n[1];
-        if birch { glow_in += glow } else if !survey.contains("birch") { glow_out += glow }
-        if x == 100 {
-            t.c().look(0.0, 20.0);
-            t.frames(30).await?;
-            t.shot_within("birch_forest", 0.03).await?;
-        }
-    }
-    // The test mod's glowing birch and flower are not generated.
-    t.check_eq(glow_in + glow_out, 0, "no glowing plants in the world");
     Ok(())
 }
 
@@ -352,10 +168,180 @@ pub async fn growth(t: T) -> R {
     Ok(())
 }
 
-/// Structures: a well stands where the engine says one is, built as its template says.
-pub async fn structures(t: T) -> R {
+/// What a player carries over leaving and opening a world again: placed blocks, the inventory,
+/// a moving structure with a block added, permanent attribute modifiers; server-only stack data
+/// is not saved, and expired modifiers are gone before.
+pub async fn persistence(t: T) -> R {
+    t.world(7).await?;
+    let p = add(t.feet(), [2, 0, 2]);
+    t.set(p, "gold_block").await?;
+    t.op("put me 3 diamond 5").await?;
+    // A moving structure with a block added, in a cube nothing else changed.
+    let skiff = t.op(&format!("spawn testmod:skiff {} {} {}", p[0], p[1] + 6, p[2] + 8)).await?;
+    let skiff = skiff.trim().trim_start_matches('#').to_string();
+    t.op(&format!("sblock #{skiff} 0 1 0 base:glass")).await?;
+    t.op("put me 0 iron_sword 1").await?;
+    t.op("secret me 0 1234").await?;
+    t.check_eq(t.op("secret me 0").await?, "1234".into(), "server keeps the secret");
+    t.frames(5).await?;
+    t.check_eq(crate::server::SECRET.stack_only(&t.c().inventory_slot(0)), None, "client never sees the secret");
+    t.check_eq(value(&t.op("attr me movement_speed").await?), 1.0, "speed without modifiers");
+    t.op("attr_mod me movement_speed testkit:haste 1 0.5 40").await?;
+    t.op("attr_mod me max_health testkit:vigor 0 10 0").await?;
+    let speed = t.op("attr me movement_speed").await?;
+    t.check_eq(value(&speed), 1.5, "speed with +50% of base");
+    t.check(speed.contains("testkit:haste"), format!("explained: {speed}"));
+    t.check_eq(value(&t.op("attr me max_health").await?), 30.0, "max health +10");
+    t.secs(2.5).await?;
+    t.check_eq(value(&t.op("attr me movement_speed").await?), 1.0, "the 40 tick modifier ran out");
+
+    let name = format!("test-{}", t.name());
+    t.c().leave_world();
+    t.screen("core:title").await?;
+    t.c().open_world(&name, 7);
+    t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED)).await?;
+    t.loaded().await?;
+    t.check_eq(t.block(p).await?, "base:gold_block".into(), "placed block after reload");
+    t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "inventory after reload");
+    t.check_eq(t.op(&format!("sblock #{skiff} 0 1 0")).await?, "base:glass".to_string(), "the structure and its added block after reload");
+    t.check_eq(t.slot("me", 0).await?.0, "base:iron_sword".into(), "the sword was saved");
+    t.check_eq(t.op("secret me 0").await?, "none".into(), "the secret was not");
+    t.check_eq(value(&t.op("attr me max_health").await?), 30.0, "max health modifier after reload");
+    // One maximum everywhere: /heal fills to it and the client hears the same.
+    t.cmd("/heal").await?;
+    t.check_eq(t.op("health").await?, "30".to_string(), "healed to the modified maximum");
+    t.until("the client has 30", Duration::from_secs(2), |t| t.state().health == 30.0).await?;
+    t.op("attr_rm me max_health testkit:vigor").await?;
+    t.check_eq(value(&t.op("attr me max_health").await?), 20.0, "removed");
+    t.sync_inventory().await
+}
+
+/// First number of an `attr` answer ("1.5 | ...").
+fn value(s: &str) -> f64 {
+    s.split('|').next().and_then(|v| v.trim().parse().ok()).unwrap_or(f64::NAN)
+}
+
+/// Dimensions: each mod's own one is reached and drawn as itself; the engine's void is empty,
+/// without gravity and refuses blocks; the debug dimension shows every state and never updates.
+pub async fn dimensions(t: T) -> R {
+    t.world(11).await?;
+    type Look = Option<fn(&crate::runner::Shot) -> (f32, bool)>;
+    let looks: [(&str, Look); 4] = [
+        (
+            "base:flatlands",
+            Some(|s| {
+                let v = s.share(0.0, 0.6, 1.0, 0.9, probe::grass);
+                (v, v > 0.6)
+            }),
+        ),
+        (
+            "testmod:mars",
+            Some(|s| {
+                let v = s.share(0.0, 0.0, 1.0, 0.9, |c| c[0] as i32 > c[1] as i32 + 40 && c[0] as i32 > c[2] as i32 + 60);
+                (v, v > 0.6)
+            }),
+        ),
+        (
+            "testmod:void",
+            Some(|s| {
+                let v = s.share(0.0, 0.0, 1.0, 0.25, probe::dark);
+                (v, v > 0.9)
+            }),
+        ),
+        // Generated terrain: reaching it is the check, the picture is for looking at.
+        ("base:overworld", None),
+    ];
+    for (dim, look) in looks {
+        let Some(id) = find_dimension(dim) else {
+            t.fail(format!("no dimension {dim}"));
+            continue;
+        };
+        t.cmd(&format!("/dim {dim}")).await?;
+        t.until(&format!("in {dim}"), Duration::from_secs(20), |t| t.state().dim == id).await?;
+        t.loaded().await?;
+        t.idle().await?;
+        t.settled().await?;
+        t.c().look(30.0, -20.0);
+        t.frames(3).await?;
+        let shot = t.shot(dim.split(':').nth(1).unwrap_or(dim)).await?;
+        if let Some(look) = look {
+            let (v, ok) = look(&shot);
+            t.probe(&format!("{dim} drawn as itself"), v, ok);
+        }
+    }
+
+    let void = find_dimension("core:void").ok_or("no core:void")?;
+    t.cmd("/dim core:void").await?;
+    t.until("in the void", Duration::from_secs(20), |t| t.state().dim == void).await?;
+    t.loaded().await?;
+    let said = (0..4).any(|i| t.c().chat_line(i).contains("nothing here can be changed"));
+    t.check(said, "chat says where the player is");
+    let p = add(t.feet(), [0, -1, 0]);
+    t.check(t.set(p, "stone").await.is_err(), "no block can be set in the void");
+    t.check(t.block(p).await? != "base:stone", "the void stays empty");
+    let y = t.state().pos[1];
+    t.secs(1.0).await?;
+    t.check((t.state().pos[1] - y).abs() < 0.01, format!("no gravity in the void (y {y:.2} -> {:.2})", t.state().pos[1]));
+
+    t.cmd("/dim core:debug_blocks").await?;
+    t.secs(0.5).await?;
+    t.loaded().await?;
+    let at = t.op("find 40 base:water").await?;
+    let w: Vec<i32> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    let [x, y, z] = w[..] else { return Err(format!("no water among the debug blocks: {at}")) };
+    t.secs(1.0).await?;
+    t.check_eq(t.block([x + 1, y, z]).await?, "core:air".to_string(), "debug water does not flow");
+    t.cmd(&format!("/setblock {} {y} {z} base:stone", x + 1)).await?;
+    t.check_eq(t.block([x + 1, y, z]).await?, "core:air".to_string(), "debug blocks refuse /setblock");
+    t.cmd("/tp -3 1 -3").await?;
+    t.c().look(225.0, -25.0);
+    t.frames(20).await?;
+    let grid = t.shot("debug_blocks").await?;
+    // Many different blocks in view: no colour class covers most of the floor.
+    let biggest = [probe::grass, probe::dark, probe::light, probe::brown].map(|f| grid.share(0.0, 0.5, 1.0, 0.9, f)).into_iter().fold(0.0f32, f32::max);
+    t.probe("debug blocks: largest share of one colour class", biggest, biggest < 0.6);
+    Ok(())
+}
+
+/// World generation from data, sampled with seed 5: deep caves (an underground biome) with the
+/// test mod's glow crystals only there, birches in birch forests and oaks on the plains, and
+/// structures where the engine says they are.
+pub async fn worldgen(t: T) -> R {
     t.world(5).await?;
     t.op("mode spectator").await?;
+    let (mut caves, mut inside, mut outside) = (0, 0, 0);
+    for (i, x) in [0, 200].into_iter().enumerate() {
+        t.cmd(&format!("/tp {x} -60 {}", i * 150)).await?;
+        t.secs(0.5).await?;
+        t.loaded().await?;
+        let survey = t.op("survey 12").await?;
+        let (biomes, crystals) = survey.split_once(" | crystals ").ok_or(format!("survey: {survey}"))?;
+        caves += biomes.split_whitespace().filter_map(|e| e.strip_prefix("base:deep_caves=")).filter_map(|n| n.parse::<u32>().ok()).sum::<u32>();
+        let n: Vec<u32> = crystals.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+        inside += n.first().copied().unwrap_or(0);
+        outside += n.get(1).copied().unwrap_or(0);
+        t.note(format!("{x}: {survey}"));
+    }
+    t.check(caves > 0, "deep caves were found underground");
+    t.check(inside > 0, format!("glow crystals grow in deep caves ({inside})"));
+    t.check_eq(outside, 0, "glow crystals outside deep caves");
+
+    // Birch forests of seed 5 (found from the base generator's columns), then plains.
+    for ([x, y, z], forest) in [([100, 83, 0], true), ([-550, 87, 550], true), ([0, 90, 0], false), ([-400, 90, -400], false)] {
+        t.cmd(&format!("/tp {x} {y} {z}")).await?;
+        t.secs(0.5).await?;
+        t.loaded().await?;
+        let census = t.op("census 28 base:birch_log,base:oak_log,testmod:glow_log,testmod:glow_flower").await?;
+        let n: Vec<u32> = census.split_whitespace().filter_map(|e| e.rsplit_once('=')?.1.parse().ok()).collect();
+        t.note(format!("{x} {z}: {census}"));
+        if forest {
+            t.check(n[0] > 0, format!("birches in the birch forest at {x} {z}"));
+        } else {
+            t.check(n[1] > 0, format!("oaks on the plains at {x} {z}"));
+        }
+        t.check_eq(n[2] + n[3], 0, &format!("the test mod's glowing plants are not generated ({x} {z})"));
+    }
+
     let at = t.op("structure base:well 2000").await?;
     let a: Vec<i32> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
     let [x, y, z] = a[..] else { return Err(format!("no well near spawn: {at}")) };
@@ -370,47 +356,5 @@ pub async fn structures(t: T) -> R {
     t.c().look(180.0, -40.0);
     t.secs(0.5).await?;
     t.shot("well").await?;
-    Ok(())
-}
-
-/// Falling sand is drawn falling all the way down: in the frame its block appears it is drawn
-/// on the ground, not a block above; while falling it is solid (stood on, jumped off).
-pub async fn sand_lands_exactly(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let ground = add(f, [3, 0, 2]);
-    t.set(add(ground, [0, 12, 0]), "sand").await?;
-    let sand = t.c().block(ground).unwrap_or(0);
-    let column = |p: [f64; 3]| (p[0] - ground[0] as f64 - 0.5).abs() < 0.1 && (p[2] - ground[2] as f64 - 0.5).abs() < 0.1;
-    let (mut last, mut landed, mut lowest) = (None::<f64>, None, f64::MAX);
-    for _ in 0..600 {
-        t.frames(1).await?;
-        let y = t.c().entities().into_iter().filter_map(|id| t.c().entity(id)).find(|e| column(e.pos)).map(|e| e.pos[1]);
-        if let Some(y) = y {
-            lowest = lowest.min(y);
-        }
-        if t.c().block(ground).is_some_and(|b| b != sand && b != 0) {
-            landed = last;
-            break;
-        }
-        last = y.or(last);
-    }
-    let landed = landed.ok_or("the sand never became a block")?;
-    t.note(format!("drawn at {:.3} the frame before its block appeared (ground {})", landed, ground[1]));
-    t.check((landed - ground[1] as f64).abs() < 0.05, "the falling sand reached the ground before turning into a block");
-    t.check(lowest > ground[1] as f64 - 0.01, "and never sank into it");
-    // Solid while it falls: a player put on it rides it down and ends up standing on the sand.
-    let top = add(ground, [0, 16, 0]);
-    t.set(top, "sand").await?;
-    t.secs(0.1).await?;
-    let near = t.op(&format!("near {} {} {} 4", top[0], top[1], top[2])).await?;
-    let id = near.split_whitespace().find(|e| e.ends_with(":core:falling_block")).and_then(|e| e.split(':').next()).ok_or(format!("no falling block ({near})"))?.to_string();
-    t.op(&format!("onto #{id} 1.0")).await?;
-    t.secs(0.6).await?;
-    let mid = t.state().pos[1];
-    t.secs(2.5).await?;
-    let me = t.state().pos[1];
-    t.check(mid < top[1] as f64 + 0.5, format!("the player went down with the falling sand (y {mid:.2})"));
-    t.check((me - (ground[1] as f64 + 2.0)).abs() < 0.01, format!("and stands on it once it landed (y {me:.2})"));
     Ok(())
 }

@@ -92,6 +92,31 @@ impl Assets {
         v
     }
 
+    /// Like `list`, but every file instead of the one that wins: the mods' own files first (by
+    /// name), then each pack's from the lowest to the top one. For files read on top of each
+    /// other, like translations, where a pack changes single keys.
+    pub fn layers(&self, kind: &str, ext: &str) -> Vec<(String, PathBuf)> {
+        let collect = |roots: &mut dyn Iterator<Item = (&String, PathBuf)>| {
+            let mut v = Vec::new();
+            for (ns, root) in roots {
+                let dir = root.join(kind);
+                walk(&dir, &mut |p| {
+                    if p.extension().and_then(|e| e.to_str()) == Some(ext) {
+                        let rel = p.strip_prefix(&dir).unwrap().with_extension("");
+                        v.push((format!("{ns}:{}", rel.to_string_lossy().replace('\\', "/")), p.to_path_buf()));
+                    }
+                });
+            }
+            v.sort_by(|a: &(String, PathBuf), b| a.0.cmp(&b.0));
+            v
+        };
+        let mut out = collect(&mut self.mods.iter().map(|(ns, root)| (ns, root.clone())));
+        for pack in self.packs.iter().rev() {
+            out.extend(collect(&mut self.mods.keys().map(|ns| (ns, pack.join(ns)))));
+        }
+        out
+    }
+
 }
 
 fn walk(dir: &Path, f: &mut impl FnMut(&Path)) {

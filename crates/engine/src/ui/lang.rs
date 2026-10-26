@@ -43,9 +43,10 @@ fn parse(src: &str, into: &mut FxHashMap<String, String>) {
     }
 }
 
+/// Every mod's file for `code`, then the packs' on top: a pack's file changes only the keys it has.
 fn load_code(assets: &Assets, code: &str) -> FxHashMap<String, String> {
     let mut map = FxHashMap::default();
-    for (name, path) in assets.list("lang", "lang") {
+    for (name, path) in assets.layers("lang", "lang") {
         if name.ends_with(&format!(":{code}")) {
             if let Ok(src) = std::fs::read_to_string(&path) {
                 parse(&src, &mut map);

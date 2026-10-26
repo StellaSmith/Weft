@@ -117,8 +117,8 @@ item.base.coal.tooltip = Burns, but only in my {#ffe070}boiler{/}.
   conflict, for someone else's it's a replacement: the old text is gone, so `{lang:}` can't pull it
   back in (a key that points to itself shows nothing), the new text has to be written in full
 - a resource pack changes a tooltip the same way, with the key in the `lang` file of the mod that owns it:
-  `<pack>/<mod>/lang/en_us.lang`. That replaces the whole file of the mod in that language, so a pack
-  copies the original and edits the lines it wants; added lines (`<tooltip key>.<mod id>`) work in packs too
+  `<pack>/<mod>/lang/en_us.lang`. The file needs only the keys the pack changes, every other key of the
+  mod stays; added lines (`<tooltip key>.<mod id>`) work in packs too
 - other languages work with their own file (`ru_ru.lang`), a missing key falls back to English
 
 ## Look

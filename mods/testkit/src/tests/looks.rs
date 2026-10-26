@@ -153,6 +153,34 @@ pub async fn texture_reload(t: T) -> R {
     Ok(())
 }
 
+/// A resource pack's translations change only the keys it has; the rest of the same mod's file
+/// stays.
+pub async fn pack_lang(t: T) -> R {
+    let pack = format!("{}/resourcepacks/testkit_lang", t.c().run_dir());
+    let dir = format!("{pack}/core/lang");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{dir}/en_us.lang"), "menu.done = Pack Done\n").map_err(|e| e.to_string())?;
+    t.c().setting("resource_packs", "testkit_lang");
+    t.c().reload_assets();
+    t.frames(2).await?;
+    t.c().open_screen("core:settings");
+    t.screen("core:settings").await?;
+    t.frames(2).await?;
+    t.laid_out(&["text:Pack Done", "text:View distance", "text:Language"]);
+    t.c().close_screen();
+    t.c().setting("resource_packs", "");
+    drop(std::fs::remove_dir_all(&pack));
+    t.c().reload_assets();
+    t.frames(2).await?;
+    t.c().open_screen("core:settings");
+    t.screen("core:settings").await?;
+    t.frames(2).await?;
+    t.check(t.c().ui_rect("text:Pack Done").is_none(), "without the pack the key is the mod's again");
+    t.laid_out(&["text:Done"]);
+    t.c().close_screen();
+    Ok(())
+}
+
 /// A shader pack whose files do not compile changes nothing: every engine shader, the composed
 /// ones (models, particles, screen effects, UI) too, falls back to the built-in one.
 pub async fn broken_shader_pack(t: T) -> R {

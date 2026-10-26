@@ -81,6 +81,7 @@ pub fn all() -> Vec<TestDef> {
         looks::shaders_and_glow,
         looks::texture_seams,
         looks::texture_reload,
+        looks::pack_lang,
         looks::tint_kinds,
         looks::broken_shader_pack,
         looks::rich_text,

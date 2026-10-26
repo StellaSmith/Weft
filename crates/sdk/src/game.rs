@@ -212,6 +212,38 @@ impl Inventory {
     pub fn insert(&self, stack: ItemStack) -> ItemStack {
         unsafe { (host().inv_insert)(self.world.raw(), self.owner, stack) }
     }
+    /// A machine's slot group (`MachineBuilder::group`) in this inventory.
+    pub fn group(&self, name: &str) -> InventoryGroup {
+        let mut out = [0u32; 2];
+        if unsafe { (host().inventory_group)(self.world.raw(), self.owner, Str::new(name), &mut out) } == 0 {
+            crate::error!("the inventory of entity {} has no group {name}", self.owner);
+        }
+        InventoryGroup { inv: Inventory { world: self.world, owner: self.owner }, start: out[0], len: out[1] }
+    }
+}
+
+/// Slots of one group in an inventory, numbered from 0.
+pub struct InventoryGroup {
+    inv: Inventory,
+    start: u32,
+    len: u32,
+}
+
+impl InventoryGroup {
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn get(&self, i: u32) -> ItemStack {
+        if i < self.len { self.inv.get(self.start + i) } else { ItemStack::EMPTY }
+    }
+    pub fn set(&self, i: u32, stack: ItemStack) {
+        if i < self.len {
+            self.inv.set(self.start + i, stack)
+        }
+    }
 }
 
 // ---------------------------------------------------------------- recipes
@@ -668,37 +700,198 @@ impl MenuCtx {
     pub fn owner(&self) -> u64 {
         self.args.owner
     }
-    /// Slot passed to `on_take`.
-    pub fn slot(&self) -> u32 {
-        self.args.slot
-    }
-    /// Adds slots: `TEMP` (menu grid), `PLAYER`, or an entity id.
-    pub fn slots(&self, owner: u64, start: u32, count: u32, flags: u32) {
-        unsafe { (host().menu_slots)(self.args.menu, owner, start, count, flags, Str::EMPTY) }
-    }
-    /// Slots taking only items with tag or component `accepts` (any mod's, full name).
-    pub fn slots_for(&self, owner: u64, start: u32, count: u32, flags: u32, accepts: &str) {
-        unsafe { (host().menu_slots)(self.args.menu, owner, start, count, flags, Str::new(accepts)) }
-    }
-    /// The player's main inventory, then the hotbar (the layout `ui.player_inventory` shows).
-    pub fn player_slots(&self) {
-        let l = player_layout();
-        let main: Vec<u32> = (l.hotbar..l.slots).filter(|i| !l.worn.contains(i)).collect();
-        for i in main {
-            self.slots(PLAYER, i, 1, 0);
-        }
-        self.slots(PLAYER, 0, l.hotbar, 0);
-    }
-    pub fn get(&self, slot: u32) -> ItemStack {
-        unsafe { (host().menu_get)(self.args.menu, slot) }
-    }
-    pub fn set(&self, slot: u32, stack: ItemStack) {
-        unsafe { (host().menu_set)(self.args.menu, slot, stack) }
+    /// Slot group `name` of this menu.
+    pub fn group(&self, name: &str) -> MenuGroup<'_> {
+        let mut out = [0u32; 2];
+        unsafe { (host().menu_group)(self.args.menu, Str::new(name), &mut out) };
+        MenuGroup { m: self, start: out[0], len: out[1] }
     }
 }
 
-pub const TEMP: u64 = 0;
-pub const PLAYER: u64 = u64::MAX;
+/// Slots of one group of an open menu, numbered from 0, whoever's inventory they show.
+pub struct MenuGroup<'a> {
+    m: &'a MenuCtx,
+    start: u32,
+    len: u32,
+}
+
+impl MenuGroup<'_> {
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn get(&self, i: u32) -> ItemStack {
+        if i < self.len { unsafe { (host().menu_get)(self.m.args.menu, self.start + i) } } else { ItemStack::EMPTY }
+    }
+    pub fn set(&self, i: u32, stack: ItemStack) {
+        if i < self.len {
+            unsafe { (host().menu_set)(self.m.args.menu, self.start + i, stack) }
+        }
+    }
+}
+
+/// The groups `player_inventory()` adds, for `Ui::group` and `MenuCtx::group`.
+pub const INVENTORY_GROUP: &str = "core:inventory";
+pub const HOTBAR_GROUP: &str = "core:hotbar";
+
+/// A group of slots: a grid, row or column of one inventory sharing its rules. Shown with
+/// `ui.group(name)`, read and written with `MenuCtx::group(name)`.
+///
+/// ```ignore
+/// r.machine("alloy_smelter", &MENU)
+///     .group("input", Slots::row(2))
+///     .group("fuel", Slots::one().accepts("fuel").background("mymod:gui/flame_slot"))
+///     .group("output", Slots::one().output().big());
+/// ```
+#[derive(Clone)]
+pub struct Slots {
+    owner: Option<u32>,
+    start: u32,
+    cols: u32,
+    rows: u32,
+    flags: u32,
+    accepts: String,
+    limit: u32,
+    size: f32,
+    background: String,
+    tooltip: String,
+    priority: i32,
+}
+
+impl Slots {
+    pub fn grid(cols: u32, rows: u32) -> Slots {
+        Slots { owner: None, start: u32::MAX, cols, rows, flags: 0, accepts: String::new(), limit: 0, size: 0.0, background: String::new(), tooltip: String::new(), priority: 0 }
+    }
+    pub fn row(n: u32) -> Slots {
+        Slots::grid(n, 1)
+    }
+    pub fn column(n: u32) -> Slots {
+        Slots::grid(1, n)
+    }
+    pub fn one() -> Slots {
+        Slots::grid(1, 1)
+    }
+    /// Rows of nine, like a chest.
+    pub fn chest(rows: u32) -> Slots {
+        Slots::grid(9, rows)
+    }
+    /// The menu's own slots, given back to the player when it closes (crafting grids). The
+    /// default for `MenuBuilder::group`.
+    pub fn menu(mut self) -> Self {
+        self.owner = Some(abi::slot_owner::MENU);
+        self
+    }
+    /// The inventory of the entity the menu opened on. The default for `MachineBuilder::group`.
+    pub fn machine(mut self) -> Self {
+        self.owner = Some(abi::slot_owner::BLOCK);
+        self
+    }
+    /// The player's own inventory from slot `start` (armor slots).
+    pub fn player(mut self, start: u32) -> Self {
+        (self.owner, self.start) = (Some(abi::slot_owner::PLAYER), start);
+        self
+    }
+    /// From this index of the owner's inventory instead of right after the group before.
+    pub fn at(mut self, start: u32) -> Self {
+        self.start = start;
+        self
+    }
+    /// Items only go in (a machine uses them up).
+    pub fn input(mut self) -> Self {
+        self.flags |= abi::slot_flags::INPUT;
+        self
+    }
+    /// Items only come out (results).
+    pub fn output(mut self) -> Self {
+        self.flags |= abi::slot_flags::OUTPUT;
+        self
+    }
+    /// Only items with this tag or component (its full name, like `fuel` or `armor_head`).
+    pub fn accepts(mut self, tag: &str) -> Self {
+        self.accepts = tag.to_string();
+        self
+    }
+    /// At most this many items per slot.
+    pub fn limit(mut self, n: u32) -> Self {
+        self.limit = n;
+        self
+    }
+    /// Side of a slot in GUI pixels (18 by default).
+    pub fn size(mut self, px: f32) -> Self {
+        self.size = px;
+        self
+    }
+    /// The big slot vanilla uses for results.
+    pub fn big(self) -> Self {
+        self.size(26.0)
+    }
+    /// A GUI texture shown while a slot is empty (the armor silhouettes).
+    pub fn background(mut self, texture: &str) -> Self {
+        self.background = texture.to_string();
+        self
+    }
+    /// A translation shown over an empty slot.
+    pub fn tooltip(mut self, key: &str) -> Self {
+        self.tooltip = key.to_string();
+        self
+    }
+    /// Shift-clicks from the player's inventory fill groups with a higher priority first.
+    pub fn priority(mut self, p: i32) -> Self {
+        self.priority = p;
+        self
+    }
+}
+
+/// Owned strings of the groups while their descriptors are sent.
+struct GroupList {
+    names: Vec<String>,
+    groups: Vec<Slots>,
+    strings: Vec<[String; 3]>,
+}
+
+impl GroupList {
+    fn new() -> GroupList {
+        GroupList { names: Vec::new(), groups: Vec::new(), strings: Vec::new() }
+    }
+    fn push(&mut self, ns: &str, name: &str, s: Slots, default_owner: u32) {
+        let s = Slots { owner: Some(s.owner.unwrap_or(default_owner)), ..s };
+        let q = |t: &str| if t.is_empty() || t.contains(':') { t.to_string() } else { qualify(ns, t) };
+        self.strings.push([s.accepts.clone(), q(&s.background), s.tooltip.clone()]);
+        self.names.push(name.to_string());
+        self.groups.push(s);
+    }
+    fn player_inventory(&mut self) {
+        self.names.push(INVENTORY_GROUP.into());
+        self.groups.push(Slots { owner: Some(abi::slot_owner::PLAYER_MAIN), ..Slots::one() });
+        self.strings.push(Default::default());
+        self.names.push(HOTBAR_GROUP.into());
+        self.groups.push(Slots { owner: Some(abi::slot_owner::PLAYER_HOTBAR), ..Slots::one() });
+        self.strings.push(Default::default());
+    }
+    fn descs(&self) -> Vec<abi::SlotGroupDesc> {
+        self.groups
+            .iter()
+            .zip(&self.names)
+            .zip(&self.strings)
+            .map(|((g, name), [accepts, background, tooltip])| abi::SlotGroupDesc {
+                name: Str::new(name),
+                owner: g.owner.unwrap_or(0),
+                start: g.start,
+                cols: g.cols,
+                rows: g.rows,
+                flags: g.flags,
+                accepts: Str::new(accepts),
+                limit: g.limit,
+                size: g.size,
+                background: Str::new(background),
+                tooltip: Str::new(tooltip),
+                priority: g.priority,
+            })
+            .collect()
+    }
+}
 
 fn menu_cb(f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> abi::Callback {
     callback(move |a: &mut abi::MenuArgs| f(unsafe { &*(a as *const abi::MenuArgs as *const MenuCtx) }))
@@ -709,6 +902,9 @@ pub struct MenuBuilder<'a> {
     name: String,
     handle: Option<&'static Menu>,
     desc: abi::MenuDesc,
+    groups: GroupList,
+    entity: String,
+    recipes: Vec<String>,
 }
 
 impl MenuBuilder<'_> {
@@ -716,12 +912,20 @@ impl MenuBuilder<'_> {
         self.handle = Some(h);
         self
     }
-    pub fn temp_slots(mut self, n: u32) -> Self {
-        self.desc.temp_slots = n;
+    /// A group of slots, by default the menu's own (`Slots::menu`). Groups come in this order.
+    pub fn group(mut self, name: &str, slots: Slots) -> Self {
+        self.groups.push(self.reg.ns, name, slots, abi::slot_owner::MENU);
         self
     }
-    pub fn setup(mut self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
-        self.desc.setup = menu_cb(f);
+    /// The player's inventory and hotbar as two groups (`INVENTORY_GROUP`, `HOTBAR_GROUP`), shown
+    /// with `ui.player_inventory(..)`.
+    pub fn player_inventory(mut self) -> Self {
+        self.groups.player_inventory();
+        self
+    }
+    /// Recipes of this kind are made here: clicking an `arrow` bar of the screen shows them.
+    pub fn recipes(mut self, kind: &RecipeKind) -> Self {
+        self.recipes.push(kind.0.to_string());
         self
     }
     pub fn on_change(mut self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
@@ -749,6 +953,11 @@ impl Drop for MenuBuilder<'_> {
         }
         self.desc.name = Str::new(&self.name);
         self.desc.cell = self.handle.map_or(std::ptr::null(), |h| h.cell());
+        let groups = self.groups.descs();
+        self.desc.groups = Slice::new(&groups);
+        self.desc.entity = Str::new(&self.entity);
+        let recipes = self.recipes.join(" ");
+        self.desc.recipes = Str::new(&recipes);
         unsafe { (host().reg_menu)(self.reg.raw, &self.desc) }
     }
 }
@@ -814,7 +1023,7 @@ impl Registry {
     }
 
     pub fn menu<'a>(&'a mut self, name: &str) -> MenuBuilder<'a> {
-        MenuBuilder { name: qualify(self.ns, name), reg: self, handle: None, desc: abi::MenuDesc::DEFAULT }
+        MenuBuilder { name: qualify(self.ns, name), reg: self, handle: None, desc: abi::MenuDesc::DEFAULT, groups: GroupList::new(), entity: String::new(), recipes: Vec::new() }
     }
 
     /// The player inventory: `slots` in all, the first `hotbar` of them the hotbar, `worn`
@@ -883,6 +1092,15 @@ impl Registry {
         unsafe { (host().reg_command_branch)(self.raw, Str::new(command), Str::new(usage), cb) }
     }
 
+    /// Adds to place `area` of `screen` without replacing the screen: a button in the main menu is
+    /// `r.screen_part("core:title", "buttons", 0, |ui| ..)`. Lower `order` comes first. The
+    /// engine's places: `core:title` `buttons` and `side`, `core:pause` `buttons`,
+    /// `core:settings` `buttons`.
+    pub fn screen_part(&mut self, screen: &str, area: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
+        let cb = crate::ui::ui_callback(f);
+        unsafe { (host().reg_screen_part)(self.raw, Str::new(screen), Str::new(area), order, cb) }
+    }
+
     /// A screen opened by name (`Client::open_screen`, `--screen`); naming it like an engine
     /// screen (`core:pause`) replaces that one.
     pub fn screen(&mut self, name: &str, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
@@ -918,9 +1136,9 @@ impl Registry {
         unsafe { (host().reg_entity_category)(self.raw, Str::new(&name), cap, despawn) }
     }
 
-    /// Registers a recipe kind this mod owns.
-    pub fn recipe_kind(&mut self, kind: &RecipeKind) {
-        unsafe { (host().reg_recipe_kind)(self.raw, Str::new(kind.0)) }
+    /// Registers a recipe kind this mod owns, and how the recipe viewer shows it.
+    pub fn recipe_kind<'a>(&'a mut self, kind: &RecipeKind) -> RecipeKindBuilder<'a> {
+        RecipeKindBuilder { raw: self.raw, name: kind.0.to_string(), input_grid: [0; 2], output_grid: [0; 2], info: String::new(), info_values: Vec::new(), display: abi::Callback::NONE, _p: std::marker::PhantomData }
     }
 
     pub fn recipe_station(&mut self, kind: &RecipeKind, item: &str) {
@@ -928,26 +1146,206 @@ impl Registry {
         unsafe { (host().reg_recipe_station)(self.raw, Str::new(kind.0), Str::new(&item)) }
     }
 
-    pub fn shaped(&mut self, kind: &RecipeKind, output: &str, count: u32, pattern: &[&str], keys: &[(char, &str)]) {
-        let pattern: Vec<Str> = pattern.iter().map(|p| Str::new(p)).collect();
-        let key_names: Vec<String> = keys.iter().map(|(_, n)| self.ingredient(n)).collect();
-        let keys: Vec<abi::RecipeKey> = keys.iter().zip(&key_names).map(|((c, _), n)| abi::RecipeKey { ch: *c as u32, item: Str::new(n) }).collect();
+    /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or
+    /// `#tag`. More results and data with the builder it returns.
+    pub fn shaped<'a>(&'a mut self, kind: &RecipeKind, output: &str, count: u32, pattern: &[&str], keys: &[(char, &str)]) -> RecipeBuilder<'a> {
+        let keys = keys.iter().map(|(c, n)| (*c, self.ingredient(n))).collect();
         let output = self.ingredient(output);
-        let desc = abi::RecipeDesc { kind: Str::new(kind.0), pattern: Slice::new(&pattern), keys: Slice::new(&keys), output: Str::new(&output), count, ..abi::RecipeDesc::DEFAULT };
-        unsafe { (host().reg_recipe)(self.raw, &desc) }
+        RecipeBuilder { kind: kind.0.to_string(), pattern: pattern.iter().map(|p| p.to_string()).collect(), keys, inputs: Vec::new(), counts: Vec::new(), output, count, time: 0, outputs: Vec::new(), values: Vec::new(), flags: 0, reg: self }
     }
 
-    /// Shapeless recipe or a processing recipe (one input, with `time`).
-    pub fn shapeless(&mut self, kind: &RecipeKind, output: &str, count: u32, inputs: &[&str], time: u32) {
-        let names: Vec<String> = inputs.iter().map(|n| self.ingredient(n)).collect();
-        let inputs: Vec<Str> = names.iter().map(|n| Str::new(n)).collect();
+    /// Shapeless recipe or a processing recipe (inputs used up over `time` ticks). Inputs are
+    /// items, `#tags` or `fluid:<liquid>`.
+    pub fn shapeless<'a>(&'a mut self, kind: &RecipeKind, output: &str, count: u32, inputs: &[&str], time: u32) -> RecipeBuilder<'a> {
+        let inputs = inputs.iter().map(|n| self.ingredient(n)).collect();
         let output = self.ingredient(output);
-        let desc = abi::RecipeDesc { kind: Str::new(kind.0), inputs: Slice::new(&inputs), output: Str::new(&output), count, time, ..abi::RecipeDesc::DEFAULT };
-        unsafe { (host().reg_recipe)(self.raw, &desc) }
+        RecipeBuilder { kind: kind.0.to_string(), pattern: Vec::new(), keys: Vec::new(), inputs, counts: Vec::new(), output, count, time, outputs: Vec::new(), values: Vec::new(), flags: 0, reg: self }
     }
 
     fn ingredient(&self, n: &str) -> String {
-        if n.starts_with('#') { n.to_string() } else { qualify(self.ns, n) }
+        match n.strip_prefix("fluid:") {
+            Some(f) => format!("fluid:{}", qualify(self.ns, f)),
+            None if n.starts_with('#') => n.to_string(),
+            None => qualify(self.ns, n),
+        }
+    }
+}
+
+/// A recipe being registered; sent when dropped.
+pub struct RecipeBuilder<'a> {
+    reg: &'a mut Registry,
+    kind: String,
+    pattern: Vec<String>,
+    keys: Vec<(char, String)>,
+    inputs: Vec<String>,
+    counts: Vec<u32>,
+    output: String,
+    count: u32,
+    time: u32,
+    outputs: Vec<(String, u32, f32)>,
+    values: Vec<Pending>,
+    flags: u32,
+}
+
+impl RecipeBuilder<'_> {
+    /// How many of each input it takes, in the order of the inputs (millibuckets for fluids).
+    pub fn counts(mut self, counts: &[u32]) -> Self {
+        self.counts = counts.to_vec();
+        self
+    }
+    /// Another result (an item or `fluid:<liquid>`).
+    pub fn output(self, item: &str, count: u32) -> Self {
+        self.chance_output(item, count, 1.0)
+    }
+    /// A result that comes out with chance `chance` (0..1) each time.
+    pub fn chance_output(mut self, item: &str, count: u32, chance: f32) -> Self {
+        let item = self.reg.ingredient(item);
+        self.outputs.push((item, count, chance));
+        self
+    }
+    /// Data the recipe carries for the machine making it (energy per tick); the recipe
+    /// viewer can show it in the kind's info line.
+    pub fn value<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
+        self.values.push(comp.raw_value(&v));
+        self
+    }
+    /// Works, but the recipe viewer doesn't list it.
+    pub fn hidden(mut self) -> Self {
+        self.flags |= abi::recipe_flags::HIDDEN;
+        self
+    }
+}
+
+impl Drop for RecipeBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let pattern: Vec<Str> = self.pattern.iter().map(|p| Str::new(p)).collect();
+        let keys: Vec<abi::RecipeKey> = self.keys.iter().map(|(c, n)| abi::RecipeKey { ch: *c as u32, item: Str::new(n) }).collect();
+        let inputs: Vec<Str> = self.inputs.iter().map(|n| Str::new(n)).collect();
+        let outputs: Vec<abi::RecipeOutput> = self.outputs.iter().map(|(n, c, ch)| abi::RecipeOutput { item: Str::new(n), count: *c, chance: *ch }).collect();
+        let mut scratch = Vec::new();
+        let values = crate::content::raw_values_pub(&self.values, &mut scratch);
+        let desc = abi::RecipeDesc {
+            kind: Str::new(&self.kind),
+            pattern: Slice::new(&pattern),
+            keys: Slice::new(&keys),
+            inputs: Slice::new(&inputs),
+            input_counts: Slice::new(&self.counts),
+            output: Str::new(&self.output),
+            count: self.count,
+            time: self.time,
+            outputs: Slice::new(&outputs),
+            values: Slice::new(&values),
+            flags: self.flags,
+        };
+        unsafe { (host().reg_recipe)(self.reg.raw, &desc) }
+    }
+}
+
+/// A recipe kind being registered; sent when dropped.
+pub struct RecipeKindBuilder<'a> {
+    raw: *mut abi::Registrar,
+    name: String,
+    input_grid: [u32; 2],
+    output_grid: [u32; 2],
+    info: String,
+    info_values: Vec<String>,
+    display: abi::Callback,
+    _p: std::marker::PhantomData<&'a mut Registry>,
+}
+
+impl RecipeKindBuilder<'_> {
+    /// The recipe viewer shows inputs as a grid this big, whatever a recipe uses (a crafting
+    /// table's 3 x 3).
+    pub fn inputs(mut self, cols: u32, rows: u32) -> Self {
+        self.input_grid = [cols, rows];
+        self
+    }
+    pub fn outputs(mut self, cols: u32, rows: u32) -> Self {
+        self.output_grid = [cols, rows];
+        self
+    }
+    /// A line under each recipe: translation `key`, its `{0}`.. filled with `values`: `time`
+    /// (seconds) or components the recipe carries (`mymod:energy_per_tick`).
+    pub fn info(mut self, key: &str, values: &[&str]) -> Self {
+        self.info = key.to_string();
+        self.info_values = values.iter().map(|v| v.to_string()).collect();
+        self
+    }
+    /// Builds each recipe yourself instead of the usual inputs, arrow, outputs:
+    /// `ui.recipe_inputs()`, `ui.recipe_outputs()` and `ui.recipe_input(i)` place its slots.
+    pub fn display(mut self, f: impl Fn(&mut Ui, &Recipe) + Send + Sync + 'static) -> Self {
+        self.display = callback(move |a: &mut abi::RecipeUiArgs| {
+            let mut ui = Ui::from_raw(a.ui, a.client);
+            let r = Recipe { kind: unsafe { a.kind.as_str() }.to_string(), index: a.recipe };
+            f(&mut ui, &r);
+        });
+        self
+    }
+}
+
+impl Drop for RecipeKindBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let values: Vec<Str> = self.info_values.iter().map(|v| Str::new(v)).collect();
+        let desc = abi::RecipeKindDesc {
+            name: Str::new(&self.name),
+            input_grid: self.input_grid,
+            output_grid: self.output_grid,
+            info: Str::new(&self.info),
+            info_values: Slice::new(&values),
+            display: self.display,
+        };
+        unsafe { (host().reg_recipe_kind)(self.raw, &desc) }
+    }
+}
+
+/// One recipe of a kind, found by `recipe_find` (or shown by a kind's `display`).
+pub struct Recipe {
+    kind: String,
+    index: u32,
+}
+
+/// The first recipe of `kind` whose inputs, with their counts, are all among `stacks`.
+pub fn recipe_find(kind: &RecipeKind, stacks: &[ItemStack]) -> Option<Recipe> {
+    let n = unsafe { (host().recipe_find)(Str::new(kind.0), stacks.as_ptr(), stacks.len() as u32) };
+    (n > 0).then(|| Recipe { kind: kind.0.to_string(), index: n - 1 })
+}
+
+impl Recipe {
+    fn info(&self) -> abi::RecipeInfo {
+        let mut out = abi::RecipeInfo::default();
+        unsafe { (host().recipe_info)(Str::new(&self.kind), self.index, &mut out) };
+        out
+    }
+    /// Its time in ticks.
+    pub fn time(&self) -> u32 {
+        self.info().time
+    }
+    /// Its results with their chances; fluids are not stacks and show as empty ones.
+    pub fn outputs(&self) -> Vec<(ItemStack, f32)> {
+        (0..self.info().outputs)
+            .map(|i| {
+                let (mut s, mut chance) = (ItemStack::EMPTY, 1.0);
+                unsafe { (host().recipe_output)(Str::new(&self.kind), self.index, i, &mut s, &mut chance) };
+                (s, chance)
+            })
+            .collect()
+    }
+    /// A value given with `RecipeBuilder::value`.
+    pub fn value<T: Value>(&self, comp: &Component<T>) -> Option<T> {
+        let mut buf = vec![0u8; std::mem::size_of::<T>()];
+        let n = unsafe { (host().recipe_value)(Str::new(&self.kind), self.index, Str::new(comp.name()), buf.as_mut_ptr(), buf.len() as u32) };
+        (n as usize == buf.len()).then(|| unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const T) })
+    }
+    /// Takes its inputs out of `stacks` (the ones `recipe_find` was given); false, and nothing
+    /// taken, if they are not all there.
+    pub fn consume(&self, stacks: &mut [ItemStack]) -> bool {
+        unsafe { (host().recipe_consume)(Str::new(&self.kind), self.index, stacks.as_mut_ptr(), stacks.len() as u32) != 0 }
     }
 }
 
@@ -1034,12 +1432,14 @@ type BlockLook = Box<dyn for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::Block
 
 /// A machine in one go: the block (its look and mining from `block`), an entity of the same
 /// name holding its inventory and state (ticking with `on_tick`), components on that entity,
-/// and the menu showing its `slots` above the player's inventory, opened by using the block.
+/// and the menu showing its slot groups above the player's inventory, opened by using the block.
 ///
 /// ```ignore
 /// r.machine("furnace", &FURNACE_MENU)
 ///     .block(|b| b.handle(&FURNACE).textures(..).hardness(3.5))
-///     .slots(&[0, 0, slot_flags::OUTPUT])
+///     .group("input", Slots::one())
+///     .group("fuel", Slots::one().accepts("fuel"))
+///     .group("output", Slots::one().output().big())
 ///     .component(&SMELTING, Smelting::default(), component_flags::SAVE | component_flags::SYNC_MENU)
 ///     .on_tick(tick_furnaces)
 ///     .screen(|ui| ..);
@@ -1051,15 +1451,15 @@ pub struct MachineBuilder<'a> {
     block: Option<BlockLook>,
     entity: Option<&'static Entity>,
     tick: abi::Callback,
-    slots: Vec<u32>,
-    accepts: Vec<(u32, String)>,
+    groups: Vec<(String, Slots)>,
+    recipes: Vec<String>,
     with: Vec<Box<dyn FnOnce(&mut Registry, &str)>>,
-    screen: Option<Box<dyn Fn(&mut Ui, u32) + Send + Sync>>,
+    screen: Option<Box<dyn Fn(&mut Ui) + Send + Sync>>,
 }
 
 impl Registry {
     pub fn machine<'a>(&'a mut self, name: &str, menu: &'static Menu) -> MachineBuilder<'a> {
-        MachineBuilder { name: name.to_string(), reg: self, menu, block: None, entity: None, tick: abi::Callback::NONE, slots: Vec::new(), accepts: Vec::new(), with: Vec::new(), screen: None }
+        MachineBuilder { name: name.to_string(), reg: self, menu, block: None, entity: None, tick: abi::Callback::NONE, groups: Vec::new(), recipes: Vec::new(), with: Vec::new(), screen: None }
     }
 }
 
@@ -1072,14 +1472,16 @@ impl MachineBuilder<'_> {
         self.entity = Some(h);
         self
     }
-    /// Its inventory: one entry per slot, with `slot_flags` (`OUTPUT` takes nothing in).
-    pub fn slots(mut self, flags: &[u32]) -> Self {
-        self.slots = flags.to_vec();
+    /// Recipes of this kind are made here: clicking an `arrow` bar of its screen shows them, and
+    /// the recipe viewer shows the machine next to them.
+    pub fn recipes(mut self, kind: &RecipeKind) -> Self {
+        self.recipes.push(kind.0.to_string());
         self
     }
-    /// Slot `slot` takes only items with this tag or component (full name, like `fuel`).
-    pub fn accepts(mut self, slot: u32, tag: &str) -> Self {
-        self.accepts.push((slot, tag.to_string()));
+    /// A group of the machine's slots (its inventory holds them all, in this order). The
+    /// machine's tick finds them with `w.inventory(id).group(name)`.
+    pub fn group(mut self, name: &str, slots: Slots) -> Self {
+        self.groups.push((name.to_string(), slots));
         self
     }
     /// A component every machine of this kind carries (`component_flags`).
@@ -1102,9 +1504,9 @@ impl MachineBuilder<'_> {
         self.tick = tick_cb(f);
         self
     }
-    /// The menu screen: slots 0.. are the machine's (as given to `slots`), then the player's
-    /// inventory and hotbar from the slot `f` gets (`Ui::player_inventory`).
-    pub fn screen(mut self, f: impl Fn(&mut Ui, u32) + Send + Sync + 'static) -> Self {
+    /// The menu screen: the machine's groups by name (`ui.group`), the player's inventory with
+    /// `ui.player_inventory(..)`.
+    pub fn screen(mut self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
         self.screen = Some(Box::new(f));
         self
     }
@@ -1128,21 +1530,31 @@ impl Drop for MachineBuilder<'_> {
         for f in self.with.drain(..) {
             f(reg, &full);
         }
-        reg.block_entity(&name, &name, self.slots.len() as u32);
-        let slots = std::mem::take(&mut self.slots);
-        let accepts = std::mem::take(&mut self.accepts);
-        let player = slots.len() as u32;
-        let m = reg.menu(&name).handle(menu).setup(move |m| {
-            for (i, &f) in slots.iter().enumerate() {
-                match accepts.iter().find(|a| a.0 == i as u32) {
-                    Some((_, tag)) => m.slots_for(m.owner(), i as u32, 1, f, tag),
-                    None => m.slots(m.owner(), i as u32, 1, f),
-                }
+        // The inventory holds every group of the machine's own, wherever they start.
+        let mut size = 0;
+        let mut next = 0;
+        for (_, s) in &self.groups {
+            if s.owner.is_none_or(|o| o == abi::slot_owner::BLOCK) {
+                let start = if s.start == u32::MAX { next } else { s.start };
+                next = start + s.cols * s.rows;
+                size = size.max(next);
             }
-            m.player_slots();
-        });
+        }
+        reg.block_entity(&name, &name, size);
+        let mut m = reg.menu(&name).handle(menu);
+        for (g, s) in self.groups.drain(..) {
+            let ns = m.reg.ns;
+            m.groups.push(ns, &g, s, abi::slot_owner::BLOCK);
+        }
+        m.entity = full.clone();
+        m.recipes = std::mem::take(&mut self.recipes);
+        let kinds = m.recipes.clone();
+        let m = m.player_inventory();
+        for k in kinds {
+            unsafe { (host().reg_recipe_station)(m.reg.raw, Str::new(&k), Str::new(&full)) }
+        }
         match self.screen.take() {
-            Some(s) => drop(m.screen(move |ui| s(ui, player))),
+            Some(s) => drop(m.screen(s)),
             None => drop(m),
         }
     }

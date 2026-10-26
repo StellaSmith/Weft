@@ -8,12 +8,19 @@ use crate::runner::{R, T};
 pub async fn screens(t: T) -> R {
     t.screen("core:title").await?;
     t.shot("title").await?;
-    t.laid_out(&["text:Singleplayer", "text:Multiplayer", "text:Settings", "text:Quit Game"]);
+    t.laid_out(&["text:Singleplayer", "text:Multiplayer", "text:Mods", "text:Settings", "text:Profile", "text:Quit Game", "text:About Test Mod"]);
+    // A mod's button in the main menu opens its own screen, with no world around.
+    t.check(t.click_ui("text:About Test Mod", 0), "the test mod's main menu button");
+    t.screen("testmod:about").await?;
+    t.c().close_screen();
+    t.screen("core:title").await?;
     for (name, texts) in [
         ("core:settings", &["text:View distance", "text:Language", "text:Controls", "text:Shader Packs", "text:Done"][..]),
         ("core:language", &["text:English", "text:Done"][..]),
         ("core:controls", &["text:Reset All", "text:Done"][..]),
-        ("core:worlds", &["text:Create New World"][..]),
+        ("core:worlds", &["text:Create New World", "id:saves_folder"][..]),
+        ("core:mods", &["id:mod:base", "id:mod:testmod", "id:mod_description"][..]),
+        ("core:profile", &["id:profile_name", "text:Copy Key"][..]),
     ] {
         t.check(t.c().open_screen(name), format!("cannot open {name}"));
         t.screen(name).await?;
@@ -28,6 +35,13 @@ pub async fn screens(t: T) -> R {
     t.until("its text", Duration::from_secs(2), |t| t.c().ui_rect("text:opened by name").is_some()).await?;
     t.shot("about").await?;
     t.laid_out(&["text:Test Mod", "text:opened by name"]);
+    // A part of a mod's screen with a tooltip of its own.
+    let [x, y, w, h] = t.c().ui_rect("text:Hover me").ok_or("no part to hover")?;
+    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.frames(4).await?;
+    let shot = t.shot("about_tooltip").await?;
+    let red = shot.share(x + w / 2.0, y - 0.02, (x + 0.3).min(1.0), y + 0.06, super::probe::red);
+    t.probe("the tooltip's red text", red, red > 0.005);
     t.c().close_screen();
     t.no_screen().await
 }
@@ -161,6 +175,15 @@ pub async fn chat(t: T) -> R {
     t.check(help.contains("#core:gizmos") && help.contains("probe"), format!("/help gizmo said '{help}'"));
     let reply = t.cmd("/probe beta").await?;
     t.check_eq(reply, "probe beta on the client".into(), "mod client command");
+    // What a player types shows as typed, braces included; it can't format.
+    t.c().chat("braces {#ff0000}stay");
+    t.until("the chat line", Duration::from_secs(5), |t| t.c().chat_line(0).contains("stay")).await?;
+    t.press("core:chat");
+    t.screen("core:chat").await?;
+    t.frames(2).await?;
+    t.check(t.c().ui_rect("text:{#ff0000}stay").is_some(), "a player's braces show literally in chat");
+    t.c().key("Escape", 0.0);
+    t.no_screen().await?;
     Ok(())
 }
 
@@ -198,7 +221,7 @@ pub async fn recipe_viewer(t: T) -> R {
     t.press("core:recipes");
     t.screen("core:recipes").await?;
     t.frames(3).await?;
-    t.check(t.c().ui_rect("text:smelting").is_some(), "smelting recipe for the ingot");
+    t.check(t.c().ui_rect("id:tab:base:smelting").is_some(), "smelting recipes for the ingot");
     t.shot("iron_recipes").await?;
     t.c().close_screen();
     t.screen("core:menu").await?;
@@ -209,6 +232,57 @@ pub async fn recipe_viewer(t: T) -> R {
     t.frames(3).await?;
     t.check(t.c().ui_rect("text:crafting").is_some(), "crafting uses of the ingot");
     t.shot("iron_uses").await?;
+    // One tab per kind; the test mod's alloying shows its info line from the recipe's values.
+    t.check(t.c().ui_rect("id:tab:base:crafting").is_some(), "a crafting tab");
+    t.check(t.click_ui("id:tab:testmod:alloying", 0), "an alloying tab");
+    t.secs(0.2).await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:32 FE/t").is_some(), "the alloying recipe's energy in its info line");
+    t.shot("alloying").await?;
+    // Tags: the list, then the items of one.
+    t.check(t.click_ui("text:Tags", 0), "a tags button");
+    t.screen("core:tags").await?;
+    t.frames(3).await?;
+    t.click_ui("id:tag_search", 0);
+    t.frames(2).await?;
+    t.c().type_text("ingots/iron");
+    t.frames(4).await?;
+    t.check(t.click_ui("id:tag:ingots/iron", 0), "the ingots/iron tag in the list");
+    t.screen("core:tag").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:#ingots/iron").is_some(), "the tag's items");
+    t.shot("tag").await?;
+    t.c().close_screen();
+    t.screen("core:tags").await?;
+    t.c().close_screen();
+    t.screen("core:recipes").await?;
+    t.c().close_screen();
+    t.screen("core:menu").await?;
+    // A kind laid out by its mod, with a fluid.
+    t.op("put me 1 diamond 1").await?;
+    t.frames(3).await?;
+    let Some([x, y, w, h]) = t.c().ui_rect("slot:37") else { return Err("no hotbar slot".into()) };
+    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.frames(3).await?;
+    t.press("core:uses");
+    t.screen("core:recipes").await?;
+    t.frames(3).await?;
+    t.check(t.click_ui("id:tab:testmod:infusing", 0), "an infusing tab");
+    t.secs(0.2).await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:laid out by the test mod").is_some(), "the infusing kind's own layout");
+    t.shot("infusing").await?;
+    t.c().close_screen();
+    t.screen("core:menu").await?;
+    // The arrow of a menu that crafts opens its recipes.
+    let Some([x, y, w, h]) = t.c().ui_rect("class:arrow") else { return Err("no arrow in the inventory".into()) };
+    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.frames(2).await?;
+    t.c().click(0, 0.05);
+    t.screen("core:recipes").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:Recipes").is_some() && t.c().ui_rect("id:tab:base:crafting").is_some(), "the arrow shows the crafting recipes");
+    t.shot("arrow").await?;
     t.c().close_screen();
     t.c().close_screen();
     t.no_screen().await
@@ -256,5 +330,22 @@ pub async fn inventory_hotkeys(t: T) -> R {
     hover(21)?;
     t.secs(0.8).await?;
     t.check(t.slot("me", 20).await?.1 == 0 && t.slot("me", 21).await?.1 == 0, "shift-sweeping moved both cobblestone stacks to the hotbar");
+    Ok(())
+}
+
+/// A long list shows a scroll bar; clicking low on its track scrolls the list down.
+pub async fn scrollbar(t: T) -> R {
+    t.c().open_screen("core:controls");
+    t.screen("core:controls").await?;
+    t.frames(2).await?;
+    let [x, y, w, h] = t.c().ui_rect("scrollbar").ok_or("no scroll bar on the controls screen")?;
+    let first = t.c().ui_rect("text:Walk forward").ok_or("no first entry")?;
+    t.c().cursor(x + w / 2.0, y + h * 0.95);
+    t.frames(1).await?;
+    t.c().click(0, 0.05);
+    t.frames(4).await?;
+    let moved = t.c().ui_rect("text:Walk forward").map_or(-1.0, |r| r[1]);
+    t.check(moved < first[1] - 0.05, format!("the list scrolled (first entry at {:.3}, was {:.3})", moved, first[1]));
+    t.c().close_screen();
     Ok(())
 }

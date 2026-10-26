@@ -27,6 +27,11 @@ struct UiBuild<'a> {
     lang: &'a Lang,
     input: Option<&'a crate::input::Input>,
     depth: u32,
+    /// Kind of the menu whose screen this is, for its slot groups.
+    menu: Option<u32>,
+    /// The recipe a kind's `display` builds: (kind, number).
+    recipe: Option<(String, u32)>,
+    client: Option<&'a Client>,
 }
 
 #[repr(C)]
@@ -59,9 +64,30 @@ unsafe fn view<'a>(c: *mut abi::ClientCtx) -> Option<&'a Client> {
 
 /// Runs a mod's UI builder callback into `ui`.
 pub fn build(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input>, owner: ModId, cb: Callback, client: Option<&Client>) {
-    let mut b = UiBuild { tag: 1, owner, ui, lang, input, depth: 0 };
+    let menu = client.and_then(|c| c.menu.as_ref()).map(|m| m.kind);
+    let mut b = UiBuild { tag: 1, owner, ui, lang, input, depth: 0, menu, recipe: None, client };
     let mut v = ClientView::new(client);
     let mut args = abi::UiArgs { ui: &mut b as *mut UiBuild as *mut abi::UiCtx, client: v.raw() };
+    host::invoke(owner, cb, &mut args);
+    for _ in 0..b.depth {
+        b.ui.close();
+    }
+}
+
+/// What mods add to place `area` of `screen`, in order, into the open node.
+pub fn parts(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input>, client: Option<&Client>, screen: &str, area: &str) {
+    let Some(c) = crate::content::try_content() else { return };
+    for p in c.game.screen_parts.iter().filter(|p| p.screen == screen && p.area == area) {
+        build(ui, lang, input, p.owner, p.cb, client);
+    }
+}
+
+/// One recipe through its kind's `display` callback.
+#[allow(clippy::too_many_arguments)]
+pub fn build_recipe(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input>, owner: ModId, cb: Callback, client: Option<&Client>, kind: &str, recipe: u32) {
+    let mut b = UiBuild { tag: 1, owner, ui, lang, input, depth: 0, menu: None, recipe: Some((kind.to_string(), recipe)), client };
+    let mut v = ClientView::new(client);
+    let mut args = abi::RecipeUiArgs { ui: &mut b as *mut UiBuild as *mut abi::UiCtx, client: v.raw(), kind: abi::Str::new(kind), recipe };
     host::invoke(owner, cb, &mut args);
     for _ in 0..b.depth {
         b.ui.close();
@@ -163,20 +189,68 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             }
             uk::BUTTON => {
                 let cb = n.on_click;
-                let action: crate::ui::Action = Rc::new(move |ctx: &mut Ctx| {
-                    let mut v = ClientView::new(ctx.client.as_deref());
-                    let mut a = abi::UiArgs { ui: std::ptr::null_mut(), client: v.raw() };
-                    host::invoke(owner, cb, &mut a);
-                });
+                // Run after the input with the whole client API: a mod's menu can open screens,
+                // worlds or quit like the engine's.
+                let action: crate::ui::Action = Rc::new(move |ctx: &mut Ctx| ctx.requests.push(crate::app::Request::ModCall(owner, cb)));
                 b.ui.open(Kind::Button { class: if class.is_empty() { "button".into() } else { class }, action: Some(action), enabled: true, selected: false }, style)
             }
             uk::SLOT => {
-                // Width set: a bigger slot (crafting results), text: the empty slot's silhouette.
-                let size = if n.width.is_nan() { 18.0 } else { n.width };
-                let id = b.ui.open(Kind::Custom { tag: TAG_SLOT, data: n.slot as u64 }, Style { w: Len::Px(size), h: Len::Px(size), ..style });
-                if n.text.len > 0 {
-                    b.ui.nodes[id].icon = Some(n.text.as_str().to_string());
+                // A group's slots as its grid, or one of them; size and silhouette from the group.
+                let c = crate::content::content();
+                let found = b.menu.and_then(|k| c.game.menus.get(k as usize)).and_then(|d| d.group(&c.game.player_layout, &class));
+                match found {
+                    None => {
+                        crate::host::misuse("ui slots", || format!("the menu has no slot group {class}"));
+                        b.ui.open(Kind::Container { class: None }, style)
+                    }
+                    Some((g, first, count)) => {
+                        let cols = g.span(&c.game.player_layout).2;
+                        let slot = |ui: &mut Ui, i: u32| {
+                            let s = ui.add(Kind::Custom { tag: TAG_SLOT, data: (first + i) as u64 }, Style { w: Len::Px(g.size), h: Len::Px(g.size), ..Style::default() });
+                            ui.nodes[s].icon = g.background.clone();
+                        };
+                        if n.slot != u32::MAX {
+                            let id = b.ui.open(Kind::Container { class: None }, style);
+                            slot(b.ui, n.slot.min(count.saturating_sub(1)));
+                            id
+                        } else {
+                            let id = b.ui.open(Kind::Container { class: None }, style);
+                            for row in 0..count.div_ceil(cols) {
+                                b.ui.open(Kind::Container { class: None }, Style::row());
+                                for i in row * cols..(row * cols + cols).min(count) {
+                                    slot(b.ui, i);
+                                }
+                                b.ui.close();
+                            }
+                            id
+                        }
+                    }
                 }
+            }
+            uk::RECIPE_SLOT => {
+                // A recipe's inputs or outputs in a kind's own display.
+                let c = crate::content::content();
+                let id = b.ui.open(Kind::Container { class: None }, style);
+                let found = b.recipe.as_ref().and_then(|(k, i)| c.game.recipes.get(k).and_then(|l| l.get(*i as usize)).map(|r| (k.clone(), r)));
+                match (found, input) {
+                    (Some((kind, r)), Some(input)) if n.slot == u32::MAX => crate::game_screens::recipe_grid(b.ui, lang, input, &kind, r, n.data == 1),
+                    (Some((_, r)), Some(input)) => {
+                        use crate::registry::Ingredient;
+                        let (ing, count, chance) = if n.data == 1 {
+                            r.outputs.get(n.slot as usize).map_or((Ingredient::Empty, 0, 1.0), |o| (o.what.clone(), o.count, o.chance))
+                        } else {
+                            (r.inputs.get(n.slot as usize).cloned().unwrap_or(Ingredient::Empty), r.input_counts.get(n.slot as usize).copied().unwrap_or(1), 1.0)
+                        };
+                        crate::game_screens::recipe_slot(b.ui, lang, input, &ing, count, chance);
+                    }
+                    _ => crate::host::misuse("ui recipe slots", || "only inside a recipe kind's display".into()),
+                }
+                id
+            }
+            uk::PARTS => {
+                let id = b.ui.open(Kind::Container { class: None }, style);
+                let (screen, area) = (class.clone(), n.text.as_str().to_string());
+                parts(b.ui, lang, input, b.client, &screen, &area);
                 id
             }
             uk::PROGRESS => {

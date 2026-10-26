@@ -467,7 +467,7 @@ impl Screen for WorldSelect {
                     *enabled = selected.is_some();
                 }
                 ui.set_id(play, "play");
-                button(ui, cx, "world.create", &[], 145.0, |c| c.requests.push(Request::Open(Box::new(CreateWorld))));
+                button(ui, cx, "world.create", &[], 145.0, |c| c.requests.push(Request::Screen("core:create_world".into())));
             });
             ui.container(Style::row().gap(6.0), |ui| {
                 let sel = selected.and_then(|i| worlds.get(i)).cloned();
@@ -479,7 +479,10 @@ impl Screen for WorldSelect {
                 if let Kind::Button { enabled, .. } = &mut ui.nodes[del].kind {
                     *enabled = selected.is_some();
                 }
-                button(ui, cx, "menu.back", &[], 145.0, |c| c.requests.push(Request::Close));
+                let dir = cx.settings.run_dir.join("saves");
+                let open = button(ui, cx, "world.folder", &[], 70.0, move |_| crate::packs::open_folder(&dir));
+                ui.set_id(open, "saves_folder");
+                button(ui, cx, "menu.back", &[], 70.0, |c| c.requests.push(Request::Close));
             });
         });
     }

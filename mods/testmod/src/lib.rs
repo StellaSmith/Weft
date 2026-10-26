@@ -15,7 +15,6 @@
 mod bodies;
 mod looks;
 
-use weft_sdk::abi::slot_flags as sf;
 use weft_sdk::terrain::*;
 use weft_sdk::*;
 
@@ -83,31 +82,33 @@ fn init(r: &mut Registry) {
     r.sound("machine.hum").handle(&HUM).files(&["base:dig/stone1"]).category("machines").pitch(0.45, 0.5);
     r.machine("generator", &GENERATOR_MENU)
         .block(|b| b.handle(&GENERATOR).textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
-        .slots(&[0])
-        // Only fuel goes in (the base game's `fuel` component).
-        .accepts(0, "fuel")
+        // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
+        .group("fuel", Slots::one().accepts("fuel").input().tooltip("testmod.fuel_slot"))
         .component(&MACHINE, Machine::default(), flags)
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
         .on_tick(tick_generators)
-        .screen(|ui, player| {
-            machine_screen(ui, "testmod.generator", player, |ui| {
+        .screen(|ui| {
+            machine_screen(ui, "testmod.generator", |ui| {
                 ui.column(S::col().gap(2.0).center(), |ui| {
-                    ui.slot(0);
+                    ui.group("fuel");
                     ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.burn, m.burn_max)));
                 });
             })
         });
     r.machine("electric_furnace", &FURNACE_MENU)
         .block(|b| b.handle(&ELECTRIC_FURNACE).textures("machine_top", "electric_furnace", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
-        .slots(&[0, sf::OUTPUT])
+        // At most 16 to smelt at a time.
+        .group("input", Slots::one().limit(16))
+        .group("output", Slots::one().output())
+        .recipes(&SMELTING_RECIPES)
         .component(&MACHINE, Machine::default(), flags)
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
         .on_tick(tick_furnaces)
-        .screen(|ui, player| {
-            machine_screen(ui, "testmod.electric_furnace", player, |ui| {
-                ui.slot(0);
+        .screen(|ui| {
+            machine_screen(ui, "testmod.electric_furnace", |ui| {
+                ui.group("input");
                 ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.progress, m.progress_max)));
-                ui.slot(1);
+                ui.group("output");
             })
         });
 
@@ -115,13 +116,12 @@ fn init(r: &mut Registry) {
     // reach open menus whoever changed them.
     r.machine("battery", &BATTERY_MENU)
         .block(|b| b.textures("machine_top", "battery", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
-        .slots(&[])
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 100_000, max_in: 400, max_out: 400 })
-        .screen(|ui, player| machine_screen(ui, "testmod.battery", player, |_| {}));
+        .screen(|ui| machine_screen(ui, "testmod.battery", |_| {}));
 
     // The base game's kinds, by name: no code dependency on it.
     static CRAFTING: RecipeKind = RecipeKind::named("base:crafting");
-    r.recipe_station(&SMELTING_RECIPES, "electric_furnace");
+    recipe_showcase(r);
     r.shaped(&CRAFTING, "generator", 1, &["iii", "ifi", "iii"], &[('i', "#ingots/iron"), ('f', "base:furnace")]);
     r.shaped(&CRAFTING, "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "base:furnace"), ('c', "cable")]);
     r.shaped(&CRAFTING, "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
@@ -232,6 +232,13 @@ fn about_screen(r: &mut Registry) {
         ui.panel("testmod_panel", S::col().pad(8.0).gap(4.0), |ui| {
             ui.text("testmod.about.title");
             ui.text("testmod.about.text");
+            ui.panel("well", S::col().pad(4.0).tooltip("testmod.about.tip"), |ui| ui.text("testmod.about.hover"));
+        });
+    });
+    // A button of its own in the main menu, next to the engine's and other mods'.
+    r.screen_part("core:title", "buttons", 0, |ui| {
+        ui.button("testmod.about.button", S::default(), |c| {
+            c.client().open_screen("testmod:about");
         });
     });
     r.client_command("about", "", |c| {
@@ -252,8 +259,7 @@ fn debug_panel(r: &mut Registry) {
     });
 }
 
-/// `player`: menu index of the first player slot (after the machine's own slots).
-fn machine_screen(ui: &mut Ui, title: &'static str, player: u32, slots: impl FnOnce(&mut Ui)) {
+fn machine_screen(ui: &mut Ui, title: &'static str, slots: impl FnOnce(&mut Ui)) {
     // Drawn by the mod's GUI shader (`testmod_panel.shader` in its theme).
     ui.panel("testmod_panel", S::col().pad(7.0).gap(4.0), |ui| {
         ui.text(title);
@@ -268,7 +274,7 @@ fn machine_screen(ui: &mut Ui, title: &'static str, player: u32, slots: impl FnO
             ui.spacer();
             ui.row(S::row().gap(6.0), slots);
         });
-        ui.player_inventory(player, true);
+        ui.player_inventory(true);
     });
 }
 
@@ -298,14 +304,14 @@ fn tick_generators(t: &EntityTick) {
         let room = e.capacity - e.stored;
         let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if m.burn == 0 && room >= PER_TICK {
-            let inv = w.inventory(id);
-            let fuel = inv.get(0);
+            let slot = w.inventory(id).group("fuel");
+            let fuel = slot.get(0);
             // Any mod's fuel works: the value is the common `fuel` component.
             if let Some(ticks) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) {
                 m.burn = ticks;
                 m.burn_max = ticks;
                 // A lava bucket leaves its bucket, like in the furnace.
-                inv.set(0, use_one(fuel));
+                slot.set(0, use_one(fuel));
             }
         }
         let Some(m) = w.component_mut(id, &MACHINE) else { continue };
@@ -331,7 +337,8 @@ fn tick_furnaces(t: &EntityTick) {
         let Some(e) = w.energy(id) else { continue };
         let stored = e.stored;
         let inv = w.inventory(id);
-        let (input, output) = (inv.get(0), inv.get(1));
+        let (input_slot, output_slot) = (inv.group("input"), inv.group("output"));
+        let (input, output) = (input_slot.get(0), output_slot.get(0));
         let recipe = (!input.is_empty()).then(|| recipe_process(&SMELTING_RECIPES, input.item)).flatten();
         let fits = recipe.is_some_and(|(out, _)| output.is_empty() || (output.stacks_with(&out) && output.count + out.count <= max_stack(out.item)));
         let Some(m) = w.component_mut(id, &MACHINE) else { continue };
@@ -351,8 +358,8 @@ fn tick_furnaces(t: &EntityTick) {
             e.stored -= FURNACE_USE;
         }
         if done {
-            inv.set(0, input.shrink(1));
-            inv.set(1, if output.is_empty() { out } else { output.grow(out.count) });
+            input_slot.set(0, input.shrink(1));
+            output_slot.set(0, if output.is_empty() { out } else { output.grow(out.count) });
         }
     }
 }
@@ -366,6 +373,33 @@ static CHEST: Block = Block::named("base:chest");
 pub const ISLAND_CHEST: [i32; 3] = [4, 64, 0];
 
 /// A floating island of stone and grass in an empty void, with a chest on it.
+static ALLOYING: RecipeKind = RecipeKind::named("testmod:alloying");
+static INFUSING: RecipeKind = RecipeKind::named("testmod:infusing");
+static ENERGY_PER_TICK: Component<u32> = Component::new("testmod:energy_per_tick");
+
+/// Recipe kinds of this mod, only for the recipe viewer: one shown the usual way with an info line
+/// from the recipe's values and a result that comes by chance, one laid out by hand with a fluid.
+fn recipe_showcase(r: &mut Registry) {
+    r.recipe_kind(&ALLOYING).inputs(2, 1).outputs(2, 1).info("recipe.testmod.alloying.info", &["testmod:energy_per_tick", "time"]);
+    r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
+        .counts(&[3, 1])
+        .chance_output("base:diamond", 1, 0.05)
+        .value(&ENERGY_PER_TICK, 32);
+    r.recipe_kind(&INFUSING).display(|ui, recipe| {
+        ui.column(S::col().gap(2.0), |ui| {
+            ui.row(S::row().gap(4.0).center(), |ui| {
+                ui.recipe_input(0);
+                ui.text("testmod.infusing.plus");
+                ui.recipe_input(1);
+                ui.progress_bind("arrow", S::default().size(24.0, 16.0), |_| 0.0);
+                ui.recipe_outputs();
+            });
+            ui.text_args("testmod.infusing.time", &[Arg::Int(recipe.time() as i64 / 20)]);
+        });
+    });
+    r.shapeless(&INFUSING, "glow_crystal", 1, &["base:diamond", "fluid:base:water"], 200).counts(&[1, 1000]);
+}
+
 /// Where the needle stands in base's overworld.
 pub const NEEDLE: [f64; 2] = [1000.0, 1000.0];
 

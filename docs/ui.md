@@ -20,7 +20,7 @@ A screen is a tree of parts built by a function that receives a `Ui`. Parts that
 ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
     ui.text("examplemod.title");
     ui.row(S::row().gap(8.0), |ui| {
-        ui.slot(0);
+        ui.group("input");
         ui.button("examplemod.go", S::default(), |_| {});
     });
 });
@@ -31,14 +31,15 @@ ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
 | `column(s, ..)`, `row(s, ..)` | children one under another, or side by side |
 | `panel(class, s, ..)` | a column with a themed background, `"panel"` is the usual window |
 | `text(key)` | a translation. `text_args(key, &[Arg::Int(5)])` fills `{0}` and the rest |
-| `button(key, s, on_click)` | a button with a translated label, the closure runs on click |
+| `button(key, s, on_click)` | a button with a translated label; the closure runs on click and can drive the game through `c.client()` (open screens and worlds, quit), even in the main menu |
 | `image(texture, w, h)` | a GUI texture such as `base:gui/arrow_bg` |
 | `spacer()` | an empty part that grows, to push others apart or center them |
-| `slot(n)`, `slots(start, count, per_row)` | menu slots, see [menus](#menus) |
+| `group(name)`, `group_slot(name, i)` | a menu's slots, see [menus](#menus) |
 | `player_model(w, h)` | the player with what they wear, the figure in the inventory |
+| `player_inventory(title)` | the player's inventory and hotbar in a menu |
 | `progress_bind`, `icons` | bars and icon rows driven by live values |
 
-Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](tooltips.md). Tooltips on the parts of your own screens are the one thing missing: the engine can show them, but the `Ui` builder has no way to set one yet (see [other tooltips](tooltips.md#other-tooltips)).
+Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](tooltips.md), pictures included. Any part with a style can have a tooltip too: `S::col().tooltip("examplemod.what_this_does")`.
 
 ## Layout
 Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in the settings makes them bigger or smaller. `S` describes one part, starting from `S::col()` or `S::row()` (rows center their children vertically, columns start at the top left):
@@ -75,7 +76,19 @@ r.client_command("about", "", |c| { if let Some(cl) = c.client() { cl.open_scree
 ```
 `open_screen("examplemod:about")` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
 
-Naming a screen like an engine one replaces it, so `r.screen("core:pause", ..)` is your own pause screen. The engine's are `core:title`, `core:pause`, `core:settings`, `core:language`, `core:controls`, `core:mod_settings`, `core:worlds`, `core:create_world`, `core:chat` and `core:death`. Replacing is all you can do to them, a mod can't add a part to an engine screen.
+Naming a screen like an engine one replaces it, so `r.screen("core:pause", ..)` is your own pause screen. The engine's are `core:title`, `core:pause`, `core:settings`, `core:language`, `core:controls`, `core:sound`, `core:mod_settings`, `core:mods`, `core:profile`, `core:worlds`, `core:create_world`, `core:multiplayer`, `core:resource_packs`, `core:shader_packs`, `core:tags`, `core:chat` and `core:death`. The engine's own screens open each other by these names too, so a replaced settings screen is the one the main menu's button opens.
+
+Most of the time a whole new screen is more than you need. A screen part adds to a place of a screen and leaves the rest alone, so several mods can add their buttons to the main menu side by side:
+```rust
+r.screen_part("core:title", "buttons", 0, |ui| {
+    ui.button("examplemod.guide", S::default(), |c| {
+        c.client().open_screen("examplemod:guide");
+    });
+});
+```
+The places are `buttons` and `side` (the space right of the menu) on `core:title`, and `buttons` on `core:pause` and `core:settings`; a lower order comes first. A mod that replaces one of these screens keeps the others' parts by building the place in its own: `ui.screen_parts("core:title", "buttons")`.
+
+The main menu takes its logo from the translation `menu.logo` and shows `menu.news` beside it, so a pack or a mod can put its own picture there (`{img:..}`).
 
 ## HUD
 `r.hud_element(name, anchor, order, |ui| ..)` puts a part on the in-game overlay. The anchor says where, and `order` 0 sits nearest the anchor's edge.
@@ -89,29 +102,31 @@ Naming a screen like an engine one replaces it, so `r.screen("core:pause", ..)` 
 F3 panels from mods take the key numbers after the engine's five, so the first one is F3+6.
 
 ## Menus
-A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu("inventory")` picks the one the inventory key opens. Here is the crafting table:
+A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu("inventory")` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:
 
 ```rust
 r.menu("crafting_table").handle(&CRAFTING)
-    .temp_slots(10)
-    .setup(|m| {
-        m.slots(TEMP, 0, 9, 0);                  // the grid, slots 0..9
-        m.slots(TEMP, 9, 1, slot_flags::OUTPUT); // the result, slot 9
-        m.player_slots();                        // inventory and hotbar after those
+    .group("grid", Slots::grid(3, 3))
+    .group("result", Slots::one().output().big())
+    .player_inventory()
+    .on_change(|m| {
+        // a slot changed: show what the grid makes
+        let grid = m.group("grid");
+        let cells: Vec<ItemStack> = (0..grid.len()).map(|i| grid.get(i)).collect();
+        m.group("result").set(0, recipe_match(&CRAFTING_RECIPES, &cells, 3, 3));
     })
-    .on_change(|m| /* a slot changed: work out the result */ {})
     .on_take(|m| /* the result was taken: use up the grid */ {})
     .screen(|ui| {
         ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
-            ui.slots(0, 9, 3);
-            ui.slot_big(9);
-            ui.player_inventory(10, true);
+            ui.row(S::row().gap(8.0), |ui| {
+                ui.group("grid");
+                ui.group("result");
+            });
+            ui.player_inventory(true);
         });
     });
 ```
-Slots are numbered in the order `setup` adds them, and the screen refers to the same numbers. `slots(owner, start, count, flags)` takes `TEMP` for the menu's own scratch space, `PLAYER` for the player's inventory, or an entity id for a machine's. `slots_for(.., "fuel")` makes slots accept only items with a tag or component, and `slot_flags::OUTPUT` marks slots nothing can be put into.
-
-On the screen side, `slot_icon(n, texture)` shows an icon in an empty slot (the armor slots), `slot_big(n)` is the large result slot, and `player_inventory(start, title)` draws the player's inventory and hotbar starting at menu slot `start`.
+A group of a plain menu is the menu's own slots, given back to the player when the menu closes; `Slots::player(start)` shows slots of the player's inventory instead (the armor slots of the inventory screen), and machines' groups are the machine's inventory. `player_inventory()` adds the player's inventory and hotbar, which `ui.player_inventory(title)` draws. The shapes and rules a group can have (`output`, `input`, `accepts`, `limit`, `big`, `background`, `tooltip`, `priority`) are listed in the [machines guide](machines.md#creating-a-machine). In `on_change` and `on_take`, `m.group(name)` reads and writes a group's slots by their place in it.
 
 Machines are menus tied to a block, with their own data and tick. The [machines guide](machines.md) covers them, including the component flags that their screens read.
 
@@ -127,11 +142,14 @@ A part asks for its class, so `ui.panel("panel", ..)` looks up `panel.texture`, 
 | class | properties |
 |---|---|
 | `panel` | `texture`, `text`, `dim_text`, `shadow` (`none` for no text shadow) |
+| `well` | `texture`, `text`, `dim_text` (a sunken area: lists, the inventory figure's frame) |
 | `button` | `texture`, `hover`, `pressed`, `disabled`, `text`, `hover_text`, `disabled_text`, `shadow` |
 | `slider` | `track`, `knob`, `knob_hover` |
 | `input` | `texture`, `focused`, `text`, `selection` |
-| `slot` | `fill`, `light`, `dark` |
-| `tooltip` | `texture`, `frame`, `text` |
+| `slot` | `texture`, `highlight` (over the hovered slot), or `fill`, `light` and `dark` without a texture |
+| `hotbar` | the same for the HUD's hotbar |
+| `scrollbar` | `track`, `handle`, `handle_hover` |
+| `tooltip` | `texture`, `frame` (drawn over it), `text` |
 | `background` | `texture`, `color` (behind menus) |
 | `hearts`, `food`, `armor` | `full`, `half`, `empty` |
 | `arrow`, `flame` | `background`, `fill_texture` |

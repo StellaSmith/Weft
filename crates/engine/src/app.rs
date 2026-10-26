@@ -54,6 +54,11 @@ pub struct Options {
 
 pub enum Request {
     Open(Box<dyn Screen>),
+    /// A screen by name: a mod's replacement if there is one, else the engine's.
+    Screen(String),
+    /// A mod's button was clicked: its callback (`UiArgs`) runs with the whole client API, like
+    /// a frame hook, after the input is handled.
+    ModCall(weft_abi::ModId, weft_abi::Callback),
     Close,
     Quit,
     Rebuild,
@@ -269,6 +274,7 @@ impl App {
         crate::packs::set_shader_pack(settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&self.opts.run_dir).join(p)));
         crate::packs::set_dev(self.opts.dev);
         let assets = Assets::new(roots, packs);
+        crate::assets::set_current(&assets);
         let lang = Lang::load(&assets, &settings.language, self.opts.dev);
         let theme = Theme::load(&assets);
         let textures = GameTextures::new(&mut *gpu, content(), &assets);
@@ -364,9 +370,9 @@ impl App {
                 .unwrap_or_else(|| saves::create(&saves_dir, world, self.opts.seed.unwrap_or(1)));
             r.start_world(meta);
         } else {
-            r.open(screens::engine("core:title"));
+            r.open(screens::engine("core:title", &r.settings));
             if let Some(name) = &self.opts.screen {
-                match screens::named(name) {
+                match screens::named(name, &r.settings) {
                     Some(s) => r.open(s),
                     None => log::warn!("--screen: no screen {name}"),
                 }
@@ -401,6 +407,10 @@ impl Running {
             remote: self.game.as_ref().is_some_and(|g| g.server.is_none()),
             mods: self.mods.len(),
             client: self.game.as_ref().map(|g| &g.client),
+            size: {
+                let (w, h) = self.gpu.surface_size();
+                glam::Vec2::new(w as f32, h as f32) / self.gui_scale()
+            },
         }
     }
 
@@ -485,7 +495,7 @@ impl Running {
         let (client_conn, server_conn) = net::local_pair();
         let _ = server.connect.send(server_conn);
         let key = net::p2p::player_key(&self.settings.run_dir);
-        match Client::new(&mut *self.gpu, &self.assets, &self.textures, client_conn, &self.settings.name, &key, self.settings.view_distance) {
+        match Client::new(&mut *self.gpu, &self.assets, &self.textures, client_conn, &self.settings.name, &key, self.settings.view_distance, std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok()) {
             Ok(mut client) => {
                 client.sent = load_chat_history(&self.settings.run_dir);
                 self.game = Some(Game { client, server: Some(server) });
@@ -506,7 +516,7 @@ impl Running {
     fn leave_world(&mut self) {
         self.leave_world_silent();
         self.screens.clear();
-        self.open(screens::engine("core:title"));
+        self.open(screens::engine("core:title", &self.settings));
     }
 
     fn leave_world_silent(&mut self) {
@@ -541,6 +551,15 @@ impl Running {
                 }
                 Request::Quit => self.quit = true,
                 Request::Rebuild => self.rebuild_all(),
+                Request::ModCall(owner, cb) => {
+                    let mut v = self.frame_view();
+                    let mut a = weft_abi::UiArgs { ui: std::ptr::null_mut(), client: v.raw() };
+                    crate::host::invoke(owner, cb, &mut a);
+                }
+                Request::Screen(name) => match screens::named(&name, &self.settings) {
+                    Some(s) => self.open(s),
+                    None => log::warn!("no screen {name}"),
+                },
                 Request::ReloadAssets => self.reload_requested = true,
                 Request::SetInput(id, text) => {
                     if let Some((_, ui)) = self.screens.last_mut() {
@@ -654,7 +673,7 @@ impl Running {
                     Ok(conn) => {
                         self.leave_world_silent();
                         let key = net::p2p::player_key(&self.settings.run_dir);
-                        match Client::new(&mut *self.gpu, &self.assets, &self.textures, conn, &self.settings.name, &key, self.settings.view_distance) {
+                        match Client::new(&mut *self.gpu, &self.assets, &self.textures, conn, &self.settings.name, &key, self.settings.view_distance, std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok()) {
                             Ok(mut client) => {
                                 client.sent = load_chat_history(&self.settings.run_dir);
                                 self.game = Some(Game { client, server: None });
@@ -677,6 +696,19 @@ impl Running {
         let Some((_, ui)) = self.screens.last_mut() else { return };
         if self.input.scroll != 0.0 && ui.scroll_at(cursor, self.input.scroll) {
             self.quads_dirty = true;
+        }
+        // A scroll bar takes the mouse before anything under it.
+        let on_bar = if self.input.pressed_button(0) {
+            ui.bar_press(cursor)
+        } else if self.input.held_button(0) {
+            ui.bar_drag(cursor)
+        } else {
+            ui.bar_release();
+            false
+        };
+        if on_bar {
+            self.quads_dirty = true;
+            return;
         }
         let hovered = ui.hit(cursor);
         if hovered != ui.hovered {
@@ -776,7 +808,20 @@ impl Running {
                         } else {
                             g.client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default()
                         };
-                        let tip = (!stack.is_empty()).then(|| crate::hud::item_tooltip(&self.lang, &self.input, stack));
+                        // An empty slot shows its group's hint, if it has one.
+                        let hint = || {
+                            let c = content();
+                            let def = c.game.menus.get(g.client.menu.as_ref()?.kind as usize)?;
+                            let key = def.group_of(&c.game.player_layout, data as u32)?.0.tooltip.clone()?;
+                            Some(crate::ui::text::rich(self.lang.get(&key), &self.lang, Some(&self.input)))
+                        };
+                        let tip = if !stack.is_empty() {
+                            Some(crate::hud::item_tooltip(&self.lang, &self.input, stack))
+                        } else if tag == crate::client::modui::TAG_SLOT {
+                            hint()
+                        } else {
+                            None
+                        };
                         if ui.nodes[h].tooltip != tip {
                             ui.nodes[h].tooltip = tip;
                             self.quads_dirty = true;
@@ -786,6 +831,14 @@ impl Running {
             }
         }
         let Some((_, ui)) = self.screens.last_mut() else { return };
+        if self.input.pressed_button(0) && menu_screen {
+            let arrow = hovered.is_some_and(|h| matches!(&ui.nodes[h].kind, Kind::Progress { class, .. } if class == "arrow"));
+            let kinds = self.game.as_ref().and_then(|g| g.client.menu.as_ref()).and_then(|m| content().game.menus.get(m.kind as usize)).map(|d| d.recipes.clone()).unwrap_or_default();
+            if arrow && !kinds.is_empty() {
+                requests.push(Request::Open(Box::new(crate::game_screens::RecipeView::new(crate::game_screens::RecipeQuery::Kinds(kinds)))));
+                return;
+            }
+        }
         if self.input.pressed_button(0) {
             ui.pressed = hovered;
             ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. }));
@@ -844,7 +897,7 @@ impl Running {
         for (action, uses) in [("core:recipes", false), ("core:uses", true)] {
             if !typing && self.input.pressed(action) {
                 if let Some(item) = crate::game_screens::hovered_item(ui, self.game.as_ref().map(|g| &g.client)) {
-                    requests.push(Request::Open(Box::new(crate::game_screens::RecipeView { item, uses })));
+                    requests.push(Request::Open(Box::new(crate::game_screens::RecipeView::item(item, uses))));
                 }
             }
         }
@@ -1086,7 +1139,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) if !self.opts.automated => {
                 r.input.release_all();
                 if r.game.is_some() && r.screens.is_empty() {
-                    r.open(screens::engine("core:pause"));
+                    r.open(screens::engine("core:pause", &r.settings));
                 }
                 r.set_capture(false);
             }
@@ -1223,7 +1276,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
             requests.push(Request::Close);
         } else if r.game.is_some() && r.screens.is_empty() {
-            r.open(screens::engine("core:pause"));
+            r.open(screens::engine("core:pause", &r.settings));
         }
     }
     // F3 alone toggles the overlay on release; F3 + digit toggles one group instead.
@@ -1275,6 +1328,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs));
         crate::packs::set_shader_pack(r.settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
         r.assets.rescan();
+        crate::assets::set_current(&r.assets);
         r.hud.load_layout(&opts.run_dir);
         r.ui.reload(&mut *r.gpu, &r.assets);
         r.post.reload(&mut *r.gpu, &r.assets);
@@ -1343,7 +1397,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
             crate::client::ClientEvent::Died => {
                 r.screens.clear();
-                r.open(screens::engine("core:death"));
+                r.open(screens::engine("core:death", &r.settings));
             }
         }
     }
@@ -1392,7 +1446,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         log::info!("disconnected: {reason}");
         r.leave_world_silent();
         r.screens.clear();
-        r.open(screens::engine("core:title"));
+        r.open(screens::engine("core:title", &r.settings));
         r.open(Box::new(screens::Message { title: "multiplayer.disconnected".into(), args: vec![Arg::Text(reason)] }));
     }
     r.input.sensitivity = r.settings.sensitivity;
@@ -1459,7 +1513,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     if r.quads_dirty {
         r.quads_dirty = false;
         let mut all = Vec::new();
-        let game = r.game.as_ref().map(|_| (content(), &r.textures));
+        let game = crate::content::try_content().map(|c| (c, &r.textures));
         let client = r.game.as_ref().map(|g| &g.client);
         let mut previews = Vec::new();
         let preview_tex = r.preview_tex;
@@ -1522,17 +1576,17 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 continue;
             }
             let (x, y) = ((clip.x / clip.w * 0.5 + 0.5) * info.width as f32, (0.5 - clip.y / clip.w * 0.5) * info.height as f32);
-            r.ui.label_colored(text, x, y - 4.0 * scale, scale, *color);
+            r.ui.label_colored(&crate::ui::text::rich(text, &r.lang, Some(&r.input)), x, y - 4.0 * scale, scale, *color);
         }
     }
     {
         let (w, h) = r.gpu.surface_size();
         for (x, y, text, color) in &r.mod_screen_text {
-            r.ui.label_colored(text, x * w as f32, y * h as f32, scale, *color);
+            r.ui.label_colored(&crate::ui::text::rich(text, &r.lang, Some(&r.input)), x * w as f32, y * h as f32, scale, *color);
         }
     }
     if let Some((_, ui)) = r.screens.last() {
-        let game = r.game.as_ref().map(|_| (content(), &r.textures));
+        let game = crate::content::try_content().map(|c| (c, &r.textures));
         r.ui.tooltip(&mut *r.gpu, &r.assets, ui, &r.theme, scale, r.input.cursor, game);
     }
     // Name of a newly held item above the hotbar, fading out.
@@ -1541,7 +1595,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let age = at.elapsed().as_secs_f32();
         if item != 0 && age < 2.0 {
             let alpha = ((2.0 - age) / 0.5).min(1.0);
-            let name = crate::ui::text::plain(&crate::hud::item_name(&r.lang, item));
+            let name = crate::hud::item_name_spans(&r.lang, Some(&r.input), item);
             let (w, h) = r.gpu.surface_size();
             r.ui.label(&name, w as f32 / 2.0, h as f32 - 59.0 * scale, scale * text_unit, (alpha * 255.0) as u32);
         }

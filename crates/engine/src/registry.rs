@@ -136,12 +136,80 @@ pub struct ComponentDef {
 pub struct MenuDef {
     pub name: String,
     pub owner: ModId,
+    /// Slots of the menu's own inventory (its `slot_owner::MENU` groups).
     pub temp_slots: u32,
-    pub setup: Option<Callback>,
+    pub groups: Vec<GroupDef>,
+    /// The machine entity kind whose inventory `slot_owner::BLOCK` groups show.
+    pub entity: String,
+    /// Recipe kinds its `arrow` bars open.
+    pub recipes: Vec<String>,
     pub on_change: Option<Callback>,
     pub on_take: Option<Callback>,
     pub on_tick: Option<Callback>,
     pub screen: Option<Callback>,
+}
+
+/// A slot group (`abi::SlotGroupDesc`), its start resolved.
+#[derive(Clone, Debug)]
+pub struct GroupDef {
+    pub name: String,
+    /// `abi::slot_owner`.
+    pub owner: u32,
+    pub start: u32,
+    pub cols: u32,
+    pub rows: u32,
+    pub flags: u32,
+    /// Tag or component name, empty for any item.
+    pub accepts: String,
+    pub limit: u32,
+    pub size: f32,
+    pub background: Option<String>,
+    pub tooltip: Option<String>,
+    pub priority: i32,
+}
+
+impl GroupDef {
+    /// (owner inventory start, slot count, columns); the player's presets follow `layout`.
+    pub fn span(&self, layout: &PlayerLayout) -> (u32, u32, u32) {
+        use weft_abi::slot_owner as so;
+        match self.owner {
+            so::PLAYER_MAIN => (layout.hotbar, layout.slots - layout.hotbar - layout.worn.len() as u32, layout.hotbar.max(1)),
+            so::PLAYER_HOTBAR => (0, layout.hotbar, layout.hotbar.max(1)),
+            _ => (self.start, self.cols * self.rows, self.cols.max(1)),
+        }
+    }
+
+    /// Owner inventory index of the group's `i`-th slot (the main inventory skips worn slots).
+    pub fn index(&self, layout: &PlayerLayout, i: u32) -> u32 {
+        let (start, _, _) = self.span(layout);
+        if self.owner == weft_abi::slot_owner::PLAYER_MAIN {
+            (start..layout.slots).filter(|s| !layout.worn.contains(s)).nth(i as usize).unwrap_or(u32::MAX)
+        } else {
+            start + i
+        }
+    }
+}
+
+impl MenuDef {
+    /// (group, its first menu slot, slot count) in menu slot order.
+    pub fn slot_groups(&self, layout: &PlayerLayout) -> impl Iterator<Item = (&GroupDef, u32, u32)> + '_ {
+        let mut at = 0;
+        let layout = layout.clone();
+        self.groups.iter().map(move |g| {
+            let n = g.span(&layout).1;
+            at += n;
+            (g, at - n, n)
+        })
+    }
+
+    pub fn group(&self, layout: &PlayerLayout, name: &str) -> Option<(&GroupDef, u32, u32)> {
+        self.slot_groups(layout).find(|g| g.0.name == name)
+    }
+
+    /// The group of menu slot `slot` and the slot's place in it.
+    pub fn group_of(&self, layout: &PlayerLayout, slot: u32) -> Option<(&GroupDef, u32)> {
+        self.slot_groups(layout).find(|g| slot >= g.1 && slot < g.1 + g.2).map(|g| (g.0, slot - g.1))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +218,8 @@ pub enum Ingredient {
     Item(u32),
     /// Component id of the tag; `u32::MAX` when nothing carries it.
     Tag(u32),
+    /// A liquid by name, in millibuckets.
+    Fluid(String),
 }
 
 impl Ingredient {
@@ -159,6 +229,7 @@ impl Ingredient {
             Ingredient::Empty => item == 0,
             Ingredient::Item(i) => *i == item,
             Ingredient::Tag(t) => item != 0 && c.has(comps::ITEM, item, *t),
+            Ingredient::Fluid(_) => false,
         }
     }
 }
@@ -167,9 +238,52 @@ pub struct Recipe {
     /// Shaped: width, height, cells (row major).
     pub shaped: Option<(u32, u32, Vec<Ingredient>)>,
     pub inputs: Vec<Ingredient>,
-    pub output: u32,
-    pub count: u32,
+    /// How many of each input (millibuckets for fluids).
+    pub input_counts: Vec<u32>,
+    /// The main result first.
+    pub outputs: Vec<RecipeOutput>,
     pub time: u32,
+    /// (component, value) the recipe carries.
+    pub values: Vec<(u32, Vec<u8>)>,
+    /// Not shown in the recipe viewer.
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecipeOutput {
+    pub what: Ingredient,
+    pub count: u32,
+    pub chance: f32,
+}
+
+impl Recipe {
+    /// The main result as an item stack (empty when it is a fluid).
+    pub fn result(&self) -> weft_abi::ItemStack {
+        match self.outputs.first() {
+            Some(RecipeOutput { what: Ingredient::Item(i), count, .. }) => weft_abi::ItemStack::new(*i, *count),
+            _ => weft_abi::ItemStack::EMPTY,
+        }
+    }
+
+    pub fn value(&self, comp: u32) -> Option<&[u8]> {
+        self.values.iter().find(|v| v.0 == comp).map(|v| v.1.as_slice())
+    }
+}
+
+/// How the recipe viewer shows a kind of recipe (`abi::RecipeKindDesc`).
+pub struct RecipeKindDef {
+    pub owner: ModId,
+    pub input_grid: [u32; 2],
+    pub output_grid: [u32; 2],
+    pub info: Option<String>,
+    pub info_values: Vec<String>,
+    pub display: Option<Callback>,
+}
+
+pub struct RawRecipeKind {
+    pub owner: ModId,
+    pub name: String,
+    pub def: RecipeKindDef,
 }
 
 #[derive(Default)]
@@ -182,6 +296,7 @@ pub struct Game {
     pub menu_names: FxHashMap<String, u32>,
     pub recipes: FxHashMap<String, Vec<Recipe>>,
     pub recipe_kinds: rustc_hash::FxHashSet<String>,
+    pub recipe_kind_defs: FxHashMap<String, RecipeKindDef>,
     /// Entity categories by `EntityKind::category`: the engine's three first.
     pub categories: Vec<CategoryDef>,
     /// Sound categories by `SoundDef::category`: the engine's six first.
@@ -191,6 +306,7 @@ pub struct Game {
     pub player_layout: PlayerLayout,
     /// Mods' screens; of two with one name the mod loaded last comes last.
     pub screens: Vec<ScreenDef>,
+    pub screen_parts: Vec<ScreenPart>,
     /// Block index -> (entity kind, inventory slots).
     pub block_entities: FxHashMap<u32, u32>,
     pub player_kind: u32,
@@ -312,14 +428,20 @@ pub struct RawComponent {
     pub schema: String,
 }
 
+#[derive(Default)]
 pub struct RawRecipe {
     pub kind: String,
     pub pattern: Vec<String>,
     pub keys: Vec<(char, String)>,
     pub inputs: Vec<String>,
+    pub input_counts: Vec<u32>,
     pub output: String,
     pub count: u32,
     pub time: u32,
+    /// (item or `fluid:..`, count, chance) after the main output.
+    pub outputs: Vec<(String, u32, f32)>,
+    pub values: Vec<crate::components::RawValue>,
+    pub flags: u32,
 }
 
 #[derive(Default)]
@@ -329,7 +451,7 @@ pub struct RawGame {
     /// (owner, kind, hook, callback); hook 0 is the tick.
     pub hooks: Vec<(ModId, String, u32, Callback)>,
     pub recipes: Vec<RawRecipe>,
-    pub recipe_kinds: Vec<String>,
+    pub recipe_kinds: Vec<RawRecipeKind>,
     pub categories: Vec<CategoryDef>,
     pub sound_categories: Vec<SoundCategory>,
     pub menus: Vec<(usize, MenuDef)>,
@@ -344,6 +466,7 @@ pub struct RawGame {
     /// (mod, layout): likewise.
     pub player_layout: Option<(ModId, PlayerLayout)>,
     pub screens: Vec<ScreenDef>,
+    pub screen_parts: Vec<ScreenPart>,
     /// (set, words) for `word(#set)` command parameters.
     pub words: Vec<(String, Vec<String>)>,
     pub block_entities: Vec<(String, String, u32)>,
@@ -434,6 +557,16 @@ pub struct EventDef {
 }
 
 /// A mod's screen.
+/// Something a mod adds to a place of a screen.
+#[derive(Clone)]
+pub struct ScreenPart {
+    pub screen: String,
+    pub area: String,
+    pub order: i32,
+    pub owner: ModId,
+    pub cb: Callback,
+}
+
 #[derive(Clone)]
 pub struct ScreenDef {
     pub name: String,
@@ -592,13 +725,42 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
 
 pub(crate) unsafe fn copy_menu(owner: ModId, d: &abi::MenuDesc) -> (usize, MenuDef) {
     unsafe {
+        // Groups without a start take the slots right after the previous one of their owner.
+        let mut next = [0u32; 5];
+        let text = |s: abi::Str| (s.len > 0).then(|| s.as_str().to_string());
+        let groups: Vec<GroupDef> = d
+            .groups
+            .as_slice()
+            .iter()
+            .map(|g| {
+                let o = (g.owner as usize).min(4);
+                let start = if g.start == u32::MAX { next[o] } else { g.start };
+                next[o] = next[o].max(start + g.cols * g.rows);
+                GroupDef {
+                    name: g.name.as_str().to_string(),
+                    owner: g.owner,
+                    start,
+                    cols: g.cols.max(1),
+                    rows: g.rows.max(1),
+                    flags: g.flags,
+                    accepts: g.accepts.as_str().to_string(),
+                    limit: g.limit,
+                    size: if g.size > 0.0 { g.size } else { 18.0 },
+                    background: text(g.background),
+                    tooltip: text(g.tooltip),
+                    priority: g.priority,
+                }
+            })
+            .collect();
         (
             d.cell as usize,
             MenuDef {
                 name: d.name.as_str().to_string(),
                 owner,
-                temp_slots: d.temp_slots,
-                setup: opt(d.setup),
+                temp_slots: groups.iter().filter(|g| g.owner == weft_abi::slot_owner::MENU).map(|g| g.start + g.cols * g.rows).max().unwrap_or(0),
+                groups,
+                entity: d.entity.as_str().to_string(),
+                recipes: d.recipes.as_str().split_whitespace().map(str::to_string).collect(),
                 on_change: opt(d.on_change),
                 on_take: opt(d.on_take),
                 on_tick: opt(d.on_tick),
@@ -620,9 +782,13 @@ pub(crate) unsafe fn copy_recipe(d: &abi::RecipeDesc) -> RawRecipe {
                 .map(|k| (char::from_u32(k.ch).unwrap_or(' '), k.item.as_str().to_string()))
                 .collect(),
             inputs: d.inputs.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
+            input_counts: d.input_counts.as_slice().to_vec(),
             output: d.output.as_str().to_string(),
             count: d.count.max(1),
             time: d.time,
+            outputs: d.outputs.as_slice().iter().map(|o| (o.item.as_str().to_string(), o.count.max(1), o.chance)).collect(),
+            values: crate::components::RawValue::list(d.values),
+            flags: d.flags,
         }
     }
 }
@@ -799,7 +965,10 @@ pub fn freeze(
         components.extend(r.components);
         hooks.extend(r.hooks);
         recipes.extend(r.recipes);
-        g.recipe_kinds.extend(r.recipe_kinds);
+        for k in r.recipe_kinds {
+            g.recipe_kinds.insert(k.name.clone());
+            g.recipe_kind_defs.insert(k.name, k.def);
+        }
         categories.extend(r.categories);
         sound_categories.extend(r.sound_categories);
         menus.extend(r.menus);
@@ -810,6 +979,7 @@ pub fn freeze(
             }
         }
         g.screens.extend(r.screens);
+        g.screen_parts.extend(r.screen_parts);
         if let Some((owner, l)) = r.player_layout {
             if player_layout.as_ref().is_none_or(|(o, _)| order(owner) >= order(*o)) {
                 player_layout = Some((owner, l));
@@ -1042,6 +1212,7 @@ pub fn freeze(
         g.menus.push(m);
     }
     g.screens.sort_by_key(|s| order(s.owner));
+    g.screen_parts.sort_by_key(|p| (p.order, order(p.owner)));
     g.player_layout = player_layout.map(|l| l.1).unwrap_or_default();
     let l = &g.player_layout;
     if l.hotbar > l.slots || l.worn.end > l.slots || l.worn.start < l.hotbar {
@@ -1080,7 +1251,9 @@ pub fn freeze(
     }
     let recipes: Vec<RawRecipe> = recipes.into_iter().flat_map(|r| expand_wildcards(r, &by_tag)).collect();
     let ing = |s: &str, errors: &mut Vec<String>| -> Ingredient {
-        if let Some(t) = s.strip_prefix('#') {
+        if let Some(f) = s.strip_prefix("fluid:") {
+            Ingredient::Fluid(f.to_string())
+        } else if let Some(t) = s.strip_prefix('#') {
             if !by_tag.contains_key(t) {
                 // Not an error: the items may come from a mod that is not installed.
                 log::warn!("a recipe uses #{t}, but no item has that tag");
@@ -1137,8 +1310,22 @@ pub fn freeze(
             }
             Some((w, h, cells))
         };
-        let inputs = r.inputs.iter().map(|s| ing(s, errors)).collect();
-        g.recipes.entry(r.kind).or_default().push(Recipe { shaped, inputs, output, count: r.count, time: r.time });
+        let inputs: Vec<Ingredient> = r.inputs.iter().map(|s| ing(s, errors)).collect();
+        let input_counts = (0..inputs.len()).map(|i| r.input_counts.get(i).copied().unwrap_or(1).max(1)).collect();
+        let mut outputs = vec![RecipeOutput { what: Ingredient::Item(output), count: r.count, chance: 1.0 }];
+        for (name, count, chance) in &r.outputs {
+            let what = match name.strip_prefix('#') {
+                Some(t) => by_tag.get(t).and_then(|v| v.first()).map(|&i| Ingredient::Item(i)),
+                None => Some(ing(name, errors)),
+            };
+            match what {
+                Some(Ingredient::Empty) | None => errors.push(format!("recipe for {}: unknown output {name}", r.output)),
+                Some(w) => outputs.push(RecipeOutput { what: w, count: *count, chance: chance.clamp(0.0, 1.0) }),
+            }
+        }
+        let values = r.values.iter().filter_map(|v| c.id(&v.name).map(|id| (id, v.bytes.clone()))).collect();
+        let hidden = r.flags & weft_abi::recipe_flags::HIDDEN != 0;
+        g.recipes.entry(r.kind).or_default().push(Recipe { shaped, inputs, input_counts, outputs, time: r.time, values, hidden });
     }
     g
 }
@@ -1212,6 +1399,22 @@ impl Game {
     pub fn process(&self, kind: &str, input: u32, tags: &Components) -> Option<&Recipe> {
         self.recipes.get(kind)?.iter().find(|r| r.inputs.first().is_some_and(|i| i.matches(input, tags)))
     }
+
+    /// For each input of `r`, the stack in `stacks` that holds enough of it (each stack used
+    /// once); `None` if one is missing. Fluids are not in stacks and never match.
+    pub fn find_inputs(&self, r: &Recipe, stacks: &[weft_abi::ItemStack], tags: &Components) -> Option<Vec<usize>> {
+        let mut used = vec![false; stacks.len()];
+        let mut out = Vec::with_capacity(r.inputs.len());
+        for (ing, &n) in r.inputs.iter().zip(&r.input_counts) {
+            if matches!(ing, Ingredient::Empty) {
+                continue;
+            }
+            let i = stacks.iter().enumerate().position(|(i, s)| !used[i] && !s.is_empty() && s.count >= n && ing.matches(s.item, tags))?;
+            used[i] = true;
+            out.push(i);
+        }
+        Some(out)
+    }
 }
 
 /// Sounds the engine plays itself (files in its own assets, packs may replace them).
@@ -1280,7 +1483,7 @@ fn freeze_particles(g: &mut Game, raws: Vec<RawParticle>, errors: &mut Vec<Strin
 /// the first such tag exists, and the copies whose other tags have no items are dropped. So
 /// `#ores/* -> #ingots/*` smelts every mod's ores into the matching ingots.
 fn expand_wildcards(r: RawRecipe, by_tag: &FxHashMap<&str, Vec<u32>>) -> Vec<RawRecipe> {
-    let names: Vec<&String> = r.keys.iter().map(|k| &k.1).chain(&r.inputs).chain(std::iter::once(&r.output)).collect();
+    let names: Vec<&String> = r.keys.iter().map(|k| &k.1).chain(&r.inputs).chain(std::iter::once(&r.output)).chain(r.outputs.iter().map(|o| &o.0)).collect();
     let Some(pattern) = names.iter().find_map(|n| n.strip_prefix('#').filter(|t| t.contains('*'))) else { return vec![r] };
     let (pre, post) = pattern.split_once('*').unwrap();
     let mut values: Vec<&str> = by_tag
@@ -1299,9 +1502,13 @@ fn expand_wildcards(r: RawRecipe, by_tag: &FxHashMap<&str, Vec<u32>>) -> Vec<Raw
                 pattern: r.pattern.clone(),
                 keys: r.keys.iter().map(|(c, n)| (*c, sub(n))).collect(),
                 inputs: r.inputs.iter().map(sub).collect(),
+                input_counts: r.input_counts.clone(),
                 output: sub(&r.output),
                 count: r.count,
                 time: r.time,
+                outputs: r.outputs.iter().map(|o| (sub(&o.0), o.1, o.2)).collect(),
+                values: r.values.clone(),
+                flags: r.flags,
             });
         }
     }
@@ -1318,7 +1525,7 @@ mod tests {
         for (t, i) in [("ores/iron", 1), ("ingots/iron", 2), ("ores/tin", 3), ("ingots/tin", 4), ("ores/ruby", 5)] {
             by_tag.entry(t).or_default().push(i);
         }
-        let r = RawRecipe { kind: "smelting".into(), pattern: vec![], keys: vec![], inputs: vec!["#ores/*".into()], output: "#ingots/*".into(), count: 1, time: 200 };
+        let r = RawRecipe { kind: "smelting".into(), inputs: vec!["#ores/*".into()], output: "#ingots/*".into(), count: 1, time: 200, ..Default::default() };
         let out: Vec<(String, String)> = expand_wildcards(r, &by_tag).into_iter().map(|r| (r.inputs[0].clone(), r.output)).collect();
         // Ruby has no ingot, so it is left out.
         assert_eq!(out, vec![("#ores/iron".into(), "#ingots/iron".into()), ("#ores/tin".into(), "#ingots/tin".into())]);

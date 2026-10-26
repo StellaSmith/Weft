@@ -3,7 +3,12 @@
 //! - `{0}`..`{9}` insert arguments, so each language orders values its own way
 //! - `{#rrggbb}` switches color, `{/}` goes back to the default
 //! - `{key:core:inventory}` shows the key the player bound to an action
-//! - `{item:base:diamond}` draws an item icon inline
+//! - `{item:base:diamond}` draws an item icon inline, `{block:base:furnace#2}` a block state (the
+//!   third state of the furnace; without `#` the first)
+//! - `{img:base:gui/arrow}` draws a GUI texture inline at its own size, `{img:base:gui/arrow 32x16}`
+//!   at another one (GUI pixels); a line grows to fit it
+//! - `{align:center}` lays the lines after it out centered (`left`, `right`) until `{/align}`, so an
+//!   image alone on a centered line is a centered picture
 //! - `{link:target}text{/link}` makes a clickable link to another element or screen
 //! - `{lang:some.key}` inserts another translation, so shared phrases are written once
 //! - `{on_key:core:sneak}text{/on_key}` shows text only while every listed key is held: actions
@@ -36,6 +41,10 @@ pub enum Arg {
 pub enum Piece {
     Text(String),
     Icon(u32),
+    /// A block state, drawn like a block item.
+    Block(u32),
+    /// A GUI texture (`image_id`), its size in font pixels.
+    Image(u16, f32, f32),
     LinkStart(String),
     LinkEnd,
 }
@@ -70,12 +79,26 @@ pub struct Span {
     pub when: Vec<Cond>,
     /// Set by `refresh` from `when`.
     pub hidden: bool,
+    /// `align::LEFT`, `CENTER` or `RIGHT` for the lines this span starts.
+    pub align: u8,
 }
+
+pub mod align {
+    pub const LEFT: u8 = 0;
+    pub const CENTER: u8 = 1;
+    pub const RIGHT: u8 = 2;
+}
+
+/// Marks a block state among the item icons a text queues.
+pub const STATE_ICON: u32 = 1 << 31;
+
+/// Font pixels per GUI pixel at the usual text size, for image sizes given in GUI pixels.
+pub const FONT_PER_GUI: f32 = 2.0;
 
 /// `hidden` is derived state: spans with the same content are equal whatever it says.
 impl PartialEq for Span {
     fn eq(&self, o: &Span) -> bool {
-        self.piece == o.piece && self.color == o.color && self.fx == o.fx && self.when == o.when
+        self.piece == o.piece && self.color == o.color && self.fx == o.fx && self.when == o.when && self.align == o.align
     }
 }
 
@@ -104,6 +127,24 @@ pub fn fx_name(id: u16) -> Option<String> {
     FX.lock().unwrap().get((id as usize).checked_sub(1)?).cloned()
 }
 
+static IMAGES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Session-wide number of an inline image's texture name, so placed text stays `Copy`.
+pub fn image_id(name: &str) -> u16 {
+    let mut v = IMAGES.lock().unwrap();
+    match v.iter().position(|n| n == name) {
+        Some(i) => i as u16,
+        None => {
+            v.push(name.to_string());
+            v.len() as u16 - 1
+        }
+    }
+}
+
+pub fn image_name(id: u16) -> Option<String> {
+    IMAGES.lock().unwrap().get(id as usize).cloned()
+}
+
 pub struct Ctx<'a> {
     pub lang: &'a Lang,
     pub input: Option<&'a Input>,
@@ -111,20 +152,41 @@ pub struct Ctx<'a> {
 }
 
 pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
-    let mut st = State { color: None, fx: 0, when: Vec::new() };
+    let mut st = State { color: None, fx: 0, when: Vec::new(), align: align::LEFT };
     format_depth(template, args, cx, out, &mut st, None, 0)
+}
+
+/// A template without arguments: a translation, a chat line, a pack's description, text a mod
+/// draws. Item names in it resolve against the loaded content.
+pub fn rich(template: &str, lang: &Lang, input: Option<&Input>) -> Vec<Span> {
+    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+    let cx = Ctx { lang, input, item_name: &items };
+    let mut out = Vec::new();
+    format(template, &[], &cx, &mut out);
+    out
+}
+
+/// `s` as a template that shows exactly `s`: player-typed text (chat, world names) goes through
+/// the same formatting as everything else without being able to format.
+pub fn escape(s: &str) -> String {
+    s.replace('{', "{{").replace('}', "}}")
 }
 
 struct State {
     color: Option<u32>,
     fx: u16,
     when: Vec<Cond>,
+    align: u8,
 }
 
 impl State {
     fn span(&self, piece: Piece, color: Option<u32>) -> Span {
-        Span { piece, color, fx: self.fx, when: self.when.clone(), hidden: false }
+        Span { piece, color, fx: self.fx, when: self.when.clone(), hidden: false, align: self.align }
     }
+}
+
+fn texture_size(name: &str) -> Option<(u32, u32)> {
+    crate::assets::texture_size(name)
 }
 
 fn push_text(out: &mut Vec<Span>, s: &str, st: &State) {
@@ -132,7 +194,7 @@ fn push_text(out: &mut Vec<Span>, s: &str, st: &State) {
         return;
     }
     if let Some(last) = out.last_mut() {
-        if last.color == st.color && last.fx == st.fx && last.when == st.when {
+        if last.color == st.color && last.fx == st.fx && last.when == st.when && last.align == st.align {
             if let Piece::Text(t) = &mut last.piece {
                 t.push_str(s);
                 return;
@@ -185,6 +247,31 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
             if let Some(id) = (cx.item_name)(item) {
                 out.push(st.span(Piece::Icon(id), None));
             }
+        } else if let Some(spec) = tag.strip_prefix("block:") {
+            let (name, index) = spec.split_once('#').map_or((spec, 0), |(n, i)| (n, i.parse().unwrap_or(0)));
+            let state = crate::content::try_content().and_then(|c| {
+                let b = c.block_names.get(name)?;
+                let def = c.blocks.get(*b as usize)?;
+                (index < def.states).then_some(def.first_state + index)
+            });
+            if let Some(s) = state {
+                out.push(st.span(Piece::Block(s), None));
+            }
+        } else if let Some(spec) = tag.strip_prefix("img:") {
+            let mut parts = spec.split_whitespace();
+            let name = parts.next().unwrap_or("");
+            let size = parts.next().and_then(|s| s.split_once('x')).and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?)));
+            if let Some((w, h)) = size.or_else(|| texture_size(name).map(|(w, h)| (w as f32, h as f32))) {
+                out.push(st.span(Piece::Image(image_id(name), w * FONT_PER_GUI, h * FONT_PER_GUI), None));
+            }
+        } else if let Some(a) = tag.strip_prefix("align:") {
+            st.align = match a.trim() {
+                "center" => align::CENTER,
+                "right" => align::RIGHT,
+                _ => align::LEFT,
+            };
+        } else if tag == "/align" {
+            st.align = align::LEFT;
         } else if let Some(target) = tag.strip_prefix("link:") {
             out.push(st.span(Piece::LinkStart(target.to_string()), None));
             st.color = Some(st.color.unwrap_or(0x80B0FF));
@@ -244,6 +331,16 @@ pub fn refresh(spans: &mut [Span], test: &dyn Fn(&Test) -> bool) -> bool {
 pub enum Placed {
     Glyph { x: f32, y: f32, ch: char, color: Option<u32>, fx: u16 },
     Icon { x: f32, y: f32, item: u32 },
+    Block { x: f32, y: f32, state: u32 },
+    Image { x: f32, y: f32, w: f32, h: f32, image: u16 },
+}
+
+impl Placed {
+    fn pos(&mut self) -> (&mut f32, &mut f32) {
+        match self {
+            Placed::Glyph { x, y, .. } | Placed::Icon { x, y, .. } | Placed::Block { x, y, .. } | Placed::Image { x, y, .. } => (x, y),
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -279,20 +376,30 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
     let mut link: Option<(String, f32, f32)> = None;
     let mut max_x = 0.0f32;
     let limit = max_width.unwrap_or(f32::INFINITY).max(8.0);
+    // Height of the current line (an image makes it taller) and every line's (start, width, align).
+    let mut line_h = lh;
+    let mut lines: Vec<(usize, f32, u8)> = Vec::new();
+    let mut line_align = spans.iter().find(|s| !s.hidden).map_or(align::LEFT, |s| s.align);
 
-    let newline = |out: &mut TextLayout, x: &mut f32, y: &mut f32, max_x: &mut f32, line_start: &mut usize| {
+    let newline = |out: &mut TextLayout, x: &mut f32, y: &mut f32, max_x: &mut f32, line_start: &mut usize, line_h: &mut f32, lines: &mut Vec<(usize, f32, u8)>, align: u8| {
+        lines.push((*line_start, *x, align));
         *max_x = max_x.max(*x);
         *x = 0.0;
-        *y += lh;
+        *y += *line_h;
+        *line_h = lh;
         *line_start = out.items.len();
     };
 
     for span in spans.iter().filter(|s| !s.hidden) {
+        if x == 0.0 && out.items.len() == line_start {
+            line_align = span.align;
+        }
         match &span.piece {
             Piece::Text(t) => {
                 for ch in t.chars() {
                     if ch == '\n' {
-                        newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start);
+                        newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start, &mut line_h, &mut lines, line_align);
+                        line_align = span.align;
                         last_break = None;
                         continue;
                     }
@@ -300,32 +407,31 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
                     if x + adv > limit && x > 0.0 {
                         if ch == ' ' {
                             // Wrapping right at a space: the space just disappears.
-                            newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start);
+                            newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start, &mut line_h, &mut lines, line_align);
                             last_break = None;
                             continue;
                         }
                         match last_break.take() {
                             Some((idx, bx)) if idx > line_start => {
                                 // Move everything after the space to the next line.
+                                lines.push((line_start, bx, line_align));
                                 max_x = max_x.max(bx);
-                                y += lh;
-                                let shift = match out.items.get(idx + 1) {
-                                    Some(Placed::Glyph { x, .. }) | Some(Placed::Icon { x, .. }) => *x,
-                                    None => x,
-                                };
+                                y += line_h;
+                                line_h = lh;
+                                let shift = out.items.get_mut(idx + 1).map_or(x, |p| *p.pos().0);
                                 out.items.remove(idx);
                                 for it in &mut out.items[idx..] {
-                                    match it {
-                                        Placed::Glyph { x, y: gy, .. } | Placed::Icon { x, y: gy, .. } => {
-                                            *x -= shift;
-                                            *gy = y;
-                                        }
+                                    if let Placed::Image { h, .. } = it {
+                                        line_h = line_h.max(*h + 1.0);
                                     }
+                                    let (ix, iy) = it.pos();
+                                    *ix -= shift;
+                                    *iy = y;
                                 }
                                 x -= shift;
                                 line_start = idx;
                             }
-                            _ => newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start),
+                            _ => newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start, &mut line_h, &mut lines, line_align),
                         }
                     }
                     if ch == ' ' {
@@ -344,12 +450,24 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
                     }
                 }
             }
-            Piece::Icon(item) => {
+            Piece::Icon(_) | Piece::Block(_) => {
                 if x + ICON > limit && x > 0.0 {
-                    newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start);
+                    newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start, &mut line_h, &mut lines, line_align);
                 }
-                out.items.push(Placed::Icon { x, y, item: *item });
+                out.items.push(match span.piece {
+                    Piece::Block(state) => Placed::Block { x, y, state },
+                    Piece::Icon(item) => Placed::Icon { x, y, item },
+                    _ => unreachable!(),
+                });
                 x += ICON + 1.0;
+            }
+            &Piece::Image(image, w, h) => {
+                if x + w > limit && x > 0.0 {
+                    newline(&mut out, &mut x, &mut y, &mut max_x, &mut line_start, &mut line_h, &mut lines, line_align);
+                }
+                out.items.push(Placed::Image { x, y, w, h, image });
+                line_h = line_h.max(h + 1.0);
+                x += w + 1.0;
             }
             Piece::LinkStart(target) => link = Some((target.clone(), x, y)),
             Piece::LinkEnd => {
@@ -359,10 +477,26 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
             }
         }
     }
+    lines.push((line_start, x, line_align));
     max_x = max_x.max(x);
     out.width = max_x;
-    out.height = y + font.line_height;
-    out.lines = (y / lh).round() as u32 + 1;
+    out.height = y + font.line_height.max(line_h - (lh - font.line_height));
+    out.lines = lines.len() as u32;
+    // Aligned lines move within the wrapping width, or within the widest line.
+    let room = max_width.filter(|w| w.is_finite()).unwrap_or(max_x).max(max_x);
+    for (i, &(start, width, a)) in lines.iter().enumerate() {
+        if a == align::LEFT {
+            continue;
+        }
+        let end = lines.get(i + 1).map_or(out.items.len(), |l| l.0);
+        let shift = if a == align::CENTER { ((room - width) / 2.0).floor() } else { room - width };
+        for it in &mut out.items[start..end] {
+            *it.pos().0 += shift;
+        }
+        if max_width.is_some() {
+            out.width = out.width.max(room);
+        }
+    }
     out
 }
 
@@ -375,6 +509,11 @@ pub fn display_key(lang: &Lang, k: crate::input::Key) -> String {
 
 pub fn plain(s: &str) -> Vec<Span> {
     vec![Span::text(s, None)]
+}
+
+/// Every inline image a layout draws, for loading their textures before drawing.
+pub fn images(layout: &TextLayout) -> impl Iterator<Item = u16> + '_ {
+    layout.items.iter().filter_map(|p| if let Placed::Image { image, .. } = p { Some(*image) } else { None })
 }
 
 #[cfg(test)]
@@ -401,6 +540,28 @@ mod tests {
         assert!(refresh(&mut spans, &|t| matches!(t, Test::If(_))));
         assert!(!refresh(&mut spans, &|t| matches!(t, Test::If(_))));
         assert_eq!(spans.iter().filter(|s| !s.hidden).count(), 5);
+    }
+
+    /// An image on a centered line sits in the middle and makes its line taller.
+    #[test]
+    fn images_and_alignment() {
+        let lang = Lang::load(&crate::assets::Assets::new([], Vec::new()), "en_us", false);
+        let cx = Ctx { lang: &lang, input: None, item_name: &|_| None };
+        let mut spans = Vec::new();
+        format("{align:center}{img:base:gui/x 16x12}{/align}
+ab", &[], &cx, &mut spans);
+        let font = Font::parse_hex(include_str!("../../assets/fonts/unifont.hex"));
+        let l = layout(&spans, &font, Some(100.0));
+        let (ix, iw, ih) = l.items.iter().find_map(|p| if let Placed::Image { x, w, h, .. } = p { Some((*x, *w, *h)) } else { None }).unwrap();
+        assert_eq!((iw, ih), (16.0 * FONT_PER_GUI, 12.0 * FONT_PER_GUI));
+        assert_eq!(ix, ((100.0 - (iw + 1.0)) / 2.0).floor());
+        let text_y = l.items.iter().find_map(|p| if let Placed::Glyph { y, .. } = p { Some(*y) } else { None }).unwrap();
+        assert_eq!(text_y, ih + 1.0);
+        assert_eq!(l.lines, 2);
+        // Escaped player text shows its braces instead of formatting.
+        let mut lit = Vec::new();
+        format(&escape("{img:x} {#ff0000}"), &[], &cx, &mut lit);
+        assert_eq!(lit, plain("{img:x} {#ff0000}"));
     }
 
     #[test]

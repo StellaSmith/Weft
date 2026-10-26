@@ -21,12 +21,30 @@ static SMELTING: Component<Smelting> = Component::new("base:smelting");
 
 r.machine("furnace", &FURNACE_MENU)
     .block(|b| b.hardness(3.5).mineable("pickaxe").needs_tool(0).tab("functional"))
-    .slots(&[0, 0, slot_flags::OUTPUT])        // input, fuel, output
+    .group("input", Slots::one())
+    .group("fuel", Slots::one().accepts("fuel"))
+    .group("output", Slots::one().output())
     .component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU)
     .on_tick(tick_furnaces)
-    .screen(|ui, player| { /* see below */ });
+    .screen(|ui| { /* see below */ });
 ```
-`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. `slots` has one entry per slot, `0` for a normal one and `slot_flags::OUTPUT` for one that only gives items out, and `accepts(1, "fuel")` limits a slot to items with that tag or component, any mod's. `entity_handle(&E)` gives you an `Entity` static if your code needs to find the block entity.
+`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. `entity_handle(&E)` gives you an `Entity` static if your code needs to find the block entity.
+
+Slots come in named groups. The machine's inventory holds all of its groups, the engine works out how big it is and which slot is which, and the tick and the screen ask for a group by its name. A group starts from a shape and adds rules:
+
+| | |
+|---|---|
+| `Slots::one()`, `row(n)`, `column(n)`, `grid(cols, rows)`, `chest(rows)` | how many slots and how the screen lays them out |
+| `output()` | items only come out (results) |
+| `input()` | items only go in, nothing comes back out by hand (fuel a machine burns) |
+| `accepts("fuel")` | only items with that tag or component, any mod's |
+| `limit(16)` | at most this many items per slot |
+| `big()`, `size(px)` | a bigger slot, 18 GUI pixels by default |
+| `background("gui/flame_slot")` | a texture shown while the slot is empty, like the armor silhouettes |
+| `tooltip("mymod.fuel_slot")` | a translation shown over the empty slot |
+| `priority(n)` | shift-clicks from the inventory fill groups with a higher priority first |
+
+Without `input()` or `output()` a slot takes and gives like a chest's. Shift-clicking an item in the player's inventory puts it into the first group that takes it, groups with an `accepts` rule before plain ones, so ore goes into the input and coal into the fuel slot without you saying anything.
 
 The machine's state is a component, a `value!` struct of plain numbers like any other. Slots hold items, so anything else a machine keeps (heat, a liquid level) goes into a component like this one:
 ```rust
@@ -42,14 +60,14 @@ The flags say who gets it. `SAVE` writes it with the world, `SYNC_MENU` sends it
 fn tick_generators(t: &EntityTick) {
     let w = t.world();
     for &id in t.ids() {
-        let inv = w.inventory(id);
+        let slot = w.inventory(id).group("fuel");
         let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if m.burn == 0 {
-            let fuel = inv.get(0);
+            let fuel = slot.get(0);
             // `fuel` is the common component, so any mod's fuel works
             if let Some(ticks) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) {
                 m.burn = ticks;
-                inv.set(0, use_one(fuel));
+                slot.set(0, use_one(fuel));
             }
         }
         if m.burn > 0 {
@@ -58,7 +76,7 @@ fn tick_generators(t: &EntityTick) {
     }
 }
 ```
-`w.inventory(id)` is the machine's slots (`get`, `set`, and `insert`, which returns what didn't fit), and `w.component_mut(id, &C)` its data, changed in place and saved and synced by itself. For stacks there are `use_one` (a lava bucket leaves its bucket), `shrink`, `grow`, `stacks_with` and `max_stack`, and the rest of the world is in `w` too (`get`, `set`, `play_sound`, `emit`).
+`w.inventory(id).group("fuel")` is one group of the machine's slots, numbered from 0 (`get`, `set`, `len`); the whole inventory also has `insert`, which returns what didn't fit. `w.component_mut(id, &C)` is the machine's data, changed in place and saved and synced by itself. For stacks there are `use_one` (a lava bucket leaves its bucket), `shrink`, `grow`, `stacks_with` and `max_stack`, and the rest of the world is in `w` too (`get`, `set`, `play_sound`, `emit`).
 
 To show that a machine is working, give the block states and flip between them from the tick. The furnace has facing times lit states (`facing_variants(.., 2, |dir, lit, s| ..)`) and does
 ```rust
@@ -67,39 +85,59 @@ w.set(pos, FURNACE.state(Facings::HORIZONTAL.index(dir, lit as u32)));
 `tick_furnaces` in `mods/base/src/machines.rs` is the whole thing in one place, with the recipe, the lit state and an event.
 
 ## The screen
-`screen(|ui, player| ..)` builds the window. Slots are numbered in the order of `slots(..)`, so the furnace has `0`, `1` and `2`, and `player` is where the player's own slots start, right after the machine's:
+`screen(|ui| ..)` builds the window. `ui.group("input")` draws a group as its grid, `ui.group_slot("input", 1)` a single slot of it when a layout places them apart, and `ui.player_inventory(true)` the player's inventory and hotbar, every machine menu has them:
 ```rust
-.screen(|ui, player| {
+.screen(|ui| {
     ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
         ui.text("container.furnace");
         ui.row(S::row().gap(8.0), |ui| {
-            ui.slot(0);
+            ui.group("input");
             ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
-            ui.slot(2);
+            ui.group("output");
         });
-        ui.player_inventory(player, true);
+        ui.player_inventory(true);
     });
 })
 ```
 The arrow reads the machine's component through `menu_component`, which is why it needs `SYNC_MENU`. The screen belongs to the menu and not to a single block, so every machine of one kind shows the same window. Parts, layout and themes are in the [UI guide](ui.md). Using the block already opens the menu, and `world.open_menu(player, &MENU, owner)` does the same from code.
 
 ## Recipes
-Anything where an input turns into an output over time is a recipe kind, and a machine can use the base game's or one of its own:
+Anything where inputs turn into outputs over time is a recipe kind, and a machine can use the base game's or one of its own:
 ```rust
 static SMELTING_RECIPES: RecipeKind = RecipeKind::named("base:smelting");
 
-r.recipe_station(&SMELTING_RECIPES, "electric_furnace");     // the recipe viewer lists this machine for those recipes
+r.machine("electric_furnace", &FURNACE_MENU)
+    .recipes(&SMELTING_RECIPES)          // its arrow opens them, the recipe viewer shows it next to them
+    ..;
 // in the tick:
 if let Some((output, time)) = recipe_process(&SMELTING_RECIPES, input.item) { .. }
 ```
-`recipe_process` gives the output and the time in ticks for an input. Recipes are added the usual way, `r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200)`, so every machine that uses the kind smelts it, whichever mod it comes from. A kind of your own (a crusher) is registered with `r.recipe_kind(&KIND)`, and recipes that name a kind nobody registered fail at load.
+`recipe_process` gives the output and the time in ticks for one input. Recipes are added the usual way, `r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200)`, so every machine that uses the kind smelts it, whichever mod it comes from. `recipes(..)` makes the `arrow` bars of the machine's screen open the kind in the recipe viewer, with "Recipes" over them; a block that is no machine (a crafting table) is named with `r.recipe_station(&KIND, "crafting_table")` instead.
+
+A recipe can say more than one output and a time:
+```rust
+r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
+    .counts(&[3, 1])                              // 3 iron and 1 coal
+    .chance_output("base:diamond", 1, 0.05)       // and a diamond now and then
+    .value(&ENERGY_PER_TICK, 32);                 // data the machine reads
+```
+Inputs and outputs can be fluids, `fluid:base:water` with the count in millibuckets, and `hidden()` keeps a recipe out of the viewer. A machine with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances, the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out.
+
+A kind of your own is registered with `r.recipe_kind(&KIND)`, and recipes that name a kind nobody registered fail at load. The same call says how the recipe viewer shows it:
+```rust
+r.recipe_kind(&ALLOYING)
+    .inputs(2, 1).outputs(2, 1)                   // always these grids, like a crafting table's 3 x 3
+    .info("recipe.mymod.alloying.info", &["mymod:energy_per_tick", "time"]);
+```
+`info` is a line under every recipe, a translation like `Uses {0} FE/t for {1} s` whose numbers come from the recipe's values and its time. For a layout of your own, `display(|ui, recipe| ..)` builds each recipe with the usual UI parts plus `ui.recipe_inputs()`, `ui.recipe_outputs()` and `ui.recipe_input(i)` for its slots (`infusing` in testmod is one, with a fluid).
 
 ## Energy
 Generators, cables and machines from different mods work together through one contract in the engine. An entity with the `core:energy` component takes part, and a block tagged `conductor` is a cable. The block entities next to a cable, or a chain of them, form a network, and once per tick the engine shares what the generators offer among the machines that want it.
 
 ```rust
 r.machine("electric_furnace", &FURNACE_MENU)
-    .slots(&[0, slot_flags::OUTPUT])
+    .group("input", Slots::one())
+    .group("output", Slots::one().output())
     .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
     .on_tick(tick_furnaces);
 r.block("cable").model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor");

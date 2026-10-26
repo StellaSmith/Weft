@@ -57,6 +57,8 @@ pub struct ServerConfig {
 
 pub struct Player {
     pub name: String,
+    /// The skin this player sent, passed on to everyone who joins.
+    skin: Option<Arc<Vec<u8>>>,
     /// Public key: the identity saves are keyed by.
     pub key: String,
     conn: ServerConn,
@@ -377,6 +379,7 @@ impl Server {
     fn accept(&mut self) {
         while let Ok(conn) = self.incoming.try_recv() {
             self.players.push(Player {
+                skin: None,
                 name: String::new(),
                 key: String::new(),
                 conn,
@@ -1024,7 +1027,7 @@ impl Server {
                 } else {
                     log::info!("<{name}> {text}");
                     for p in &mut self.players {
-                        p.conn.send(ToClient::Chat(format!("<{name}> {text}")));
+                        p.conn.send(ToClient::Chat(format!("<{}> {}", crate::ui::text::escape(&name), crate::ui::text::escape(&text))));
                     }
                 }
             }
@@ -1036,6 +1039,22 @@ impl Server {
                 r.flush_neighbors(c);
                 r.finish_tick(c);
                 self.dim_events(c);
+            }
+            ToServer::Skin(png) => {
+                // Only a skin's size of PNG: everyone else stores and uploads it.
+                let size = (png.len() <= 65536 && png.starts_with(b"\x89PNG") && png.len() > 24).then(|| {
+                    let at = |i: usize| u32::from_be_bytes(png[i..i + 4].try_into().unwrap());
+                    (at(16), at(20))
+                });
+                if !self.players[pi].joined || !matches!(size, Some((64, 64) | (64, 32))) {
+                    return;
+                }
+                let png = Arc::new(png);
+                let entity = self.players[pi].entity;
+                self.players[pi].skin = Some(png.clone());
+                for p in self.players.iter_mut().filter(|p| p.joined) {
+                    p.conn.send(ToClient::Skin { entity, png: png.to_vec() });
+                }
             }
             ToServer::Gizmos(mut names) => {
                 names.retain(|n| n.len() <= 64);
@@ -1124,6 +1143,11 @@ impl Server {
         p.conn.send(ToClient::GameMode(mode));
         if dim == c.void_dim {
             p.conn.send(ToClient::Chat(void_note(c)));
+        }
+        // The skins of who is here already.
+        let skins: Vec<(u64, Arc<Vec<u8>>)> = self.players.iter().filter(|o| o.joined && o.entity != id).filter_map(|o| o.skin.clone().map(|s| (o.entity, s))).collect();
+        for (entity, png) in skins {
+            self.players[pi].conn.send(ToClient::Skin { entity, png: png.to_vec() });
         }
     }
 

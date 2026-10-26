@@ -263,7 +263,7 @@ impl Client {
     }
 
     /// Where an element of the top screen is (fractions of the window: x, y, w, h):
-    /// `slot:N`, `item:N` (creative list), `entity` (the entity figure), `id:name` or `text:words`.
+    /// `slot:N`, `item:N` (creative list), `entity` (the entity figure), `scrollbar` (the first scroll bar's track), `class:name` (the first part of that theme class), `id:name` or `text:words`.
     pub fn ui_rect(&self, query: &str) -> Option<[f32; 4]> {
         let mut r = [0.0; 4];
         (unsafe { (host().client_ui_rect)(self.raw, s(query), &mut r) } != 0).then_some(r)

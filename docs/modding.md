@@ -104,7 +104,8 @@ Textures can also be [animated, glow and have overlays](textures.md), or [be con
 ### Translations
 Format: `type.modname.name = value`, e.g. `item.examplemod.example_item = Example Item`\
 Any item can have a tooltip using `type.modname.name.tooltip = Some tooltip`, more in the [tooltips guide](tooltips.md).\
-If the player's language doesn't have a key (or a whole file), English is shown, so `en_us.lang` is the one you always need.
+If the player's language doesn't have a key (or a whole file), English is shown, so `en_us.lang` is the one you always need.\
+The Mods screen reads your mod's page from there too: `mod.mymod.name`, `mod.mymod.description` (as long as you like, with pictures), `mod.mymod.authors` and `mod.mymod.url`, and its icon is `assets/textures/icon.png`.
 
 Text can carry colors and effects:
 - `{#ff8080}This text is red{/}`
@@ -112,6 +113,9 @@ Text can carry colors and effects:
 - `{on_key:!core:sneak}This text will appear when the bound key is NOT pressed{/on_key}`
 - `{on_key:core:sneak}This text will appear only when the bound key is pressed{/on_key}`
 - `{if:creative}This text will appear if the player is in creative mode{/if}`
+- `{img:mymod:gui/logo}`, `{block:base:furnace}` and `{align:center}..{/align}` for pictures, blocks and centered lines
+
+All of it works in any text the game shows, chat and command replies included, so there is no second kind of text to learn.
 
 ## Components and tags as inter-mod communication
 

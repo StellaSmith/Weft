@@ -14,8 +14,13 @@ name = "weft_abi"
 version = "0.1.0"
 
 [[package]]
+name = "weft_noise"
+version = "0.1.0"
+
+[[package]]
 name = "weft_sdk"
 version = "0.1.0"
 dependencies = [
  "weft_abi",
+ "weft_noise",
 ]

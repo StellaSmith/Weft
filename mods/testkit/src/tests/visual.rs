@@ -79,9 +79,10 @@ pub async fn tooltips(t: T) -> R {
         t.frames(4).await?;
         t.shot(name).await?;
         let now = t.grab().await?;
-        // The tooltip opens to the right of the cursor.
+        // The tooltip opens to the right of the cursor. Its dark box is close to the panel's
+        // color, so only part of the pixels change.
         let v = changed(&plain, &now, w, h, cx + 0.02, cy - 0.02, cx + 0.15, cy + 0.05);
-        t.probe(&format!("{name} tooltip drawn"), v, v > 0.3);
+        t.probe(&format!("{name} tooltip drawn"), v, v > 0.1);
         // Another mod's line under coal's own (`item.base.coal.tooltip.testmod`), in red.
         if name == "coal" {
             let red = t.shot("coal_lines").await?.share(cx + 0.02, cy - 0.05, cx + 0.3, cy + 0.12, probe::red);
@@ -136,6 +137,34 @@ pub async fn third_person(t: T) -> R {
         t.secs(0.3).await?;
     }
     Ok(())
+}
+
+/// A skin of the player's own (`skins/skin.png`) goes to the server with the join and the model
+/// wears it: an all red one turns the figure red instead of its shirt and skin.
+pub async fn player_skin(t: T) -> R {
+    let path = format!("{}/skins/skin.png", t.c().run_dir());
+    std::fs::create_dir_all(format!("{}/skins", t.c().run_dir())).map_err(|e| e.to_string())?;
+    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), 64, 64);
+    enc.set_color(png::ColorType::Rgba);
+    let px: Vec<u8> = (0..64 * 64).flat_map(|_| [220u8, 30, 30, 255]).collect();
+    enc.write_header().and_then(|mut w| w.write_image_data(&px)).map_err(|e| e.to_string())?;
+    let result = async {
+        t.flat().await?;
+        t.press("core:perspective");
+        t.c().look(30.0, -15.0);
+        t.secs(0.8).await?;
+        let shot = t.shot("red").await?;
+        let (red, shirt) = (shot.share(0.42, 0.35, 0.58, 0.8, probe::red), shot.share(0.42, 0.35, 0.58, 0.8, probe::cyan));
+        t.probe("the model in the player's red skin", red, red > 0.05);
+        t.probe("and not in the default shirt", shirt, shirt < 0.01);
+        t.press("core:perspective");
+        t.press("core:perspective");
+        Ok::<(), String>(())
+    }
+    .await;
+    drop(std::fs::remove_file(&path));
+    result
 }
 
 /// Crouching shows in third person: the model is lower (vanilla's pose).

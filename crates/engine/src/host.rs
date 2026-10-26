@@ -67,11 +67,17 @@ pub static HOST: Host = Host {
     spawn_item,
     block_entity,
     open_menu,
-    menu_slots,
+    menu_group,
+    inventory_group,
     menu_get,
     menu_set,
     recipe_match,
     recipe_process,
+    recipe_find,
+    recipe_info,
+    recipe_output,
+    recipe_value,
+    recipe_consume,
     item_block,
     ui_open: crate::client::modui::ui_open,
     ui_close: crate::client::modui::ui_close,
@@ -176,6 +182,7 @@ pub static HOST: Host = Host {
     structure_block,
     set_structure_block,
     reg_terrain,
+    reg_screen_part,
     terrain_column,
     terrain_carved,
 };
@@ -717,16 +724,37 @@ unsafe fn menu<'a>(m: *mut abi::MenuCtx) -> &'a mut MenuCall {
     unsafe { &mut *(m as *mut MenuCall) }
 }
 
-unsafe extern "C" fn menu_slots(m: *mut abi::MenuCtx, owner: u64, start: u32, count: u32, flags: u32, accepts: Str) {
-    let accepts = unsafe { accepts.as_str() };
-    if accepts.is_empty() {
-        return unsafe { menu(m).add_slots(owner, start, count, flags) };
+unsafe extern "C" fn menu_group(m: *mut abi::MenuCtx, name: Str, out: *mut [u32; 2]) -> u32 {
+    unsafe {
+        match menu(m).group(content(), name.as_str()) {
+            Some((start, count)) => {
+                *out = [start, count];
+                1
+            }
+            None => {
+                misuse("menu group", || format!("the menu has no group {}", name.as_str()));
+                0
+            }
+        }
     }
-    let tag = content().components.id(accepts);
-    if tag.is_none() {
-        misuse("menu_slots", || format!("no tag or component {accepts}"));
+}
+
+/// A machine's group in its entity's inventory: the menu built for its kind says where.
+unsafe extern "C" fn inventory_group(w: *mut abi::WorldCtx, entity: u64, name: Str, out: *mut [u32; 2]) -> u32 {
+    unsafe {
+        let c = content();
+        let Some(kind) = dim(w).entities.get(entity).map(|e| e.kind) else { return 0 };
+        let kind_name = &c.game.entities[kind as usize].name;
+        let layout = &c.game.player_layout;
+        let found = c.game.menus.iter().filter(|d| &d.entity == kind_name).find_map(|d| d.group(layout, name.as_str())).filter(|g| g.0.owner == abi::slot_owner::BLOCK);
+        match found {
+            Some((g, _, n)) => {
+                *out = [g.start, n];
+                1
+            }
+            None => 0,
+        }
     }
-    unsafe { menu(m).add_slots_for(owner, start, count, flags, tag.unwrap_or(u32::MAX - 1)) }
 }
 
 unsafe extern "C" fn reg_player_inventory(r: *mut abi::Registrar, slots: u32, hotbar: u32, worn_start: u32, worn_count: u32) {
@@ -765,7 +793,61 @@ unsafe extern "C" fn recipe_match(kind: Str, grid: *const ItemStack, width: u32,
     content()
         .game
         .match_grid(kind, &cells, width, height, &content().components)
-        .map_or(ItemStack::EMPTY, |r| ItemStack::new(r.output, r.count))
+        .map_or(ItemStack::EMPTY, |r| r.result())
+}
+
+fn recipe_at(kind: Str, recipe: u32) -> Option<&'static registry::Recipe> {
+    content().game.recipes.get(unsafe { kind.as_str() })?.get(recipe as usize)
+}
+
+unsafe extern "C" fn recipe_find(kind: Str, stacks: *const ItemStack, count: u32) -> u32 {
+    let c = content();
+    let stacks = unsafe { std::slice::from_raw_parts(stacks, count as usize) };
+    let Some(list) = c.game.recipes.get(unsafe { kind.as_str() }) else { return 0 };
+    list.iter().position(|r| c.game.find_inputs(r, stacks, &c.components).is_some()).map_or(0, |i| i as u32 + 1)
+}
+
+unsafe extern "C" fn recipe_info(kind: Str, recipe: u32, out: *mut abi::RecipeInfo) -> u32 {
+    let Some(r) = recipe_at(kind, recipe) else { return 0 };
+    let flags = if r.hidden { abi::recipe_flags::HIDDEN } else { 0 };
+    unsafe { *out = abi::RecipeInfo { time: r.time, inputs: r.inputs.len() as u32, outputs: r.outputs.len() as u32, flags } };
+    1
+}
+
+unsafe extern "C" fn recipe_output(kind: Str, recipe: u32, index: u32, stack: *mut ItemStack, chance: *mut f32) -> u32 {
+    let Some(o) = recipe_at(kind, recipe).and_then(|r| r.outputs.get(index as usize)) else { return 0 };
+    unsafe {
+        *stack = match o.what {
+            registry::Ingredient::Item(i) => ItemStack::new(i, o.count),
+            _ => ItemStack::EMPTY,
+        };
+        *chance = o.chance;
+    }
+    1
+}
+
+unsafe extern "C" fn recipe_value(kind: Str, recipe: u32, component: Str, out: *mut u8, cap: u32) -> u32 {
+    let c = content();
+    let Some(id) = c.components.id(unsafe { component.as_str() }) else { return 0 };
+    let Some(v) = recipe_at(kind, recipe).and_then(|r| r.value(id)) else { return 0 };
+    let n = v.len().min(cap as usize);
+    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, n) };
+    v.len() as u32
+}
+
+unsafe extern "C" fn recipe_consume(kind: Str, recipe: u32, stacks: *mut ItemStack, count: u32) -> u32 {
+    let c = content();
+    let Some(r) = recipe_at(kind, recipe) else { return 0 };
+    let stacks = unsafe { std::slice::from_raw_parts_mut(stacks, count as usize) };
+    let Some(found) = c.game.find_inputs(r, stacks, &c.components) else { return 0 };
+    let counts = r.inputs.iter().zip(&r.input_counts).filter(|(i, _)| !matches!(i, registry::Ingredient::Empty)).map(|(_, &n)| n);
+    for (i, n) in found.into_iter().zip(counts) {
+        stacks[i].count -= n;
+        if stacks[i].count == 0 {
+            stacks[i] = ItemStack::EMPTY;
+        }
+    }
+    1
 }
 
 unsafe extern "C" fn recipe_process(kind: Str, input: u32, time_out: *mut u32) -> ItemStack {
@@ -775,7 +857,7 @@ unsafe extern "C" fn recipe_process(kind: Str, input: u32, time_out: *mut u32) -
             if !time_out.is_null() {
                 unsafe { *time_out = r.time }
             }
-            ItemStack::new(r.output, r.count)
+            r.result()
         }
         None => ItemStack::EMPTY,
     }
@@ -1002,6 +1084,14 @@ unsafe extern "C" fn reg_creative_tab(r: *mut abi::Registrar, name: Str, icon: S
     }
 }
 
+unsafe extern "C" fn reg_screen_part(r: *mut abi::Registrar, screen: Str, area: Str, order: i32, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.screen_parts.push(registry::ScreenPart { screen: screen.as_str().to_string(), area: area.as_str().to_string(), order, owner, cb });
+    }
+}
+
 unsafe extern "C" fn reg_terrain(r: *mut abi::Registrar, d: *const abi::TerrainDesc) {
     unsafe {
         let r = reg(r);
@@ -1094,8 +1184,21 @@ unsafe extern "C" fn reg_entity_category(r: *mut abi::Registrar, name: Str, cap:
     unsafe { reg(r).game.categories.push(crate::registry::CategoryDef { name: name.as_str().to_string(), cap, despawn: despawn as f64 }) }
 }
 
-unsafe extern "C" fn reg_recipe_kind(r: *mut abi::Registrar, name: Str) {
-    unsafe { reg(r).game.recipe_kinds.push(name.as_str().to_string()) }
+unsafe extern "C" fn reg_recipe_kind(r: *mut abi::Registrar, d: *const abi::RecipeKindDesc) {
+    unsafe {
+        let d = &*d;
+        let r = reg(r);
+        let def = registry::RecipeKindDef {
+            owner: r.owner,
+            input_grid: d.input_grid,
+            output_grid: d.output_grid,
+            info: (d.info.len > 0).then(|| d.info.as_str().to_string()),
+            info_values: d.info_values.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
+            display: d.display.is_some().then_some(d.display),
+        };
+        let owner = r.owner;
+        r.game.recipe_kinds.push(registry::RawRecipeKind { owner, name: d.name.as_str().to_string(), def });
+    }
 }
 
 unsafe extern "C" fn reg_attach_value(r: *mut abi::Registrar, kind: Str, component: Str, value: abi::Slice<u8>) {

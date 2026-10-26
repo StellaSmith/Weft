@@ -28,6 +28,7 @@ pub fn all() -> Vec<TestDef> {
     crate::tests![
         scene::scene,
         ui::screens,
+        ui::scrollbar,
         ui::f3,
         ui::inventory_crafting,
         ui::creative_inventory,
@@ -49,6 +50,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::creative_clicks,
         gameplay::armor,
         gameplay::slot_accepts,
+        gameplay::slot_limit,
         gameplay::bucket,
         gameplay::battery,
         gameplay::burning,
@@ -70,6 +72,7 @@ pub fn all() -> Vec<TestDef> {
         visual::tooltips,
         visual::night_light,
         visual::third_person,
+        visual::player_skin,
         visual::ladder_placement,
         visual::wall_torch,
         visual::crouch_pose,

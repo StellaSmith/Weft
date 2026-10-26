@@ -1,5 +1,11 @@
 language.name = English
 block.testmod.generator = Generator
+testmod.fuel_slot = Fuel: anything that burns. It stays in until it is burnt.
+recipe.testmod.alloying = Alloying
+recipe.testmod.alloying.info = Uses {#ffe070}{0} FE/t{/} for {1} s
+recipe.testmod.infusing = Infusing
+testmod.infusing.plus = +
+testmod.infusing.time = Soaks for {0} s, laid out by the test mod itself
 block.testmod.battery = Battery
 testmod.battery = Battery
 block.testmod.electric_furnace = Electric Furnace
@@ -48,3 +54,11 @@ block.testmod.glow_leaves = Glowing Birch Leaves
 block.testmod.glow_flower = Glow Flower
 testmod.about.title = {#55ffff}Test Mod
 testmod.about.text = A screen of the mod's own, opened by name.
+testmod.about.hover = Hover me
+testmod.about.button = About Test Mod
+testmod.about.tip = {#ff6060}A tooltip of the mod's own screen
+mod.testmod.description = Proves that a mod needs no engine changes.
+    {align:center}{img:testmod:icon 32x32}{/align}
+    Energy, its own dimensions, a biome in {#ffe070}another mod's{/} overworld, machines and recipes of its own.
+    Its generator burns fuel the way {block:base:furnace} furnaces do, lit up like {block:base:furnace#1}.
+mod.testmod.authors = Weft developers

@@ -122,6 +122,8 @@ pub enum ToClient {
     Sounds(Vec<(u32, DVec3, f32, f32)>),
     /// Keyframe animations started on entities: (entity, name, looping); empty name = none.
     Animate(Vec<(u64, String, bool)>),
+    /// A player's own skin (PNG), for their entity.
+    Skin { entity: u64, png: Vec<u8> },
 }
 
 #[derive(Clone)]
@@ -159,6 +161,8 @@ pub enum ToServer {
     /// Gizmo groups this player shows; the server only sends shapes of these.
     Gizmos(Vec<String>),
     Packet { channel: u32, data: Vec<u8> },
+    /// The player's skin (PNG, 64 x 64 or 64 x 32).
+    Skin(Vec<u8>),
 }
 
 /// Message kinds by name, for traffic counters (`net` log channel).
@@ -196,12 +200,12 @@ messages!(ToClient, ClientTag, false, [
     Welcome, Cube, Unload, Blocks, Time, Teleport, Spawn, Moves, Despawn, Hurt, Burning, Worn,
     GameMode, Players, Inventory, Components, Health, Knockback, OpenMenu, MenuSlots,
     Cursor, CloseMenu, Died, Chat, Disconnect, Gizmos, Packet, EntityComponents, Particles,
-    Configs, Sounds, Animate, Taken, Swing, Shapes, Structure,
+    Configs, Sounds, Animate, Taken, Swing, Shapes, Structure, Skin,
 ]);
 
 messages!(ToServer, ServerTag, true, [
     Join, Move, Break, Use, UseItem, Select, Attack, Interact, OpenInventory, Click, CreativeTake,
-    Pick, Drag, CloseMenu, Drop, Respawn, Chat, Leave, Gizmos, Packet,
+    Pick, Drag, CloseMenu, Drop, Respawn, Chat, Leave, Gizmos, Packet, Skin,
 ]);
 
 pub struct Conn<S, R> {

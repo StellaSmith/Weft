@@ -357,6 +357,10 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.u32(*channel);
             w.bytes(data);
         }
+        ToClient::Skin { entity, png } => {
+            w.u64(*entity);
+            w.bytes(png);
+        }
         ToClient::Worn(list) => {
             w.len(list.len());
             for (id, items) in list {
@@ -583,6 +587,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             ToClient::Gizmos(list)
         }
         ClientTag::Packet => ToClient::Packet { channel: r.u32()?, data: r.bytes()? },
+        ClientTag::Skin => ToClient::Skin { entity: r.u64()?, png: r.bytes()? },
     })
 }
 
@@ -667,6 +672,7 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
             w.u32(*channel);
             w.bytes(data);
         }
+        ToServer::Skin(png) => w.bytes(png),
         ToServer::Drag { slots, button } => {
             w.u8(*button);
             w.len(slots.len());
@@ -724,6 +730,7 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
             ToServer::Gizmos(names)
         }
         ServerTag::Packet => ToServer::Packet { channel: r.u32()?, data: r.bytes()? },
+        ServerTag::Skin => ToServer::Skin(r.bytes()?),
     })
 }
 

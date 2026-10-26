@@ -150,6 +150,8 @@ pub struct UiRenderer {
     pub quads: Vec<Quad>,
     /// Clip of each deferred item icon, in the order they were queued.
     icon_clips: Vec<[f32; 4]>,
+    /// Stack counts drawn over queued item icons: (icon number, count, text pixel size).
+    icon_counts: Vec<(usize, u32, f32)>,
     /// Text effects and GUI fills the shader has, and the effect slot by `text::fx_id`.
     fx: Slots,
     gui: Slots,
@@ -206,6 +208,7 @@ impl UiRenderer {
             screen,
             quads: Vec::new(),
             icon_clips: Vec::new(),
+            icon_counts: Vec::new(),
             fx,
             gui,
             fx_slots: Vec::new(),
@@ -334,6 +337,15 @@ impl UiRenderer {
         s
     }
 
+    /// Loads the textures of a text's inline images, so `glyph_run` can draw them.
+    pub fn load_images(&mut self, gpu: &mut dyn Backend, assets: &Assets, layout: &super::text::TextLayout) {
+        for id in super::text::images(layout) {
+            if let Some(name) = super::text::image_name(id) {
+                self.texture(gpu, assets, &name);
+            }
+        }
+    }
+
     /// Draws GUI texture `name` over `r` the way the texture asks for, or with `fallback` (from the
     /// theme) when it says nothing. False if the texture is missing.
     pub fn draw_gui(&mut self, gpu: &mut dyn Backend, assets: &Assets, name: &str, r: Rect, scale: f32, color: u32, fallback: Slicing) -> bool {
@@ -348,6 +360,21 @@ impl UiRenderer {
         });
         match slicing {
             Slicing::Nine { size, border } => self.nine_sliced(r, tex.0, size, border, scale, color),
+            Slicing::Tile { size } => self.tile(r, tex, size[0] * scale, color),
+            Slicing::Stretch => self.image(r, tex.0, [0.0, 0.0, 1.0, 1.0], color),
+        }
+        true
+    }
+
+    /// `draw_gui` for a texture already loaded (by an earlier `texture` call); false otherwise.
+    pub fn draw_loaded(&mut self, name: &str, r: Rect, scale: f32, color: u32) -> bool {
+        let Some(Some(tex)) = self.textures.get(name).copied() else { return false };
+        let pixels = [tex.1 as f32, tex.2 as f32];
+        let slicing = self.slicing.get(name).copied().flatten().unwrap_or(Slicing::Stretch);
+        let o = self.outset.get(name).copied().unwrap_or(0.0) * scale;
+        let r = Rect { x: r.x - o, y: r.y - o, w: r.w + 2.0 * o, h: r.h + 2.0 * o };
+        match slicing {
+            Slicing::Nine { size, border } => self.nine_sliced(r, tex.0, if size == [0.0; 2] { pixels } else { size }, border, scale, color),
             Slicing::Tile { size } => self.tile(r, tex, size[0] * scale, color),
             Slicing::Stretch => self.image(r, tex.0, [0.0, 0.0, 1.0, 1.0], color),
         }
@@ -438,6 +465,13 @@ impl UiRenderer {
                         });
                     }
                     Placed::Icon { x: ix, y: iy, item } if !pass => icons.push((x + ix * px, y + iy * px, 16.0 * px, item)),
+                    Placed::Block { x: ix, y: iy, state } if !pass => icons.push((x + ix * px, y + iy * px, 16.0 * px, state | super::text::STATE_ICON)),
+                    // Loaded by `load_images` before.
+                    Placed::Image { x: ix, y: iy, w, h, image } if !pass => {
+                        if let Some(Some(t)) = super::text::image_name(image).and_then(|n| self.textures.get(&n).copied()) {
+                            self.image(Rect { x: x + ix * px, y: y + iy * px, w: w * px, h: h * px }, t.0, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -464,7 +498,12 @@ impl UiRenderer {
             return;
         }
         let Some(state) = def.block else { return };
-        let s = &c.states[state as usize];
+        self.state_icon(c, tex, x, y, size, state);
+    }
+
+    /// A block state the way block items show: a sprite for flat blocks, else an isometric model.
+    pub fn state_icon(&mut self, c: &Content, tex: &GameTextures, x: f32, y: f32, size: f32, state: u32) {
+        let Some(s) = c.states.get(state as usize) else { return };
         let tint = |face: usize| -> u32 {
             if s.tint == 0 || s.tint_faces & (1 << face) == 0 {
                 return 0xFFFFFFFF;
@@ -530,14 +569,26 @@ impl UiRenderer {
     ) {
         self.quads.clear();
         self.icon_clips.clear();
+        self.icon_counts.clear();
         self.animated.clear();
         let mut icons = Vec::new();
         self.node(gpu, assets, ui, theme, 0, scale, &mut icons, custom, None);
         if let Some((c, t)) = game {
             let clips = std::mem::take(&mut self.icon_clips);
+            let counts = std::mem::take(&mut self.icon_counts);
             for (i, (x, y, s, item)) in icons.into_iter().enumerate() {
                 let start = self.quads.len();
-                self.item_icon(c, t, x, y, s, item);
+                if item & super::text::STATE_ICON != 0 {
+                    self.state_icon(c, t, x, y, s, item & !super::text::STATE_ICON);
+                } else {
+                    self.item_icon(c, t, x, y, s, item);
+                }
+                // The count over the icon, at its bottom right like in a slot.
+                if let Some(&(_, n, px)) = counts.iter().find(|c| c.0 == i) {
+                    let layout = super::text::layout(&super::text::plain(&n.to_string()), &self.font, None);
+                    let mut none = Vec::new();
+                    self.glyph_run(&layout.items, x + s - layout.width * px + px * 2.0, y + s - 16.0 * px + px * 2.0, px, 0xFFFFFFFF, Some(0x3F3F3FFF), &mut none);
+                }
                 let clip = clips.get(i).copied().unwrap_or_default();
                 for q in &mut self.quads[start..] {
                     q.clip = clip;
@@ -570,6 +621,7 @@ impl UiRenderer {
         }
         let mut icons = Vec::new();
         let color = theme.color("tooltip", "text", 0xFFFFFFFF);
+        self.load_images(gpu, assets, &layout);
         self.glyph_run(&layout.items, x + pad, y + pad, px, color, Some(0x3F3F3FFF), &mut icons);
         if let Some((c, t)) = game {
             for (ix, iy, s, item) in icons {
@@ -578,9 +630,9 @@ impl UiRenderer {
         }
     }
 
-    /// Plain text centered on `cx` in one color (`0xRRGGBBAA`) with a shadow.
-    pub fn label_colored(&mut self, text: &str, cx: f32, y: f32, px: f32, color: u32) {
-        let layout = super::text::layout(&super::text::plain(text), &self.font, None);
+    /// Text centered on `cx`, by default in one color (`0xRRGGBBAA`), with a shadow.
+    pub fn label_colored(&mut self, spans: &[super::text::Span], cx: f32, y: f32, px: f32, color: u32) {
+        let layout = super::text::layout(spans, &self.font, None);
         let mut icons = Vec::new();
         let x = (cx - layout.width * px / 2.0).round();
         self.glyph_run(&layout.items, x, y.round(), px, color, Some(0x00000000 | (color & 0xFF) / 2), &mut icons);
@@ -657,6 +709,7 @@ impl UiRenderer {
                 // `none` turns off a shadow the default class would give (dark text on light panels).
                 let shadow = if parent_disabled { None } else { theme.get(class, "shadow").filter(|v| *v != "none").map(|_| theme.color(class, "shadow", 0x3F3F3FFF)) };
                 let x = if t.center { r.x + (r.w - t.layout.width * px) / 2.0 } else { r.x };
+                self.load_images(gpu, assets, &t.layout);
                 self.glyph_run(&t.layout.items, x, r.y, px, default, shadow, icons);
             }
             Kind::Image { texture, color } => {
@@ -666,6 +719,9 @@ impl UiRenderer {
             }
             Kind::Item { last, .. } => {
                 if last.0 != 0 {
+                    if last.1 > 1 {
+                        self.icon_counts.push((icons.len(), last.1, scale * ui.text_unit));
+                    }
                     icons.push((r.x, r.y, r.w.min(r.h), last.0));
                 }
             }
@@ -746,6 +802,13 @@ impl UiRenderer {
                 }
             }
             Kind::Custom { tag, data } => {
+                for (class, state) in [("slot", "texture"), ("hotbar", "texture"), ("well", "texture")] {
+                    if let Some(name) = theme.get(class, state).map(str::to_string) {
+                        if let Some(t) = self.texture(gpu, assets, &name) {
+                            self.declared_slicing(assets, &name, [t.1 as f32, t.2 as f32]);
+                        }
+                    }
+                }
                 let icon = n.icon.clone().and_then(|i| self.texture(gpu, assets, &i)).map(|t| t.0);
                 custom(self, *tag, *data, r, hovered, icon)
             }
@@ -771,6 +834,25 @@ impl UiRenderer {
         self.icon_clips.resize(icons.len(), clip);
         for &c in &n.children {
             self.node(gpu, assets, ui, theme, c, scale, icons, custom, inner_surface);
+        }
+        if let Some(bar) = n.scrollbar {
+            let start = self.quads.len();
+            let px = |r: super::Rect| Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale };
+            let track = px(super::Rect { x: bar.track.x + (bar.track.w - 6.0) / 2.0, w: 6.0, ..bar.track });
+            if !theme.get("scrollbar", "track").map(str::to_string).is_some_and(|t| self.draw_gui(gpu, assets, &t, track, scale, 0xFFFFFFFF, Slicing::Stretch)) {
+                self.rect(track, theme.color("scrollbar", "track", 0x00000060));
+            }
+            let handle = bar.handle();
+            let over = ui.dragging_bar() == Some(id);
+            let name = theme.get("scrollbar", if over { "handle_hover" } else { "handle" }).or_else(|| theme.get("scrollbar", "handle")).map(str::to_string);
+            if !name.is_some_and(|t| self.draw_gui(gpu, assets, &t, px(handle), scale, 0xFFFFFFFF, Slicing::Stretch)) {
+                self.rect(px(handle), theme.color("scrollbar", "handle", 0xC0C0C0FF));
+            }
+            if n.clip.is_some() {
+                for q in &mut self.quads[start..] {
+                    q.clip = clip;
+                }
+            }
         }
         let class = match &n.kind {
             Kind::Container { class: Some(c) } | Kind::Button { class: c, .. } | Kind::Progress { class: c, .. } | Kind::Icons { class: c, .. } => Some(c.as_str()),

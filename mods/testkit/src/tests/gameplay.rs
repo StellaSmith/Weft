@@ -108,6 +108,27 @@ pub async fn armor(t: T) -> R {
     Ok(())
 }
 
+/// A slot holding at most 16: shift-clicking 32 ores into the test mod's electric furnace moves
+/// 16 and leaves the rest.
+pub async fn slot_limit(t: T) -> R {
+    t.flat().await?;
+    let p = add(t.feet(), [0, 0, -2]);
+    t.set(p, "testmod:electric_furnace").await?;
+    t.op("put me 0 iron_ore 32").await?;
+    t.op(&format!("menu testmod:electric_furnace {} {} {}", p[0], p[1], p[2])).await?;
+    t.screen("core:menu").await?;
+    // Menu slots: 0 input, 1 output, 2-28 main inventory, 29-37 hotbar.
+    t.c().key("ShiftLeft", 0.3);
+    t.frames(1).await?;
+    t.click_ui("slot:29", 0);
+    t.until("ores in the furnace", Duration::from_secs(5), |t| t.c().menu_slot(0).count > 0).await?;
+    t.frames(4).await?;
+    t.check_eq(t.c().menu_slot(0).count, 16, "the input slot holds 16");
+    t.check_eq(t.c().menu_slot(29).count, 16, "the rest stays in the hotbar");
+    t.c().close_screen();
+    t.no_screen().await
+}
+
 /// A slot taking only some items: the test mod's generator burns fuel, so shift-clicked dirt
 /// stays with the player and coal goes in.
 pub async fn slot_accepts(t: T) -> R {
@@ -130,6 +151,16 @@ pub async fn slot_accepts(t: T) -> R {
     t.until("coal in the generator", Duration::from_secs(5), |t| t.c().menu_slot(0).count >= 7).await?;
     t.check_eq(t.slot(&at, 0).await?.0, "base:coal".to_string(), "the generator's slot");
     t.check_eq(t.slot("me", 9).await?, ("base:dirt".into(), 16, 0), "dirt moved to the main inventory");
+    // Its fuel slot only takes: a click or a shift-click gets nothing back out.
+    let before = t.c().menu_slot(0).count;
+    t.click_ui("slot:0", 0);
+    t.frames(4).await?;
+    t.check(t.c().cursor_stack().is_empty(), "nothing comes out of an input slot");
+    t.c().key("ShiftLeft", 0.3);
+    t.frames(1).await?;
+    t.click_ui("slot:0", 0);
+    t.frames(4).await?;
+    t.check(t.c().menu_slot(0).count + 1 >= before, "a shift-click doesn't take it out either");
     t.c().close_screen();
     t.no_screen().await
 }

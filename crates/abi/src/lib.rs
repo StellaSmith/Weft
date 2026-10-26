@@ -930,43 +930,177 @@ pub struct RecipeDesc {
     /// Shaped recipes: rows of key characters. Empty for shapeless/processing.
     pub pattern: Slice<Str>,
     pub keys: Slice<RecipeKey>,
-    /// Shapeless/processing inputs.
+    /// Shapeless/processing inputs: item names, `#tags` or `fluid:<liquid>`.
     pub inputs: Slice<Str>,
+    /// How many of each input (millibuckets for fluids); empty: one each.
+    pub input_counts: Slice<u32>,
     pub output: Str,
     pub count: u32,
     /// Processing time in ticks, meaning is up to the recipe type.
     pub time: u32,
+    /// More results after `output` (byproducts, chances).
+    pub outputs: Slice<RecipeOutput>,
+    /// Data machines read from the recipe and the viewer shows (energy per tick).
+    pub values: Slice<CompValue>,
+    /// `recipe_flags`.
+    pub flags: u32,
 }
-defaults!(RecipeDesc { kind: Str::EMPTY, pattern: Slice::EMPTY, keys: Slice::EMPTY, inputs: Slice::EMPTY, output: Str::EMPTY, count: 1, time: 0 });
+defaults!(RecipeDesc {
+    kind: Str::EMPTY,
+    pattern: Slice::EMPTY,
+    keys: Slice::EMPTY,
+    inputs: Slice::EMPTY,
+    input_counts: Slice::EMPTY,
+    output: Str::EMPTY,
+    count: 1,
+    time: 0,
+    outputs: Slice::EMPTY,
+    values: Slice::EMPTY,
+    flags: 0
+});
+
+pub mod recipe_flags {
+    /// Works, but the recipe viewer doesn't show it.
+    pub const HIDDEN: u32 = 1;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RecipeOutput {
+    /// An item or `fluid:<liquid>`.
+    pub item: Str,
+    pub count: u32,
+    /// 0..1, 1 for always.
+    pub chance: f32,
+}
+
+/// A kind of recipe and how the recipe viewer shows it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RecipeKindDesc {
+    pub name: Str,
+    /// Inputs and outputs as grids of this size (a crafting table's 3 x 3 whatever the recipe
+    /// uses); 0: as many as a recipe has.
+    pub input_grid: [u32; 2],
+    pub output_grid: [u32; 2],
+    /// Translation under each recipe, with `{0}`.. filled from `info_values`: `time` (seconds) or
+    /// the name of a component the recipe carries.
+    pub info: Str,
+    pub info_values: Slice<Str>,
+    /// `RecipeUiArgs`, client: builds one recipe instead of the default layout.
+    pub display: Callback,
+}
+defaults!(RecipeKindDesc { name: Str::EMPTY, input_grid: [0; 2], output_grid: [0; 2], info: Str::EMPTY, info_values: Slice::EMPTY, display: Callback::NONE });
+
+/// A recipe the viewer shows with a kind's own `display`.
+#[repr(C)]
+pub struct RecipeUiArgs {
+    pub ui: *mut UiCtx,
+    pub client: *mut ClientCtx,
+    pub kind: Str,
+    /// The recipe's number in its kind, for `Host::recipe_info` and friends.
+    pub recipe: u32,
+}
+
+/// What `Host::recipe_info` tells about one recipe.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct RecipeInfo {
+    pub time: u32,
+    pub inputs: u32,
+    pub outputs: u32,
+    pub flags: u32,
+}
 
 pub mod slot_flags {
     /// Can only be taken from (crafting result).
     pub const OUTPUT: u32 = 1;
+    /// Can only be put into, nothing comes back out by hand.
+    pub const INPUT: u32 = 2;
 }
+
+/// Whose inventory a slot group shows.
+pub mod slot_owner {
+    /// The menu's own slots, emptied back to the player on close (crafting grids).
+    pub const MENU: u32 = 0;
+    /// The entity the menu opened on (a machine).
+    pub const BLOCK: u32 = 1;
+    /// The player's inventory from `start`.
+    pub const PLAYER: u32 = 2;
+    /// The player's main inventory, laid out like `Registry::player_inventory` says.
+    pub const PLAYER_MAIN: u32 = 3;
+    pub const PLAYER_HOTBAR: u32 = 4;
+}
+
+/// Slots shown and handled together: a grid of one owner's inventory with the same rules.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SlotGroupDesc {
+    /// The screen and the menu's callbacks find the group by this.
+    pub name: Str,
+    /// `slot_owner`.
+    pub owner: u32,
+    /// First index in the owner's inventory, `u32::MAX`: right after the previous group of the
+    /// same owner.
+    pub start: u32,
+    pub cols: u32,
+    pub rows: u32,
+    /// `slot_flags`.
+    pub flags: u32,
+    /// Only items with this tag or component.
+    pub accepts: Str,
+    /// Most items a slot holds, 0: as many as the item stacks to.
+    pub limit: u32,
+    /// Side of a slot in GUI pixels, 0: 18.
+    pub size: f32,
+    /// GUI texture shown in an empty slot.
+    pub background: Str,
+    /// Translation shown over an empty slot.
+    pub tooltip: Str,
+    /// Shift-clicks from the player's inventory fill groups with a higher priority first.
+    pub priority: i32,
+}
+defaults!(SlotGroupDesc {
+    name: Str::EMPTY,
+    owner: 0,
+    start: u32::MAX,
+    cols: 1,
+    rows: 1,
+    flags: 0,
+    accepts: Str::EMPTY,
+    limit: 0,
+    size: 0.0,
+    background: Str::EMPTY,
+    tooltip: Str::EMPTY,
+    priority: 0
+});
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MenuDesc {
     pub name: Str,
     pub cell: *const AtomicU32,
-    /// Slots in the menu's own temporary inventory (crafting grids), returned to the player on close.
-    pub temp_slots: u32,
-    /// `MenuArgs`, server: add slots with `Host::menu_slots`.
-    pub setup: Callback,
+    /// Its slots, in this order.
+    pub groups: Slice<SlotGroupDesc>,
+    /// The entity kind of the machine it belongs to (`slot_owner::BLOCK` groups are its inventory).
+    pub entity: Str,
+    /// Recipe kinds it makes, space separated: its `arrow` bars open them in the recipe viewer.
+    pub recipes: Str,
     /// `MenuArgs`, server: a slot changed (recompute crafting output).
     pub on_change: Callback,
     /// `MenuArgs` with `slot` set, server: an OUTPUT slot was taken (consume ingredients).
     pub on_take: Callback,
     /// `MenuArgs`, server, every tick while open.
     pub on_tick: Callback,
-    /// `UiArgs`, client: build the screen. Slot widgets refer to menu slot indices.
+    /// `UiArgs`, client: build the screen. Slot widgets refer to the groups by name.
     pub screen: Callback,
 }
 defaults!(MenuDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
-    temp_slots: 0,
-    setup: Callback::NONE,
+    groups: Slice::EMPTY,
+    entity: Str::EMPTY,
+    recipes: Str::EMPTY,
     on_change: Callback::NONE,
     on_take: Callback::NONE,
     on_tick: Callback::NONE,
@@ -1024,7 +1158,8 @@ pub mod ui_kind {
     pub const PANEL: u32 = 1;
     pub const TEXT: u32 = 2;
     pub const BUTTON: u32 = 3;
-    /// Menu slot `slot`.
+    /// Slots of the group named by `class`: all of them as its grid, or only number `slot` when
+    /// it is not `u32::MAX`.
     pub const SLOT: u32 = 4;
     /// Bound value 0..1 from `bind`, filling in direction `dir`.
     pub const PROGRESS: u32 = 5;
@@ -1035,6 +1170,11 @@ pub mod ui_kind {
     pub const ICONS: u32 = 8;
     /// The local player's model with what it wears, turning towards the mouse.
     pub const ENTITY: u32 = 9;
+    /// In a recipe's `display`: its inputs (`data` 0) or outputs (1) as the kind's grid, or only
+    /// number `slot` when it is not `u32::MAX`.
+    pub const RECIPE_SLOT: u32 = 10;
+    /// What mods add to place `text` of screen `class` (`Host::reg_screen_part`).
+    pub const PARTS: u32 = 11;
 }
 
 /// Fill directions of progress bars.
@@ -1228,10 +1368,11 @@ pub struct Host {
     pub block_entity: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u64,
     pub open_menu: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, menu: u32, owner: u64),
 
-    /// During `MenuDesc::setup`: add `count` slots of `owner`'s inventory (0 = the menu's temp slots,
-    /// u64::MAX = the player) starting at `start`. A non-empty `accepts` takes only items with that
-    /// tag or component (armor slots); shift-clicks fill these before plain slots.
-    pub menu_slots: unsafe extern "C" fn(menu: *mut MenuCtx, owner: u64, start: u32, count: u32, flags: u32, accepts: Str),
+    /// Group `name` of an open menu: its first menu slot and how many slots it has. 0 if none.
+    pub menu_group: unsafe extern "C" fn(menu: *mut MenuCtx, name: Str, out: *mut [u32; 2]) -> u32,
+    /// Group `name` of a machine (`MenuDesc::entity`) in `entity`'s inventory: first index and
+    /// count. 0 if the entity has no such group.
+    pub inventory_group: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str, out: *mut [u32; 2]) -> u32,
     pub menu_get: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32) -> ItemStack,
     pub menu_set: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32, stack: ItemStack),
 
@@ -1239,6 +1380,18 @@ pub struct Host {
     pub recipe_match: unsafe extern "C" fn(kind: Str, grid: *const ItemStack, width: u32, height: u32) -> ItemStack,
     /// Processing recipe for one input item: output stack, time written to `time_out`.
     pub recipe_process: unsafe extern "C" fn(kind: Str, input: u32, time_out: *mut u32) -> ItemStack,
+    /// The first recipe of `kind` whose inputs (with counts) are all in `stacks`, any order:
+    /// its number + 1, or 0.
+    pub recipe_find: unsafe extern "C" fn(kind: Str, stacks: *const ItemStack, count: u32) -> u32,
+    pub recipe_info: unsafe extern "C" fn(kind: Str, recipe: u32, out: *mut RecipeInfo) -> u32,
+    /// Output `index` of a recipe: the stack (empty for a fluid) and its chance.
+    pub recipe_output: unsafe extern "C" fn(kind: Str, recipe: u32, index: u32, stack: *mut ItemStack, chance: *mut f32) -> u32,
+    /// A value the recipe carries: its bytes into `out` (up to `cap`); returns the value's size,
+    /// 0 if it has none.
+    pub recipe_value: unsafe extern "C" fn(kind: Str, recipe: u32, component: Str, out: *mut u8, cap: u32) -> u32,
+    /// Takes the recipe's inputs out of `stacks` (counts, the matching stacks); 0 if they are not
+    /// all there, then nothing changes.
+    pub recipe_consume: unsafe extern "C" fn(kind: Str, recipe: u32, stacks: *mut ItemStack, count: u32) -> u32,
     /// The block state an item places, 0 if none.
     pub item_block: unsafe extern "C" fn(item: u32) -> u32,
 
@@ -1462,7 +1615,7 @@ pub struct Host {
     pub reg_attach_value: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str, value: Slice<u8>),
     /// A kind of recipe (`base:crafting`): recipes, stations and loot naming a kind nobody
     /// registered are freeze errors.
-    pub reg_recipe_kind: unsafe extern "C" fn(reg: *mut Registrar, name: Str),
+    pub reg_recipe_kind: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeKindDesc),
     /// An entity category: at most `cap` of it spawn naturally within 64 blocks of a player;
     /// with `despawn` > 0 they vanish when no player is that close.
     pub reg_entity_category: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cap: u32, despawn: f32),
@@ -1497,6 +1650,9 @@ pub struct Host {
     /// Sets a block of moving structure `entity` like `set_block` (updates, callbacks); 0 if it
     /// is none.
     pub set_structure_block: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const [i32; 3], state: u32) -> u32,
+    /// Adds `cb` (`UiArgs`) to place `area` of screen `screen` (`core:title` has `buttons` and
+    /// `side`), lowest `order` first. Engine screens and mods' own build these places.
+    pub reg_screen_part: unsafe extern "C" fn(reg: *mut Registrar, screen: Str, area: Str, order: i32, cb: Callback),
     /// Describes or edits the terrain of a dimension, see `TerrainDesc`.
     pub reg_terrain: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TerrainDesc),
     /// Column (`x`, `z`) of the terrain of dimension `dim` for `seed`, generated or not. Returns

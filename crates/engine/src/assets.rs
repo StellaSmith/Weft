@@ -447,3 +447,31 @@ mod tests {
         assert!(d.frames.iter().all(|f| f.1 == 1));
     }
 }
+
+static CURRENT: std::sync::RwLock<Option<std::sync::Arc<Assets>>> = std::sync::RwLock::new(None);
+static SIZES: std::sync::Mutex<Option<FxHashMap<String, Option<(u32, u32)>>>> = std::sync::Mutex::new(None);
+
+/// The assets the game uses now, for code that has no handle to them (inline images in text).
+pub fn set_current(a: &Assets) {
+    *CURRENT.write().unwrap() = Some(std::sync::Arc::new(a.clone()));
+    *SIZES.lock().unwrap() = None;
+}
+
+/// Pixel size of a texture (`base:gui/arrow`), read once from its PNG header.
+pub fn texture_size(name: &str) -> Option<(u32, u32)> {
+    let mut map = SIZES.lock().unwrap();
+    let map = map.get_or_insert_with(Default::default);
+    if let Some(s) = map.get(name) {
+        return *s;
+    }
+    let assets = CURRENT.read().unwrap().clone();
+    let size = assets.and_then(|a| a.read(name, "textures", "png")).and_then(|b| png_size(&b));
+    map.insert(name.to_string(), size);
+    size
+}
+
+fn png_size(b: &[u8]) -> Option<(u32, u32)> {
+    let w = u32::from_be_bytes(b.get(16..20)?.try_into().ok()?);
+    let h = u32::from_be_bytes(b.get(20..24)?.try_into().ok()?);
+    (b.starts_with(b"\x89PNG") && w > 0 && h > 0).then_some((w, h))
+}

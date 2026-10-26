@@ -20,6 +20,8 @@ pub struct BuildCx<'a> {
     pub remote: bool,
     pub mods: usize,
     pub client: Option<&'a crate::client::Client>,
+    /// The window in GUI pixels.
+    pub size: glam::Vec2,
 }
 
 impl BuildCx<'_> {
@@ -29,6 +31,11 @@ impl BuildCx<'_> {
         let cx = text::Ctx { lang: self.lang, input: Some(self.input), item_name: &items };
         text::format(self.lang.get(key), args, &cx, &mut out);
         out
+    }
+
+    /// A template that is not a translation key (a pack's description), formatted the same way.
+    pub fn rich(&self, template: &str) -> Vec<Span> {
+        text::rich(template, self.lang, Some(self.input))
     }
 }
 
@@ -70,7 +77,8 @@ pub trait Screen {
 }
 
 /// A screen by name (`core:` may be left out): a mod's of that name, else the engine's.
-pub fn named(name: &str) -> Option<Box<dyn Screen>> {
+/// Engine screens open each other through this too, so a mod's replacement is used everywhere.
+pub fn named(name: &str, settings: &Settings) -> Option<Box<dyn Screen>> {
     let name = if name.contains(':') { name.to_string() } else { format!("core:{name}") };
     if let Some(s) = crate::content::try_content().and_then(|c| c.game.screens.iter().rev().find(|s| s.name == name)) {
         return Some(Box::new(ModScreen(s.clone())));
@@ -86,13 +94,179 @@ pub fn named(name: &str) -> Option<Box<dyn Screen>> {
         "core:create_world" => Box::new(crate::saves::CreateWorld),
         "core:chat" => Box::new(crate::game_screens::Chat::new("")),
         "core:death" => Box::new(crate::game_screens::Death),
+        "core:multiplayer" => Box::new(crate::net::screens::Multiplayer::default()),
+        "core:resource_packs" => Box::new(crate::packs::ResourcePacks::new(&settings.resource_packs)),
+        "core:shader_packs" => Box::new(crate::packs::ShaderPacks::new(settings.shader_pack.clone())),
+        "core:sound" => Box::new(ConfigScreen { ns: "core".into(), title: Some("settings.sound".into()) }),
+        "core:tags" => Box::new(crate::game_screens::TagList::default()),
+        "core:mods" => Box::new(ModList::default()),
+        "core:profile" => Box::new(Profile::default()),
         _ => return None,
     })
 }
 
 /// An engine screen; they always exist.
-pub fn engine(name: &str) -> Box<dyn Screen> {
-    named(name).unwrap_or_else(|| panic!("no screen {name}"))
+pub fn engine(name: &str, settings: &Settings) -> Box<dyn Screen> {
+    named(name, settings).unwrap_or_else(|| panic!("no screen {name}"))
+}
+
+/// Opens a screen by name (a mod's replacement if any).
+fn open(c: &mut Ctx, name: &str) {
+    c.requests.push(Request::Screen(name.to_string()));
+}
+
+/// What mods add to place `area` of `screen` (`Registry::screen_part`).
+pub fn parts(ui: &mut Ui, cx: &BuildCx, screen: &str, area: &str) {
+    ui.container(Style::default().gap(4.0).stretch(), |ui| {
+        crate::client::modui::parts(ui, cx.lang, Some(cx.input), cx.client, screen, area);
+    });
+}
+
+/// A mod's name as players see it: `mod.<id>.name` from the language files, else what it declared.
+pub fn mod_name(lang: &Lang, id: &str) -> String {
+    let key = format!("mod.{id}.name");
+    if lang.has(&key) {
+        return lang.get(&key).to_string();
+    }
+    crate::content::try_content().and_then(|c| c.mods.iter().find(|m| m.id == id)).map_or(id.to_string(), |m| m.name.clone())
+}
+
+// ---------------------------------------------------------------- mods
+
+/// Every loaded mod with its icon, version, authors and description (translations
+/// `mod.<id>.description`, `.authors`, `.url`; icon `textures/icon.png`), and its settings.
+#[derive(Default)]
+pub struct ModList {
+    selected: Rc<std::cell::Cell<usize>>,
+}
+
+impl Screen for ModList {
+    fn name(&self) -> &str {
+        "core:mods"
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        let c = crate::content::content();
+        let mut mods: Vec<&crate::content::ModMeta> = c.mods.iter().collect();
+        mods.sort_by_key(|m| m.order);
+        let sel = self.selected.get().min(mods.len().saturating_sub(1));
+        let tall = (cx.size.y - 120.0).clamp(80.0, 300.0);
+        let icon = |id: &str| {
+            let name = format!("{id}:icon");
+            crate::assets::texture_size(&name).map(|_| name)
+        };
+        frame(ui, cx, "mods.title", |ui| {
+            ui.container(Style::row().gap(6.0), |ui| {
+                let list = ui.panel("well", Style::default().pad(4.0).gap(2.0).w(160.0).h(tall).scroll().stretch(), |ui| {
+                    for (i, m) in mods.iter().enumerate() {
+                        let s = self.selected.clone();
+                        let b = ui.button("button", Style::row().min_h(22.0).pad_xy(4.0, 2.0).gap(4.0).stretch().justify(Justify::Start), Rc::new(move |c: &mut Ctx| {
+                            s.set(i);
+                            c.requests.push(Request::Rebuild);
+                        }), |ui| {
+                            match icon(&m.id) {
+                                Some(t) => drop(ui.add(Kind::Image { texture: t, color: 0xFFFFFFFF }, Style::default().size(16.0, 16.0))),
+                                None => drop(ui.add(Kind::Container { class: None }, Style::default().size(16.0, 16.0))),
+                            }
+                            ui.text(text::plain(&mod_name(cx.lang, &m.id)), "button");
+                        });
+                        if let Kind::Button { selected, .. } = &mut ui.nodes[b].kind {
+                            *selected = i == sel;
+                        }
+                        ui.set_id(b, &format!("mod:{}", m.id));
+                    }
+                });
+                ui.set_id(list, "mod_list");
+                let Some(m) = mods.get(sel) else { return };
+                let key = |k: &str| format!("mod.{}.{k}", m.id);
+                ui.panel("panel", Style::default().pad(8.0).gap(4.0).w(300.0).h(tall).scroll().stretch(), |ui| {
+                    ui.container(Style::row().gap(6.0), |ui| {
+                        if let Some(t) = icon(&m.id) {
+                            ui.add(Kind::Image { texture: t, color: 0xFFFFFFFF }, Style::default().size(32.0, 32.0));
+                        }
+                        ui.container(Style::default().gap(1.0), |ui| {
+                            ui.text(text::plain(&mod_name(cx.lang, &m.id)), "default");
+                            label(ui, cx, "mods.version", &[Arg::Text(m.version.clone()), Arg::Text(m.id.clone())], "dim");
+                        });
+                    });
+                    for (k, line) in [("authors", "mods.authors"), ("url", "mods.url")] {
+                        if cx.lang.has(&key(k)) {
+                            label(ui, cx, line, &[Arg::Key(key(k))], "dim");
+                        }
+                    }
+                    if !m.deps.is_empty() {
+                        let deps: Vec<String> = m.deps.iter().map(|d| mod_name(cx.lang, d)).collect();
+                        label(ui, cx, "mods.deps", &[Arg::Text(deps.join(", "))], "dim");
+                    }
+                    ui.add(Kind::Container { class: None }, Style::default().h(4.0));
+                    if cx.lang.has(&key("description")) {
+                        let d = ui.text(cx.t(&key("description"), &[]), "default");
+                        ui.set_id(d, "mod_description");
+                    } else {
+                        label(ui, cx, "mods.no_description", &[], "dim");
+                    }
+                });
+            });
+            ui.container(Style::row().gap(6.0), |ui| {
+                let id = mods.get(sel).map(|m| m.id.clone()).unwrap_or_default();
+                let has_settings = c.game.configs.iter().any(|d| d.name.split_once(':').is_some_and(|x| x.0 == id));
+                let b = button(ui, cx, "mods.settings", &[], 120.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: id.clone(), title: None }))));
+                if let Kind::Button { enabled, .. } = &mut ui.nodes[b].kind {
+                    *enabled = has_settings;
+                }
+                let dir = cx.settings.run_dir.join("mods");
+                button(ui, cx, "mods.folder", &[], 120.0, move |_| crate::packs::open_folder(&dir));
+                button(ui, cx, "menu.done", &[], 120.0, |c| c.requests.push(Request::Close));
+            });
+        });
+    }
+}
+
+// ---------------------------------------------------------------- profile
+
+/// Who the player is everywhere: the name, the key servers know them by, and the skin.
+#[derive(Default)]
+pub struct Profile;
+
+impl Screen for Profile {
+    fn name(&self) -> &str {
+        "core:profile"
+    }
+
+    fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
+        let key = crate::net::p2p::player_key(&cx.settings.run_dir);
+        frame(ui, cx, "profile.title", |ui| {
+            ui.panel("panel", Style::default().pad(8.0).gap(4.0).w(320.0), |ui| {
+                label(ui, cx, "profile.name", &[], "default");
+                let input = ui.add(
+                    Kind::Input {
+                        value: cx.settings.name.clone(),
+                        caret: cx.settings.name.chars().count(),
+                        max: 16,
+                        on_change: Some(Rc::new(|c: &mut Ctx, v: &str| c.settings.name = v.to_string())),
+                    },
+                    Style::default().h(16.0).w(300.0),
+                );
+                ui.set_id(input, "profile_name");
+                ui.add(Kind::Container { class: None }, Style::default().h(4.0));
+                label(ui, cx, "profile.key", &[], "default");
+                ui.text(text::plain(if key.is_empty() { "-" } else { &key }), "dim");
+                let copy = key.clone();
+                button(ui, cx, "profile.copy", &[], 120.0, move |_| {
+                    crate::clipboard::set(&copy);
+                });
+                ui.add(Kind::Container { class: None }, Style::default().h(4.0));
+                label(ui, cx, "profile.skin", &[], "default");
+                label(ui, cx, "profile.skin_hint", &[], "dim");
+                let dir = cx.settings.run_dir.join("skins");
+                button(ui, cx, "profile.skins_folder", &[], 120.0, move |_| crate::packs::open_folder(&dir));
+            });
+            button(ui, cx, "menu.done", &[], 200.0, |c| {
+                c.settings.save();
+                c.requests.push(Request::Close);
+            });
+        });
+    }
 }
 
 /// A screen a mod built (`Registry::screen`).
@@ -151,21 +325,38 @@ impl Screen for Title {
         "core:title"
     }
 
+    /// The menu down a bar on the left under the logo, the rest of the window for whatever packs
+    /// and mods show there (`menu.news`, the `side` place).
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         ui.root_style(Style::default().stretch());
-        ui.panel("background", Style::default().grow().center().gap(6.0), |ui| {
-            let logo = ui.text(text::plain("WEFT"), "title");
-            if let Some(t) = ui.text_mut(logo) {
-                t.scale = 5.0;
-                t.wrap = false;
-            }
-            ui.add(Kind::Container { class: None }, Style::default().h(20.0));
-            button(ui, cx, "menu.singleplayer", &[], 200.0, |c| c.requests.push(Request::Open(Box::new(crate::saves::WorldSelect::default()))));
-            button(ui, cx, "menu.multiplayer", &[], 200.0, |c| c.requests.push(Request::Open(Box::new(crate::net::screens::Multiplayer::default()))));
-            button(ui, cx, "menu.settings", &[], 200.0, |c| c.requests.push(Request::Open(Box::new(SettingsScreen))));
-            button(ui, cx, "menu.quit", &[], 200.0, |c| c.requests.push(Request::Quit));
-            ui.add(Kind::Container { class: None }, Style::default().h(20.0));
-            label(ui, cx, "menu.version", &[Arg::Text(env!("CARGO_PKG_VERSION").into()), Arg::Int(cx.mods as i64)], "dim");
+        ui.panel("background", Style::row().grow().stretch(), |ui| {
+            ui.panel("sidebar", Style::default().w(180.0).pad(12.0).gap(4.0).stretch(), |ui| {
+                // A translation, so a pack can make the logo a picture (`{img:..}`).
+                let logo = ui.text(cx.t("menu.logo", &[]), "title");
+                if let Some(t) = ui.text_mut(logo) {
+                    t.scale = 3.0;
+                    t.wrap = false;
+                }
+                ui.spacer();
+                button(ui, cx, "menu.singleplayer", &[], 156.0, |c| open(c, "core:worlds"));
+                button(ui, cx, "menu.multiplayer", &[], 156.0, |c| open(c, "core:multiplayer"));
+                button(ui, cx, "menu.mods", &[Arg::Int(cx.mods as i64)], 156.0, |c| open(c, "core:mods"));
+                button(ui, cx, "menu.settings", &[], 156.0, |c| open(c, "core:settings"));
+                button(ui, cx, "menu.profile", &[], 156.0, |c| open(c, "core:profile"));
+                parts(ui, cx, "core:title", "buttons");
+                ui.add(Kind::Container { class: None }, Style::default().h(6.0));
+                button(ui, cx, "menu.quit", &[], 156.0, |c| c.requests.push(Request::Quit));
+                ui.add(Kind::Container { class: None }, Style::default().h(6.0));
+                label(ui, cx, "menu.version", &[Arg::Text(env!("CARGO_PKG_VERSION").into()), Arg::Int(cx.mods as i64)], "dim");
+            });
+            ui.container(Style::default().grow().pad(16.0).gap(8.0).justify(Justify::End).align(crate::ui::Align::End), |ui| {
+                if cx.lang.has("menu.news") && !cx.lang.get("menu.news").is_empty() {
+                    ui.panel("news", Style::default().pad(8.0).w(280.0), |ui| {
+                        ui.text(cx.t("menu.news", &[]), "default");
+                    });
+                }
+                parts(ui, cx, "core:title", "side");
+            });
         });
     }
 }
@@ -186,8 +377,9 @@ impl Screen for Pause {
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         frame(ui, cx, "menu.paused", |ui| {
             button(ui, cx, "menu.resume", &[], 200.0, |c| c.requests.push(Request::Close));
-            button(ui, cx, "menu.multiplayer", &[], 200.0, |c| c.requests.push(Request::Open(Box::new(crate::net::screens::Multiplayer::default()))));
-            button(ui, cx, "menu.settings", &[], 200.0, |c| c.requests.push(Request::Open(Box::new(SettingsScreen))));
+            button(ui, cx, "menu.multiplayer", &[], 200.0, |c| open(c, "core:multiplayer"));
+            button(ui, cx, "menu.settings", &[], 200.0, |c| open(c, "core:settings"));
+            parts(ui, cx, "core:pause", "buttons");
             button(ui, cx, "menu.save_quit", &[], 200.0, |c| c.requests.push(Request::LeaveWorld));
         });
     }
@@ -236,29 +428,24 @@ impl Screen for SettingsScreen {
                     c.requests.push(Request::Rebuild);
                 });
                 ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
-                    let b = button(ui, cx, "settings.language", &[], 147.0, |c| c.requests.push(Request::Open(Box::new(LanguageScreen))));
+                    let b = button(ui, cx, "settings.language", &[], 147.0, |c| open(c, "core:language"));
                     ui.nodes[b].style.grow = 1.0;
-                    let b = button(ui, cx, "settings.controls", &[], 147.0, |c| c.requests.push(Request::Open(Box::new(Controls { waiting: None }))));
-                    ui.nodes[b].style.grow = 1.0;
-                });
-                ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
-                    let b = button(ui, cx, "settings.sound", &[], 147.0, |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: "core".into(), title: Some("settings.sound".into()) }))));
-                    ui.nodes[b].style.grow = 1.0;
-                    let b = button(ui, cx, "settings.mods", &[], 147.0, |c| c.requests.push(Request::Open(Box::new(ModSettings))));
+                    let b = button(ui, cx, "settings.controls", &[], 147.0, |c| open(c, "core:controls"));
                     ui.nodes[b].style.grow = 1.0;
                 });
                 ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
-                    let b = button(ui, cx, "settings.resource_packs", &[], 147.0, |c| {
-                        let current = c.settings.resource_packs.clone();
-                        c.requests.push(Request::Open(Box::new(crate::packs::ResourcePacks::new(&current))));
-                    });
+                    let b = button(ui, cx, "settings.sound", &[], 147.0, |c| open(c, "core:sound"));
                     ui.nodes[b].style.grow = 1.0;
-                    let b = button(ui, cx, "settings.shader_packs", &[], 147.0, |c| {
-                        let current = c.settings.shader_pack.clone();
-                        c.requests.push(Request::Open(Box::new(crate::packs::ShaderPacks::new(current))));
-                    });
+                    let b = button(ui, cx, "settings.mods", &[], 147.0, |c| open(c, "core:mod_settings"));
                     ui.nodes[b].style.grow = 1.0;
                 });
+                ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
+                    let b = button(ui, cx, "settings.resource_packs", &[], 147.0, |c| open(c, "core:resource_packs"));
+                    ui.nodes[b].style.grow = 1.0;
+                    let b = button(ui, cx, "settings.shader_packs", &[], 147.0, |c| open(c, "core:shader_packs"));
+                    ui.nodes[b].style.grow = 1.0;
+                });
+                parts(ui, cx, "core:settings", "buttons");
             });
             button(ui, cx, "menu.done", &[], 200.0, |c| {
                 c.settings.save();
@@ -291,7 +478,7 @@ impl Screen for ModSettings {
                 label(ui, cx, "settings.mods.none", &[], "dim");
             }
             for ns in namespaces {
-                let name = c.mods.iter().find(|m| m.id == ns).map_or(ns.to_string(), |m| m.name.clone());
+                let name = mod_name(cx.lang, ns);
                 let ns = ns.to_string();
                 button(ui, cx, "settings.mods.entry", &[Arg::Text(name)], 220.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: ns.clone(), title: None }))));
             }
@@ -321,7 +508,7 @@ impl Screen for ConfigScreen {
         let c = crate::content::content();
         let ns = self.ns.clone();
         let title = self.title.clone().unwrap_or_else(|| "settings.mods.title".into());
-        let mod_name = c.mods.iter().find(|m| m.id == ns).map_or(ns.clone(), |m| m.name.clone());
+        let mod_name = mod_name(cx.lang, &ns);
         frame(ui, cx, &title, |ui| {
             if self.title.is_none() {
                 label(ui, cx, "settings.mods.of", &[Arg::Text(mod_name)], "default");
@@ -552,7 +739,7 @@ impl Screen for Message {
             button(ui, cx, "menu.back", &[], 200.0, move |c| {
                 c.requests.push(Request::Close);
                 if !in_game {
-                    c.requests.push(Request::Open(engine("core:title")));
+                    open(c, "core:title");
                 }
             });
         });

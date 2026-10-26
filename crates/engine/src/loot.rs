@@ -246,7 +246,10 @@ pub fn roll(c: &crate::content::Content, t: &Table, ctx: &Ctx, rng: &mut dyn FnM
             let mut item = e.item;
             if let (true, Some(kind)) = (ctx.on_fire, &e.smelt) {
                 if let Some(r) = c.game.process(kind, item, &c.components) {
-                    item = r.output;
+                    let made = r.result();
+                    if !made.is_empty() {
+                        item = made.item;
+                    }
                 }
             }
             match out.iter_mut().find(|s| s.item == item && s.count + n <= c.max_stack(item)) {

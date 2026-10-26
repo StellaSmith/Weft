@@ -110,7 +110,7 @@ pub fn compose(name: &str, builtin: &str, parts: &[(&crate::shaders::Hook, &[(St
     crate::shaders::compose(name, &with_common(&builtin_source(name, builtin)), parts)
 }
 
-fn open_folder(dir: &Path) {
+pub(crate) fn open_folder(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
     let opener = if cfg!(windows) {
         "explorer"
@@ -124,12 +124,12 @@ fn open_folder(dir: &Path) {
     }
 }
 
-fn pack_row(ui: &mut Ui, info: &PackInfo, buttons: impl FnOnce(&mut Ui)) {
+fn pack_row(ui: &mut Ui, cx: &BuildCx, info: &PackInfo, buttons: impl FnOnce(&mut Ui)) {
     ui.container(Style::row().gap(4.0).stretch(), |ui| {
         ui.container(Style::default().gap(1.0).grow(), |ui| {
-            ui.text(text::plain(&info.name), "default");
+            ui.text(cx.rich(&info.name), "default");
             if !info.description.is_empty() {
-                ui.text(text::plain(&info.description), "dim");
+                ui.text(cx.rich(&info.description), "dim");
             }
         });
         buttons(ui);
@@ -179,7 +179,7 @@ impl Screen for ResourcePacks {
                         }
                         for p in available {
                             let id = p.id.clone();
-                            pack_row(ui, p, |ui| {
+                            pack_row(ui, cx, p, |ui| {
                                 small(ui, "+", move |c| {
                                     c.settings.resource_packs.insert(0, id.clone());
                                     c.requests.push(Request::Rebuild);
@@ -194,7 +194,7 @@ impl Screen for ResourcePacks {
                         for (i, id) in selected.iter().enumerate() {
                             let info = all.iter().find(|p| &p.id == id);
                             let missing = PackInfo { id: id.clone(), name: id.clone(), description: cx.lang.get("packs.missing").to_string() };
-                            pack_row(ui, info.unwrap_or(&missing), |ui| {
+                            pack_row(ui, cx, info.unwrap_or(&missing), |ui| {
                                 if i > 0 {
                                     small(ui, "\u{25b2}", move |c| {
                                         c.settings.resource_packs.swap(i, i - 1);
@@ -258,7 +258,7 @@ impl Screen for ShaderPacks {
         frame(ui, cx, "settings.shader_packs", |ui| {
             ui.panel("panel", Style::default().pad(8.0).gap(4.0).w(320.0).h(0.0).grow().min_h(60.0).scroll().stretch(), |ui| {
                 let choices = std::iter::once((None, cx.t("packs.shaders_off", &[]), String::new()))
-                    .chain(all.iter().map(|p| (Some(p.id.clone()), text::plain(&p.name), p.description.clone())));
+                    .chain(all.iter().map(|p| (Some(p.id.clone()), cx.rich(&p.name), p.description.clone())));
                 for (id, name, description) in choices {
                     let selected = id == current;
                     let b = ui.button("button", Style::default().min_h(20.0).pad_xy(6.0, 4.0).stretch(), Rc::new(move |c: &mut Ctx| {
@@ -267,7 +267,7 @@ impl Screen for ShaderPacks {
                     }), |ui| {
                         ui.text(name, "button");
                         if !description.is_empty() {
-                            ui.text(text::plain(&description), "button");
+                            ui.text(cx.rich(&description), "button");
                         }
                     });
                     if let Kind::Button { selected: sel, .. } = &mut ui.nodes[b].kind {

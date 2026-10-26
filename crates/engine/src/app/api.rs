@@ -345,7 +345,7 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
                     }
                     return 1;
                 }
-                let Some(s) = crate::screens::named(&text) else {
+                let Some(s) = crate::screens::named(&text, &r.settings) else {
                     log::warn!("client_op::OPEN_SCREEN: no screen {text}");
                     return 0;
                 };
@@ -469,6 +469,11 @@ pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out:
             ui.nodes.iter().position(|node| matches!(node.kind, Kind::Custom { tag: crate::client::modui::TAG_ENTITY, .. }))
         } else if let Some(id) = q.strip_prefix("id:") {
             ui.find(id)
+        } else if let Some(class) = q.strip_prefix("class:") {
+            ui.nodes.iter().position(|node| match &node.kind {
+                Kind::Container { class: Some(c) } | Kind::Button { class: c, .. } | Kind::Progress { class: c, .. } | Kind::Icons { class: c, .. } => c == class,
+                _ => false,
+            })
         } else if let Some(words) = q.strip_prefix("text:") {
             let words = words.to_lowercase();
             ui.nodes.iter().position(|node| match &node.kind {
@@ -481,8 +486,9 @@ pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out:
         } else {
             None
         };
-        let Some(i) = found else { return 0 };
-        let rect = ui.nodes[i].rect;
+        // `scrollbar`: the track of the first scroll bar shown.
+        let bar = (q == "scrollbar").then(|| ui.nodes.iter().find_map(|n| n.scrollbar.map(|b| b.track))).flatten();
+        let Some(rect) = bar.or_else(|| found.map(|i| ui.nodes[i].rect)) else { return 0 };
         let scale = r.gui_scale();
         let (w, h) = r.gpu.surface_size();
         *out = [rect.x * scale / w as f32, rect.y * scale / h as f32, rect.w * scale / w as f32, rect.h * scale / h as f32];

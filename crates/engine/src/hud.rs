@@ -117,7 +117,7 @@ impl Hud {
                 let now = std::time::Instant::now();
                 for (line, at) in client.chat.iter().rev().take(10).rev() {
                     if chat_visible > 0 && now.duration_since(*at).as_secs() < 10 {
-                        ui.text(text::plain(line), "chat");
+                        ui.text(text::rich(line, lang, Some(input)), "chat");
                     }
                 }
             });
@@ -302,27 +302,30 @@ pub fn draw_custom(
         TAG_HOTBAR => {
             let Some(client) = client else { return };
             let selected = client.selected as u64 == data;
-            slot_background(ren, theme, r, selected, scale);
+            slot_background(ren, theme, "hotbar", r, selected, scale);
             let stack = client.inventory.get(data as usize).copied().unwrap_or_default();
             stack_icon(ren, textures, r, stack, scale, text_unit);
         }
         TAG_ENTITY => {
             // Inset frame; the model itself is drawn in a later pass.
+            if theme.get("well", "texture").is_some_and(|t| ren.draw_loaded(t, r, scale, 0xFFFFFFFF)) {
+                return;
+            }
             ren.rect(r, 0x373737FF);
             ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - scale, h: r.h - scale }, 0xFFFFFFFF);
             ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, 0x000000FF);
         }
         modui::TAG_ICON => stack_icon(ren, textures, r, ItemStack::new(data as u32, 1), scale, text_unit),
         modui::TAG_CREATIVE => {
-            slot_background(ren, theme, r, false, scale);
+            slot_background(ren, theme, "slot", r, false, scale);
             stack_icon(ren, textures, r, ItemStack::new(data as u32, 1), scale, text_unit);
             if hovered {
-                ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, 0xFFFFFF50);
+                ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, theme.color("slot", "highlight", 0xFFFFFF50));
             }
         }
         TAG_SLOT => {
             let Some(client) = client else { return };
-            slot_background(ren, theme, r, false, scale);
+            slot_background(ren, theme, "slot", r, false, scale);
             let stack = client.menu.as_ref().and_then(|m| m.slots.get(data as usize)).copied().unwrap_or_default();
             if let (Some(t), true) = (icon, stack.is_empty()) {
                 let s = 16.0 * scale;
@@ -331,7 +334,7 @@ pub fn draw_custom(
             stack_icon(ren, textures, r, stack, scale, text_unit);
             let dragged = client.drag.as_ref().is_some_and(|d| d.1.contains(&(data as u32)));
             if hovered || dragged {
-                ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, 0xFFFFFF50);
+                ren.rect(Rect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, theme.color("slot", "highlight", 0xFFFFFF50));
             }
         }
         _ => {}
@@ -368,14 +371,18 @@ pub fn stack_icon(ren: &mut UiRenderer, textures: &GameTextures, r: Rect, stack:
     }
 }
 
-pub fn slot_background(ren: &mut UiRenderer, theme: &Theme, r: Rect, selected: bool, scale: f32) {
-    ren.rect(r, theme.color("slot", "fill", 0x8B8B8BFF));
-    let dark = theme.color("slot", "dark", 0x373737FF);
-    let light = theme.color("slot", "light", 0xFFFFFFFF);
-    ren.rect(Rect { h: scale, ..r }, dark);
-    ren.rect(Rect { w: scale, ..r }, dark);
-    ren.rect(Rect { y: r.y + r.h - scale, h: scale, ..r }, light);
-    ren.rect(Rect { x: r.x + r.w - scale, w: scale, ..r }, light);
+/// A slot of theme class `class` (`slot` in menus, `hotbar` on the HUD): its `texture`, or a
+/// bevel in its `fill`, `dark` and `light` colors.
+pub fn slot_background(ren: &mut UiRenderer, theme: &Theme, class: &str, r: Rect, selected: bool, scale: f32) {
+    if !theme.get(class, "texture").is_some_and(|t| ren.draw_loaded(t, r, scale, 0xFFFFFFFF)) {
+        ren.rect(r, theme.color(class, "fill", 0x8B8B8BFF));
+        let dark = theme.color(class, "dark", 0x373737FF);
+        let light = theme.color(class, "light", 0xFFFFFFFF);
+        ren.rect(Rect { h: scale, ..r }, dark);
+        ren.rect(Rect { w: scale, ..r }, dark);
+        ren.rect(Rect { y: r.y + r.h - scale, h: scale, ..r }, light);
+        ren.rect(Rect { x: r.x + r.w - scale, w: scale, ..r }, light);
+    }
     if selected {
         let w = 2.0 * scale;
         let edge = 0xFFFFFFFF;
@@ -400,13 +407,21 @@ pub fn item_name(lang: &Lang, item: u32) -> String {
     }
 }
 
+/// The item's name as shown: its translation formatted (a name can have colors and effects).
+pub fn item_name_spans(lang: &Lang, input: Option<&crate::input::Input>, item: u32) -> Vec<text::Span> {
+    match item_key(lang, item) {
+        Some(k) => text::rich(lang.get(&k), lang, input),
+        None => text::plain(content().items.get(item as usize).map_or("", |d| d.name.as_str())),
+    }
+}
+
 /// The name, then the `<name key>.tooltip` translation in gray (details usually behind
 /// `{on_key:core:sneak}`) and the mods' own lines under it, then durability for damaged tools.
 pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::ItemStack) -> Vec<text::Span> {
     const GRAY: u32 = 0xA8A8A8;
     let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
     let cx = text::Ctx { lang, input: Some(input), item_name: &items };
-    let mut out = text::plain(&item_name(lang, stack.item));
+    let mut out = item_name_spans(lang, Some(input), stack.item);
     let line = |template: &str, args: &[text::Arg], out: &mut Vec<text::Span>| {
         out.push(text::Span::text("\n", None));
         let start = out.len();

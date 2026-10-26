@@ -15,6 +15,11 @@ impl ClientView {
     pub(crate) fn from_raw(raw: *mut abi::ClientCtx) -> ClientView {
         ClientView { raw }
     }
+    /// The client's actions (`open_screen`, `open_world`, `quit`..), for a button's callback:
+    /// a button may drive the client, a binding that only shows a value may not.
+    pub fn client(&self) -> crate::Client {
+        crate::Client::from_raw(self.raw)
+    }
     pub fn player(&self) -> u64 {
         unsafe { (host().client_player)(self.raw) }
     }
@@ -83,11 +88,13 @@ pub struct S {
     pub row: bool,
     pub align: u32,
     pub justify: u32,
+    /// Translation shown while the mouse is over the part, empty for none.
+    pub tooltip: &'static str,
 }
 
 impl Default for S {
     fn default() -> Self {
-        S { width: None, height: None, grow: 0.0, gap: 0.0, pad: 0.0, row: false, align: abi::ui_align::START, justify: abi::ui_justify::START }
+        S { width: None, height: None, grow: 0.0, gap: 0.0, pad: 0.0, row: false, align: abi::ui_align::START, justify: abi::ui_justify::START, tooltip: "" }
     }
 }
 
@@ -97,6 +104,11 @@ impl S {
     }
     pub fn col() -> S {
         S::default()
+    }
+    /// A tooltip over the part (a translation key, with all of rich text).
+    pub fn tooltip(mut self, key: &'static str) -> S {
+        self.tooltip = key;
+        self
     }
     pub fn gap(mut self, g: f32) -> S {
         self.gap = g;
@@ -140,6 +152,12 @@ pub struct Ui {
     client: ClientView,
 }
 
+impl Ui {
+    pub(crate) fn from_raw(ui: *mut abi::UiCtx, client: *mut abi::ClientCtx) -> Ui {
+        Ui { raw: ui, client: ClientView { raw: client } }
+    }
+}
+
 pub(crate) fn ui_callback(f: impl Fn(&mut Ui) + Send + Sync + 'static) -> abi::Callback {
     callback(move |a: &mut abi::UiArgs| {
         let mut ui = Ui { raw: a.ui, client: ClientView { raw: a.client } };
@@ -159,6 +177,7 @@ fn node(kind: u32, s: S) -> abi::UiNode {
         align: s.align,
         justify: s.justify,
         data: 0,
+        tooltip: Str::new(s.tooltip),
         ..abi::UiNode::DEFAULT
     }
 }
@@ -226,54 +245,65 @@ impl Ui {
         self.leaf(n)
     }
 
-    /// One menu slot.
-    pub fn slot(&mut self, slot: u32) {
+    /// What mods add to place `area` of `screen` (`Registry::screen_part`). A screen of your own
+    /// that replaces an engine one (`core:title`) keeps other mods' buttons by building its places.
+    pub fn screen_parts(&mut self, screen: &str, area: &str) {
+        let mut n = node(k::PARTS, S::default());
+        n.class = Str::new(screen);
+        n.text = Str::new(area);
+        self.leaf(n)
+    }
+
+    /// In a recipe kind's `display`: the recipe's inputs as the kind's grid.
+    pub fn recipe_inputs(&mut self) {
+        self.recipe_slot_raw(0, u32::MAX)
+    }
+    pub fn recipe_outputs(&mut self) {
+        self.recipe_slot_raw(1, u32::MAX)
+    }
+    /// Only input `i`, for layouts that place them apart.
+    pub fn recipe_input(&mut self, i: u32) {
+        self.recipe_slot_raw(0, i)
+    }
+    pub fn recipe_output(&mut self, i: u32) {
+        self.recipe_slot_raw(1, i)
+    }
+
+    fn recipe_slot_raw(&mut self, outputs: u32, i: u32) {
+        let mut n = node(k::RECIPE_SLOT, S::default());
+        n.data = outputs;
+        n.slot = i;
+        self.leaf(n)
+    }
+
+    /// Every slot of the menu's group `name` (`MenuBuilder::group`), laid out as its grid.
+    pub fn group(&mut self, name: &str) {
+        self.group_slot_raw(name, u32::MAX)
+    }
+
+    /// Only slot `i` of group `name`, for layouts that place a group's slots apart.
+    pub fn group_slot(&mut self, name: &str, i: u32) {
+        self.group_slot_raw(name, i)
+    }
+
+    fn group_slot_raw(&mut self, name: &str, i: u32) {
         let mut n = node(k::SLOT, S::default());
-        n.slot = slot;
+        n.class = Str::new(name);
+        n.slot = i;
         self.leaf(n)
     }
 
-    /// A slot showing `icon` (a GUI texture) while empty, like the armor slots.
-    pub fn slot_icon(&mut self, slot: u32, icon: &str) {
-        let mut n = node(k::SLOT, S::default());
-        n.slot = slot;
-        n.text = Str::new(icon);
-        self.leaf(n)
-    }
-
-    /// The big slot vanilla uses for crafting results.
-    pub fn slot_big(&mut self, slot: u32) {
-        let mut n = node(k::SLOT, S::default().size(26.0, 26.0));
-        n.slot = slot;
-        self.leaf(n)
-    }
-
-    /// The player's main inventory and hotbar (`MenuCtx::player_slots`) from menu slot `start`,
-    /// spaced like vanilla, under the title "Inventory" when `title`.
-    pub fn player_inventory(&mut self, start: u32, title: bool) {
-        let l = crate::player_layout();
-        let main = l.slots - l.hotbar - l.worn.len() as u32;
+    /// The player's inventory and hotbar (`MenuBuilder::player_inventory`), spaced like vanilla,
+    /// under the title "Inventory" when `title`.
+    pub fn player_inventory(&mut self, title: bool) {
         self.column(S::col().gap(2.0), |ui| {
             if title {
                 ui.text("container.inventory");
             }
             ui.column(S::col().gap(4.0), |ui| {
-                ui.slots(start, main, l.hotbar.max(1));
-                ui.slots(start + main, l.hotbar, l.hotbar.max(1));
+                ui.group(crate::game::INVENTORY_GROUP);
+                ui.group(crate::game::HOTBAR_GROUP);
             });
-        });
-    }
-
-    /// `count` menu slots starting at `start`, `per_row` per line.
-    pub fn slots(&mut self, start: u32, count: u32, per_row: u32) {
-        self.column(S::col(), |ui| {
-            for r in 0..count.div_ceil(per_row) {
-                ui.row(S::row(), |ui| {
-                    for i in 0..per_row.min(count - r * per_row) {
-                        ui.slot(start + r * per_row + i);
-                    }
-                });
-            }
         });
     }
 

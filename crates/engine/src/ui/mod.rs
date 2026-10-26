@@ -229,6 +229,36 @@ pub struct Node {
     measured: [f32; 2],
     /// Visible part when inside a scrolling node, GUI units.
     pub clip: Option<Rect>,
+    /// A scrolling node whose content is longer than itself shows a bar.
+    pub scrollbar: Option<Scrollbar>,
+}
+
+/// Where a scrolling node's bar is and how far it is scrolled, GUI units.
+#[derive(Clone, Copy, Debug)]
+pub struct Scrollbar {
+    pub track: Rect,
+    pub offset: f32,
+    pub max: f32,
+}
+
+impl Scrollbar {
+    /// Width the bar takes from the content, its gap included.
+    pub const ROOM: f32 = 14.0;
+    pub const HANDLE: [f32; 2] = [12.0, 15.0];
+
+    /// The handle's rect.
+    pub fn handle(&self) -> Rect {
+        let [w, h] = Self::HANDLE;
+        let y = self.track.y + (self.track.h - h).max(0.0) * (self.offset / self.max.max(1.0)).clamp(0.0, 1.0);
+        Rect { x: self.track.x + (self.track.w - w) / 2.0, y, w, h }
+    }
+
+    /// Offset that puts the handle's center at height `y`.
+    fn offset_at(&self, y: f32) -> f32 {
+        let h = Self::HANDLE[1];
+        let t = (y - self.track.y - h / 2.0) / (self.track.h - h).max(1.0);
+        t.clamp(0.0, 1.0) * self.max
+    }
 }
 
 pub struct Ui {
@@ -242,6 +272,8 @@ pub struct Ui {
     pub dirty: bool,
     /// Scroll offsets by node id (or index), kept across rebuilds.
     scroll: rustc_hash::FxHashMap<String, f32>,
+    /// The scrolling node whose bar is being dragged.
+    dragging: Option<NodeId>,
     pub size: Vec2,
     /// GUI pixels per font pixel, chosen by the caller so glyphs land on whole physical pixels.
     pub text_unit: f32,
@@ -273,6 +305,7 @@ impl Ui {
             icon: None,
             measured: [0.0; 2],
             clip: None,
+            scrollbar: None,
         };
         Ui {
             nodes: vec![root],
@@ -283,6 +316,7 @@ impl Ui {
             anchor: None,
             dirty: true,
             scroll: Default::default(),
+            dragging: None,
             size: Vec2::ZERO,
             text_unit: 0.5,
             shown: crate::shaders::clock(),
@@ -311,13 +345,44 @@ impl Ui {
         true
     }
 
+    /// Mouse pressed at `p`: on a scroll bar it starts dragging (a click on the track jumps
+    /// there). True if a bar took the click.
+    pub fn bar_press(&mut self, p: Vec2) -> bool {
+        let hit = (0..self.nodes.len()).rev().find(|&i| self.nodes[i].scrollbar.is_some_and(|b| b.track.contains(p)) && self.nodes[i].clip.is_none_or(|c| c.contains(p)));
+        let Some(id) = hit else { return false };
+        self.dragging = Some(id);
+        self.bar_drag(p);
+        true
+    }
+
+    /// Mouse held at `p` while dragging a bar; false when nothing is dragged.
+    pub fn bar_drag(&mut self, p: Vec2) -> bool {
+        let Some(id) = self.dragging else { return false };
+        let Some(bar) = self.nodes.get(id).and_then(|n| n.scrollbar) else {
+            self.dragging = None;
+            return false;
+        };
+        let key = self.scroll_key(id);
+        self.scroll.insert(key, bar.offset_at(p.y));
+        self.dirty = true;
+        true
+    }
+
+    pub fn bar_release(&mut self) {
+        self.dragging = None;
+    }
+
+    pub fn dragging_bar(&self) -> Option<NodeId> {
+        self.dragging
+    }
+
     pub fn root_style(&mut self, s: Style) {
         self.nodes[0].style = s;
     }
 
     pub fn add(&mut self, kind: Kind, style: Style) -> NodeId {
         let id = self.nodes.len();
-        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, icon: None, measured: [0.0; 2], clip: None });
+        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, icon: None, measured: [0.0; 2], clip: None, scrollbar: None });
         let parent = *self.stack.last().unwrap();
         self.nodes[parent].children.push(id);
         self.dirty = true;
@@ -513,7 +578,7 @@ impl Ui {
         if children.is_empty() {
             return;
         }
-        let (main_size, cross_size) = if style.row { (inner.w, inner.h) } else { (inner.h, inner.w) };
+        let (main_size, mut cross_size) = if style.row { (inner.w, inner.h) } else { (inner.h, inner.w) };
         let mut sizes: Vec<[f32; 2]> = children.iter().map(|&c| self.nodes[c].measured).collect();
         let main_of = |s: &[f32; 2]| if style.row { s[0] } else { s[1] };
         let gaps = style.gap * (children.len() as f32 - 1.0);
@@ -544,6 +609,7 @@ impl Ui {
             }
         }
         let mut scrolled = 0.0;
+        self.nodes[id].scrollbar = None;
         if style.scroll {
             // Content longer than the node scrolls; the offset stays within the content.
             let key = self.scroll_key(id);
@@ -552,6 +618,11 @@ impl Ui {
             *v = v.min(max);
             scrolled = *v;
             free = free.max(0.0);
+            if max > 0.0 && !style.row && cross_size > Scrollbar::ROOM * 2.0 {
+                cross_size -= Scrollbar::ROOM;
+                let track = Rect { x: inner.x + inner.w - Scrollbar::HANDLE[0], y: inner.y, w: Scrollbar::HANDLE[0], h: inner.h };
+                self.nodes[id].scrollbar = Some(Scrollbar { track, offset: scrolled, max });
+            }
         }
         let (mut pos, spacing) = match style.justify {
             Justify::Start => (-scrolled, style.gap),

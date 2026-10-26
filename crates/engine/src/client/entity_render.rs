@@ -79,6 +79,12 @@ pub struct EntityRenderer {
     preview_target: Option<(TextureId, TextureId, [u32; 2], u32)>,
     /// Texture, bindless index and size, by name; and the glow masks of those that have one.
     skins: FxHashMap<String, Option<(TextureId, u32, [u32; 2])>>,
+    /// Players' own skins by entity, replacing the player kind's texture on them.
+    player_skins: FxHashMap<u64, (TextureId, u32, [u32; 2])>,
+    /// Skins received and not uploaded yet.
+    pub skin_pending: Vec<(u64, Vec<u8>)>,
+    /// The local player's entity.
+    pub local: u64,
     glows: FxHashMap<String, (TextureId, u32)>,
     /// Shader slot of each entity kind.
     kind_shaders: Vec<u32>,
@@ -163,6 +169,9 @@ impl EntityRenderer {
             preview_pipe,
             preview_target: None,
             skins: FxHashMap::default(),
+            player_skins: FxHashMap::default(),
+            skin_pending: Vec::new(),
+            local: 0,
             glows: FxHashMap::default(),
             kind_shaders,
             sprites: FxHashMap::default(),
@@ -317,7 +326,20 @@ impl EntityRenderer {
         }
     }
 
+    /// Uploads player `entity`'s own skin.
+    pub fn set_skin(&mut self, gpu: &mut dyn Backend, entity: u64, png: &[u8]) {
+        let Some(img) = crate::assets::decode_png(png) else { return };
+        let t = gpu.create_texture(&TextureDesc { width: img.width, height: img.height, mips: 1, format: Format::Rgba8Srgb, render_target: false }, "player skin");
+        gpu.write_texture(t, 0, &img.rgba);
+        if let Some(old) = self.player_skins.insert(entity, (t, gpu.texture_index(t), [img.width, img.height])) {
+            gpu.destroy_texture(old.0);
+        }
+    }
+
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
+        for (t, ..) in self.player_skins.drain().map(|(_, v)| v) {
+            gpu.destroy_texture(t);
+        }
         for (b, _) in self.buffers.drain(..) {
             gpu.destroy_buffer(b);
         }
@@ -485,14 +507,17 @@ impl EntityRenderer {
         self.skins.insert(name.to_string(), loaded);
     }
 
-    /// Model instances of an entity of `kind`: its skin and what it wears (how many in `.1`).
-    fn layers(&self, kind: u32, worn: &[u32], light: u32, hurt: f32) -> ([Instance; MAX_LAYERS], usize) {
+    /// Model instances of `entity`, of `kind`: its skin (a player's own if they sent one) and what
+    /// it wears (how many in `.1`).
+    fn layers(&self, kind: u32, entity: u64, worn: &[u32], light: u32, hurt: f32) -> ([Instance; MAX_LAYERS], usize) {
         let c = content();
         let k = &c.game.entities[kind as usize];
         let mut out = ([Instance::default(); MAX_LAYERS], 0);
         let Some(Some((_, skin, _))) = self.skins.get(&k.texture) else { return out };
         let glow = |name: &str| self.glows.get(name).map_or(u32::MAX, |g| g.1);
         let size = self.models.kinds.get(kind as usize).and_then(|m| m.texture).unwrap_or(k.texture_size);
+        let own = self.player_skins.get(&entity).filter(|_| kind == c.game.player_kind);
+        let (skin, size) = own.map_or((skin, size), |o| (&o.1, o.2));
         let base = Instance {
             color: [1.0; 3],
             light,
@@ -549,7 +574,7 @@ impl EntityRenderer {
             Vec4::new(0.0, 0.0, 0.1, 0.0),
             Vec4::new(2.0 * cx / sw - 1.0, 1.0 - 2.0 * feet / sh, 0.5, 1.0),
         );
-        let layers = self.layers(c.game.player_kind, worn, FULL_LIGHT, 0.0);
+        let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, 0.0);
         self.models.begin();
         let root = Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
         self.models.add(c.game.player_kind, root, &crate::model::Motion { pitch, swing: 0.0, anims: &[], crouch: false }, layers.0[..layers.1].iter().copied());
@@ -601,7 +626,7 @@ impl EntityRenderer {
         // Models: bones posed here (in parallel when many), drawn instanced per kind.
         let mut posed = std::mem::take(&mut self.posed);
         posed.clear();
-        for e in entities.values().chain(me) {
+        for (id, e) in entities.iter().map(|(i, e)| (*i, e)).chain(me.map(|m| (self.local, m))) {
             let base = rel(e.pos);
             if base.length_squared() > 160.0 * 160.0 {
                 continue;
@@ -622,7 +647,7 @@ impl EntityRenderer {
                 continue;
             }
             let kind = e.look();
-            let (layers, layer_count) = self.layers(kind, &e.worn, lit, hurt);
+            let (layers, layer_count) = self.layers(kind, id, &e.worn, lit, hurt);
             if layer_count == 0 {
                 continue;
             }
@@ -756,8 +781,9 @@ impl EntityRenderer {
         let mut hand_item: Option<(GpuBox, u32)> = None;
         if let Some(h) = hand {
             let k = &c.game.entities[c.game.player_kind as usize];
-            let player_skin = match self.skins.get(&k.texture) {
-                Some(Some((_, idx, _))) => Some((*idx, [k.texture_size[0] as f32, k.texture_size[1] as f32])),
+            let player_skin = match (self.player_skins.get(&self.local), self.skins.get(&k.texture)) {
+                (Some((_, idx, size)), _) => Some((*idx, [size[0] as f32, size[1] as f32])),
+                (None, Some(Some((_, idx, _)))) => Some((*idx, [k.texture_size[0] as f32, k.texture_size[1] as f32])),
                 _ => None,
             };
             // Keyframes may move the hand too: the `hand` bone of what plays (else of idle).

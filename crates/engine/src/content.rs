@@ -1165,6 +1165,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         cb.declare(&s.value.name, &s.value.schema, (!s.remove && s.value.text.is_none()).then_some(s.value.bytes.len()), &|| who(s.owner, &format!("set on {:?}", s.target)), &mut errors);
     }
     for g in &games {
+        // Values recipes carry may be on nothing else.
+        for v in g.recipes.iter().flat_map(|r| &r.values) {
+            cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| format!("a {} recipe", v.name), &mut errors);
+        }
         for rc in &g.components {
             cb.declare(&rc.def.name, &rc.schema, Some(rc.def.size as usize), &|| who(rc.owner, "entity component"), &mut errors);
         }

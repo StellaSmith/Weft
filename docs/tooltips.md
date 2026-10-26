@@ -20,6 +20,9 @@ They work in any translation, not only in tooltips:
 |---|---|
 | `{#rrggbb}text{/}` | colors the text, `{/}` goes back to the default |
 | `{item:base:coal}` | draws the item's icon inline |
+| `{block:base:furnace#1}` | draws a block state like a block item, `#` picks the state (the first without it) |
+| `{img:base:gui/arrow}` | draws a GUI texture at its own size, `{img:base:gui/arrow 32x16}` at another (GUI pixels); the line grows to fit |
+| `{align:center}text{/align}` | lays out the lines inside centered (`left`, `right`); a picture alone on such a line is a centered picture |
 | `{key:core:sneak}` | the key the player has bound to that action |
 | `{lang:some.key}` | inserts another translation, so a shared phrase is written once |
 | `{on_key:core:sneak}text{/on_key}` | shown only while the key is held; `!` in front inverts it; raw keys work too, but it's recommended to not use them |
@@ -88,8 +91,8 @@ block.base.furnace.tooltip = Smelts ores and cooks food.
 - **Settings:** `config.<mod>.<key>.tooltip` is shown over the setting's row in Mod Settings. Settings that the
   server overrides or that need a restart get a note added by the engine.
 - **Creative tabs:** show their name from `tab.<mod>.<name>`, or the mod's display name when there is no key.
-- **Your own screens:** not yet. The engine can show a tooltip over any element of a mod's screen, but
-  the SDK's `Ui` builder (`ui.button`, `ui.text`...) has no way to set it, so a mod can't do it today.
+- **Your own screens:** any part with a style takes one, `S::col().tooltip("examplemod.hint")`.
+- **Slots:** a slot group's `tooltip(key)` shows over its empty slots ([machines guide](machines.md#creating-a-machine)).
 
 ## Adding from outside
 Translations are one shared table: every `lang/<code>.lang` of every mod and pack is read into it, so the

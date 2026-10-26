@@ -1,6 +1,5 @@
 //! Furnace and chest: blocks with an entity holding their inventory and state.
 
-use weft_sdk::abi::slot_flags as sf;
 use weft_sdk::*;
 
 use crate::blocks::{CHEST, FURNACE};
@@ -25,10 +24,6 @@ pub const SMELT_TIME: &str = "base:smelt_time";
 pub static FURNACE_MENU: Menu = Menu::new();
 pub static CHEST_MENU: Menu = Menu::new();
 
-const INPUT: u32 = 0;
-const FUEL_SLOT: u32 = 1;
-const OUTPUT: u32 = 2;
-
 pub fn register(r: &mut Registry) {
     // The furnace's state syncs to whoever has it open: the screen binds to it directly.
     r.machine("furnace", &FURNACE_MENU)
@@ -47,24 +42,27 @@ pub fn register(r: &mut Registry) {
                 .mineable("pickaxe").needs_tool(0)
                 .tab("functional")
         })
-        .slots(&[0, 0, sf::OUTPUT]) // INPUT, FUEL_SLOT, OUTPUT
+        .group("input", Slots::one())
+        .group("fuel", Slots::one().accepts("fuel"))
+        .group("output", Slots::one().output())
+        .recipes(&crate::recipes::SMELTING)
         .component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU)
         .on_tick(tick_furnaces)
-        .screen(|ui, player| {
+        .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
                 ui.text("container.furnace");
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
-                        ui.slot(INPUT);
+                        ui.group("input");
                         ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.burn, s.burn_max)));
-                        ui.slot(FUEL_SLOT);
+                        ui.group("fuel");
                     });
                     ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
-                    ui.slot(OUTPUT);
+                    ui.group("output");
                     ui.spacer();
                 });
-                ui.player_inventory(player, true);
+                ui.player_inventory(true);
             });
         });
 
@@ -82,12 +80,12 @@ pub fn register(r: &mut Registry) {
                 .mineable("axe")
                 .tab("functional")
         })
-        .slots(&[0; 27])
-        .screen(|ui, player| {
+        .group("chest", Slots::chest(3))
+        .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
                 ui.text("container.chest");
-                ui.slots(0, player, 9);
-                ui.player_inventory(player, true);
+                ui.group("chest");
+                ui.player_inventory(true);
             });
         });
 }
@@ -107,7 +105,8 @@ fn tick_furnaces(t: &EntityTick) {
         let Some(st) = w.entity(id) else { continue };
         let pos = [st.pos[0].floor() as i32, st.pos[1].floor() as i32, st.pos[2].floor() as i32];
         let inv = w.inventory(id);
-        let (input, fuel, output) = (inv.get(INPUT), inv.get(FUEL_SLOT), inv.get(OUTPUT));
+        let (input_slot, fuel_slot, output_slot) = (inv.group("input"), inv.group("fuel"), inv.group("output"));
+        let (input, fuel, output) = (input_slot.get(0), fuel_slot.get(0), output_slot.get(0));
         let Some(s) = w.component_mut(id, &SMELTING) else { continue };
         let was_lit = s.burn > 0;
         if s.burn > 0 {
@@ -121,7 +120,7 @@ fn tick_furnaces(t: &EntityTick) {
             if let Some(ticks) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) {
                 s.burn = ticks;
                 s.burn_max = ticks;
-                inv.set(FUEL_SLOT, use_one(fuel));
+                fuel_slot.set(0, use_one(fuel));
             }
         }
         if s.burn > 0 && fits {
@@ -133,9 +132,9 @@ fn tick_furnaces(t: &EntityTick) {
             s.cook += 1;
             if s.cook >= s.cook_max {
                 s.cook = 0;
-                inv.set(INPUT, input.shrink(1));
+                input_slot.set(0, input.shrink(1));
                 let merged = if output.is_empty() { out } else { output.grow(out.count) };
-                inv.set(OUTPUT, merged);
+                output_slot.set(0, merged);
                 w.emit(&SMELTED, Smelted { furnace: id, input: input.item, output: out });
             }
         } else if let Some(s) = w.component_mut(id, &SMELTING).filter(|s| s.cook > 0) {

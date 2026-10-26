@@ -55,6 +55,7 @@ pub static HOST: Host = Host {
     entity_set,
     entity_walk,
     entity_damage,
+    entity_attack,
     entity_look_at,
     entities_near,
     component,
@@ -515,6 +516,10 @@ unsafe extern "C" fn entity_look_at(w: *mut abi::WorldCtx, id: u64, max: f64, li
 
 unsafe extern "C" fn entity_damage(w: *mut abi::WorldCtx, id: u64, amount: f32, source: u64, cause: u32) -> u32 {
     unsafe { dim(w).damage(content(), id, amount, source, cause) as u32 }
+}
+
+unsafe extern "C" fn entity_attack(w: *mut abi::WorldCtx, attacker: u64, target: u64) -> u32 {
+    unsafe { dim(w).attack(content(), attacker, target, ItemStack::EMPTY) as u32 }
 }
 
 unsafe extern "C" fn entities_near(w: *mut abi::WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize {

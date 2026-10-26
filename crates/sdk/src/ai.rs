@@ -71,6 +71,19 @@ pub fn nearest_player(w: &World, st: &EntityState, range: f64) -> Option<(u64, E
         .min_by(|a, b| d2(&a.1).total_cmp(&d2(&b.1)))
 }
 
+/// Hits the nearest player within `reach` (and less than a body high above or below) with
+/// `World::attack`, which keeps the pace. Never takes over: chasing goes on.
+pub fn melee(reach: f64) -> impl Goal {
+    move |w: &World, id: u64, st: &EntityState| {
+        if let Some((p, ps)) = nearest_player(w, st, reach) {
+            if (ps.pos[1] - st.pos[1]).abs() < 1.8 {
+                w.attack(id, p);
+            }
+        }
+        false
+    }
+}
+
 /// Walks to the nearest player within `range` at `speed`.
 pub fn follow_player(range: f64, speed: f32) -> impl Goal {
     move |w: &World, id: u64, st: &EntityState| match nearest_player(w, st, range) {

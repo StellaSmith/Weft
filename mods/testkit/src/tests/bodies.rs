@@ -203,6 +203,13 @@ pub async fn zombie_chases(t: T) -> R {
     let health: f32 = t.op("health").await?.parse().unwrap_or(20.0);
     t.check(z[0] < f[0] as f64 + 4.0, format!("the zombie came round the wall (x {:.1})", z[0]));
     t.check(health < 20.0, format!("and hit the player (health {health})"));
+    // Mobs hit through the same question as players: a mod that forbids attacks stops them.
+    t.op("heal").await?;
+    t.cmd("/rule testkit:peace 1").await?;
+    t.secs(2.5).await?;
+    let calm: f32 = t.op("health").await?.parse().unwrap_or(0.0);
+    t.cmd("/rule testkit:peace 0").await?;
+    t.check(calm >= 20.0, format!("a zombie hit while attacks were forbidden (health {calm})"));
     Ok(())
 }
 

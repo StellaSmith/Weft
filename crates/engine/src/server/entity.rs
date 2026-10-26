@@ -25,6 +25,8 @@ pub struct Entity {
     pub health: f32,
     pub age: u64,
     pub hurt_cooldown: u32,
+    /// Ticks until it may attack again (mobs).
+    pub attack_cooldown: u32,
     /// AI steering requested this tick: direction, speed factor, jump.
     pub walk: Option<([f32; 2], f32, bool)>,
     pub removed: bool,
@@ -70,6 +72,7 @@ impl Entity {
             health,
             age: 0,
             hurt_cooldown: 0,
+            attack_cooldown: 0,
             walk: None,
             removed: false,
             item: ItemStack::EMPTY,

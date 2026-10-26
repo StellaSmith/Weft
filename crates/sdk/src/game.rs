@@ -102,6 +102,12 @@ impl World {
     pub fn damage(&self, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         unsafe { (host().entity_damage)(self.raw(), id, amount, source, cause) != 0 }
     }
+    /// `id` hits `target` the way players do: other mods can forbid it (`question::ATTACK`) or
+    /// change it (`chain::ATTACK_DAMAGE`); the damage is the kind's `.attack_damage(..)`, and a
+    /// mob hits at most once a second. True if it landed.
+    pub fn attack(&self, id: u64, target: u64) -> bool {
+        unsafe { (host().entity_attack)(self.raw(), id, target) != 0 }
+    }
     /// Entity ids within `radius`; `kind` None = any kind.
     pub fn near(&self, pos: [f64; 3], radius: f64, kind: Option<&Entity>) -> Vec<u64> {
         let k = kind.map_or(u32::MAX, |k| k.id());
@@ -570,6 +576,10 @@ impl EntityBuilder<'_> {
         self.height = height;
         self.eye = height * EYE_SHARE;
         self
+    }
+    /// Damage of its melee hits (`World::attack`), like an item's.
+    pub fn attack_damage(self, damage: f32) -> Self {
+        crate::WithComponents::set(self, &crate::component::ATTACK_DAMAGE, damage)
     }
     pub fn health(mut self, h: f32) -> Self {
         self.components.retain(|p| p.name != abi::attribute::MAX_HEALTH);
@@ -1414,8 +1424,8 @@ pub struct SpawnBuilder<'a> {
 }
 
 impl Registry {
-    pub fn spawn<'a>(&'a mut self, entity: &str) -> SpawnBuilder<'a> {
-        let entity = qualify(self.ns, entity);
+    pub fn spawn<'a>(&'a mut self, entity: &Entity) -> SpawnBuilder<'a> {
+        let entity = entity.name().to_string();
         SpawnBuilder { raw: self.raw, names: [entity, String::new(), String::new(), String::new()], desc: abi::SpawnDesc::DEFAULT, _p: std::marker::PhantomData }
     }
 }

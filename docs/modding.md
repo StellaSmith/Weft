@@ -230,7 +230,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `model(biped(..))` or `model_file("thing")` (Blockbench geo.json)
 - `sound("hurt")`, `sound("death")`, `sound("ambient")`: files from `sounds/entity/<name>/`
 - `animations(..)`
-- `goals(..)` for AI (see `weft_sdk::ai`)
+- `goals(..)` for AI (see `weft_sdk::ai`); `ai::melee(reach)` with `.attack_damage(3.0)` makes it hit like a player does, so `question::ATTACK` and `chain::ATTACK_DAMAGE` (a strength effect, a peaceful zone) work on mobs too
 - `on_tick`, `on_hurt`, `on_death`, `on_interact`
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and

@@ -58,8 +58,8 @@ Structures stand on the surface of the dimension's [terrain](#terrain). A dimens
 - `weight(n)` and `chance(c)`: how likely it is picked among the rules that fit, and how likely it is to happen per try
 
 ```rust
-r.spawn("ghost").light(0, 4).weight(1);
-r.spawn("sheep").biome("#animals").ground("#animal_spawn").light(7, 15).group(2, 3).chance(0.05);
+r.spawn(&GHOST).light(0, 4).weight(1);
+r.spawn(&SHEEP).biome("#animals").ground("#animal_spawn").light(7, 15).group(2, 3).chance(0.05);
 ```
 
 ## Biomes

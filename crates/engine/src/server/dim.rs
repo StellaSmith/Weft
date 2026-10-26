@@ -636,6 +636,34 @@ impl Dim {
         Some(self.call(block.owner, cb, args))
     }
 
+    /// A melee hit of `attacker` on `target`, the same for players and mobs: the `ATTACK`
+    /// question, then the `ATTACK_DAMAGE` chain from the held item's attack (players) or the
+    /// kind's `attack_damage` component (mobs, 1 without), then the damage. Mobs wait a second
+    /// between hits, like vanilla's; players are only held back by the target's hurt time.
+    pub fn attack(&mut self, c: &'static Content, attacker: u64, target: u64, held: ItemStack) -> bool {
+        let (Some(me), Some(t)) = (self.entities.get(attacker), self.entities.get(target)) else { return false };
+        if target == attacker || !t.item.is_empty() || t.anchor.is_some() || me.attack_cooldown > 0 {
+            return false;
+        }
+        let (kind, player) = (me.kind, me.player);
+        let mut q = abi::Query { entity: attacker, other: target, item: held.item, ..abi::Query::DEFAULT };
+        if !self.ask(c, abi::question::ATTACK, &mut q) {
+            return false;
+        }
+        let base = if held.item != 0 {
+            c.items.get(held.item as usize).map_or(1.0, |i| i.attack)
+        } else if player {
+            1.0
+        } else {
+            c.components.id(abi::comp::ATTACK_DAMAGE).and_then(|id| c.components.get::<f32>(crate::components::ENTITY, kind, id)).unwrap_or(1.0)
+        };
+        if let Some(e) = self.entities.get_mut(attacker).filter(|e| !e.player) {
+            e.attack_cooldown = 20;
+        }
+        let dmg = self.compute(c, abi::chain::ATTACK_DAMAGE, base as f64, &q, false) as f32;
+        self.damage(c, target, dmg, attacker, damage::ATTACK)
+    }
+
     pub fn damage(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         let Some(e) = self.entities.get(id) else { return false };
         let k = &c.game.entities[e.kind as usize];
@@ -978,6 +1006,7 @@ impl Dim {
                 }
                 e.age += 1;
                 e.hurt_cooldown = e.hurt_cooldown.saturating_sub(1);
+                e.attack_cooldown = e.attack_cooldown.saturating_sub(1);
                 if e.player && (e.health <= 0.0 || e.mode == crate::world::GameMode::Spectator) {
                     return None;
                 }

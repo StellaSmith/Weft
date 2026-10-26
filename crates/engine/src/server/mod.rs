@@ -929,18 +929,12 @@ impl Server {
             ToServer::Attack(target) => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let (Some(me), Some(t)) = (r.entities.get(entity), r.entities.get(target)) else { return };
-                if (me.pos - t.pos).length_squared() > REACH * REACH || target == entity || !t.item.is_empty() || t.anchor.is_some() {
+                if (me.pos - t.pos).length_squared() > REACH * REACH {
                     return;
                 }
                 let sel = me.selected;
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
-                let mut q = abi::Query { entity, other: target, item: held.item, ..abi::Query::DEFAULT };
-                if !r.ask(c, abi::question::ATTACK, &mut q) {
-                    return;
-                }
-                let base = c.items.get(held.item as usize).filter(|_| held.item != 0).map_or(1.0, |i| i.attack);
-                let dmg = r.compute(c, abi::chain::ATTACK_DAMAGE, base as f64, &q, false) as f32;
-                if r.damage(c, target, dmg, entity, damage::ATTACK) {
+                if r.attack(c, entity, target, held) {
                     wear(c, r, entity, sel, c.item_value::<u32>(held.item, c.ids.wear_per_hit).unwrap_or(2));
                 }
             }

@@ -28,6 +28,8 @@ static PIG: Entity = Entity::named("base:pig");
 pub static COUNT_MARKS: Rule = Rule::named("count_marks");
 pub static PROTECT_GOLD: Rule = Rule::named("protect_gold");
 pub static HALF_DAMAGE: Rule = Rule::named("half_damage");
+/// Mobs may not attack while it is on.
+pub static PEACE: Rule = Rule::named("peace");
 pub static OP: Channel = Channel::named("op");
 pub static REPLY: Channel = Channel::named("reply");
 /// A key whose presses reach the server: the test counts them there.
@@ -54,6 +56,12 @@ pub fn register(r: &mut Registry) {
     r.stack_component(&SECRET, abi::stack_flags::SERVER_ONLY | abi::stack_flags::NO_SAVE);
     // Switches for the tests of the extension mechanisms, off unless a test turns them on.
     r.rule(&PROTECT_GOLD, 0);
+    r.rule(&PEACE, 0);
+    r.intercept(&question::ATTACK, |q| {
+        let w = q.world();
+        let mob = w.entity(q.entity()).is_some_and(|e| !w.each_player().any(|p| p == q.entity()) && e.health > 0.0);
+        if mob && w.rule(&PEACE) != 0 { Verdict::Deny } else { Verdict::Abstain }
+    });
     r.rule(&HALF_DAMAGE, 0);
     r.intercept(&question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && q.world().rule(&PROTECT_GOLD) != 0 { Verdict::Deny } else { Verdict::Abstain });
     r.modify(&chain::DAMAGE, stage::FINAL, |m| {
@@ -363,6 +371,12 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let me = w.entity(player).ok_or("no player")?;
             let p = [me.pos[0].floor() as i32, me.pos[1].floor() as i32, me.pos[2].floor() as i32];
             Ok(w.structure_near(name, p, r).map_or("none".into(), |a| format!("{} {} {}", a[0], a[1], a[2])))
+        }
+        "heal" => {
+            let mut st = w.entity(player).ok_or("no player")?;
+            st.health = st.max_health;
+            w.set_entity(player, &st);
+            Ok(String::new())
         }
         "health" => {
             let id = a.owner(w, player).unwrap_or(player);

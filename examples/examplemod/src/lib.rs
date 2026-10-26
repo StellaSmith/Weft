@@ -122,7 +122,7 @@ fn worldgen(_r: &mut Registry) {
 fn entities(_r: &mut Registry) {
     // static GHOST: Entity = Entity::named("ghost");
     // r.entity(&GHOST).size(0.6, 1.8).health(10.0).speed(3.0).hostile().model(biped(false)).sound("hurt");
-    // r.spawn("ghost").light(0, 4).weight(1);
+    // r.spawn(&GHOST).light(0, 4).weight(1);
 }
 
 /// Reacting to the game, events arrive batched once per tick

@@ -123,7 +123,7 @@ impl T {
     /// Turns the local player to look at the middle of block `p` from its eyes.
     pub fn look_at(&self, p: [i32; 3]) {
         let s = self.state();
-        let eye = [s.pos[0], s.pos[1] + 1.62, s.pos[2]];
+        let eye = [s.pos[0], s.pos[1] + self.c().entity(0).map_or(1.62, |e| e.size[2] as f64), s.pos[2]];
         let d = [p[0] as f64 + 0.5 - eye[0], p[1] as f64 + 0.5 - eye[1], p[2] as f64 + 0.5 - eye[2]];
         let yaw = (-d[0]).atan2(-d[2]).to_degrees() as f32;
         let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()).to_degrees() as f32;

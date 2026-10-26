@@ -6,8 +6,7 @@ use weft_sdk::*;
 use crate::items::{ARMOR, FOOD};
 
 value! {
-    /// `armor`: points worn, kept here so the HUD can show them.
-    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub armor: f32, pub timer: u32 }
+    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub timer: u32 }
 }
 
 pub static HUNGER: Component<Hunger> = Component::named("base:hunger");
@@ -20,13 +19,27 @@ static HUD_AIR: HudElement = HudElement::named("air");
 
 const MAX_AIR: f32 = 300.0;
 
-/// Armor, head to feet, after the hotbar (9) and the main inventory (27).
-const WORN_SLOTS: std::ops::Range<u32> = 36..40;
+pub static HEAD: EquipmentSlot = EquipmentSlot::named("head");
+pub static CHEST: EquipmentSlot = EquipmentSlot::named("chest");
+pub static LEGS: EquipmentSlot = EquipmentSlot::named("legs");
+pub static FEET: EquipmentSlot = EquipmentSlot::named("feet");
+/// Head to feet.
+pub const EQUIPMENT: [&EquipmentSlot; 4] = [&HEAD, &CHEST, &LEGS, &FEET];
+
+/// Armor points of what `entity` wears.
+fn armor_points(w: &World, entity: u64) -> u32 {
+    let worn = w.inventory(entity).group(EQUIPMENT_GROUP);
+    (0..worn.len()).filter_map(|i| ARMOR.on_item(worn.get(i).item)).map(|a| a.points).sum()
+}
 
 pub fn register(r: &mut Registry) {
+    r.player_inventory().group("hotbar", Slots::row(9).hotbar()).group("main", Slots::grid(9, 3));
+    for (slot, parts, piece) in [(&HEAD, worn_parts::HEAD, "helmet"), (&CHEST, worn_parts::BODY | worn_parts::ARMS, "chestplate"), (&LEGS, worn_parts::BODY | worn_parts::LEGS, "leggings"), (&FEET, worn_parts::LEGS, "boots")] {
+        r.equipment_slot(slot, parts, &format!("slot_{piece}"));
+    }
     r.entity_component(
         &HUNGER,
-        Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, armor: 0.0, timer: 0 },
+        Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, timer: 0 },
         component_flags::SAVE | component_flags::SYNC_OWNER,
     );
     r.attach(&PLAYER, &HUNGER);
@@ -38,21 +51,19 @@ pub fn register(r: &mut Registry) {
         if !armor_applies(q.cause) {
             return;
         }
-        let inv = m.world().inventory(q.entity);
-        let points: u32 = WORN_SLOTS.filter_map(|i| ARMOR.on_item(inv.get(i).item)).map(|a| a.points).sum();
-        m.value *= 1.0 - points.min(20) as f64 * 0.04;
+        m.value *= 1.0 - armor_points(&m.world(), q.entity).min(20) as f64 * 0.04;
     });
     r.on(&ENTITY_HURT, |b| {
         let w = b.world();
         for h in b.iter().filter(|h| armor_applies(h.cause)) {
-            let inv = w.inventory(h.entity);
+            let worn = w.inventory(h.entity).group(EQUIPMENT_GROUP);
             let wear = ((h.amount / 4.0) as u32).max(1);
-            for slot in WORN_SLOTS {
-                let s = inv.get(slot);
+            for slot in 0..worn.len() {
+                let s = worn.get(slot);
                 if ARMOR.on_item(s.item).is_some() {
                     let durability = DURABILITY.on_item(s.item).unwrap_or(0);
                     let damage = s.damage() + wear;
-                    inv.set(slot, if durability > 0 && damage >= durability { ItemStack::EMPTY } else { s.with_damage(damage) });
+                    worn.set(slot, if durability > 0 && damage >= durability { ItemStack::EMPTY } else { s.with_damage(damage) });
                 }
             }
         }
@@ -72,7 +83,11 @@ pub fn register(r: &mut Registry) {
         ui.icons("hearts", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
     });
     r.hud_element(&HUD_ARMOR, hud_anchor::HOTBAR_LEFT, 1, |ui| {
-        ui.icons("armor", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.armor > 0.0 && !c.creative() { h.armor } else { -1.0 }))
+        ui.icons("armor", 10, |c| {
+            // From what the client knows of its own inventory, like the server's damage chain.
+            let points: u32 = c.inventory_group(EQUIPMENT_GROUP).iter().filter_map(|s| ARMOR.on_item(s.item)).map(|a| a.points).sum();
+            if points > 0 && !c.creative() { points as f32 } else { -1.0 }
+        })
     });
     r.hud_element(&HUD_FOOD, hud_anchor::HOTBAR_RIGHT, 0, |ui| {
         ui.icons_rtl("food", 10, |c| if c.creative() { -1.0 } else { c.component(&HUNGER).map_or(20.0, |h| h.food.ceil()) })
@@ -81,15 +96,11 @@ pub fn register(r: &mut Registry) {
         ui.icons_rtl("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }))
     });
 
-    // The worn slots, each taking its piece of armor and showing its silhouette while empty.
-    const PIECES: [&str; 4] = ["helmet", "chestplate", "leggings", "boots"];
-    let mut inventory = r.menu(&INVENTORY)
+    // The equipment slots take what is worn there and show its silhouette while empty.
+    r.menu(&INVENTORY)
         .group("grid", Slots::grid(2, 2))
-        .group("result", Slots::single().output().large());
-    for ((piece, slot), tag) in PIECES.into_iter().zip(WORN_SLOTS).zip(abi::comp::ARMOR) {
-        inventory = inventory.group(piece, Slots::single().player(slot).accepts(tag).background(&format!("slot_{piece}")));
-    }
-    inventory
+        .group("result", Slots::single().output().large())
+        .equipment()
         .player_inventory()
         .recipes(&crate::recipes::CRAFTING)
         .on_change(craft_result)
@@ -97,11 +108,7 @@ pub fn register(r: &mut Registry) {
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(5.0), |ui| {
                 ui.row(S::row().gap(1.0), |ui| {
-                    ui.column(S::col(), |ui| {
-                        for piece in PIECES {
-                            ui.group(piece);
-                        }
-                    });
+                    ui.equipment();
                     ui.player_model(51.0, 72.0);
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
@@ -137,7 +144,6 @@ pub fn register(r: &mut Registry) {
                 ui.player_inventory(true);
             });
         });
-    r.player_inventory(40, 9, WORN_SLOTS);
     r.player_menu(&INVENTORY);
 }
 
@@ -191,12 +197,9 @@ fn tick_players(t: &EntityTick) {
                 w.damage(id, 1.0, 0, damage::STARVE);
             }
         }
-        let eye = [st.pos[0].floor() as i32, (st.pos[1] + 1.62).floor() as i32, st.pos[2].floor() as i32];
+        let eye = [st.pos[0].floor() as i32, (st.pos[1] + st.size[2] as f64).floor() as i32, st.pos[2].floor() as i32];
         let underwater = w.flags(eye) & abi::block_flags::LIQUID != 0;
-        let inv = w.inventory(id);
-        let armor: u32 = WORN_SLOTS.filter_map(|i| ARMOR.on_item(inv.get(i).item)).map(|a| a.points).sum();
         let Some(h) = w.component_mut(id, &HUNGER) else { continue };
-        h.armor = armor as f32;
         if underwater {
             h.air -= 1.0;
             if h.air <= -20.0 {

@@ -176,7 +176,8 @@ pub static HOST: Host = Host {
     reg_tint_kind,
     reg_biome_tint,
     reg_player_inventory,
-    player_layout,
+    reg_equipment_slot,
+    player_group,
     reg_screen,
     reg_words,
     set_entity_size,
@@ -742,9 +743,19 @@ unsafe extern "C" fn menu_group(m: *mut abi::MenuCtx, name: Str, out: *mut [u32;
 unsafe extern "C" fn inventory_group(w: *mut abi::WorldCtx, entity: u64, name: Str, out: *mut [u32; 2]) -> u32 {
     unsafe {
         let c = content();
-        let Some(kind) = dim(w).entities.get(entity).map(|e| e.kind) else { return 0 };
-        let kind_name = &c.game.entities[kind as usize].name;
+        let Some(e) = dim(w).entities.get(entity) else { return 0 };
         let layout = &c.game.player_layout;
+        // A player's groups are the player inventory's.
+        if e.player {
+            return match layout.group(name.as_str()) {
+                Some(g) => {
+                    *out = [g.start, g.count];
+                    1
+                }
+                None => 0,
+            };
+        }
+        let kind_name = &c.game.entities[e.kind as usize].name;
         let found = c.game.menus.iter().filter(|d| &d.entity == kind_name).find_map(|d| d.group(layout, name.as_str())).filter(|g| g.0.owner == abi::slot_owner::BLOCK);
         match found {
             Some((g, _, n)) => {
@@ -756,10 +767,30 @@ unsafe extern "C" fn inventory_group(w: *mut abi::WorldCtx, entity: u64, name: S
     }
 }
 
-unsafe extern "C" fn reg_player_inventory(r: *mut abi::Registrar, slots: u32, hotbar: u32, worn_start: u32, worn_count: u32) {
+unsafe extern "C" fn reg_player_inventory(r: *mut abi::Registrar, groups: abi::Slice<abi::SlotGroupDesc>) {
     unsafe {
         let r = reg(r);
-        r.game.player_layout = Some((r.owner, registry::PlayerLayout { slots, hotbar, worn: worn_start..worn_start + worn_count }));
+        let groups = groups.as_slice().iter().map(|g| (g.name.as_str().to_string(), g.cols.max(1), g.rows.max(1), g.flags)).collect();
+        r.game.player_inventory = Some((r.owner, groups));
+    }
+}
+
+unsafe extern "C" fn player_group(name: Str, out: *mut [u32; 2]) -> u32 {
+    unsafe {
+        match content().game.player_layout.group(name.as_str()) {
+            Some(g) => {
+                *out = [g.start, g.count];
+                1
+            }
+            None => 0,
+        }
+    }
+}
+
+unsafe extern "C" fn reg_equipment_slot(r: *mut abi::Registrar, name: Str, parts: u32, background: Str) {
+    unsafe {
+        let r = reg(r);
+        r.game.equipment.push(registry::EquipmentSlot { name: name.as_str().to_string(), parts, background: background.as_str().to_string() });
     }
 }
 
@@ -770,10 +801,6 @@ unsafe extern "C" fn reg_screen(r: *mut abi::Registrar, name: Str, cb: Callback)
     }
 }
 
-unsafe extern "C" fn player_layout(out: *mut [u32; 4]) {
-    let l = &content().game.player_layout;
-    unsafe { *out = [l.slots, l.hotbar, l.worn.start, l.worn.len() as u32] }
-}
 
 unsafe extern "C" fn menu_get(m: *mut abi::MenuCtx, slot: u32) -> ItemStack {
     unsafe { menu(m).get(slot) }

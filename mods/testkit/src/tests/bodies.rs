@@ -20,6 +20,8 @@ pub async fn lift(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
     let id = spawn(&t, "testmod:lift", add(f, [3, 0, 0])).await?;
+    // Its box comes from its blocks (2 x 2 planks from block (0, 0, 0) on), no size of its own.
+    t.check_eq(t.op(&format!("size #{id}")).await?, "3.000 1.000 0.850".to_string(), "the lift's box from its blocks");
     let p = pos_of(&t, &format!("#{id}")).await?;
     t.op(&format!("onto #{id} 1.0")).await?;
     t.secs(2.0).await?;
@@ -229,7 +231,7 @@ pub async fn skiff_blocks(t: T) -> R {
     let st = t.state();
     let o = t.c().entity(id).map_or([0.0; 3], |e| e.pos);
     let spot = [o[0] - 0.5 + 0.98, o[1] + 1.0, o[2] - 0.5 + 0.5 - 1.0];
-    let eye = [st.shown[0], st.shown[1] + 1.62, st.shown[2]];
+    let eye = [st.shown[0], st.shown[1] + t.c().entity(0).map_or(1.62, |e| e.size[2] as f64), st.shown[2]];
     let (dx, dy, dz) = (spot[0] - eye[0], spot[1] - eye[1], spot[2] - eye[2]);
     t.c().look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
     t.frames(2).await?;

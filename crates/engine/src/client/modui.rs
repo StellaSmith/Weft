@@ -194,6 +194,20 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 let action: crate::ui::Action = Rc::new(move |ctx: &mut Ctx| ctx.requests.push(crate::app::Request::ModCall(owner, cb)));
                 b.ui.open(Kind::Button { class: if class.is_empty() { "button".into() } else { class }, action: Some(action), enabled: true, selected: false }, style)
             }
+            uk::EQUIPMENT => {
+                // Every equipment slot of the player the menu shows, top to bottom.
+                let c = crate::content::content();
+                let layout = &c.game.player_layout;
+                let def = b.menu.and_then(|k| c.game.menus.get(k as usize));
+                let id = b.ui.open(Kind::Container { class: None }, style);
+                for e in &layout.equipment {
+                    if let Some((g, first, _)) = def.and_then(|d| d.group(layout, &e.name)) {
+                        let s = b.ui.add(Kind::Custom { tag: TAG_SLOT, data: first as u64 }, Style { w: Len::Px(g.size), h: Len::Px(g.size), ..Style::default() });
+                        b.ui.nodes[s].icon = g.background.clone();
+                    }
+                }
+                id
+            }
             uk::SLOT => {
                 // A group's slots as its grid, or one of them; size and silhouette from the group.
                 let c = crate::content::content();
@@ -313,12 +327,34 @@ pub unsafe extern "C" fn client_player(c: *mut abi::ClientCtx) -> u64 {
 
 pub unsafe extern "C" fn client_component(c: *mut abi::ClientCtx, id: u64, comp: u32) -> *const u8 {
     unsafe {
-        match view(c) {
-            Some(cl) if id == cl.player_id || id == 0 => cl.components.get(&comp).map_or(std::ptr::null(), |v| v.as_ptr()),
+        let own = view(c).is_some_and(|cl| id == cl.player_id || id == 0);
+        let found = match view(c) {
+            Some(cl) if own => cl.components.get(&comp).map(|v| v.as_ptr()),
             // Other entities' components the server shares (`SYNC_WATCHERS`, `SYNC_MENU`).
-            Some(cl) => cl.entity_components.get(&(id, comp)).map_or(std::ptr::null(), |v| v.as_ptr()),
-            None => std::ptr::null(),
+            Some(cl) => cl.entity_components.get(&(id, comp)).map(|v| v.as_ptr()),
+            None => None,
+        };
+        if found.is_none() && view(c).is_some() {
+            unsynced(comp, own);
         }
+        found.unwrap_or(std::ptr::null())
+    }
+}
+
+/// A component read on the client that its flags never send there: says which flag it needs,
+/// once per component.
+fn unsynced(comp: u32, own: bool) {
+    use abi::component_flags as cf;
+    let Some(d) = crate::content::content().game.components.get(comp as usize) else { return };
+    let (need, name) = if own { (cf::SYNC_OWNER, "SYNC_OWNER") } else { (cf::SYNC_WATCHERS | cf::SYNC_MENU, "SYNC_WATCHERS (or SYNC_MENU for a menu's machine)") };
+    if d.flags & need != 0 {
+        return;
+    }
+    static SAID: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+    let mut said = SAID.lock().unwrap();
+    if !said.contains(&comp) {
+        said.push(comp);
+        log::warn!("component {} is read on the client but never sent there: declare it with {name}", d.name);
     }
 }
 

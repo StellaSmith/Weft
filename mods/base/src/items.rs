@@ -15,8 +15,8 @@ value! {
 }
 
 value! {
-    /// `slot` 0 head, 1 chest, 2 legs, 3 feet.
-    pub struct Armor { pub slot: u32, pub points: u32 }
+    /// Protection while worn: 4% less damage per point, like 1.7.10.
+    pub struct Armor { pub points: u32 }
 }
 
 // The common vocabulary the base game reads; any mod may set these on its own content.
@@ -26,8 +26,8 @@ pub static FUEL: Component<u32> = Component::named("fuel");
 pub static ARMOR: Component<Armor> = Component::named("armor");
 /// How readily fire takes it.
 pub static FLAMMABLE: Component<u32> = Component::named("flammable");
-/// Slot tags; `<slot>/<material>` tags pick the recipe (see recipes.rs).
-pub const ARMOR_SLOTS: [&str; 4] = abi::comp::ARMOR;
+/// Tags of armor pieces, head to feet; `<tag>/<material>` picks the recipe (see recipes.rs).
+pub const ARMOR_SLOTS: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
 
 struct Material {
     name: &'static str,
@@ -102,13 +102,14 @@ pub fn register(r: &mut Registry) {
         for (slot, piece, points, dur) in [(0, "helmet", 1, 11), (1, "chestplate", 3, 16), (2, "leggings", 2, 15), (3, "boots", 1, 13)] {
             let points = points + mult * (if slot == 1 { 3 } else { 1 });
             let tag = ARMOR_SLOTS[slot as usize];
-            let (parts, inflate, layer) = [(worn_parts::HEAD, 1.0, 1), (worn_parts::BODY | worn_parts::ARMS, 1.0, 1), (worn_parts::BODY | worn_parts::LEGS, 0.5, 2), (worn_parts::LEGS, 1.0, 1)][slot as usize];
+            // Leggings are the inner layer, drawn closer to the body.
+            let (inflate, layer) = if slot == 2 { (0.5, 2) } else { (1.0, 1) };
             r.item(Item::generated(format!("{mat}_{piece}")))
                 .durability(durability * dur)
-                .set(&ARMOR, Armor { slot, points })
+                .set(&ARMOR, Armor { points })
                 .tag(tag)
                 .tag(&format!("{tag}/{mat}"))
-                .worn(parts, inflate, &format!("armor/{mat}_{layer}"))
+                .wearable(crate::player::EQUIPMENT[slot as usize], inflate, &format!("armor/{mat}_{layer}"))
                 .tab(&crate::tabs::COMBAT);
         }
     }

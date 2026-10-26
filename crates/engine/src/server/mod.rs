@@ -13,7 +13,7 @@ pub use extend::{MAX_HEALTH, MOVEMENT_SPEED, explanation};
 pub mod menu;
 pub mod persist;
 pub mod regions;
-mod structure;
+pub mod structure;
 pub mod terrain;
 pub use structure::origin as structure_origin;
 mod visibility;

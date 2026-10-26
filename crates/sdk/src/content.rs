@@ -31,7 +31,7 @@ pub mod kind {
             })*
         };
     }
-    named_kinds!(Key, Channel, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music);
+    named_kinds!(Key, Channel, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -163,6 +163,7 @@ pub type RecipeKind = Handle<kind::RecipeKind>;
 pub type LootTable = Handle<kind::LootTable>;
 pub type TextCondition = Handle<kind::TextCondition>;
 pub type Music = Handle<kind::Music>;
+pub type EquipmentSlot = Handle<kind::EquipmentSlot>;
 
 /// Things that name a loot table: a block or entity kind (what it drops) or a table of its own.
 pub trait LootSource {
@@ -1143,11 +1144,12 @@ impl ItemBuilder<'_> {
         let tag = format!("tab/{}", tab.name());
         self.tag(&tag)
     }
-    /// Shown on the wearer's model while in an equipment slot: `parts` from `worn_parts`, `texture`
-    /// (under `entity/`, like `armor/iron_1`) in the wearer's skin layout.
-    pub fn worn(self, parts: u32, inflate: f32, texture: &str) -> Self {
+    /// Worn in equipment `slot` (any mod's), where it shows on the wearer's model over the parts
+    /// the slot covers: `texture` (under `entity/`, like `armor/iron_1`) in the wearer's skin
+    /// layout, `inflate` pixels out from the body.
+    pub fn wearable(self, slot: &EquipmentSlot, inflate: f32, texture: &str) -> Self {
         let tex = crate::asset("entity", texture);
-        self.set(&c::WORN, abi::Worn { roles: parts, inflate }).set_text(&c::WORN_TEXTURE, &tex)
+        self.tag(&format!("worn/{}", slot.name())).set(&c::WORN, abi::Worn { roles: 0, inflate }).set_text(&c::WORN_TEXTURE, &tex)
     }
 
     pub fn on_use(mut self, f: impl Fn(&mut ItemUse) -> bool + Send + Sync + 'static) -> Self {

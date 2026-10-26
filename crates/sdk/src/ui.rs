@@ -32,6 +32,18 @@ impl ClientView {
         let mut s = abi::EntityState::default();
         (unsafe { (host().client_entity)(self.raw, 0, &mut s) } != 0).then_some(s)
     }
+    /// Own inventory slot by index.
+    pub fn inventory_slot(&self, slot: u32) -> ItemStack {
+        unsafe { (host().client_slot)(self.raw, 0, slot) }
+    }
+    /// The stacks of a group of the own inventory (`hotbar`, `core:equipment`...).
+    pub fn inventory_group(&self, name: &str) -> Vec<ItemStack> {
+        let mut out = [0u32; 2];
+        if unsafe { (host().player_group)(Str::new(name), &mut out) } == 0 {
+            return Vec::new();
+        }
+        (out[0]..out[0] + out[1]).map(|i| self.inventory_slot(i)).collect()
+    }
     /// The local player is in creative mode.
     pub fn creative(&self) -> bool {
         unsafe { (host().client_creative)(self.raw) != 0 }
@@ -305,6 +317,11 @@ impl Ui {
                 ui.group(crate::game::HOTBAR_GROUP);
             });
         });
+    }
+
+    /// The player's equipment slots of a menu with `.equipment()`, in a column.
+    pub fn equipment(&mut self) {
+        self.leaf(node(k::EQUIPMENT, S::default()))
     }
 
     /// The arrow of a menu that makes recipes (`.recipes(..)` on the menu or machine): clicking

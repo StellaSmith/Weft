@@ -268,8 +268,6 @@ pub mod comp {
     /// `<block> x y z [x2 y2 z2]` boxes in its own coordinates, block (0, 0, 0) centered on the
     /// entity's position. Players place and break blocks on it like in the world.
     pub const BLOCKS: &str = "blocks";
-    /// Tags of items worn in the armor slots, head to feet.
-    pub const ARMOR: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
 }
 
 /// Harvest levels (`tool_level` of a tool, `harvest_level` of a block) of the vanilla tiers.
@@ -1038,6 +1036,9 @@ pub mod slot_flags {
     pub const OUTPUT: u32 = 1;
     /// Can only be put into, nothing comes back out by hand.
     pub const INPUT: u32 = 2;
+    /// The player's hotbar (a group of `reg_player_inventory`): selected with the number keys,
+    /// shown at the bottom of the screen.
+    pub const HOTBAR: u32 = 4;
 }
 
 /// Whose inventory a slot group shows.
@@ -1051,6 +1052,9 @@ pub mod slot_owner {
     /// The player's main inventory, laid out like `Registry::player_inventory` says.
     pub const PLAYER_MAIN: u32 = 3;
     pub const PLAYER_HOTBAR: u32 = 4;
+    /// Stands for one group per equipment slot of the player, named like the slots, where it
+    /// is in the list (`ui_kind::EQUIPMENT` draws them).
+    pub const PLAYER_EQUIPMENT: u32 = 5;
 }
 
 /// Slots shown and handled together: a grid of one owner's inventory with the same rules.
@@ -1196,6 +1200,8 @@ pub mod ui_kind {
     pub const RECIPE_SLOT: u32 = 10;
     /// What mods add to place `text` of screen `class` (`Host::reg_screen_part`).
     pub const PARTS: u32 = 11;
+    /// The player's equipment slots of the open menu (`slot_owner::PLAYER_EQUIPMENT`), a column.
+    pub const EQUIPMENT: u32 = 13;
     /// A progress bar (`bind`, class `arrow` unless given) that opens the open menu's recipe
     /// kinds when clicked, with "Recipes" over it.
     pub const RECIPE_ARROW: u32 = 12;
@@ -1494,6 +1500,9 @@ pub struct Host {
     pub client_text: unsafe extern "C" fn(client: *mut ClientCtx, which: u32, index: u32) -> Str,
     /// Block the client has at `pos`, `u32::MAX` if that cube is not loaded there.
     pub client_block: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
+    /// Group `name` of the player inventory (`reg_player_inventory`, equipment slots,
+    /// `core:equipment`): first slot and count.
+    pub player_group: unsafe extern "C" fn(name: Str, out: *mut [u32; 2]) -> u32,
     /// `container` 0 own inventory, 1 the open menu's slots, 2 the menu cursor.
     pub client_slot: unsafe extern "C" fn(client: *mut ClientCtx, container: u32, slot: u32) -> ItemStack,
     /// Open menu as (kind, window, slot count); 0 if none.
@@ -1657,12 +1666,14 @@ pub struct Host {
     pub reg_tint_kind: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: u32),
     /// The color of a tint kind in a biome (any mod's of either).
     pub reg_biome_tint: unsafe extern "C" fn(reg: *mut Registrar, biome: Str, kind: Str, color: u32),
-    /// The player inventory: `slots` in all, the first `hotbar` of them the hotbar, and
-    /// `worn_count` from `worn_start` equipment (never filled by pickups, shown on the model).
-    /// Of several, the mod loaded last wins.
-    pub reg_player_inventory: unsafe extern "C" fn(reg: *mut Registrar, slots: u32, hotbar: u32, worn_start: u32, worn_count: u32),
-    /// The player inventory layout: slots, hotbar, worn start, worn count.
-    pub player_layout: unsafe extern "C" fn(out: *mut [u32; 4]),
+    /// The player inventory as named groups (one flagged `slot_flags::HOTBAR`); the engine lays
+    /// them out, the hotbar first and the equipment slots last. Of several, the mod loaded last
+    /// wins.
+    pub reg_player_inventory: unsafe extern "C" fn(reg: *mut Registrar, groups: Slice<SlotGroupDesc>),
+    /// An equipment slot of players: `parts` (`worn_parts`) of the model what is worn there
+    /// covers, `background` the GUI texture of the empty slot. It takes items tagged
+    /// `worn/<name>`, is never filled by pickups and shows on the model.
+    pub reg_equipment_slot: unsafe extern "C" fn(reg: *mut Registrar, name: Str, parts: u32, background: Str),
     /// A screen built by `cb` (a UI callback), opened by name (`client_op::OPEN_SCREEN`,
     /// `--screen`); one named like an engine screen (`core:pause`) replaces it.
     pub reg_screen: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cb: Callback),

@@ -188,6 +188,8 @@ pub struct ItemDef {
     pub on_use: Option<Callback>,
     /// Owning mod's load position, then registration order: how creative tabs list items.
     pub order: u64,
+    /// The player's equipment slot it is worn in (`worn/<slot>` tag), by index.
+    pub equip: Option<u32>,
 }
 
 /// A creative inventory tab: translated as `tab.<ns>.<name>`, or the mod's name for the tab a mod
@@ -450,9 +452,12 @@ impl Content {
         }
     }
 
-    /// Worn look of an item: covered part roles, inflation and texture.
+    /// Worn look of an item: the parts its equipment slot covers, inflation and texture.
     pub fn worn(&self, item: u32) -> Option<(abi::Worn, &str)> {
-        let w = self.item_value::<abi::Worn>(item, self.ids.worn)?;
+        let mut w = self.item_value::<abi::Worn>(item, self.ids.worn)?;
+        if let Some(e) = self.items.get(item as usize).and_then(|d| d.equip) {
+            w.roles = self.game.player_layout.equipment[e as usize].parts;
+        }
         Some((w, self.components.text(comps::ITEM, item, self.ids.worn_texture?)?))
     }
 
@@ -1177,6 +1182,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         block: None,
         on_use: None,
         order: 0,
+        equip: None,
     }];
     let mut item_values: Vec<(ModId, Vec<RawValue>)> = vec![(ModId(u32::MAX), Vec::new())];
     for (owner, it) in items {
@@ -1212,6 +1218,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             block,
             on_use: it.on_use,
             order: (mods[owner.0 as usize].order as u64) << 32 | it.seq as u64,
+            equip: None,
         });
     }
     let item_names: FxHashMap<String, u32> =
@@ -1313,9 +1320,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         for rc in &g.components {
             cb.declare(&rc.def.name, &rc.schema, Some(rc.def.size as usize), &|| who(rc.owner, "entity component"), &mut errors);
         }
-    }
-    for t in crate::registry::ENGINE_TAGS {
-        cb.declare(t, "", None, &|| "the engine".into(), &mut errors);
     }
     cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), &mut errors);
     for g in &games {
@@ -1656,6 +1660,24 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &order_of, &mut errors);
+    // A structure's box is what its blocks fill; a set size would only disagree with them.
+    if let Some(comp) = components.id(abi::comp::BLOCKS) {
+        for (k, kind) in game.entities.iter_mut().enumerate() {
+            if let Some((w, h)) = components.text(comps::ENTITY, k as u32, comp).and_then(crate::server::structure::extent) {
+                (kind.width, kind.height, kind.eye) = (w, h, h * crate::registry::EYE);
+            }
+        }
+    }
+    // Items worn in an equipment slot carry its `worn/<slot>` tag.
+    for (e, slot) in game.player_layout.equipment.iter().enumerate() {
+        if let Some(t) = components.id(&format!("worn/{}", slot.name)) {
+            for (i, d) in item_defs.iter_mut().enumerate() {
+                if components.has(comps::ITEM, i as u32, t) {
+                    d.equip = Some(e as u32);
+                }
+            }
+        }
+    }
     // Blocks open their menus; one with recipe kinds makes the block a station of them.
     for (b, menu) in opens_names.iter().enumerate().filter(|m| !m.1.is_empty()) {
         let def = &mut block_defs[b + 1];

@@ -17,6 +17,21 @@ pub fn origin(pos: DVec3) -> DVec3 {
     pos - DVec3::new(0.5, 0.0, 0.5)
 }
 
+/// The box a structure's `blocks` text fills around its entity: (width, height). Block
+/// (0, 0, 0) is centered on the entity, so the box reaches as far as the farthest block.
+pub fn extent(text: &str) -> Option<(f32, f32)> {
+    let mut hw: f32 = 0.0;
+    let mut top = i32::MIN;
+    for part in text.split(';').map(str::trim).filter(|p| !p.is_empty()) {
+        let n: Vec<i32> = part.split_whitespace().skip(1).filter_map(|v| v.parse().ok()).collect();
+        for p in n.chunks_exact(3) {
+            hw = hw.max((p[0] as f32 - 0.5).abs()).max((p[0] as f32 + 0.5).abs()).max((p[2] as f32 - 0.5).abs()).max((p[2] as f32 + 0.5).abs());
+            top = top.max(p[1] + 1);
+        }
+    }
+    (top > i32::MIN).then_some((hw * 2.0, top as f32))
+}
+
 /// The blocks a kind is built of (its `blocks` component), parsed once per kind.
 pub fn template(c: &Content, kind: u32) -> Option<&'static [(IVec3, u32)]> {
     static ALL: OnceLock<Vec<Option<Vec<(IVec3, u32)>>>> = OnceLock::new();

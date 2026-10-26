@@ -55,7 +55,8 @@ Text and bars can change while a screen is open. A binding's closure runs every 
 - `progress_bind(class, s, |view| 0.0..1.0)` for a bar, and `progress_bind_dir(.., dir, ..)` to fill another way, `abi::ui_dir::UP` for a flame
 - `icons(class, count, |view| value)` for a row of icons that shows a number in half-icon steps, like hearts. `icons_rtl` fills from the right, like hunger. A negative value hides the row
 
-`view` is a read-only look at the client: `view.me()` has your health and position, `view.component(&C)` a synced component of yours, `view.creative()` the game mode, and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
+`view` is a read-only look at the client, the same in HUD bindings, screens and frame hooks (`c.view()`): `view.me()` has your health and position, `view.inventory_group("core:equipment")` the stacks of a group of your inventory, `view.component(&C)` a synced component of yours, `view.creative()` the game mode, and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
+Anything the client already has is better read than mirrored into a component: base's armor bar adds up the points of what you wear, the way the server's damage does. A component read without the flag that sends it there says so in the log.
 
 ```rust
 static HEALTH: HudElement = HudElement::named("health");
@@ -129,7 +130,7 @@ r.menu(&CRAFTING)
         });
     });
 ```
-A group of a plain menu is the menu's own slots, given back to the player when the menu closes; `Slots::player(start)` shows slots of the player's inventory instead (the armor slots of the inventory screen), and machines' groups are the machine's inventory. `player_inventory()` adds the player's inventory and hotbar, which `ui.player_inventory(title)` draws. The shapes and rules a group can have (`output`, `input`, `accepts`, `limit`, `large`, `background`, `tooltip`, `priority`) are listed in the [machines guide](machines.md#creating-a-machine). In `on_change` and `on_take`, `m.group(name)` reads and writes a group's slots by their place in it.
+A group of a plain menu is the menu's own slots, given back to the player when the menu closes; `.equipment()` adds the player's equipment slots (drawn by `ui.equipment()`), and machines' groups are the machine's inventory. `player_inventory()` adds the player's inventory and hotbar, which `ui.player_inventory(title)` draws. The shapes and rules a group can have (`output`, `input`, `accepts`, `limit`, `large`, `background`, `tooltip`, `priority`) are listed in the [machines guide](machines.md#creating-a-machine). In `on_change` and `on_take`, `m.group(name)` reads and writes a group's slots by their place in it.
 
 Machines are menus tied to a block, with their own data and tick. The [machines guide](machines.md) covers them, including the component flags that their screens read.
 

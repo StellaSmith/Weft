@@ -1,10 +1,13 @@
 use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::{Component, ENERGY, Value};
-use crate::content::{Block, Biome, Entity, EntityCategory, GizmoGroup, HudElement, Menu, Pending, RecipeKind, Screen, TintKind};
+use crate::content::{Block, Biome, Entity, EntityCategory, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, Screen, TintKind};
 use crate::ui::{Ui, ui_callback};
 use crate::{Registry, World, callback, host, qualify};
 
 pub use abi::{Energy, EntityState, component_flags, damage, entity_flags, part_role, slot_flags};
+
+/// Eye height as a share of an entity's height, the engine's default too.
+pub const EYE_SHARE: f32 = 0.85;
 
 /// The engine's player kind, for hooks and components on players.
 pub static PLAYER: Entity = Entity::named("core:player");
@@ -247,18 +250,28 @@ impl InventoryGroup {
 
 // ---------------------------------------------------------------- recipes
 
-/// Slots of every player's inventory (`Registry::player_inventory`).
-#[derive(Clone, Debug)]
-pub struct PlayerLayout {
-    pub slots: u32,
-    pub hotbar: u32,
-    pub worn: std::ops::Range<u32>,
+pub struct PlayerInventoryBuilder<'a> {
+    raw: *mut abi::Registrar,
+    groups: GroupList,
+    _p: std::marker::PhantomData<&'a mut Registry>,
 }
 
-pub fn player_layout() -> PlayerLayout {
-    let mut o = [0u32; 4];
-    unsafe { (host().player_layout)(&mut o) };
-    PlayerLayout { slots: o[0], hotbar: o[1], worn: o[2]..o[2] + o[3] }
+impl PlayerInventoryBuilder<'_> {
+    /// A group of the player's inventory: its size from `slots` (`Slots::row(9).hotbar()`).
+    pub fn group(mut self, name: &str, slots: Slots) -> Self {
+        self.groups.push("", name, slots, abi::slot_owner::PLAYER);
+        self
+    }
+}
+
+impl Drop for PlayerInventoryBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let descs = self.groups.descs();
+        unsafe { (host().reg_player_inventory)(self.raw, Slice::new(&descs)) }
+    }
 }
 
 pub fn recipe_match(kind: &RecipeKind, grid: &[ItemStack], width: u32, height: u32) -> ItemStack {
@@ -534,7 +547,7 @@ impl EntityBuilder<'_> {
     pub fn size(mut self, width: f32, height: f32) -> Self {
         self.width = width;
         self.height = height;
-        self.eye = height * 0.85;
+        self.eye = height * EYE_SHARE;
         self
     }
     pub fn health(mut self, h: f32) -> Self {
@@ -734,6 +747,8 @@ impl MenuGroup<'_> {
 /// The groups `player_inventory()` adds, for `Ui::group` and `MenuCtx::group`.
 pub const INVENTORY_GROUP: &str = "core:inventory";
 pub const HOTBAR_GROUP: &str = "core:hotbar";
+/// Every equipment slot of a player's inventory (`w.inventory(player).group(EQUIPMENT_GROUP)`).
+pub const EQUIPMENT_GROUP: &str = "core:equipment";
 
 /// A group of slots: a grid, row or column of one inventory sharing its rules. Shown with
 /// `ui.group(name)`, read and written with `MenuCtx::group(name)`.
@@ -787,9 +802,9 @@ impl Slots {
         self.owner = Some(abi::slot_owner::BLOCK);
         self
     }
-    /// The player's own inventory from slot `start` (armor slots).
-    pub fn player(mut self, start: u32) -> Self {
-        (self.owner, self.start) = (Some(abi::slot_owner::PLAYER), start);
+    /// The player's hotbar, in `Registry::player_inventory`.
+    pub fn hotbar(mut self) -> Self {
+        self.flags |= slot_flags::HOTBAR;
         self
     }
     /// From this index of the owner's inventory instead of right after the group before.
@@ -918,6 +933,12 @@ impl MenuBuilder<'_> {
         self.groups.player_inventory();
         self
     }
+    /// The player's equipment slots, here among the groups, each named like its slot
+    /// (`ui.equipment()` draws them).
+    pub fn equipment(mut self) -> Self {
+        self.groups.push("", EQUIPMENT_GROUP, Slots { owner: Some(abi::slot_owner::PLAYER_EQUIPMENT), ..Slots::single() }, abi::slot_owner::PLAYER_EQUIPMENT);
+        self
+    }
     /// Recipes of this kind are made here: clicking an `arrow` bar of the screen shows them.
     pub fn recipes(mut self, kind: &RecipeKind) -> Self {
         self.recipes.push(kind.name().to_string());
@@ -1019,10 +1040,21 @@ impl Registry {
         MenuBuilder { name: menu.name().to_string(), reg: self, handle: Some(menu), desc: abi::MenuDesc::DEFAULT, groups: GroupList::new(), entity: String::new(), recipes: Vec::new() }
     }
 
-    /// The player inventory: `slots` in all, the first `hotbar` of them the hotbar, `worn`
-    /// equipment (never filled by pickups, shown on the model). The mod loaded last wins.
-    pub fn player_inventory(&mut self, slots: u32, hotbar: u32, worn: std::ops::Range<u32>) {
-        unsafe { (host().reg_player_inventory)(self.raw, slots, hotbar, worn.start, worn.len() as u32) }
+    /// The player inventory as named groups, one of them `.hotbar()`:
+    /// `r.player_inventory().group("hotbar", Slots::row(9).hotbar()).group("main", Slots::grid(9, 3))`.
+    /// The engine lays them out, hotbar first, the equipment slots (`equipment_slot`) after
+    /// everything; `w.inventory(player).group(name)` reads a group, `core:equipment` all of the
+    /// equipment. The mod loaded last wins.
+    pub fn player_inventory(&mut self) -> PlayerInventoryBuilder<'_> {
+        PlayerInventoryBuilder { raw: self.raw, groups: GroupList::new(), _p: std::marker::PhantomData }
+    }
+
+    /// An equipment slot of players (head, chest...): what is worn there covers `parts`
+    /// (`worn_parts`) of the model, `background` (from `gui/`) shows while it is empty. Items go
+    /// there with `.wearable(&SLOT, ..)`; menus show the slots with `.equipment()`.
+    pub fn equipment_slot(&mut self, slot: &EquipmentSlot, parts: u32, background: &str) {
+        let bg = crate::asset("gui", background);
+        unsafe { (host().reg_equipment_slot)(self.raw, Str::new(slot.name()), parts, Str::new(&bg)) }
     }
 
     /// The menu the inventory key opens.

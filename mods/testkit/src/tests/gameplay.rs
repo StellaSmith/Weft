@@ -12,7 +12,7 @@ fn item(name: &str) -> u32 {
 value! {
     /// The base game's hunger component, declared here the same way so the engine checks both
     /// agree on its layout.
-    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub armor: f32, pub timer: u32 }
+    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub timer: u32 }
 }
 static HUNGER: Component<Hunger> = Component::named("base:hunger");
 
@@ -104,6 +104,10 @@ pub async fn armor(t: T) -> R {
         t.frames(4).await?;
     }
     t.until("armor worn", Duration::from_secs(5), |t| (36..40).all(|s| !t.c().inventory_slot(s).is_empty())).await?;
+    // The player's inventory by group name: four equipment slots, all filled; the hotbar empty.
+    t.check_eq(t.op("group me core:equipment").await?, "4 4".to_string(), "equipment group (slots, filled)");
+    t.check_eq(t.op("group me base:head").await?, "1 1".to_string(), "the head slot");
+    t.check_eq(t.op("group me hotbar").await?, "9 0".to_string(), "hotbar group");
     t.shot("worn").await?;
     t.c().close_screen();
     t.no_screen().await?;

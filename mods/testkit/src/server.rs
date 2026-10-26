@@ -183,6 +183,11 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
         }
         "get" => Ok(block_name(w.get(a.pos()?)).to_string()),
+        "group" => {
+            let owner = a.owner(w, player)?;
+            let g = w.inventory(owner).group(a.word()?);
+            Ok(format!("{} {}", g.len(), (0..g.len()).filter(|&i| !g.get(i).is_empty()).count()))
+        }
         "pings" => Ok(PINGS.load(Ordering::Relaxed).to_string()),
         "setprop" => {
             let p = a.pos()?;

@@ -125,7 +125,7 @@ Families made in a loop take `Item::generated(format!("{metal}_ingot"))`, a hand
 ### Textures and other assets
 Every call that takes a file knows its folder: blocks look in `block/`, items in `item/`, mobs and worn armor in `entity/`, particles in `particle/`, slot backgrounds and `{img:..}` in `gui/`, sounds in `sounds/`.\
 So `.texture("ruby")` for a block means `mymod:block/ruby`, for an item `mymod:item/ruby`, and `"base:ruby"` is the same folder of the base game.\
-Subfolders are fine (`.worn(.., "armor/ruby_1")` is `entity/armor/ruby_1`), but a name can't leave its folder: `"block/ruby"` for an item, `..` or an absolute path stop the game at load. An item that wants to look like a block gets a model, not the block's texture path.\
+Subfolders are fine (`.wearable(.., "armor/ruby_1")` is `entity/armor/ruby_1`), but a name can't leave its folder: `"block/ruby"` for an item, `..` or an absolute path stop the game at load. An item that wants to look like a block gets a model, not the block's texture path.\
 Resource packs replace any of them by putting a file at the same place.\
 Textures can also be [animated, glow and have overlays](textures.md), or [be connected](ctm.md)).
 
@@ -219,7 +219,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `tool("pickaxe")`, `tool_level(tier)`, `mining_speed(speed)`
 - `attack_damage`
 - `placed_block(&BLOCK)`
-- `worn(..)` for armor
+- `wearable(&HEAD, inflate, texture)` for armor and anything else worn in an equipment slot
 - `on_use`
 
 ### Entities
@@ -233,7 +233,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `on_tick`, `on_hurt`, `on_death`, `on_interact`
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
-`blocks(&[("base:oak_planks", from, to)])` makes a flying structure players can build on.
+`blocks(&[("base:oak_planks", from, to)])` makes a flying structure players can build on; its box is what the blocks fill, no `size` needed.`EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos[1] + st.size[2]` is where its eyes are.
 
 ### Machines
 `r.machine(&BLOCK, &MENU)` is block + block entity + inventory + menu + screen in one go.\
@@ -318,7 +318,7 @@ Reading values by name: `cmd.int("amount")`, `cmd.targets("who")`.\
 Inside any callback you get a `World` (`w`):
 - blocks (`get`, `set`, `schedule`)
 - entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `navigate`, `walk`)
-- inventories (`inventory(id).get/set/insert`)
+- inventories (`inventory(id).get/set/insert`, `inventory(id).group("fuel")`); a player's by the groups its inventory was declared with (`r.player_inventory().group("hotbar", Slots::row(9).hotbar())..`), `core:equipment` for all equipment slots
 - components, energy, menus
 - particles (`w.spawn_particles(&SPARK, pos).count(20)`)
 - sounds (`w.play_sound(&S, pos, volume)`)

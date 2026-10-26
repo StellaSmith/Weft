@@ -466,8 +466,9 @@ pub struct RawGame {
     pub command_extensions: Vec<(ModId, CommandExtension)>,
     /// (mod, menu): of several, the mod loaded last wins.
     pub player_menu: Option<(ModId, String)>,
-    /// (mod, layout): likewise.
-    pub player_layout: Option<(ModId, PlayerLayout)>,
+    /// (mod, groups (name, cols, rows, flags)): likewise.
+    pub player_inventory: Option<(ModId, Vec<(String, u32, u32, u32)>)>,
+    pub equipment: Vec<EquipmentSlot>,
     pub screens: Vec<ScreenDef>,
     pub screen_parts: Vec<ScreenPart>,
     /// (set, words) for `word(#set)` command parameters.
@@ -576,7 +577,8 @@ pub struct ScreenDef {
     pub cb: Callback,
 }
 
-/// Slots of every player's inventory.
+/// Slots of every player's inventory, laid out by the engine from the groups and equipment
+/// slots mods declare.
 #[derive(Clone, Debug)]
 pub struct PlayerLayout {
     pub slots: u32,
@@ -584,11 +586,58 @@ pub struct PlayerLayout {
     pub hotbar: u32,
     /// Equipment: never filled by pickups, worn on the model.
     pub worn: std::ops::Range<u32>,
+    /// Named groups: the declared ones, each equipment slot, and `core:equipment` for all of them.
+    pub groups: Vec<PlayerGroup>,
+    pub equipment: Vec<EquipmentSlot>,
 }
+
+#[derive(Clone, Debug)]
+pub struct PlayerGroup {
+    pub name: String,
+    pub start: u32,
+    pub count: u32,
+    pub cols: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct EquipmentSlot {
+    pub name: String,
+    /// `worn_parts` of the model it covers.
+    pub parts: u32,
+    pub background: String,
+}
+
+/// The group holding every equipment slot.
+pub const EQUIPMENT_GROUP: &str = "core:equipment";
 
 impl Default for PlayerLayout {
     fn default() -> Self {
-        PlayerLayout { slots: 36, hotbar: 9, worn: 36..36 }
+        PlayerLayout::new(&[("hotbar".into(), 9, 1, weft_abi::slot_flags::HOTBAR), ("main".into(), 9, 3, 0)], Vec::new())
+    }
+}
+
+impl PlayerLayout {
+    /// The hotbar group first, then the other groups in order, then the equipment slots.
+    pub fn new(groups: &[(String, u32, u32, u32)], equipment: Vec<EquipmentSlot>) -> PlayerLayout {
+        let mut ordered: Vec<&(String, u32, u32, u32)> = groups.iter().filter(|g| g.3 & weft_abi::slot_flags::HOTBAR != 0).take(1).collect();
+        ordered.extend(groups.iter().filter(|g| g.3 & weft_abi::slot_flags::HOTBAR == 0));
+        let hotbar = ordered.first().filter(|g| g.3 & weft_abi::slot_flags::HOTBAR != 0).map_or(0, |g| g.1 * g.2);
+        let mut at = 0;
+        let mut out = Vec::new();
+        for (name, cols, rows, _) in ordered {
+            out.push(PlayerGroup { name: name.clone(), start: at, count: cols * rows, cols: (*cols).max(1) });
+            at += cols * rows;
+        }
+        let worn = at..at + equipment.len() as u32;
+        for (i, e) in equipment.iter().enumerate() {
+            out.push(PlayerGroup { name: e.name.clone(), start: worn.start + i as u32, count: 1, cols: 1 });
+        }
+        out.push(PlayerGroup { name: EQUIPMENT_GROUP.into(), start: worn.start, count: worn.len() as u32, cols: 1 });
+        PlayerLayout { slots: worn.end, hotbar, worn, groups: out, equipment }
+    }
+
+    pub fn group(&self, name: &str) -> Option<&PlayerGroup> {
+        self.groups.iter().find(|g| g.name == name)
     }
 }
 
@@ -801,13 +850,16 @@ fn write_cell(cell: usize, id: u32) {
     }
 }
 
+/// Eye height as a share of an entity's height, unless it says otherwise (vanilla's default).
+pub const EYE: f32 = 0.85;
+
 fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
     EntityKind {
         name: name.into(),
         owner: ENGINE,
         width,
         height,
-        eye: height * 0.9,
+        eye: height * EYE,
         speed: 4.3,
         flags,
         category: 0,
@@ -849,8 +901,6 @@ fn player_parts() -> Vec<Part> {
     ]
 }
 
-/// Tags the engine refers to by name, so they have ids even when no mod uses them.
-pub const ENGINE_TAGS: &[&str] = &abi::comp::ARMOR;
 /// Entity component with attribute modifiers.
 pub const MODIFIERS: &str = "core:modifiers";
 
@@ -922,7 +972,8 @@ pub fn freeze(
     let mut recipes = Vec::new();
     let mut menus = Vec::new();
     let mut player_menu = None;
-    let mut player_layout: Option<(ModId, PlayerLayout)> = None;
+    let mut player_inventory: Option<(ModId, Vec<(String, u32, u32, u32)>)> = None;
+    let mut equipment: Vec<EquipmentSlot> = Vec::new();
     let mut block_entities = Vec::new();
     let mut attach: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
     let mut packets: Vec<(ModId, String, u32, Callback)> = Vec::new();
@@ -981,11 +1032,12 @@ pub fn freeze(
         }
         g.screens.extend(r.screens);
         g.screen_parts.extend(r.screen_parts);
-        if let Some((owner, l)) = r.player_layout {
-            if player_layout.as_ref().is_none_or(|(o, _)| order(owner) >= order(*o)) {
-                player_layout = Some((owner, l));
+        if let Some((owner, l)) = r.player_inventory {
+            if player_inventory.as_ref().is_none_or(|(o, _)| order(owner) >= order(*o)) {
+                player_inventory = Some((owner, l));
             }
         }
+        equipment.extend(r.equipment);
         block_entities.extend(r.block_entities);
         attach.extend(r.attach);
     }
@@ -1205,11 +1257,36 @@ pub fn freeze(
     }
     g.screens.sort_by_key(|s| order(s.owner));
     g.screen_parts.sort_by_key(|p| (p.order, order(p.owner)));
-    g.player_layout = player_layout.map(|l| l.1).unwrap_or_default();
-    let l = &g.player_layout;
-    if l.hotbar > l.slots || l.worn.end > l.slots || l.worn.start < l.hotbar {
-        errors.push(format!("player inventory: hotbar {} and worn {:?} must lie within {} slots, worn after the hotbar", l.hotbar, l.worn, l.slots));
-        g.player_layout = PlayerLayout::default();
+    g.player_layout = match player_inventory {
+        Some((_, groups)) => {
+            if !groups.iter().any(|g| g.3 & weft_abi::slot_flags::HOTBAR != 0) {
+                errors.push("player inventory: no group is the hotbar (`.hotbar()`)".into());
+            }
+            PlayerLayout::new(&groups, equipment)
+        }
+        None => PlayerLayout { ..PlayerLayout::new(&[("hotbar".into(), 9, 1, weft_abi::slot_flags::HOTBAR), ("main".into(), 9, 3, 0)], equipment) },
+    };
+    // Menus showing the player's equipment get a group per slot, taking what is worn there.
+    let layout = g.player_layout.clone();
+    for m in &mut g.menus {
+        let Some(at) = m.groups.iter().position(|g| g.owner == weft_abi::slot_owner::PLAYER_EQUIPMENT) else { continue };
+        m.groups.remove(at);
+        for (i, e) in layout.equipment.iter().enumerate().rev() {
+            m.groups.insert(at, GroupDef {
+                name: e.name.clone(),
+                owner: weft_abi::slot_owner::PLAYER,
+                start: layout.worn.start + i as u32,
+                cols: 1,
+                rows: 1,
+                flags: 0,
+                accepts: format!("worn/{}", e.name),
+                limit: 1,
+                size: 18.0,
+                background: (!e.background.is_empty()).then(|| e.background.clone()),
+                tooltip: None,
+                priority: 1,
+            });
+        }
     }
     g.player_menu = player_menu.and_then(|(_, n)| {
         let m = g.menu_names.get(&n).copied();

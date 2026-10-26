@@ -109,10 +109,13 @@ After that the player has the animations of your `animations/player.animation.js
 In first person all you see is the hand, and it can be animated as well. A bone called `hand` in the animation moves and turns it. No model has such a bone, only the animation names it. The wave in `player.animation.json` raises the arm and moves `hand` along, so the hand you see follows suit.
 
 ## Armor and other worn items
-An item shows up on the wearer when it sits in an equipment slot:
+An item shows up on the wearer when it sits in an equipment slot. The slots are declared once, with the bones what is worn there covers and the silhouette of the empty slot, and an item only names its slot:
 ```rust
-r.item(&RUBY_HELMET).worn(worn_parts::HEAD, 1.0, "armor/ruby_1")
+static HEAD: EquipmentSlot = EquipmentSlot::named("base:head");    // the base game's, or your own
+r.equipment_slot(&BACK, worn_parts::BODY, "slot_back");             // a slot of your mod
+r.item(&RUBY_HELMET).wearable(&HEAD, 1.0, "armor/ruby_1")
 ```
-The first argument says which bones it covers (`worn_parts::HEAD`, `BODY`, `ARMS`, `LEGS`, combined with `|`), the second how far it sticks out from the body in pixels (vanilla armor uses 1.0, and 0.5 for the leggings layer), and the third is its texture. That texture is drawn on the same boxes as the wearer's, so it follows the wearer's skin layout, and the 64x32 files in `mods/base/assets/textures/entity/armor/` show how (the name is under `entity/`). It works on any model with the right roles, mobs made with `biped` included.
+`worn_parts` are `HEAD`, `BODY`, `ARMS`, `LEGS`, combined with `|`. `wearable` takes how far the piece sticks out from the body in pixels (vanilla armor uses 1.0, and 0.5 for the leggings layer) and its texture.
+The slot then takes the item in the inventory, shift-clicks put it there, and a new slot of any mod shows up in the inventory screen by itself (`.equipment()` on the menu, `ui.equipment()` on its screen). That texture is drawn on the same boxes as the wearer's, so it follows the wearer's skin layout, and the 64x32 files in `mods/base/assets/textures/entity/armor/` show how (the name is under `entity/`). It works on any model with the right roles, mobs made with `biped` included.
 
 Items in the world and in the hand are flat sprites with some thickness, or the boxes of a block, so there are no custom item models. `F3+T` reloads models and animations along with textures while the game runs.

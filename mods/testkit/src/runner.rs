@@ -134,10 +134,11 @@ impl T {
     }
 
     /// Where world point `p` is drawn this frame (fractions of the window), seen from the eyes
-    /// of the standing local player in first person; `None` behind the camera.
+    /// of the local player in first person; `None` behind the camera.
     pub fn on_screen(&self, p: [f64; 3]) -> Option<(f32, f32)> {
         let s = self.state();
-        let eye = [s.shown[0], s.shown[1] + 1.62, s.shown[2]];
+        let eye_y = self.c().entity(0).map_or(1.62, |e| e.size[2] as f64);
+        let eye = [s.shown[0], s.shown[1] + eye_y, s.shown[2]];
         let (sy, cy) = (s.yaw as f64).sin_cos();
         let (sp, cp) = (s.pitch as f64).sin_cos();
         let fwd = [-sy * cp, sp, -cy * cp];

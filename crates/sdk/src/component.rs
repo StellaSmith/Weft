@@ -3,9 +3,9 @@
 //! `ingots/iron`); `mymod:name` is private to a mod.
 //!
 //! ```ignore
-//! pub static FUEL: Component<u32> = Component::new("fuel");
-//! pub static PLANT_SOIL: Tag = Tag::new("plant_soil");
-//! r.item("peat").set(&FUEL, 800);
+//! pub static FUEL: Component<u32> = Component::named("fuel");
+//! pub static PLANT_SOIL: Tag = Tag::named("plant_soil");
+//! r.item(&PEAT).set(&FUEL, 800);
 //! r.set_tagged("logs", &FUEL, 300);                  // every block and item tagged `logs`
 //! if let Some(ticks) = FUEL.on_item(stack.item) { .. }
 //! if PLANT_SOIL.on_block(w.get(below)) { .. }
@@ -220,7 +220,9 @@ impl Lookup {
     }
 }
 
-/// Typed handle to a component, found by name the first time it is used.
+/// Typed handle to a component, found by name the first time it is used. Component and tag
+/// names are a vocabulary shared by all mods, not things a mod owns: `fuel` means the same
+/// to everyone and is used as written, a `modid:` prefix only keeps a term to one mod.
 pub struct Component<T: Value> {
     name: &'static str,
     lookup: Lookup,
@@ -228,7 +230,7 @@ pub struct Component<T: Value> {
 }
 
 impl<T: Value> Component<T> {
-    pub const fn new(name: &'static str) -> Self {
+    pub const fn named(name: &'static str) -> Self {
         Component { name, lookup: Lookup::new(), _p: PhantomData }
     }
     pub fn name(&self) -> &'static str {
@@ -288,7 +290,7 @@ pub struct Tag {
 }
 
 impl Tag {
-    pub const fn new(name: &'static str) -> Self {
+    pub const fn named(name: &'static str) -> Self {
         Tag { name, lookup: Lookup::new() }
     }
     pub fn name(&self) -> &'static str {
@@ -371,30 +373,30 @@ impl StackData for ItemStack {
 }
 
 // The components the engine reads itself.
-pub static MAX_STACK: Component<u32> = Component::new(abi::comp::MAX_STACK);
-pub static DURABILITY: Component<u32> = Component::new(abi::comp::DURABILITY);
-pub static ATTACK_DAMAGE: Component<f32> = Component::new(abi::comp::ATTACK_DAMAGE);
-pub static MINING_SPEED: Component<f32> = Component::new(abi::comp::MINING_SPEED);
-pub static TOOL_LEVEL: Component<u32> = Component::new(abi::comp::TOOL_LEVEL);
-pub static HARVEST_LEVEL: Component<u32> = Component::new(abi::comp::HARVEST_LEVEL);
-pub static NEEDS_TOOL: Tag = Tag::new(abi::comp::NEEDS_TOOL);
-pub static DAMAGE: Component<u32> = Component::new(abi::comp::DAMAGE);
-pub static CONDUCTOR: Tag = Tag::new(abi::comp::CONDUCTOR);
-pub static ENERGY: Component<abi::Energy> = Component::new(abi::comp::ENERGY);
-pub static WORN: Component<abi::Worn> = Component::new(abi::comp::WORN);
-pub static WORN_TEXTURE: Component<Text> = Component::new(abi::comp::WORN_TEXTURE);
-pub static WEAR_PER_HIT: Component<u32> = Component::new(abi::comp::WEAR_PER_HIT);
-pub static LIQUID: Component<Text> = Component::new(abi::comp::LIQUID);
-pub static REMAINDER: Component<Text> = Component::new(abi::comp::REMAINDER);
-pub static SHADER: Component<Text> = Component::new(abi::comp::SHADER);
-pub static MODEL: Component<Text> = Component::new(abi::comp::MODEL);
-pub static ANIMATIONS: Component<Text> = Component::new(abi::comp::ANIMATIONS);
-pub static SOUND: Component<Text> = Component::new(abi::comp::SOUND);
+pub static MAX_STACK: Component<u32> = Component::named(abi::comp::MAX_STACK);
+pub static DURABILITY: Component<u32> = Component::named(abi::comp::DURABILITY);
+pub static ATTACK_DAMAGE: Component<f32> = Component::named(abi::comp::ATTACK_DAMAGE);
+pub static MINING_SPEED: Component<f32> = Component::named(abi::comp::MINING_SPEED);
+pub static TOOL_LEVEL: Component<u32> = Component::named(abi::comp::TOOL_LEVEL);
+pub static HARVEST_LEVEL: Component<u32> = Component::named(abi::comp::HARVEST_LEVEL);
+pub static NEEDS_TOOL: Tag = Tag::named(abi::comp::NEEDS_TOOL);
+pub static DAMAGE: Component<u32> = Component::named(abi::comp::DAMAGE);
+pub static CONDUCTOR: Tag = Tag::named(abi::comp::CONDUCTOR);
+pub static ENERGY: Component<abi::Energy> = Component::named(abi::comp::ENERGY);
+pub static WORN: Component<abi::Worn> = Component::named(abi::comp::WORN);
+pub static WORN_TEXTURE: Component<Text> = Component::named(abi::comp::WORN_TEXTURE);
+pub static WEAR_PER_HIT: Component<u32> = Component::named(abi::comp::WEAR_PER_HIT);
+pub static LIQUID: Component<Text> = Component::named(abi::comp::LIQUID);
+pub static REMAINDER: Component<Text> = Component::named(abi::comp::REMAINDER);
+pub static SHADER: Component<Text> = Component::named(abi::comp::SHADER);
+pub static MODEL: Component<Text> = Component::named(abi::comp::MODEL);
+pub static ANIMATIONS: Component<Text> = Component::named(abi::comp::ANIMATIONS);
+pub static SOUND: Component<Text> = Component::named(abi::comp::SOUND);
 
 /// The stack after one of it is used up (burnt as fuel, taken by a recipe): one less, and the
 /// last one leaves its `remainder` behind (a lava bucket its bucket).
 pub fn use_one(stack: ItemStack) -> ItemStack {
-    match REMAINDER.on_item(stack.item).and_then(|r| crate::find_item(r.as_str())) {
+    match REMAINDER.on_item(stack.item).and_then(|r| crate::Item::lookup(r.as_str())) {
         Some(left) if stack.count == 1 => ItemStack::new(left, 1),
         _ => stack.shrink(1),
     }

@@ -16,11 +16,12 @@ Examples to copy from:
 
 ## Creating a machine
 ```rust
-static FURNACE_MENU: Menu = Menu::new();
-static SMELTING: Component<Smelting> = Component::new("base:smelting");
+static FURNACE: Block = Block::named("furnace");
+static FURNACE_MENU: Menu = Menu::named("furnace");
+static SMELTING: Component<Smelting> = Component::named("base:smelting");
 
-r.machine("furnace", &FURNACE_MENU)
-    .block(|b| b.hardness(3.5).mineable("pickaxe").needs_tool(0).tab("functional"))
+r.machine(&FURNACE, &FURNACE_MENU)
+    .block(|b| b.hardness(3.5).mineable("pickaxe").needs_tool(0).tab(&FUNCTIONAL))
     .group("input", Slots::one())
     .group("fuel", Slots::one().accepts("fuel"))
     .group("output", Slots::one().output())
@@ -28,7 +29,7 @@ r.machine("furnace", &FURNACE_MENU)
     .on_tick(tick_furnaces)
     .screen(|ui| { /* see below */ });
 ```
-`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. `entity_handle(&E)` gives you an `Entity` static if your code needs to find the block entity.
+`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. The block entity is named like the block, so `Entity::named("furnace")` finds it if your code needs to.
 
 Slots come in named groups. The machine's inventory holds all of its groups, the engine works out how big it is and which slot is which, and the tick and the screen ask for a group by its name. A group starts from a shape and adds rules:
 
@@ -106,13 +107,13 @@ Anything where inputs turn into outputs over time is a recipe kind, and a machin
 ```rust
 static SMELTING_RECIPES: RecipeKind = RecipeKind::named("base:smelting");
 
-r.machine("electric_furnace", &FURNACE_MENU)
+r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
     .recipes(&SMELTING_RECIPES)          // its arrow opens them, the recipe viewer shows it next to them
     ..;
 // in the tick:
 if let Some((output, time)) = recipe_process(&SMELTING_RECIPES, input.item) { .. }
 ```
-`recipe_process` gives the output and the time in ticks for one input. Recipes are added the usual way, `r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200)`, so every machine that uses the kind smelts it, whichever mod it comes from. `recipes(..)` makes the `arrow` bars of the machine's screen open the kind in the recipe viewer, with "Recipes" over them; a block that is no machine (a crafting table) is named with `r.recipe_station(&KIND, "crafting_table")` instead.
+`recipe_process` gives the output and the time in ticks for one input. Recipes are added the usual way, `r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200)`, so every machine that uses the kind smelts it, whichever mod it comes from. `recipes(..)` makes the `arrow` bars of the machine's screen open the kind in the recipe viewer, with "Recipes" over them; a block that is no machine (a crafting table) is named with `r.recipe_station(&KIND, &CRAFTING_TABLE)` instead.
 
 A recipe can say more than one output and a time:
 ```rust
@@ -135,12 +136,12 @@ r.recipe_kind(&ALLOYING)
 Generators, cables and machines from different mods work together through one contract in the engine. An entity with the `core:energy` component takes part, and a block tagged `conductor` is a cable. The block entities next to a cable, or a chain of them, form a network, and once per tick the engine shares what the generators offer among the machines that want it.
 
 ```rust
-r.machine("electric_furnace", &FURNACE_MENU)
+r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
     .group("input", Slots::one())
     .group("output", Slots::one().output())
     .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
     .on_tick(tick_furnaces);
-r.block("cable").model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor");
+r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor");
 ```
 `Energy` is `stored` and `capacity`, plus `max_in` and `max_out`, the most it takes from or gives to the network per tick. A generator has `max_in: 0`, a machine `max_out: 0`, and a battery has both, without feeding itself. In the tick, generators add to `stored` and machines spend it:
 ```rust

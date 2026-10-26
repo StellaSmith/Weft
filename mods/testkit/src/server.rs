@@ -17,24 +17,30 @@ value! {
 value! {
     struct Smelted { furnace: u64, input: u32, output: ItemStack }
 }
-static EATEN: Event<Eaten> = Event::new("eaten");
-static SMELTED: Event<Smelted> = Event::new("smelted");
+static EATEN: Event<Eaten> = Event::named("base:eaten");
+static SMELTED: Event<Smelted> = Event::named("base:smelted");
 static GOLD: Block = Block::named("base:gold_block");
 /// Shared with everyone who sees the entity, for the sync test.
-pub static MARK: Component<u32> = Component::new("testkit:mark");
+pub static MARK: Component<u32> = Component::named("testkit:mark");
 /// Server-side stack data that is not saved either.
-pub static SECRET: Component<u32> = Component::new("testkit:secret");
+pub static SECRET: Component<u32> = Component::named("testkit:secret");
+static PIG: Entity = Entity::named("base:pig");
+pub static COUNT_MARKS: Rule = Rule::named("count_marks");
+pub static PROTECT_GOLD: Rule = Rule::named("protect_gold");
+pub static HALF_DAMAGE: Rule = Rule::named("half_damage");
+pub static OP: Channel = Channel::named("op");
+pub static REPLY: Channel = Channel::named("reply");
 
 fn count(i: usize, n: usize) {
     COUNTS[i].fetch_add(n as u32, Ordering::Relaxed);
 }
 
 pub fn register(r: &mut Registry) {
-    r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS, &["base:pig"]);
-    r.rule("count_marks", 0);
+    r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS, &[&PIG]);
+    r.rule(&COUNT_MARKS, 0);
     // While the rule is on, every marked pig counts up once a tick.
     r.system(&MARK, |b| {
-        if b.world().rule("testkit:count_marks") == 0 {
+        if b.world().rule(&COUNT_MARKS) == 0 {
             return;
         }
         for m in b.values().iter_mut().filter(|m| **m > 0) {
@@ -43,11 +49,11 @@ pub fn register(r: &mut Registry) {
     });
     r.stack_component(&SECRET, abi::stack_flags::SERVER_ONLY | abi::stack_flags::NO_SAVE);
     // Switches for the tests of the extension mechanisms, off unless a test turns them on.
-    r.rule("protect_gold", 0);
-    r.rule("half_damage", 0);
-    r.intercept(question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && q.world().rule("testkit:protect_gold") != 0 { Verdict::Deny } else { Verdict::Abstain });
-    r.modify(chain::DAMAGE, stage::FINAL, |m| {
-        if m.world().rule("testkit:half_damage") != 0 {
+    r.rule(&PROTECT_GOLD, 0);
+    r.rule(&HALF_DAMAGE, 0);
+    r.intercept(&question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && q.world().rule(&PROTECT_GOLD) != 0 { Verdict::Deny } else { Verdict::Abstain });
+    r.modify(&chain::DAMAGE, stage::FINAL, |m| {
+        if m.world().rule(&HALF_DAMAGE) != 0 {
             m.value *= 0.5;
         }
     });
@@ -59,7 +65,7 @@ pub fn register(r: &mut Registry) {
     r.on(&PLAYER_JOINED, |b| count(5, b.len()));
     r.on(&EATEN, |b| count(6, b.len()));
     r.on(&SMELTED, |b| count(7, b.len()));
-    r.packet("op", |p| {
+    r.packet(&OP, |p| {
         let data = p.data();
         if data.len() < 4 {
             return;
@@ -72,7 +78,7 @@ pub fn register(r: &mut Registry) {
         };
         let mut out = seq.to_vec();
         out.extend_from_slice(answer.as_bytes());
-        p.reply("reply", &out);
+        p.reply(&REPLY, &out);
     });
 }
 
@@ -83,12 +89,12 @@ fn block_state(name: &str) -> Result<u32, String> {
         n if n.contains(':') => n.to_string(),
         n => format!("base:{n}"),
     };
-    find_block(&n).map(|s| s + i).ok_or_else(|| format!("no block {n}"))
+    Block::lookup(&n).map(|s| s + i).ok_or_else(|| format!("no block {n}"))
 }
 
 fn item(name: &str) -> Result<u32, String> {
     let n = if name.contains(':') { name.to_string() } else { format!("base:{name}") };
-    find_item(&n).ok_or_else(|| format!("no item {n}"))
+    Item::lookup(&n).ok_or_else(|| format!("no item {n}"))
 }
 
 fn stack_text(s: ItemStack) -> String {
@@ -218,7 +224,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
         }
         "spawn" => {
             let kind = a.word()?;
-            let k = find_entity(&if kind.contains(':') { kind.to_string() } else { format!("base:{kind}") }).ok_or_else(|| format!("no entity {kind}"))?;
+            let k = Entity::lookup(&if kind.contains(':') { kind.to_string() } else { format!("base:{kind}") }).ok_or_else(|| format!("no entity {kind}"))?;
             let p = a.pos()?;
             Ok(w.spawn_kind(k, [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5]).to_string())
         }
@@ -255,8 +261,8 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let r: i32 = a.num()?;
             let me = w.entity(player).ok_or("no player")?;
             let c = [me.pos[0].floor() as i32, me.pos[1].floor() as i32, me.pos[2].floor() as i32];
-            let crystal = find_block("testmod:glow_crystal").ok_or("no crystal block")?;
-            let cave = Tag::new("cave");
+            let crystal = Block::lookup("testmod:glow_crystal").ok_or("no crystal block")?;
+            let cave = Tag::named("cave");
             let mut biomes: std::collections::BTreeMap<&str, u32> = Default::default();
             let (mut in_cave, mut elsewhere) = (0, 0);
             for y in c[1] - r..=c[1] + r {
@@ -277,7 +283,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             // `drops n`: n dropped stacks of a few kinds (blocks and sprites) in a grid north of
             // the player, 1.1 apart so they do not merge.
             let n: u32 = a.num()?;
-            let kinds: Vec<u32> = ["base:dirt", "base:coal", "base:iron_pickaxe", "base:dandelion", "base:stick", "base:torch"].iter().filter_map(|k| find_item(k)).collect();
+            let kinds: Vec<u32> = ["base:dirt", "base:coal", "base:iron_pickaxe", "base:dandelion", "base:stick", "base:torch"].iter().filter_map(|k| Item::lookup(k)).collect();
             let side = (n as f64).sqrt().ceil() as u32;
             for i in 0..n {
                 let (x, z) = ((i % side) as f64 * 1.1 - side as f64 * 0.55, -3.0 - (i / side) as f64 * 1.1);
@@ -288,7 +294,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
         "find" => {
             // `find r name`: the first block of that name within `r` of the player.
             let r: i32 = a.num()?;
-            let id = block_of(find_block(a.word()?).ok_or("no such block")?);
+            let id = block_of(Block::lookup(a.word()?).ok_or("no such block")?);
             for y in me[1] - r..=me[1] + r {
                 for z in me[2] - r..=me[2] + r {
                     for x in me[0] - r..=me[0] + r {
@@ -304,7 +310,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             // `census r a,b`: how many of each block lie within `r` of the player.
             let r: i32 = a.num()?;
             let names: Vec<&str> = a.word()?.split(',').collect();
-            let ids: Vec<u32> = names.iter().map(|n| find_block(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
+            let ids: Vec<u32> = names.iter().map(|n| Block::lookup(n).map(block_of).ok_or(format!("no block {n}"))).collect::<Result<_, _>>()?;
             let mut counts = vec![0u32; ids.len()];
             for y in me[1] - r..=me[1] + r {
                 for z in me[2] - r..=me[2] + r {
@@ -360,7 +366,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
         }
         "menu" => {
             let name = a.word()?;
-            let m = find_menu(name).ok_or_else(|| format!("no menu {name}"))?;
+            let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
             let p = a.pos()?;
             if !w.open_menu_kind_at(player, m, p) {
                 return Err(format!("no block entity at {p:?} ({})", block_name(w.get(p))));
@@ -369,7 +375,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
         }
         "vmenu" => {
             let name = a.word()?;
-            let m = find_menu(name).ok_or_else(|| format!("no menu {name}"))?;
+            let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
             let slots: u32 = a.num()?;
             let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
             let id = w.virtual_inventory(slots, pos);
@@ -415,24 +421,24 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
         "attr" => {
             let owner = a.owner(w, player)?;
             let name = a.word()?;
-            let (v, text) = w.explain_attribute(owner, name);
+            let (v, text) = w.explain_attribute(owner, Attribute::generated(name.to_string()));
             Ok(format!("{v} | {text}"))
         }
         "attr_mod" => {
             let owner = a.owner(w, player)?;
             let (name, id, op) = (a.word()?, a.word()?, a.num::<u32>()?);
             let (amount, ticks) = (a.num::<f64>()?, a.num::<u64>()?);
-            w.add_modifier(owner, name, id, op, amount, ticks);
+            w.add_modifier(owner, Attribute::generated(name.to_string()), id, op, amount, ticks);
             Ok(String::new())
         }
         "attr_rm" => {
             let owner = a.owner(w, player)?;
             let (name, id) = (a.word()?, a.word()?);
-            w.remove_modifier(owner, name, id);
+            w.remove_modifier(owner, Attribute::generated(name.to_string()), id);
             Ok(String::new())
         }
         "loot" => {
-            let table = a.word()?.to_string();
+            let table = LootTable::generated(a.word()?.to_string());
             let n: u32 = a.num()?;
             let mut ctx = LootCtx::default();
             while let Ok(word) = a.word() {
@@ -444,7 +450,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             }
             let mut totals: std::collections::BTreeMap<String, u32> = Default::default();
             for _ in 0..n {
-                for s in w.roll_loot(&table, &ctx) {
+                for s in w.roll_loot(table, &ctx) {
                     *totals.entry(item_name(s.item).to_string()).or_default() += s.count;
                 }
             }
@@ -462,7 +468,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let amount: f64 = a.num()?;
             let cause: u32 = a.num().unwrap_or(abi::damage::GENERIC);
             let q = abi::Query { entity: player, cause, amount, ..query() };
-            let (v, text) = w.explain(chain::DAMAGE, amount, &q);
+            let (v, text) = w.explain(&chain::DAMAGE, amount, &q);
             Ok(format!("{v} | {text}"))
         }
         "snapshot" => {

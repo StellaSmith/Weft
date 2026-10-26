@@ -22,8 +22,8 @@ static PLAN: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 
 fn init(r: &mut Registry) {
     server::register(r);
-    r.client_packet("reply", |_, data| runner::reply(data));
-    r.key("probe", "F9");
+    r.client_packet(&server::REPLY, |_, data| runner::reply(data));
+    r.key(&runner::PROBE, "F9");
     // A branch of an engine command, handled by this mod (on the client, like /gizmo).
     r.command_branch("gizmo", "probe <n:int>", |cmd| {
         let n = cmd.int("n").unwrap_or(0);

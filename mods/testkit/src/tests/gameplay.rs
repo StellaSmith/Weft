@@ -6,7 +6,7 @@ use super::{add, at};
 use crate::runner::{R, T};
 
 fn item(name: &str) -> u32 {
-    find_item(name).unwrap_or(u32::MAX)
+    Item::lookup(name).unwrap_or(u32::MAX)
 }
 
 value! {
@@ -14,7 +14,7 @@ value! {
     /// agree on its layout.
     pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub armor: f32, pub timer: u32 }
 }
-static HUNGER: Component<Hunger> = Component::new("base:hunger");
+static HUNGER: Component<Hunger> = Component::named("base:hunger");
 
 /// Shaped crafting with tag ingredients (`#planks`) at a crafting table.
 pub async fn crafting_table_tags(t: T) -> R {

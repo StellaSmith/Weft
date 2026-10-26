@@ -35,7 +35,7 @@ fn changed(a: &[u8], b: &[u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f3
 }
 
 fn item(name: &str) -> u32 {
-    find_item(name).unwrap_or(u32::MAX)
+    Item::lookup(name).unwrap_or(u32::MAX)
 }
 
 /// Items in the first person hand: each drawn in its own colors at the hand's place.
@@ -446,7 +446,7 @@ pub async fn client_hooks(t: T) -> R {
     let before = crate::runner::PROBES.with(|p| p.get());
     t.c().key("F9", 0.0);
     t.until("probe key seen", Duration::from_secs(3), |_| crate::runner::PROBES.with(|p| p.get()) > before).await?;
-    t.c().open_screen("core:controls");
+    t.c().open_screen(&screens::CONTROLS);
     t.screen("core:controls").await?;
     for _ in 0..40 {
         if t.c().ui_rect("text:test probe").is_some() {

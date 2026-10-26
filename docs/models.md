@@ -20,7 +20,8 @@ A model is a list of bones. Each one has a pivot (the point it turns around), bo
 
 The skin lives in `textures/entity/<name>.png`:
 ```rust
-r.entity("ghost").size(0.6, 1.8).health(10.0).texture("ghost", 64, 32).model(biped(false));
+static GHOST: Entity = Entity::named("ghost");
+r.entity(&GHOST).size(0.6, 1.8).health(10.0).texture("ghost", 64, 32).model(biped(false));
 ```
 `texture` takes the file (`entity/ghost.png` of your mod, or a full name for someone else's) and the skin's size in pixels, which the boxes need to work out their UV unwrap.
 
@@ -43,7 +44,7 @@ Everything you can do with a part:
 This is the orb from testmod, a ball with a ring of stones hanging off it:
 ```rust
 let ring = Part::new([0.0, 8.0, 0.0], part_role::STATIC).named("ring").child_of(0);
-r.entity("orb").texture("orb", 32, 16).model(vec![
+r.entity(&ORB).texture("orb", 32, 16).model(vec![
     Part::new([0.0, 8.0, 0.0], part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])),
     ring.cube([6.0, -1.0, -1.0], [2.0, 2.0, 2.0], [16.0, 0.0]),
 ]);
@@ -110,7 +111,7 @@ In first person all you see is the hand, and it can be animated as well. A bone 
 ## Armor and other worn items
 An item shows up on the wearer when it sits in an equipment slot:
 ```rust
-r.item("ruby_helmet").worn(worn_parts::HEAD, 1.0, "armor/ruby_1")
+r.item(&RUBY_HELMET).worn(worn_parts::HEAD, 1.0, "armor/ruby_1")
 ```
 The first argument says which bones it covers (`worn_parts::HEAD`, `BODY`, `ARMS`, `LEGS`, combined with `|`), the second how far it sticks out from the body in pixels (vanilla armor uses 1.0, and 0.5 for the leggings layer), and the third is its texture. That texture is drawn on the same boxes as the wearer's, so it follows the wearer's skin layout, and the 64x32 files in `mods/base/assets/textures/armor/` show how. It works on any model with the right roles, mobs made with `biped` included.
 

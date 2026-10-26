@@ -58,25 +58,27 @@ Text and bars can change while a screen is open. A binding's closure runs every 
 `view` is a read-only look at the client: `view.me()` has your health and position, `view.component(&C)` a synced component of yours, `view.creative()` the game mode, and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
 
 ```rust
-r.hud_element("health", hud_anchor::HOTBAR_LEFT, 0, |ui| {
+static HEALTH: HudElement = HudElement::named("health");
+r.hud_element(&HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
     ui.icons("hearts", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
 });
 ```
 The `class` ("hearts", "arrow", "flame") is a theme class, which is where the textures come from.
 
 ## Screens
-`r.screen(name, |ui| ..)` registers a screen of your own that opens by name:
+`r.screen(&SCREEN, |ui| ..)` registers a screen of your own:
 ```rust
-r.screen("about", |ui| {
+static ABOUT: Screen = Screen::named("about");
+r.screen(&ABOUT, |ui| {
     ui.panel("panel", S::col().pad(8.0).gap(4.0), |ui| {
         ui.text("examplemod.about.title");
     });
 });
-r.client_command("about", "", |c| { if let Some(cl) = c.client() { cl.open_screen("examplemod:about"); } });
+r.client_command("about", "", |c| { if let Some(cl) = c.client() { cl.open_screen(&ABOUT); } });
 ```
-`open_screen("examplemod:about")` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
+`open_screen(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
 
-Naming a screen like an engine one replaces it, so `r.screen("core:pause", ..)` is your own pause screen. The engine's are `core:title`, `core:pause`, `core:settings`, `core:language`, `core:controls`, `core:sound`, `core:mod_settings`, `core:mods`, `core:profile`, `core:worlds`, `core:create_world`, `core:multiplayer`, `core:resource_packs`, `core:shader_packs`, `core:tags`, `core:chat` and `core:death`. The engine's own screens open each other by these names too, so a replaced settings screen is the one the main menu's button opens.
+Registering an engine screen's handle replaces that screen, so `r.screen(&screens::PAUSE, ..)` is your own pause screen. The engine's are in `screens::*`: `TITLE`, `PAUSE`, `SETTINGS`, `LANGUAGE`, `CONTROLS`, `SOUND`, `MOD_SETTINGS`, `MODS`, `PROFILE`, `WORLDS`, `CREATE_WORLD`, `MULTIPLAYER`, `RESOURCE_PACKS`, `SHADER_PACKS`, `CHAT` and `DEATH`. The engine's own screens open each other through the same names, so a replaced settings screen is the one the main menu's button opens.
 
 Most of the time a whole new screen is more than you need. A screen part adds to a place of a screen and leaves the rest alone, so several mods can add their buttons to the main menu side by side:
 ```rust
@@ -102,10 +104,11 @@ The main menu takes its logo from the translation `menu.logo` and shows `menu.ne
 F3 panels from mods take the key numbers after the engine's five, so the first one is F3+6.
 
 ## Menus
-A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu("inventory")` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:
+A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu(&INVENTORY)` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:
 
 ```rust
-r.menu("crafting_table").handle(&CRAFTING)
+static CRAFTING: Menu = Menu::named("crafting_table");
+r.menu(&CRAFTING)
     .group("grid", Slots::grid(3, 3))
     .group("result", Slots::one().output().big())
     .player_inventory()

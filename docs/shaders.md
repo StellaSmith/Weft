@@ -70,7 +70,7 @@ fn shade(p: EntityPixel) -> vec4<f32> {
 }
 ```
 ```rust
-r.entity("wisp").texture("wisp", 32, 16).model(..).shader("ghost");
+r.entity(&WISP).texture("wisp", 32, 16).model(..).shader("ghost");
 ```
 `EntityPixel` has `uv`, `albedo` (the skin's texel, linear, `a` is its alpha), `light` (a vec3 with shading, the hurt flash and glow already included) and `time`. A returned alpha under 0.5 cuts the pixel out, which is how the wisp gets its holes. The `_e` glow masks of the [textures guide](textures.md#emission) are a separate and simpler way to make parts of a skin shine.
 
@@ -83,7 +83,8 @@ fn shade(p: ParticleFrag) -> vec4<f32> {
 }
 ```
 ```rust
-r.particle("spark").textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright().shader("twinkle");
+static SPARK: Particle = Particle::named("spark");
+r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright().shader("twinkle");
 ```
 `ParticleFrag` has `uv` (0 to 1 across the quad), `albedo` (the texture sample), `color` (the kind's color at this age, between the two you gave to `color(start, end)`), `life` (0 at birth, 1 at the end) and `time`.
 
@@ -99,9 +100,10 @@ fn apply(p: PostPixel) -> vec4<f32> {
 }
 ```
 ```rust
-r.key("dream", "KeyN");
+static DREAM: Key = Key::named("dream");
+r.key(&DREAM, "N");
 r.client_frame(|c| {
-    if c.pressed("mymod:dream") { c.post_effect("dream", 1.0); }
+    if c.pressed(&DREAM) { c.post_effect("dream", 1.0); }
 });
 ```
 `PostPixel` has `uv` (0 to 1, top left first), `color` (the picture so far at that point, linear), `strength`, `time` and `size` in pixels, and `scene_at(p, uv)` reads the picture anywhere else, for blur and waves. `post_effect(name, 0.0)` turns an effect off, and several can be on at once, applied one after another in the order they were turned on.

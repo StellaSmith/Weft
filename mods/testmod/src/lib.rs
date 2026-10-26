@@ -20,39 +20,54 @@ use weft_sdk::*;
 
 declare_mod!(id: "testmod", name: "Test Mod", version: "0.1.0", deps: ["base"], init: init);
 
-static GENERATOR: Block = Block::new();
-static HUM: Sound = Sound::new();
-static CABLE: Block = Block::new();
-static ELECTRIC_FURNACE: Block = Block::new();
-static SOUL_TORCH: Block = Block::new();
-static GENERATOR_MENU: Menu = Menu::new();
-static FURNACE_MENU: Menu = Menu::new();
-static BATTERY_MENU: Menu = Menu::new();
+static GENERATOR: Block = Block::named("generator");
+static HUM: Sound = Sound::named("machine.hum");
+static CABLE: Block = Block::named("cable");
+static ELECTRIC_FURNACE: Block = Block::named("electric_furnace");
+static BATTERY: Block = Block::named("battery");
+static RED_SAND: Block = Block::named("red_sand");
+static VENT: Block = Block::named("vent");
+static REINFORCED_STONE: Block = Block::named("reinforced_stone");
+static STEEL_PICKAXE: Item = Item::named("steel_pickaxe");
+static OIL: Block = Block::named("oil");
+static OIL_BUCKET: Item = Item::named("oil_bucket");
+static MACHINES: SoundCategory = SoundCategory::named("machines");
+static ENERGY_GIZMOS: GizmoGroup = GizmoGroup::named("energy");
+// The base game's things, by name: no code dependency on it.
+pub static OVERWORLD: Dimension = Dimension::named("base:overworld");
+static BUCKET: Item = Item::named("base:bucket");
+static ZOMBIE: Entity = Entity::named("base:zombie");
+static BASE_TOOLS: CreativeTab = CreativeTab::named("base:tools");
+static BASE_BUILDING: CreativeTab = CreativeTab::named("base:building");
+static SOUL_TORCH: Block = Block::named("base:torch");
+static GENERATOR_MENU: Menu = Menu::named("generator");
+static FURNACE_MENU: Menu = Menu::named("electric_furnace");
+static BATTERY_MENU: Menu = Menu::named("battery");
 static SMELTING_RECIPES: RecipeKind = RecipeKind::named("base:smelting");
-static VOID: Dimension = Dimension::new();
-static MARS: Dimension = Dimension::new();
-static DUST: Biome = Biome::new();
-static SCORCHED: Biome = Biome::new();
-static REGOLITH: Block = Block::new();
-static BASALT: Block = Block::new();
-static TIN_ORE: Block = Block::new();
-static TIN_INGOT: Item = Item::new();
+static VOID: Dimension = Dimension::named("void");
+static MARS: Dimension = Dimension::named("mars");
+static DUST: Biome = Biome::named("dust");
+static SCORCHED: Biome = Biome::named("scorched");
+static REGOLITH: Block = Block::named("regolith");
+static BASALT: Block = Block::named("basalt");
+static TIN_ORE: Block = Block::named("tin_ore");
+static TIN_INGOT: Item = Item::named("tin_ingot");
 
 value! {
     #[derive(Default)]
     struct Machine { burn: u32, burn_max: u32, progress: u32, progress_max: u32 }
 }
 
-static MACHINE: Component<Machine> = Component::new("testmod:machine");
+static MACHINE: Component<Machine> = Component::named("testmod:machine");
 /// The common fuel value; the base game sets it, this mod only reads it.
-static FUEL: Component<u32> = Component::new("fuel");
-static FOOD_HEAL: Component<f32> = Component::new("testmod:food_heal");
+static FUEL: Component<u32> = Component::named("fuel");
+static FOOD_HEAL: Component<f32> = Component::named("testmod:food_heal");
 
 value! {
     /// The base game's `eaten` event, declared here the same way (no code dependency).
     struct Eaten { player: u64, stack: ItemStack, hunger: u32, saturation: f32 }
 }
-static EATEN: Event<Eaten> = Event::new("eaten");
+static EATEN: Event<Eaten> = Event::named("base:eaten");
 
 const PER_TICK: i64 = 40;
 const FURNACE_USE: i64 = 20;
@@ -63,12 +78,12 @@ fn init(r: &mut Registry) {
     debug_panel(r);
     about_screen(r);
     morph(r);
-    r.block("cable").handle(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor").hardness(0.5);
+    r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor").hardness(0.5);
 
     // Same name as the base game's torch: the base game's handle, item and recipes give this.
     // It keeps the base torch's states (floor and walls) and placement, only its texture and
     // light are its own.
-    r.block("base:torch").handle(&SOUL_TORCH)
+    r.block(&SOUL_TORCH)
         .replace()
         .retexture("base:block/torch", "soul_torch")
         .light_rgb(3, 9, 15)
@@ -78,10 +93,10 @@ fn init(r: &mut Registry) {
     // The components sync to open menus; screens bind to them.
     let flags = component_flags::SAVE | component_flags::SYNC_MENU;
     // Machines' sounds have their own category (and volume setting `testmod:volume_machines`).
-    r.sound_category("machines", true);
-    r.sound("machine.hum").handle(&HUM).files(&["base:dig/stone1"]).category("machines").pitch(0.45, 0.5);
-    r.machine("generator", &GENERATOR_MENU)
-        .block(|b| b.handle(&GENERATOR).textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
+    r.sound_category(&MACHINES, true);
+    r.sound(&HUM).files(&["base:dig/stone1"]).category(&MACHINES).pitch(0.45, 0.5);
+    r.machine(&GENERATOR, &GENERATOR_MENU)
+        .block(|b| b.textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
         .group("fuel", Slots::one().accepts("fuel").input().tooltip("testmod.fuel_slot"))
         .component(&MACHINE, Machine::default(), flags)
@@ -95,8 +110,8 @@ fn init(r: &mut Registry) {
                 });
             })
         });
-    r.machine("electric_furnace", &FURNACE_MENU)
-        .block(|b| b.handle(&ELECTRIC_FURNACE).textures("machine_top", "electric_furnace", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
+    r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
+        .block(|b| b.textures("machine_top", "electric_furnace", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         // At most 16 to smelt at a time.
         .group("input", Slots::one().limit(16))
         .group("output", Slots::one().output())
@@ -114,7 +129,7 @@ fn init(r: &mut Registry) {
 
     // No tick of its own: only the grid fills and drains it, so its bar shows that components
     // reach open menus whoever changed them.
-    r.machine("battery", &BATTERY_MENU)
+    r.machine(&BATTERY, &BATTERY_MENU)
         .block(|b| b.textures("machine_top", "battery", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 100_000, max_in: 400, max_out: 400 })
         .screen(|ui| machine_screen(ui, "testmod.battery", |_| {}));
@@ -126,18 +141,18 @@ fn init(r: &mut Registry) {
     r.shaped(&CRAFTING, "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "base:furnace"), ('c', "cable")]);
     r.shaped(&CRAFTING, "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
 
-    r.block("regolith").handle(&REGOLITH).hardness(0.5).mineable("shovel");
+    r.block(&REGOLITH).hardness(0.5).mineable("shovel");
     // Only the common `sand` tag: cactus and sugar cane accept it without knowing it.
-    r.block("red_sand").hardness(0.5).mineable("shovel").tag("sand");
-    r.block("basalt").handle(&BASALT).hardness(1.5).mineable("pickaxe").tag("stone_ore_replaceables");
+    r.block(&RED_SAND).hardness(0.5).mineable("shovel").tag("sand");
+    r.block(&BASALT).hardness(1.5).mineable("pickaxe").tag("stone_ore_replaceables");
     // Only tags: the base game's `#ores/*` smelting recipe and tools pick these up.
-    r.block("tin_ore").handle(&TIN_ORE).hardness(3.0).mineable("pickaxe").needs_tool(0).tag("ores/tin");
-    r.item("tin_ingot").handle(&TIN_INGOT).tag("ingots/tin");
+    r.block(&TIN_ORE).hardness(3.0).mineable("pickaxe").needs_tool(0).tag("ores/tin");
+    r.item(&TIN_INGOT).tag("ingots/tin");
     // A tier between vanilla's iron (200) and diamond (300): mines everything iron does plus
     // reinforced stone, which iron cannot.
-    r.item("steel_pickaxe").tool("pickaxe", 250, 7.0).durability(800).attack(4.0).set(&WEAR_PER_HIT, 2).tag("tools/pickaxe").tab("base:tools");
+    r.item(&STEEL_PICKAXE).tool("pickaxe", 250, 7.0).durability(800).attack(4.0).set(&WEAR_PER_HIT, 2).tag("tools/pickaxe").tab(&BASE_TOOLS);
     // May face up, north or east only: three states, not six.
-    r.block("vent")
+    r.block(&VENT)
         .facing(Facings::only(&[Dir::Up, Dir::North, Dir::East]), Toward::Player, |d, s| {
             let mut f = ["vent_side"; 6];
             f[d.face() as usize] = "vent_front";
@@ -145,19 +160,19 @@ fn init(r: &mut Registry) {
         })
         .hardness(2.0)
         .mineable("pickaxe")
-        .tab("base:building");
-    r.block("reinforced_stone").hardness(4.0).mineable("pickaxe").needs_tool(250).tab("base:building");
-    r.biome("dust").handle(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
-    r.biome("scorched").handle(&SCORCHED).colors(0xbf8a50, 0xae7a3a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
+        .tab(&BASE_BUILDING);
+    r.block(&REINFORCED_STONE).hardness(4.0).mineable("pickaxe").needs_tool(250).tab(&BASE_BUILDING);
+    r.biome(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
+    r.biome(&SCORCHED).colors(0xbf8a50, 0xae7a3a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
     // Base's overworld, edited from outside: a biome in the hottest, driest deserts, a rock needle
     // from a feature of this mod's own, and boulders on the new biome.
-    r.terrain("base:overworld")
+    r.terrain(&OVERWORLD)
         .biome_before("base:desert", BiomeRule::new("scorched").temperature(0.4, f64::INFINITY).humidity(f64::NEG_INFINITY, -0.1).surface("regolith", "regolith", 2))
         .feature(Feature::new(|_, x, z| if (x - NEEDLE[0]).abs().max((z - NEEDLE[1]).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"))
         .decorate(boulders);
-    r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
-    r.ore("mars", "tin_ore").y(-64, 90).veins(6).size(8).replace("#stone_ore_replaceables");
-    r.terrain("mars")
+    r.ore(&OVERWORLD, &TIN_ORE).y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
+    r.ore(&MARS, &TIN_ORE).y(-64, 90).veins(6).size(8).replace("#stone_ore_replaceables");
+    r.terrain(&MARS)
         .stone("basalt")
         .base_height(60.0)
         .feature(preset::hills(8.0, 220.0))
@@ -166,7 +181,7 @@ fn init(r: &mut Registry) {
         .feature(preset::craters(32.0, 16.0, 150.0))
         .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
         .biome(BiomeRule::new("dust").surface("regolith", "regolith", 3));
-    r.dimension("mars").handle(&MARS)
+    r.dimension(&MARS)
         .spawn(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])
         .height(-4, 12)
         .sky_above(11)
@@ -175,7 +190,7 @@ fn init(r: &mut Registry) {
         .sky(0xd8a080, 0xe0b090);
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
-    r.liquid("oil").texture("oil_still").opacity(4).drag(0.4).delay(15).drop_off(2).slope_find(3).infinite(0).tag("oil").bucket("oil_bucket", "base:bucket", "base:tools");
+    r.liquid(&OIL).texture("oil_still").opacity(4).drag(0.4).delay(15).drop_off(2).slope_find(3).infinite(0).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
 
     // Healing food without touching the base game's eating code.
     r.set_tagged("cooked_meat/*", &FOOD_HEAL, 2.0);
@@ -188,13 +203,13 @@ fn init(r: &mut Registry) {
             }
         }
     });
-    r.loot_modify("base:zombie").add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
+    r.loot_modify(&ZOMBIE).add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);
     // The engine's /gizmo suggests this mod's group too.
-    r.gizmo_group("energy");
+    r.gizmo_group(&ENERGY_GIZMOS);
 
-    r.dimension("void").handle(&VOID)
+    r.dimension(&VOID)
         .generator(island)
         .spawn(|_| [0, 64, 0])
         .height(2, 6)
@@ -226,9 +241,12 @@ fn morph(r: &mut Registry) {
     });
 }
 
-/// A screen of the mod's own, opened by name (`/about` here, `--screen testmod:about`).
+static ABOUT: Screen = Screen::named("about");
+static DEBUG_PANEL: HudElement = HudElement::named("debug");
+
+/// A screen of the mod's own (`/about` here, `--screen testmod:about`).
 fn about_screen(r: &mut Registry) {
-    r.screen("about", |ui| {
+    r.screen(&ABOUT, |ui| {
         ui.panel("testmod_panel", S::col().pad(8.0).gap(4.0), |ui| {
             ui.text("testmod.about.title");
             ui.text("testmod.about.text");
@@ -236,21 +254,21 @@ fn about_screen(r: &mut Registry) {
         });
     });
     // A button of its own in the main menu, next to the engine's and other mods'.
-    r.screen_part("core:title", "buttons", 0, |ui| {
+    r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
         ui.button("testmod.about.button", S::default(), |c| {
-            c.client().open_screen("testmod:about");
+            c.client().open_screen(&ABOUT);
         });
     });
     r.client_command("about", "", |c| {
         if let Some(cl) = c.client() {
-            cl.open_screen("testmod:about");
+            cl.open_screen(&ABOUT);
         }
     });
 }
 
 /// An F3 panel of the mod's own (F3+6 toggles it).
 fn debug_panel(r: &mut Registry) {
-    r.hud_element("debug", hud_anchor::DEBUG_LEFT, 0, |ui| {
+    r.hud_element(&DEBUG_PANEL, hud_anchor::DEBUG_LEFT, 0, |ui| {
         ui.text_bind(|c, out| {
             let Some(me) = c.me() else { return };
             let speed = (me.vel[0] * me.vel[0] + me.vel[2] * me.vel[2]).sqrt() * 20.0;
@@ -285,13 +303,13 @@ fn ratio(a: u32, b: u32) -> f32 {
 /// `/gizmo testmod:energy`: stored energy above every machine, the mod-side use of gizmos.
 fn energy_gizmos(t: &EntityTick) {
     let w = t.world();
-    if w.time() % 10 != 0 || !w.gizmo_on("energy") {
+    if w.time() % 10 != 0 || !w.gizmo_on(&ENERGY_GIZMOS) {
         return;
     }
     for &id in t.ids() {
         if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
             let text = format!("{} / {} EU", e.stored, e.capacity);
-            w.gizmo_text("energy", [st.pos[0], st.pos[1] + 1.3, st.pos[2]], &text, 0x60FF60FF, 11);
+            w.gizmo_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], &text, 0x60FF60FF, 11);
         }
     }
 }
@@ -373,9 +391,9 @@ static CHEST: Block = Block::named("base:chest");
 pub const ISLAND_CHEST: [i32; 3] = [4, 64, 0];
 
 /// A floating island of stone and grass in an empty void, with a chest on it.
-static ALLOYING: RecipeKind = RecipeKind::named("testmod:alloying");
-static INFUSING: RecipeKind = RecipeKind::named("testmod:infusing");
-static ENERGY_PER_TICK: Component<u32> = Component::new("testmod:energy_per_tick");
+static ALLOYING: RecipeKind = RecipeKind::named("alloying");
+static INFUSING: RecipeKind = RecipeKind::named("infusing");
+static ENERGY_PER_TICK: Component<u32> = Component::named("testmod:energy_per_tick");
 
 /// Recipe kinds of this mod, only for the recipe viewer: one shown the usual way with an info line
 /// from the recipe's values and a result that comes by chance, one laid out by hand with a fluid.
@@ -447,7 +465,7 @@ fn island(g: &mut Gen) {
 
 /// `/tagbench`: what a tag check costs a mod compared with reading a field.
 fn tag_bench(cmd: &mut Command) {
-    static PLANT_SOIL: Tag = Tag::new("plant_soil");
+    static PLANT_SOIL: Tag = Tag::named("plant_soil");
     let n = cmd.int("millions").unwrap_or(10).clamp(1, 1000) as u32 * 1_000_000;
     let states: Vec<u32> = (0..256).map(|i| i * 7 % 120).collect();
     let flags: Vec<u32> = (0..256).map(|i| i * 31).collect();

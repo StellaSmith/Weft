@@ -5,55 +5,86 @@ use crate::abi::{self, Layer, Model, Slice, Str, block_flags as bf};
 use crate::component::{self as c, Component, Value};
 use crate::{World, callback, host, qualify};
 
-/// Registry kinds a handle can point at.
+/// What a handle can name. Kinds with engine ids (`HasId`) can also be resolved to one.
 pub mod kind {
     pub trait Kind {
+        /// `abi::entry_kind`, or `u32::MAX` for things known only by name.
         const KIND: u32;
     }
+    /// Kinds the engine numbers (blocks, items...): their handles give ids.
+    pub trait HasId: Kind {}
     macro_rules! kinds {
         ($($n:ident = $v:expr),*) => {
             $(pub struct $n;
             impl Kind for $n {
                 const KIND: u32 = $v;
-            })*
+            }
+            impl HasId for $n {})*
         };
     }
     kinds!(Block = crate::abi::entry_kind::BLOCK, Item = crate::abi::entry_kind::ITEM, Entity = crate::abi::entry_kind::ENTITY, Biome = crate::abi::entry_kind::BIOME, Dimension = crate::abi::entry_kind::DIMENSION, Menu = crate::abi::entry_kind::MENU, Particle = crate::abi::entry_kind::PARTICLE, Config = crate::abi::entry_kind::CONFIG, Sound = crate::abi::entry_kind::SOUND);
+    macro_rules! named_kinds {
+        ($($n:ident),*) => {
+            $(pub struct $n;
+            impl Kind for $n {
+                const KIND: u32 = u32::MAX;
+            })*
+        };
+    }
+    named_kinds!(Key, Channel, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
-/// `Handle::new()` before `.handle(...)` bound it.
-const UNBOUND: u32 = u32::MAX - 2;
 
-/// Handle to registered content, valid once the engine froze the registries. Either bound when
-/// registering (`static STONE: Block = Block::new();` + `r.block("stone").handle(&STONE)`) or
-/// looked up by full name on first use (`static STONE: Block = Block::named("base:stone");`),
-/// which also works for content of other mods.
+/// A thing a mod owns (block, item, entity kind, menu, key, screen...), named in its handle:
+///
+/// ```ignore
+/// static STONE: Block = Block::named("stone");        // this mod's, "<ns>:stone"
+/// static COAL: Item = Item::named("base:coal");       // another mod's
+/// r.block(&STONE).hardness(1.5);                      // registered by its handle
+/// if STONE.is(w.get(pos)) { .. }
+/// ```
+///
+/// A name without a namespace is the declaring mod's, the same when registering and reading.
+/// Ids are known once the engine froze the registries.
 pub struct Handle<K: kind::Kind> {
     id: AtomicU32,
     count: AtomicU32,
     name: &'static str,
-    /// Where an unnamed handle was declared, for the error when it is never bound.
-    at: &'static std::panic::Location<'static>,
+    full: std::sync::OnceLock<String>,
     _k: PhantomData<fn() -> K>,
 }
 
 impl<K: kind::Kind> Handle<K> {
-    #[track_caller]
-    pub const fn new() -> Self {
-        Handle { id: AtomicU32::new(UNBOUND), count: AtomicU32::new(1), name: "", at: std::panic::Location::caller(), _k: PhantomData }
-    }
-
-    #[track_caller]
     pub const fn named(name: &'static str) -> Self {
-        Handle { id: AtomicU32::new(UNRESOLVED), count: AtomicU32::new(1), name, at: std::panic::Location::caller(), _k: PhantomData }
+        Handle { id: AtomicU32::new(UNRESOLVED), count: AtomicU32::new(1), name, full: std::sync::OnceLock::new(), _k: PhantomData }
     }
 
+    /// A handle for a name made at runtime, for families of content built in a loop
+    /// (`r.item(Item::generated(format!("{metal}_ingot")))`). Lives as long as the game, like
+    /// a `static`; meant for registration, not for every tick.
+    pub fn generated(name: String) -> &'static Self {
+        Box::leak(Box::new(Self::named(Box::leak(name.into_boxed_str()))))
+    }
+
+    /// Full name, `ns:name`.
+    pub fn name(&self) -> &str {
+        self.full.get_or_init(|| crate::full_name(self.name))
+    }
+
+    /// The name without its namespace.
+    pub fn path(&self) -> &str {
+        let n = self.name();
+        n.split_once(':').map_or(n, |x| x.1)
+    }
+}
+
+impl<K: kind::HasId> Handle<K> {
     /// For blocks, the first state. `u32::MAX` if unknown.
     #[inline]
     pub fn id(&self) -> u32 {
         let id = self.id.load(Ordering::Relaxed);
-        if id < UNBOUND { id } else { self.resolve(id) }
+        if id < UNRESOLVED { id } else { self.resolve(id) }
     }
 
     #[cold]
@@ -62,22 +93,24 @@ impl<K: kind::Kind> Handle<K> {
         if id == u32::MAX || !frozen {
             return u32::MAX;
         }
-        if id == UNBOUND {
-            crate::error!("the handle declared at {}:{} was never bound with `.handle(...)`", self.at.file(), self.at.line());
-            self.id.store(u32::MAX, Ordering::Relaxed);
-            return u32::MAX;
-        }
         let mut count = 0;
-        let id = unsafe { (host().find)(K::KIND, Str::new(self.name), &mut count) };
+        let id = unsafe { (host().find)(K::KIND, Str::new(self.name()), &mut count) };
         if id != u32::MAX {
             self.count.store(count, Ordering::Relaxed);
             self.id.store(id, Ordering::Relaxed);
         } else {
             // Frozen and still unknown: a typo or a missing mod. Say so once.
-            crate::error!("no {} named {}", abi::entry_kind::NAMES.get(K::KIND as usize).unwrap_or(&"entry"), self.name);
+            crate::error!("no {} named {}", abi::entry_kind::NAMES.get(K::KIND as usize).unwrap_or(&"entry"), self.name());
             self.id.store(u32::MAX, Ordering::Relaxed);
         }
         id
+    }
+
+    /// The id of what a player typed (`/give` style input), `None` if there is no such thing.
+    /// Code names things with handles; this is for text that only exists at runtime.
+    pub fn lookup(name: &str) -> Option<u32> {
+        let id = unsafe { (host().find)(K::KIND, Str::new(name), std::ptr::null_mut()) };
+        (id != u32::MAX).then_some(id)
     }
 
     /// The `i`-th state of a block (`u32::MAX` if the block is unknown).
@@ -113,13 +146,7 @@ impl<K: kind::Kind> Handle<K> {
     }
 }
 
-impl<K: kind::Kind> Default for Handle<K> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn cell<K: kind::Kind>(h: Option<&'static Handle<K>>) -> *const AtomicU32 {
+fn cell<K: kind::HasId>(h: Option<&'static Handle<K>>) -> *const AtomicU32 {
     h.map_or(std::ptr::null(), |h| h.cell())
 }
 
@@ -129,6 +156,45 @@ pub type Biome = Handle<kind::Biome>;
 pub type Dimension = Handle<kind::Dimension>;
 pub type Particle = Handle<kind::Particle>;
 pub type Sound = Handle<kind::Sound>;
+pub type Entity = Handle<kind::Entity>;
+pub type Menu = Handle<kind::Menu>;
+pub type Key = Handle<kind::Key>;
+pub type Channel = Handle<kind::Channel>;
+pub type Screen = Handle<kind::Screen>;
+pub type HudElement = Handle<kind::HudElement>;
+pub type GizmoGroup = Handle<kind::GizmoGroup>;
+pub type TintKind = Handle<kind::TintKind>;
+pub type EntityCategory = Handle<kind::EntityCategory>;
+pub type SoundCategory = Handle<kind::SoundCategory>;
+pub type CreativeTab = Handle<kind::CreativeTab>;
+pub type Question = Handle<kind::Question>;
+pub type Chain = Handle<kind::Chain>;
+pub type Attribute = Handle<kind::Attribute>;
+pub type Rule = Handle<kind::Rule>;
+pub type RecipeKind = Handle<kind::RecipeKind>;
+pub type LootTable = Handle<kind::LootTable>;
+pub type TextCondition = Handle<kind::TextCondition>;
+pub type Music = Handle<kind::Music>;
+
+/// Things that name a loot table: a block or entity kind (what it drops) or a table of its own.
+pub trait LootSource {
+    fn table_name(&self) -> &str;
+}
+impl LootSource for Block {
+    fn table_name(&self) -> &str {
+        self.name()
+    }
+}
+impl LootSource for Entity {
+    fn table_name(&self) -> &str {
+        self.name()
+    }
+}
+impl LootSource for LootTable {
+    fn table_name(&self) -> &str {
+        self.name()
+    }
+}
 
 /// Builders of content carrying components (blocks, items, biomes, dimensions, liquids, entity
 /// kinds) tag and set values the same way.
@@ -224,19 +290,18 @@ impl Registry {
 
     /// Registers a block and, unless `.no_item()` is called, an item that places it (and carries
     /// the block's components). Texture defaults to `block/<name>` for all faces.
-    pub fn block<'a>(&'a mut self, name: &str) -> BlockBuilder<'a> {
-        let tex = asset_path(self.ns, "block", name);
-        let name = qualify(self.ns, name);
+    pub fn block<'a>(&'a mut self, block: &'static Block) -> BlockBuilder<'a> {
+        let name = block.name().to_string();
+        let tex = asset_path(self.ns, "block", &name);
         BlockBuilder {
             reg: self,
             name,
-            handle: None,
+            handle: Some(block),
             states: vec![StateDef::new(&tex)],
             components: Vec::new(),
             drop: String::new(),
             drop_count: 1,
             item: true,
-            item_handle: None,
             item_texture: String::new(),
             callbacks: BlockCallbacks::default(),
             replace: false,
@@ -246,13 +311,13 @@ impl Registry {
     }
 
     /// Texture defaults to `item/<name>`.
-    pub fn item<'a>(&'a mut self, name: &str) -> ItemBuilder<'a> {
+    pub fn item<'a>(&'a mut self, item: &'static Item) -> ItemBuilder<'a> {
         ItemBuilder {
             _p: PhantomData,
             raw: self.raw,
-            name: qualify(self.ns, name),
-            texture: asset_path(self.ns, "item", name),
-            handle: None,
+            name: item.name().to_string(),
+            texture: asset_path(self.ns, "item", item.name()),
+            handle: Some(item),
             block: String::new(),
             components: Vec::new(),
             on_use: abi::Callback::NONE,
@@ -260,25 +325,24 @@ impl Registry {
         }
     }
 
-    pub fn biome<'a>(&'a mut self, name: &str) -> BiomeBuilder<'a> {
-        BiomeBuilder { _p: PhantomData, raw: self.raw, name: qualify(self.ns, name), handle: None, desc: abi::BiomeDesc::DEFAULT, colors: None, components: Vec::new() }
+    pub fn biome<'a>(&'a mut self, biome: &'static Biome) -> BiomeBuilder<'a> {
+        BiomeBuilder { _p: PhantomData, raw: self.raw, name: biome.name().to_string(), handle: Some(biome), desc: abi::BiomeDesc::DEFAULT, colors: None, components: Vec::new() }
     }
 
     /// Creative inventory tab named `tab.<ns>.<name>` in the language files, shown with `icon`.
-    /// Blocks and items join with `.tab(name)`; untabbed items land in a tab named after the mod.
-    pub fn creative_tab(&mut self, name: &str, icon: &str) {
-        let (name, icon) = (qualify(self.ns, name), qualify(self.ns, icon));
-        unsafe { (host().reg_creative_tab)(self.raw, Str::new(&name), Str::new(&icon)) }
+    /// Blocks and items join with `.tab(&TAB)`; untabbed items land in a tab named after the mod.
+    pub fn creative_tab(&mut self, tab: &CreativeTab, icon: &Item) {
+        unsafe { (host().reg_creative_tab)(self.raw, Str::new(tab.name()), Str::new(icon.name())) }
     }
 
     /// Ore veins of `block` in any mod's dimension, e.g.
-    /// `r.ore("base:overworld", "tin_ore").y(0, 64).veins(6).size(8).replace("#stone")`.
-    pub fn ore<'a>(&'a mut self, dimension: &str, block: &str) -> OreBuilder<'a> {
+    /// `r.ore(&OVERWORLD, &TIN_ORE).y(0, 64).veins(6).size(8).replace("#stone")`.
+    pub fn ore<'a>(&'a mut self, dimension: &Dimension, block: &Block) -> OreBuilder<'a> {
         OreBuilder {
             raw: self.raw,
             ns: self.ns,
-            dimension: qualify(self.ns, dimension),
-            block: qualify(self.ns, block),
+            dimension: dimension.name().to_string(),
+            block: block.name().to_string(),
             replace: String::new(),
             biome: String::new(),
             desc: abi::OreDesc::DEFAULT,
@@ -286,12 +350,12 @@ impl Registry {
         }
     }
 
-    pub fn structure<'a>(&'a mut self, dimension: &str, name: &str) -> StructureBuilder<'a> {
+    pub fn structure<'a>(&'a mut self, dimension: &Dimension, name: &str) -> StructureBuilder<'a> {
         StructureBuilder {
             raw: self.raw,
             ns: self.ns,
             name: qualify(self.ns, name),
-            dimension: qualify(self.ns, dimension),
+            dimension: dimension.name().to_string(),
             layers: Vec::new(),
             keys: Vec::new(),
             biome: String::new(),
@@ -300,8 +364,8 @@ impl Registry {
         }
     }
 
-    pub fn dimension<'a>(&'a mut self, name: &str) -> DimensionBuilder<'a> {
-        DimensionBuilder { raw: self.raw, name: qualify(self.ns, name), handle: None, desc: abi::DimensionDesc::DEFAULT, components: Vec::new(), _p: PhantomData }
+    pub fn dimension<'a>(&'a mut self, dimension: &'static Dimension) -> DimensionBuilder<'a> {
+        DimensionBuilder { raw: self.raw, name: dimension.name().to_string(), handle: Some(dimension), desc: abi::DimensionDesc::DEFAULT, components: Vec::new(), _p: PhantomData }
     }
 
     /// Sets a component on the block and item called `name`, whoever registered them:
@@ -564,8 +628,9 @@ macro_rules! state_setters {
             self
         }
         /// Colored by a tint kind registered with `Registry::tint_kind` (any mod's).
-        pub fn tint(mut self, kind: &str) -> Self {
-            self.each(|s, ns| s.tint_name = qualify(ns, kind));
+        pub fn tint(mut self, kind: &TintKind) -> Self {
+            let kind = kind.name().to_string();
+            self.each(|s, _| s.tint_name = kind.clone());
             self
         }
         pub fn friction(mut self, f: f32) -> Self {
@@ -684,7 +749,6 @@ pub struct BlockBuilder<'a> {
     drop: String,
     drop_count: u32,
     item: bool,
-    item_handle: Option<&'static Item>,
     item_texture: String,
     callbacks: BlockCallbacks,
     replace: bool,
@@ -701,12 +765,6 @@ impl<'a> BlockBuilder<'a> {
     }
 
     state_setters!();
-
-    /// Fills `h` with the block's first state once the registries are frozen.
-    pub fn handle(mut self, h: &'static Block) -> Self {
-        self.handle = Some(h);
-        self
-    }
 
     /// Makes `n` states copied from the current settings, then customizes each one.
     pub fn states(mut self, n: u32, f: impl Fn(u32, State) -> State) -> Self {
@@ -738,8 +796,8 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Creative inventory tab of the block's item, see `Registry::creative_tab`.
-    pub fn tab(mut self, tab: &str) -> Self {
-        let tag = format!("tab/{}", qualify(self.reg.ns, tab));
+    pub fn tab(mut self, tab: &CreativeTab) -> Self {
+        let tag = format!("tab/{}", tab.name());
         self.components.push(Pending::tag(&tag));
         self
     }
@@ -793,11 +851,6 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Registers the block item into this handle (otherwise it is only reachable by name).
-    pub fn item_handle(mut self, h: &'static Item) -> Self {
-        self.item_handle = Some(h);
-        self
-    }
 
     /// Grows over time, a step every `mean_seconds` on average (spread like random ticks) while
     /// the light is at least `min_light`: by default to the next state until the last. Timed by
@@ -951,7 +1004,7 @@ impl Drop for BlockBuilder<'_> {
                 raw: self.reg.raw,
                 name: self.name.clone(),
                 texture: std::mem::take(&mut self.item_texture),
-                handle: self.item_handle,
+                handle: None,
                 block: self.name.clone(),
                 components: Vec::new(),
                 on_use: abi::Callback::NONE,
@@ -975,10 +1028,6 @@ pub struct ItemBuilder<'a> {
 }
 
 impl ItemBuilder<'_> {
-    pub fn handle(mut self, h: &'static Item) -> Self {
-        self.handle = Some(h);
-        self
-    }
     pub fn texture(mut self, t: &str) -> Self {
         self.texture = if t.contains(':') { t.to_string() } else { format!("{}:item/{t}", self.ns) };
         self
@@ -1000,13 +1049,13 @@ impl ItemBuilder<'_> {
     pub fn attack(self, damage: f32) -> Self {
         self.set(&c::ATTACK_DAMAGE, damage)
     }
-    pub fn places(mut self, block: &str) -> Self {
-        self.block = qualify(self.ns, block);
+    pub fn places(mut self, block: &Block) -> Self {
+        self.block = block.name().to_string();
         self
     }
     /// Creative inventory tab, see `Registry::creative_tab`.
-    pub fn tab(self, tab: &str) -> Self {
-        let tag = format!("tab/{}", qualify(self.ns, tab));
+    pub fn tab(self, tab: &CreativeTab) -> Self {
+        let tag = format!("tab/{}", tab.name());
         self.tag(&tag)
     }
     /// Shown on the wearer's model while in an equipment slot: `parts` from `worn_parts`, `texture`
@@ -1056,10 +1105,6 @@ pub struct BiomeBuilder<'a> {
 }
 
 impl BiomeBuilder<'_> {
-    pub fn handle(mut self, h: &'static Biome) -> Self {
-        self.handle = Some(h);
-        self
-    }
     /// Grass, foliage and water colors (`0xRRGGBB`).
     pub fn colors(mut self, grass: u32, foliage: u32, water: u32) -> Self {
         self.colors = Some([grass, foliage, water]);
@@ -1096,10 +1141,6 @@ pub struct DimensionBuilder<'a> {
 }
 
 impl DimensionBuilder<'_> {
-    pub fn handle(mut self, h: &'static Dimension) -> Self {
-        self.handle = Some(h);
-        self
-    }
     /// Must be a pure function of its input: it runs in parallel and must give the same cube for the
     /// same seed and position on every machine.
     pub fn generator(mut self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> Self {
@@ -1448,23 +1489,16 @@ impl ItemUse {
     }
 }
 
-impl<K: kind::Kind> Handle<K> {
-    /// Full name it was declared with (`Handle::named`), empty for bound handles.
-    pub fn name(&self) -> &'static str {
-        self.name
-    }
-}
-
 /// A liquid: its block (16 states) and flow rules, optionally a filled bucket item.
 ///
 /// ```ignore
-/// r.liquid("oil").handle(&OIL).texture("oil_still").delay(15).drop_off(2).bucket("oil_bucket", "base:bucket");
+/// r.liquid(&OIL).texture("oil_still").delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
 /// r.liquid_reaction("#hot", "#water").source("obsidian").flowing("cobblestone").falls_into("stone");
 /// ```
 pub struct LiquidBuilder<'a> {
     reg: &'a mut Registry,
     name: String,
-    handle: Option<&'static Block>,
+    handle: &'static Block,
     texture: String,
     tint: bool,
     light: [u8; 3],
@@ -1472,14 +1506,10 @@ pub struct LiquidBuilder<'a> {
     drag: f32,
     components: Vec<Pending>,
     desc: abi::LiquidDesc,
-    bucket: Option<(String, String, String)>,
+    bucket: Option<(&'static Item, String, String)>,
 }
 
 impl LiquidBuilder<'_> {
-    pub fn handle(mut self, h: &'static Block) -> Self {
-        self.handle = Some(h);
-        self
-    }
     /// Still texture, relative names are under `block/`.
     pub fn texture(mut self, t: &str) -> Self {
         self.texture = t.to_string();
@@ -1536,8 +1566,8 @@ impl LiquidBuilder<'_> {
     }
     /// Also registers `item`: `empty` (a container item, any mod's) filled with this liquid, in
     /// creative tab `tab` (any mod's). The engine fills and pours it; no code needed.
-    pub fn bucket(mut self, item: &str, empty: &str, tab: &str) -> Self {
-        self.bucket = Some((item.to_string(), qualify(self.reg.ns, empty), tab.to_string()));
+    pub fn bucket(mut self, item: &'static Item, empty: &Item, tab: &CreativeTab) -> Self {
+        self.bucket = Some((item, empty.name().to_string(), tab.name().to_string()));
         self
     }
 }
@@ -1547,22 +1577,19 @@ impl Drop for LiquidBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let short = self.name.rsplit(':').next().unwrap_or(&self.name).to_string();
+        let short = self.handle.path().to_string();
         let tex = if self.texture.is_empty() { format!("{short}_still") } else { self.texture.clone() };
         let (tint, light, opacity, drag) = (self.tint, self.light, self.opacity, self.drag);
-        let mut b = self.reg.block(&short).texture(&tex).states(16, |i, s| s.liquid(if i >= 8 { 0 } else { i as u8 })).light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
+        let mut b = self.reg.block(self.handle).texture(&tex).states(16, |i, s| s.liquid(if i >= 8 { 0 } else { i as u8 })).light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
         if tint {
             b = b.tint_water();
-        }
-        if let Some(h) = self.handle {
-            b = b.handle(h);
         }
         b.components = std::mem::take(&mut self.components);
         drop(b);
         let desc = abi::LiquidDesc { name: Str::new(&self.name), ..self.desc };
         unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
         if let Some((item, empty, tab)) = self.bucket.take() {
-            self.reg.item(&item).stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tab(&tab);
+            self.reg.item(item).stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tag(&format!("tab/{tab}"));
         }
     }
 }
@@ -1607,11 +1634,11 @@ fn block_or_tag(ns: &str, s: &str) -> String {
 
 impl Registry {
     /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers.
-    pub fn liquid<'a>(&'a mut self, name: &str) -> LiquidBuilder<'a> {
+    pub fn liquid<'a>(&'a mut self, liquid: &'static Block) -> LiquidBuilder<'a> {
         LiquidBuilder {
-            name: qualify(self.ns, name),
+            name: liquid.name().to_string(),
             reg: self,
-            handle: None,
+            handle: liquid,
             texture: String::new(),
             tint: false,
             light: [0; 3],

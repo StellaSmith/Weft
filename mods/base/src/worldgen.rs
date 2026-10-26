@@ -12,57 +12,57 @@ use weft_sdk::terrain::*;
 
 pub const SEA: i32 = 63;
 
-static PLANT_SOIL: Tag = Tag::new("plant_soil");
-static CACTUS_SOIL: Tag = Tag::new("cactus_soil");
-static SUGAR_CANE_SOIL: Tag = Tag::new("sugar_cane_soil");
+static PLANT_SOIL: Tag = Tag::named("plant_soil");
+static CACTUS_SOIL: Tag = Tag::named("cactus_soil");
+static SUGAR_CANE_SOIL: Tag = Tag::named("sugar_cane_soil");
 /// What a biome grows, as data any mod can set on any biome: trees per 5x5 cell (0..1), share of
 /// grass on plantable soil, which trees and flowers, and tags `snowy` (nothing grows), `dry`
 /// (cacti).
-pub static TREES: Component<f32> = Component::new("trees");
-pub static GRASS_COVER: Component<f32> = Component::new("grass");
+pub static TREES: Component<f32> = Component::named("trees");
+pub static GRASS_COVER: Component<f32> = Component::named("grass");
 /// The logs of the trees a biome grows, with weights: `"base:birch_log:1 base:oak_log:4"`
 /// (oaks where unset).
-pub static TREE_KINDS: Component<Text> = Component::new("tree_kinds");
+pub static TREE_KINDS: Component<Text> = Component::named("tree_kinds");
 /// Flowers a biome grows, picked evenly (`"base:dandelion base:rose"` where unset).
-pub static FLOWERS: Component<Text> = Component::new("flowers");
+pub static FLOWERS: Component<Text> = Component::named("flowers");
 /// On a log, the tree it grows into: `round <leaves>` (like oaks, 4-6 high) or `cone <leaves>`
 /// (like spruces, 6-9 high).
-pub static TREE: Component<Text> = Component::new("tree");
-static SNOWY_TAG: Tag = Tag::new("snowy");
-static DRY: Tag = Tag::new("dry");
+pub static TREE: Component<Text> = Component::named("tree");
+static SNOWY_TAG: Tag = Tag::named("snowy");
+static DRY: Tag = Tag::named("dry");
 
-pub static PLAINS: Biome = Biome::new();
-pub static FOREST: Biome = Biome::new();
-pub static BIRCH_FOREST: Biome = Biome::new();
-pub static TAIGA: Biome = Biome::new();
-pub static SNOWY: Biome = Biome::new();
-pub static DESERT: Biome = Biome::new();
-pub static MOUNTAINS: Biome = Biome::new();
-pub static OCEAN: Biome = Biome::new();
-pub static BEACH: Biome = Biome::new();
-pub static DEEP_CAVES: Biome = Biome::new();
+pub static PLAINS: Biome = Biome::named("plains");
+pub static FOREST: Biome = Biome::named("forest");
+pub static BIRCH_FOREST: Biome = Biome::named("birch_forest");
+pub static TAIGA: Biome = Biome::named("taiga");
+pub static SNOWY: Biome = Biome::named("snowy_plains");
+pub static DESERT: Biome = Biome::named("desert");
+pub static MOUNTAINS: Biome = Biome::named("mountains");
+pub static OCEAN: Biome = Biome::named("ocean");
+pub static BEACH: Biome = Biome::named("beach");
+pub static DEEP_CAVES: Biome = Biome::named("deep_caves");
 
 pub fn register(r: &mut Registry) {
     // Tags say what a biome is (spawning, decoration and mods ask these, not names).
-    r.biome("plains").handle(&PLAINS).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("animals").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
-    r.biome("forest").handle(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8).tag("forest").tag("animals").set(&TREES, 0.4).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log:1 base:oak_log:4");
-    r.biome("birch_forest").handle(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6).tag("forest").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log");
-    r.biome("taiga").handle(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8).tag("forest").tag("cold").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.08).set_text(&TREE_KINDS, "base:spruce_log");
-    r.biome("snowy_plains").handle(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5).tag("cold").tag("snowy").tag("animals").set(&TREES, 0.03).set_text(&TREE_KINDS, "base:spruce_log");
-    r.biome("desert").handle(&DESERT).colors(0xbfb755, 0xaea42a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
-    r.biome("mountains").handle(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3).tag("mountain").tag("animals").set(&TREES, 0.06).set(&GRASS_COVER, 0.05).set_text(&TREE_KINDS, "base:spruce_log");
-    r.biome("ocean").handle(&OCEAN).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("ocean");
-    r.biome("beach").handle(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("beach");
+    r.biome(&PLAINS).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("animals").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
+    r.biome(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8).tag("forest").tag("animals").set(&TREES, 0.4).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log:1 base:oak_log:4");
+    r.biome(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6).tag("forest").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log");
+    r.biome(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8).tag("forest").tag("cold").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.08).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5).tag("cold").tag("snowy").tag("animals").set(&TREES, 0.03).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome(&DESERT).colors(0xbfb755, 0xaea42a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
+    r.biome(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3).tag("mountain").tag("animals").set(&TREES, 0.06).set(&GRASS_COVER, 0.05).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome(&OCEAN).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("ocean");
+    r.biome(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("beach");
     // Underground (3D): whole cubes deep under the surface; spiders like it there.
-    r.biome("deep_caves").handle(&DEEP_CAVES).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("cave").tag("dark");
+    r.biome(&DEEP_CAVES).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("cave").tag("dark");
 
-    for (ore, max_y, veins, size) in [("coal_ore", 128, 8, 12), ("iron_ore", 64, 6, 8), ("gold_ore", 32, 2, 7), ("diamond_ore", 16, 1, 6)] {
-        r.ore("overworld", ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
+    for (ore, max_y, veins, size) in [(&COAL_ORE, 128, 8, 12), (&IRON_ORE, 64, 6, 8), (&GOLD_ORE, 32, 2, 7), (&DIAMOND_ORE, 16, 1, 6)] {
+        r.ore(&crate::OVERWORLD, ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
     }
 
     // The overworld's shape. Other mods add to it by these names (`base:desert`, `base:mountains`).
     let (low, high) = (f64::NEG_INFINITY, f64::INFINITY);
-    r.terrain("overworld")
+    r.terrain(&crate::OVERWORLD)
         .stone("stone")
         .base_height(SEA as f64)
         .sea(SEA, "water")
@@ -111,7 +111,7 @@ fn pick(list: &str, roll: u64) -> Option<u32> {
     let mut r = (roll % total.max(1) as u64) as u32;
     for (name, w) in entries() {
         if r < w {
-            return find_block(name);
+            return Block::lookup(name);
         }
         r -= w;
     }
@@ -123,7 +123,7 @@ fn tree_at(log: u32, x: i32, y: i32, z: i32, h: u64) -> Option<TreeAt> {
     let (shape, leaves) = TREE.on_block(log)?.as_str().split_once(' ')?;
     let cone = shape == "cone";
     let height = if cone { 6 + (h % 4) as i32 } else { 4 + (h % 3) as i32 };
-    Some(TreeAt { x, y, z, log, leaves: find_block(leaves.trim())?, cone, height })
+    Some(TreeAt { x, y, z, log, leaves: Block::lookup(leaves.trim())?, cone, height })
 }
 
 fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {

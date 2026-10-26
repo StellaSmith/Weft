@@ -14,25 +14,36 @@
 
 use weft_sdk::*;
 
-pub static SPARK: Particle = Particle::new();
-static WISP: Entity = Entity::new();
-static RUNE: Item = Item::new();
+pub static SPARK: Particle = Particle::named("spark");
+static WISP: Entity = Entity::named("wisp");
+static IDOL: Entity = Entity::named("idol");
+static ORB: Entity = Entity::named("orb");
+static MOSAIC: Block = Block::named("mosaic");
+static GLOW_MOSS: Block = Block::named("glow_moss");
+static GLOW_LOG: Block = Block::named("glow_log");
+static GLOW_LEAVES: Block = Block::named("glow_leaves");
+static GLOW_FLOWER: Block = Block::named("glow_flower");
+static GLOW_CRYSTAL: Block = Block::named("glow_crystal");
+static GLOW: TintKind = TintKind::named("glow");
+static SPIRITS: EntityCategory = EntityCategory::named("spirits");
+static HURT: TextCondition = TextCondition::named("hurt");
+static DREAM_KEY: Key = Key::named("dream");
+static RUNE: Item = Item::named("rune");
 /// Idols currently bowing.
 static BOWED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 /// Settings players change in Settings > Mod Settings.
-static CRYSTAL_SPARKS: Config<bool> = Config::new();
-static WISP_SPARKS: Config<i32> = Config::new();
-static DREAM_STRENGTH: Config<f32> = Config::new();
-static DREAM_STYLE: Config<u32> = Config::new();
+static CRYSTAL_SPARKS: Config<bool> = Config::named("crystal_sparks");
+static WISP_SPARKS: Config<i32> = Config::named("wisp_sparks");
+static DREAM_STRENGTH: Config<f32> = Config::named("dream_strength");
+static DREAM_STYLE: Config<u32> = Config::named("dream_style");
 
 pub fn register(r: &mut Registry) {
-    r.config("crystal_sparks").bool(true).handle(&CRYSTAL_SPARKS);
+    r.config(&CRYSTAL_SPARKS).bool(true);
     // The server decides how much its wisps sparkle; joining players get its value.
-    r.config("wisp_sparks").int(2, 0, 10).synced().handle(&WISP_SPARKS);
-    r.config("dream_strength").float(1.0, 0.1, 1.0).step(0.05).handle(&DREAM_STRENGTH);
-    r.config("dream_style").choice(0, &["warm", "cold"]).handle(&DREAM_STYLE);
-    r.particle("spark")
-        .handle(&SPARK)
+    r.config(&WISP_SPARKS).int(2, 0, 10).synced();
+    r.config(&DREAM_STRENGTH).float(1.0, 0.1, 1.0).step(0.05);
+    r.config(&DREAM_STYLE).choice(0, &["warm", "cold"]);
+    r.particle(&SPARK)
         .textures(&["core:particle/glint_3", "core:particle/glint_2", "core:particle/glint_1", "core:particle/glint_0"])
         .life(0.6, 1.2)
         .size(0.12, 0.2)
@@ -44,26 +55,26 @@ pub fn register(r: &mut Registry) {
         .shader("twinkle");
 
     // A glowing obelisk here and there in the deserts of another mod's world.
-    let mut obelisk = r.structure("base:overworld", "obelisk").layer(&["sss", "sss", "sss"]);
+    let mut obelisk = r.structure(&crate::OVERWORLD, "obelisk").layer(&["sss", "sss", "sss"]);
     for _ in 0..4 {
         obelisk = obelisk.layer(&["   ", " g ", "   "]);
     }
     obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("dry").sink(1);
     // Glow crystals grow only in the overworld's deep caves (an underground biome).
-    r.ore("base:overworld", "glow_crystal").veins(3).size(6).replace("#stone_ore_replaceables").biome("cave");
+    r.ore(&crate::OVERWORLD, &GLOW_CRYSTAL).veins(3).size(6).replace("#stone_ore_replaceables").biome("cave");
     // A 64x64 texture among 16x16 ones: every texture keeps its own size.
-    r.block("mosaic").hardness(1.5).mineable("pickaxe");
+    r.block(&MOSAIC).hardness(1.5).mineable("pickaxe");
     // A tint kind of the mod's own: violet by default (and on the item), teal in plains.
-    r.tint_kind("glow", 0xc080ff);
-    r.biome_tint("base:plains", "glow", 0x40e0c0);
-    r.block("glow_moss").tint("glow").hardness(0.6).mineable("shovel");
+    r.tint_kind(&GLOW, 0xc080ff);
+    r.biome_tint(&Biome::named("base:plains"), &GLOW, 0x40e0c0);
+    r.block(&GLOW_MOSS).tint(&GLOW).hardness(0.6).mineable("shovel");
     // A glowing birch (a log's `tree` component grows it from a sapling or worldgen) and
     // flower; not generated in the world, only from the creative tabs.
-    static TREE: Component<Text> = Component::new("tree");
-    r.block("glow_log").textures("glow_log_top", "glow_log", "glow_log_top").hardness(2.0).mineable("axe").tag("logs").set_text(&TREE, "round testmod:glow_leaves");
-    r.block("glow_leaves").cutout().opacity(1).tint("glow").hardness(0.2).tag("leaves").mineable("shears");
-    r.block("glow_flower").plant().needs_below("plant_soil").tint("glow");
-    r.block("glow_crystal")
+    static TREE: Component<Text> = Component::named("tree");
+    r.block(&GLOW_LOG).textures("glow_log_top", "glow_log", "glow_log_top").hardness(2.0).mineable("axe").tag("logs").set_text(&TREE, "round testmod:glow_leaves");
+    r.block(&GLOW_LEAVES).cutout().opacity(1).tint(&GLOW).hardness(0.2).tag("leaves").mineable("shears");
+    r.block(&GLOW_FLOWER).plant().needs_below("plant_soil").tint(&GLOW);
+    r.block(&GLOW_CRYSTAL)
         .hardness(1.5)
         .mineable("pickaxe")
         .random_ticks(|e| {
@@ -76,10 +87,9 @@ pub fn register(r: &mut Registry) {
 
     // Its own category (no spawning rule: wisps come only from commands and creative): they
     // drift off again when nobody is within 64 blocks.
-    r.entity_category("spirits", 4, 64.0);
-    r.entity("wisp")
-        .category("spirits")
-        .handle(&WISP)
+    r.entity_category(&SPIRITS, 4, 64.0);
+    r.entity(&WISP)
+        .category(&SPIRITS)
         .size(0.4, 0.4)
         .health(4.0)
         .speed(1.5)
@@ -90,7 +100,7 @@ pub fn register(r: &mut Registry) {
         .shader("ghost")
         .on_tick(wisps);
 
-    r.entity("idol").size(0.6, 1.1).health(20.0).texture("idol", 64, 32).model_file("idol").animations("idol").on_interact(|e| {
+    r.entity(&IDOL).size(0.6, 1.1).health(20.0).texture("idol", 64, 32).model_file("idol").animations("idol").on_interact(|e| {
         let mut bowed = BOWED.lock().unwrap();
         let id = e.entity();
         if let Some(i) = bowed.iter().position(|&b| b == id) {
@@ -109,7 +119,7 @@ pub fn register(r: &mut Registry) {
     });
     let ring = Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("ring").child_of(0);
     let ring = [[6.0, -1.0, -1.0], [-8.0, -1.0, -1.0], [-1.0, -1.0, 6.0], [-1.0, -1.0, -8.0]].into_iter().fold(ring, |p, at| p.cube(at, [2.0, 2.0, 2.0], [16.0, 0.0]));
-    r.entity("orb")
+    r.entity(&ORB)
         .size(0.6, 0.9)
         .health(4.0)
         .flags(entity_flags::NO_GRAVITY)
@@ -117,7 +127,7 @@ pub fn register(r: &mut Registry) {
         .model(vec![Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]);
 
     r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
-    r.item("rune").handle(&RUNE).stack(1).on_use(|u| {
+    r.item(&RUNE).stack(1).on_use(|u| {
         let w = u.world();
         w.play_animation(u.player(), "wave", false);
         if let Some(st) = w.entity(u.player()) {
@@ -125,11 +135,11 @@ pub fn register(r: &mut Registry) {
         }
         true
     });
-    r.text_condition("hurt", |v| v.me().is_some_and(|m| m.health < m.max_health));
+    r.text_condition(&HURT, |v| v.me().is_some_and(|m| m.health < m.max_health));
 
-    r.key("dream", "KeyN");
+    r.key(&DREAM_KEY, "N");
     r.client_frame(|c| {
-        if c.pressed("testmod:dream") {
+        if c.pressed(&DREAM_KEY) {
             let on = DREAM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
             let effect = if DREAM_STYLE.get() == 1 { "dream_cold" } else { "dream" };
             c.post_effect("dream", 0.0);

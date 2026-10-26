@@ -20,10 +20,12 @@ A cube is made in steps: the dimension's terrain first, then its decorations (tr
 Cube coordinates are block coordinates divided by 16, so cube `y = 4` holds the blocks from 64 to 79.
 
 ## Ores
-`r.ore(dimension, block)` adds veins of a block to any dimension, yours or another mod's. For a dimension of another mod you need the full name (`base:overworld`), your own is just `mars`.
+`r.ore(&DIMENSION, &BLOCK)` adds veins of a block to any dimension, yours or another mod's. Another mod's dimension is a handle with its full name, `Dimension::named("base:overworld")`.
 
 ```rust
-r.ore("base:overworld", "tin_ore").y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
+static OVERWORLD: Dimension = Dimension::named("base:overworld");
+static TIN_ORE: Block = Block::named("tin_ore");
+r.ore(&OVERWORLD, &TIN_ORE).y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
 ```
 - `y(min, max)`: the heights veins can start at
 - `veins(n)`: how many veins are started per cube
@@ -64,18 +66,19 @@ r.spawn("sheep").biome("animals").ground("animal_spawn").light(7, 15).group(2, 3
 A biome is a name, three colors and a climate, plus whatever data and tags you attach.
 
 ```rust
-static DUST: Biome = Biome::new();
-r.biome("dust").handle(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
+static DUST: Biome = Biome::named("dust");
+r.biome(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
 ```
-`colors(grass, foliage, water)` is what tinted blocks take in this biome. Tags (`tag("animals")`) are how everything else asks what a biome is, since spawns, ores and structures look at tags and never at names. `set(&COMPONENT, value)` attaches data, like how many trees base grows there, and `handle` gives you the static for the generator.
+`colors(grass, foliage, water)` is what tinted blocks take in this biome. Tags (`tag("animals")`) are how everything else asks what a biome is, since spawns, ores and structures look at tags and never at names. `set(&COMPONENT, value)` attaches data, like how many trees base grows there.
 
 Registering a biome doesn't put it anywhere. The rules of a dimension's terrain decide where it appears, and that can be underground too: base's `deep_caves` is a biome of whole cubes deep below the surface. Your biome can go into your own dimension or into someone else's, see [changing another mod's terrain](#changing-another-mods-terrain).
 
 ## Dimensions
-`r.dimension("mars")` makes a separate world with its own terrain, sky and gravity, and players get there with `/dim mymod:mars`. It needs a spawn point and something to fill it, usually a [terrain](#terrain) and sometimes a generator written by hand.
+`r.dimension(&MARS)` makes a separate world with its own terrain, sky and gravity, and players get there with `/dim mymod:mars`. It needs a spawn point and something to fill it, usually a [terrain](#terrain) and sometimes a generator written by hand.
 
 ```rust
-r.dimension("mars").handle(&MARS)
+static MARS: Dimension = Dimension::named("mars");
+r.dimension(&MARS)
     .spawn(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])
     .height(-4, 12)
     .sky_above(11)
@@ -102,7 +105,7 @@ All the settings:
 Most dimensions need real terrain, and writing noise by hand is the slow way. `r.terrain(dimension)` builds it from parts: a base height, features that add to it, biome rules that choose a biome and its surface, then water and caves. The engine generates it, so there's no generator to write.
 
 ```rust
-r.terrain("mars")
+r.terrain(&MARS)
     .stone("basalt")
     .base_height(60.0)
     .feature(preset::hills(8.0, 220.0))
@@ -169,10 +172,10 @@ for z in 0..16usize { for x in 0..16usize {
 `g.column(x, z)` gives any other column in world coordinates, and `g.surface_carved(x, z)` says whether a cave opened the ground there, so a tree from a neighboring cube doesn't end up floating over a pit. How much grows where is data on the biome (the components `trees`, `grass`, `tree_kinds` and `flowers`), which is why another mod can give a biome its own trees without touching code, by attaching those components with `r.set_on(Target::Biome("base:forest"), &COMPONENT, value)`.
 
 ## Changing another mod's terrain
-`r.terrain("base:overworld")` works on someone else's dimension just like on yours. Whatever you call on it is applied after the owner's description, and edits from several mods go in load order, so the result is the same on every machine. Testmod puts a hot, dry biome into base's deserts like this:
+`r.terrain(&OVERWORLD)` with `OVERWORLD = Dimension::named("base:overworld")` works on someone else's dimension just like on yours. Whatever you call on it is applied after the owner's description, and edits from several mods go in load order, so the result is the same on every machine. Testmod puts a hot, dry biome into base's deserts like this:
 
 ```rust
-r.terrain("base:overworld")
+r.terrain(&OVERWORLD)
     .biome_before("base:desert", BiomeRule::new("scorched").temperature(0.4, f64::INFINITY).humidity(f64::NEG_INFINITY, -0.1).surface("regolith", "regolith", 2))
     .feature(Feature::new(|_, x, z| if (x - 1000.0).abs().max((z - 1000.0).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"))
     .decorate(boulders);

@@ -3,7 +3,7 @@
 //!
 //! ```ignore
 //! // A furnace: four directions, each lit or not (eight states), front towards the player.
-//! r.block("furnace").facing_variants(Facings::HORIZONTAL, Toward::Player, 2, |dir, lit, s| ...);
+//! r.block(&FURNACE).facing_variants(Facings::HORIZONTAL, Toward::Player, 2, |dir, lit, s| ...);
 //! ```
 
 /// A direction, in face order (`-X +X -Y +Y -Z +Z`), so `face()` is the face index blocks and

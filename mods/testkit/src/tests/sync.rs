@@ -10,7 +10,7 @@ use crate::runner::{R, T};
 value! {
     struct Smelting { burn: u32, burn_max: u32, cook: u32, cook_max: u32 }
 }
-static SMELTING: Component<Smelting> = Component::new("base:smelting");
+static SMELTING: Component<Smelting> = Component::named("base:smelting");
 
 pub async fn menu_sync(t: T) -> R {
     t.flat().await?;

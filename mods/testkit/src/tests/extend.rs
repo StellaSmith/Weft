@@ -64,3 +64,22 @@ pub async fn facing_placement(t: T) -> R {
     Ok(())
 }
 
+
+/// One naming rule for every kind of thing: a name without a namespace is the declaring mod's,
+/// another mod's is written in full, and both resolve the same way when read.
+pub async fn names(t: T) -> R {
+    use weft_sdk::*;
+    static PROBE: Key = Key::named("probe");
+    static OWN_EVENT: Event<u32> = Event::named("marks");
+    static COAL: Item = Item::named("base:coal");
+    static NOWHERE: Block = Block::named("no_such_block");
+    t.flat().await?;
+    t.check_eq(PROBE.name().to_string(), "testkit:probe".into(), "a key's relative name");
+    t.check_eq(OWN_EVENT.name().to_string(), "testkit:marks".into(), "an event's relative name");
+    t.check_eq(screens::PAUSE.name().to_string(), "core:pause".into(), "an engine screen");
+    t.check_eq(question::BREAK_BLOCK.name().to_string(), "core:break_block".into(), "an engine question");
+    t.check_eq(Some(COAL.id()), Item::lookup("base:coal"), "another mod's item by handle and by typed name");
+    t.check_eq(Item::generated("base:coal".into()).id(), COAL.id(), "a generated handle");
+    t.check_eq(NOWHERE.id(), u32::MAX, "an unknown block");
+    Ok(())
+}

@@ -1947,17 +1947,17 @@ pub struct SystemArgs {
 /// Engine events (`Host::reg_event_handler`); values are the structs named in each line.
 pub mod event {
     /// `BlockChange`: a player or `break_block` broke a block (`item` = tool).
-    pub const BLOCK_BROKEN: &str = "block_broken";
+    pub const BLOCK_BROKEN: &str = "core:block_broken";
     /// `BlockChange`: a player placed a block (`item` = the item used).
-    pub const BLOCK_PLACED: &str = "block_placed";
+    pub const BLOCK_PLACED: &str = "core:block_placed";
     /// `Death`.
-    pub const ENTITY_DIED: &str = "entity_died";
+    pub const ENTITY_DIED: &str = "core:entity_died";
     /// `PlayerEvent`.
-    pub const PLAYER_JOINED: &str = "player_joined";
+    pub const PLAYER_JOINED: &str = "core:player_joined";
     /// `Pickup`.
-    pub const ITEM_PICKED_UP: &str = "item_picked_up";
+    pub const ITEM_PICKED_UP: &str = "core:item_picked_up";
     /// `Hurt`: damage was applied (after armor and every modifier).
-    pub const ENTITY_HURT: &str = "entity_hurt";
+    pub const ENTITY_HURT: &str = "core:entity_hurt";
 }
 
 #[repr(C)]
@@ -2014,17 +2014,17 @@ pub struct EventArgs {
 /// Questions the engine asks before doing things (`Host::reg_interceptor`).
 pub mod question {
     /// `entity` the player (0 for `break_block` without one), `pos`, `state`, `item` the tool.
-    pub const BREAK_BLOCK: &str = "break_block";
+    pub const BREAK_BLOCK: &str = "core:break_block";
     /// `entity`, `pos`, `state` to be placed, `item` used.
-    pub const PLACE_BLOCK: &str = "place_block";
+    pub const PLACE_BLOCK: &str = "core:place_block";
     /// Right click on a block: `entity`, `pos`, `state`.
-    pub const USE_BLOCK: &str = "use_block";
+    pub const USE_BLOCK: &str = "core:use_block";
     /// `entity` about to change dimension to `dim`.
-    pub const ENTER_DIMENSION: &str = "enter_dimension";
+    pub const ENTER_DIMENSION: &str = "core:enter_dimension";
     /// `entity` (a player) picking up `item` (count in `amount`), `other` the item entity.
-    pub const PICKUP_ITEM: &str = "pickup_item";
+    pub const PICKUP_ITEM: &str = "core:pickup_item";
     /// `entity` attacking `other` with `item`.
-    pub const ATTACK: &str = "attack";
+    pub const ATTACK: &str = "core:attack";
 }
 
 pub mod verdict {
@@ -2066,10 +2066,10 @@ pub mod stage {
 /// Value chains the engine runs.
 pub mod chain {
     /// Damage an entity takes (`entity` hurt by `other`, `cause`), after `on_hurt` hooks.
-    pub const DAMAGE: &str = "damage";
+    pub const DAMAGE: &str = "core:damage";
     /// Melee damage of `entity` hitting `other` holding `item`, from the item's
     /// `attack_damage`.
-    pub const ATTACK_DAMAGE: &str = "attack_damage";
+    pub const ATTACK_DAMAGE: &str = "core:attack_damage";
 }
 
 #[repr(C)]
@@ -2084,12 +2084,12 @@ pub struct ModifyArgs {
 
 /// Attributes the engine reads.
 pub mod attribute {
-    pub const MAX_HEALTH: &str = "max_health";
+    pub const MAX_HEALTH: &str = "core:max_health";
     /// Multiplier on walking speed (1 = the kind's speed).
-    pub const MOVEMENT_SPEED: &str = "movement_speed";
+    pub const MOVEMENT_SPEED: &str = "core:movement_speed";
     /// Multiplier on how far mobs notice it (1; 0 in creative, so mobs ignore the player; a mod
     /// can lower it, like vanilla's mob heads).
-    pub const VISIBILITY: &str = "visibility";
+    pub const VISIBILITY: &str = "core:visibility";
 }
 
 /// How an attribute modifier applies, like vanilla: ADD amounts sum onto the base, then times

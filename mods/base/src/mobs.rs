@@ -8,16 +8,16 @@ value! {
     pub struct Brain { pub cooldown: u32, pub panic: u32 }
 }
 
-pub static BRAIN: Component<Brain> = Component::new("base:brain");
-pub static ZOMBIE: Entity = Entity::new();
-pub static SPIDER: Entity = Entity::new();
-pub static PIG: Entity = Entity::new();
-pub static COW: Entity = Entity::new();
+pub static BRAIN: Component<Brain> = Component::named("base:brain");
+pub static ZOMBIE: Entity = Entity::named("zombie");
+pub static SPIDER: Entity = Entity::named("spider");
+pub static PIG: Entity = Entity::named("pig");
+pub static COW: Entity = Entity::named("cow");
 
 
 pub fn register(r: &mut Registry) {
     r.entity_component(&BRAIN, Brain::default(), 0, &[]);
-    r.entity("zombie").handle(&ZOMBIE)
+    r.entity(&ZOMBIE)
         .sounds("zombie")
         .size(0.6, 1.95)
         .health(20.0)
@@ -28,7 +28,7 @@ pub fn register(r: &mut Registry) {
         .model(biped(true))
         .attach_with(&BRAIN, Brain::default())
         .goals(hostile(3.0, false));
-    r.entity("spider").handle(&SPIDER)
+    r.entity(&SPIDER)
         .sounds("spider")
         .size(1.3, 0.9)
         .health(16.0)
@@ -38,7 +38,7 @@ pub fn register(r: &mut Registry) {
         .model(spider())
         .attach_with(&BRAIN, Brain::default())
         .goals(hostile(2.0, true));
-    r.entity("pig").handle(&PIG)
+    r.entity(&PIG)
         .sounds("pig")
         .size(0.9, 0.9)
         .health(10.0)
@@ -49,7 +49,7 @@ pub fn register(r: &mut Registry) {
         .attach_with(&BRAIN, Brain::default())
         .goals(passive())
         .on_hurt(panic);
-    r.entity("cow").handle(&COW)
+    r.entity(&COW)
         .sounds("cow")
         .size(0.9, 1.3)
         .health(10.0)
@@ -61,10 +61,10 @@ pub fn register(r: &mut Registry) {
         .goals(passive())
         .on_hurt(panic);
     // Vanilla amounts; meat comes out cooked when the animal burns.
-    r.loot("zombie").pool(Pool::new().items("rotten_flesh", 0, 2));
-    r.loot("spider").pool(Pool::new().items("string", 0, 2));
-    r.loot("pig").pool(Pool::new().entry(Entry::item("porkchop").count(1, 3).smelted(&crate::recipes::SMELTING)));
-    r.loot("cow").pool(Pool::new().entry(Entry::item("beef").count(1, 3).smelted(&crate::recipes::SMELTING))).pool(Pool::new().items("leather", 0, 2));
+    r.loot(&ZOMBIE).pool(Pool::new().items("rotten_flesh", 0, 2));
+    r.loot(&SPIDER).pool(Pool::new().items("string", 0, 2));
+    r.loot(&PIG).pool(Pool::new().entry(Entry::item("porkchop").count(1, 3).smelted(&crate::recipes::SMELTING)));
+    r.loot(&COW).pool(Pool::new().entry(Entry::item("beef").count(1, 3).smelted(&crate::recipes::SMELTING))).pool(Pool::new().items("leather", 0, 2));
     // Natural spawning, as rules the engine runs: monsters in the dark (spiders more in deep
     // caves), animals in small herds on grass by day, rarely once the world is loaded.
     r.spawn("zombie").light(0, 6).weight(2);

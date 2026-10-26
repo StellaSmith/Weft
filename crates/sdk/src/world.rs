@@ -63,16 +63,6 @@ pub fn state_flags(state: u32) -> u32 {
     unsafe { (host().state_flags)(state) }
 }
 
-pub fn find_block(name: &str) -> Option<u32> {
-    let id = unsafe { (host().find)(abi::entry_kind::BLOCK, Str::new(name), std::ptr::null_mut()) };
-    (id != u32::MAX).then_some(id)
-}
-
-pub fn find_item(name: &str) -> Option<u32> {
-    let id = unsafe { (host().find)(abi::entry_kind::ITEM, Str::new(name), std::ptr::null_mut()) };
-    (id != u32::MAX).then_some(id)
-}
-
 pub fn block_of(state: u32) -> u32 {
     unsafe { (host().block_of)(state) }
 }
@@ -91,33 +81,17 @@ pub fn item_name(item: u32) -> &'static str {
     name_of(abi::entry_kind::ITEM, item)
 }
 
-pub fn find_entity(name: &str) -> Option<u32> {
-    let id = unsafe { (host().find)(abi::entry_kind::ENTITY, Str::new(name), std::ptr::null_mut()) };
-    (id != u32::MAX).then_some(id)
-}
-
-pub fn find_menu(name: &str) -> Option<u32> {
-    let id = unsafe { (host().find)(abi::entry_kind::MENU, Str::new(name), std::ptr::null_mut()) };
-    (id != u32::MAX).then_some(id)
-}
-
-pub fn find_dimension(name: &str) -> Option<u32> {
-    let id = unsafe { (host().find)(abi::entry_kind::DIMENSION, Str::new(name), std::ptr::null_mut()) };
-    (id != u32::MAX).then_some(id)
-}
-
 impl World {
-    /// Current value of a world rule (`Registry::rule`), by full name.
-    pub fn rule(&self, name: &str) -> i64 {
-        unsafe { (host().rule)(self.raw, Str::new(name)) }
+    /// Current value of a world rule (`Registry::rule`).
+    pub fn rule(&self, rule: &crate::Rule) -> i64 {
+        unsafe { (host().rule)(self.raw, Str::new(rule.name())) }
     }
 }
 
 impl crate::Registry {
     /// A world rule players change with `/rule <name> <value>` (saved with the world), like
-    /// vanilla's game rules: `r.rule("mob_spawning", 1)`, read with `w.rule("base:mob_spawning")`.
-    pub fn rule(&mut self, name: &str, default: i64) {
-        let name = crate::qualify(self.ns, name);
-        unsafe { (host().reg_rule)(self.raw, Str::new(&name), default) }
+    /// vanilla's game rules: `r.rule(&MOB_SPAWNING, 1)`, read with `w.rule(&MOB_SPAWNING)`.
+    pub fn rule(&mut self, rule: &crate::Rule, default: i64) {
+        unsafe { (host().reg_rule)(self.raw, Str::new(rule.name()), default) }
     }
 }

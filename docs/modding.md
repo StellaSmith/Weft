@@ -56,13 +56,15 @@ use weft_sdk::*;
 
 declare_mod!(id: "mymod", name: "My Mod", version: "0.1.0", deps: ["base"], init: init);
 
-pub static RUBY: Item = Item::new();
-pub static RUBY_ORE: Block = Block::new();
+pub static RUBY: Item = Item::named("ruby");
+pub static RUBY_ORE: Block = Block::named("ruby_ore");
+static OVERWORLD: Dimension = Dimension::named("base:overworld");
+static INGREDIENTS: CreativeTab = CreativeTab::named("base:ingredients");
 
 fn init(r: &mut Registry) {
-    r.block("ruby_ore").handle(&RUBY_ORE).hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).drops("ruby", 1);
-    r.item("ruby").handle(&RUBY).tag("gems/ruby").tab("base:ingredients");
-    r.ore("base:overworld", "ruby_ore").y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
+    r.block(&RUBY_ORE).hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).drops("ruby", 1);
+    r.item(&RUBY).tag("gems/ruby").tab(&INGREDIENTS);
+    r.ore(&OVERWORLD, &RUBY_ORE).y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
 }
 ```
 
@@ -85,16 +87,31 @@ using another engine version, it just refuses to load and tells you to rebuild.
 
 ## Names and paths
 ### Names
-Everything has a name `namespace:path`. In your own mod you write just `ruby`, it becomes `mymod:ruby`.\
-For other mods' things you have to write the full name: `base:furnace`.
+Everything a mod adds has a name `namespace:path`: blocks, items, entities, menus, biomes, dimensions,
+settings, sounds, particles, events, keys, screens, HUD elements, rules, recipe kinds and so on.\
+In your own mod you write just `ruby` and it becomes `mymod:ruby`, the same when you register it and when you read it.\
+Other mods' things go by their full name: `base:furnace`. The engine's own are `core:..`.
 
 ### Tags
 `#tag` in a recipe, an ore replace list or a loot condition means "anything with this tag".\
 `#ingots/*` means anything with a tag starting with `ingots/`.
 
 ### Handles
-Handles like `static RUBY: Item = Item::new()` are bound with `.handle(&RUBY)` and then give you the numeric id.\
-Other mods' content: `Block::named("base:stone")`. Hot code works only with ids.
+The name lives in a handle, and you register by the handle:
+
+```rust
+static RUBY: Item = Item::named("ruby");
+static DASH: Key = Key::named("dash");
+static STONE: Block = Block::named("base:stone");   // someone else's, only read
+
+r.item(&RUBY).stack(16);
+r.key(&DASH, "R");
+if STONE.is(w.get(pos)) { .. }
+```
+
+Every kind of thing works like this, so there is nothing else to remember.\
+Once the game is loaded a handle gives you the numeric id (`RUBY.id()`), and hot code works only with ids.\
+Families made in a loop take `Item::generated(format!("{metal}_ingot"))`, a handle made from a name at runtime.
 
 ### Textures
 `.texture("ruby")` for a block means `mymod:block/ruby`, for an item it means `mymod:item/ruby`.\
@@ -125,10 +142,10 @@ This is done so any mod reads and writes them without depending on whoever added
 
 ```rust
 // Declared the same way in every mod that uses it
-static FUEL: Component<u32> = Component::new("fuel");
-static HOT: Tag = Tag::new("hot");
+static FUEL: Component<u32> = Component::named("fuel");
+static HOT: Tag = Tag::named("hot");
 
-r.item("coal_dust").set(&FUEL, 800).tag("hot");     // on your own content
+r.item(&COAL_DUST).set(&FUEL, 800).tag("hot");      // on your own content
 r.set("base:stick", &FUEL, 100);                    // on someone else's
 r.set_tagged("planks/*", &FUEL, 300);               // on everything with a tag
 r.tag("hot", &["base:lava", "base:magma"]);
@@ -138,9 +155,10 @@ if let Some(ticks) = FUEL.on_item(stack.item) { /* burn it */ }
 if HOT.on_block(state) { /* harm player */ }
 ```
 
-Common names like `fuel`, `food`, `sand`, `conductor`, `ores/iron` have no prefix on purpose since they
-are very common.\
-Your stuff goes under your namespace if you want other mods to not conflict with them: `mymod:heat`.
+Component and tag names are not things a mod owns, they are a vocabulary.\
+Blocks and items belong to the mod that adds them, but `fuel`, `food`, `sand`, `conductor` or `ores/iron` belong to nobody
+and mean the same in every mod, so they are written as they are, without a namespace.\
+A term that only makes sense for your mod can carry its prefix, `mymod:heat`, so nobody else picks the same word by accident.
 
 Your own data structures:
 
@@ -149,21 +167,21 @@ value! {
     #[derive(Default)]
     struct Machine { burn: u32, burn_max: u32 }
 }
-static MACHINE: Component<Machine> = Component::new("mymod:machine");
+static MACHINE: Component<Machine> = Component::named("mymod:machine");
 ```
 
 Per-entity components like a state of a machine, hunger or anything else that changes in time go through
-`r.entity_component(&COMP, default, flags, &["core:player"])` or the `.attach_with(..)` of a builder.\
+`r.entity_component(&COMP, default, flags, &[&PLAYER])` or the `.attach_with(..)` of a builder.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`.\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.
 
 ## Content builders
 
-All of them are `r.<thing>("name")` followed by settings. The registration happens when the builder
+All of them are `r.<thing>(&HANDLE)` followed by settings. The registration happens when the builder
 is dropped.
 
 ### Blocks
-`r.block("name")` and then:
+`r.block(&BLOCK)` and then:
 - `hardness`
 - `mineable("pickaxe")`
 - `needs_tool(tier)`
@@ -179,7 +197,7 @@ is dropped.
 - `states(n, |i, s| ..)` for anything else with states
 
 ### Items
-`r.item("name")` and then:
+`r.item(&ITEM)` and then:
 - `texture`
 - `stack(N)`
 - `durability`
@@ -190,7 +208,7 @@ is dropped.
 - `on_use`
 
 ### Entities
-`r.entity("name")` and then:
+`r.entity(&ENTITY)` and then:
 - `size(w, h)`, `health`, `speed`
 - `hostile()` or `passive()` or `category(..)`
 - `texture`
@@ -203,11 +221,11 @@ Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
 `blocks(&[("base:oak_planks", from, to)])` makes a flying structure players can build on.
 
 ### Machines
-`r.machine(name, &MENU)` is block + block entity + inventory + menu + screen in one go.\
+`r.machine(&BLOCK, &MENU)` is block + block entity + inventory + menu + screen in one go.\
 Look at testmod's generator for an example.
 
 ### Liquids
-`r.liquid("name")` and then:
+`r.liquid(&LIQUID)` and then:
 - `delay`, `drop_off`, `slope_find`
 - `infinite`
 - `temperature`
@@ -234,11 +252,11 @@ It works on other mods' dimensions too, so adding a biome to base's overworld is
 Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with stations.
 
 ### Loot
-`r.loot("name").pool(Pool::new().rolls(1, 2).item("ruby"))`\
-and other mods' tables without replacing them: `r.loot_modify("base:zombie").add_pool(..)`.
+`r.loot(&RUBY_ORE).pool(Pool::new().rolls(1, 2).item("ruby"))` (a block's or entity's table is what it drops, `LootTable::named(..)` is a table of its own)\
+and other mods' tables without replacing them: `r.loot_modify(&ZOMBIE).add_pool(..)` with `ZOMBIE = Entity::named("base:zombie")`.
 
 ### Replacing something of another mod
-Register the same name with `.replace()`.\
+Register their handle (`Block::named("base:torch")`) with `.replace()`.\
 Their handle, item and recipes now point at yours. testmod does it with the torch.
 
 ## Hooking into the game
@@ -246,24 +264,25 @@ There are four mechanisms, try them in this order:
 
 ```rust
 // Events which are batched, delivered once per tick and nobody can cancel them.
-static EATEN: Event<Eaten> = Event::new("eaten");
+static EATEN: Event<Eaten> = Event::named("eaten");
 r.on(&EATEN, |b| for e in b.iter() { /* do something */ });
 w.emit(&MY_EVENT, value);
 
 // Questions, anyone may say no, any deny wins.
-r.intercept(question::BREAK_BLOCK, |q| if is_protected(q.pos()) { Verdict::Deny } else { Verdict::Abstain });
+r.intercept(&question::BREAK_BLOCK, |q| if is_protected(q.pos()) { Verdict::Deny } else { Verdict::Abstain });
 
 // Value chains for damage, attack damage, or your own. Stages order them, `w.explain(..)` and
 // `--log modifiers=debug` show what changed what.
-r.modify(chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
+r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 
 // Attributes with timed modifiers like speed, max health, your own that are saved with the entity.
-r.attribute("mymod:mana", 100.0, 0.0, 1000.0);
+static MANA: Attribute = Attribute::named("mana");
+r.attribute(&MANA, 100.0, 0.0, 1000.0);
 ```
 
 ### Built-in events
 `BLOCK_BROKEN`, `BLOCK_PLACED`, `ITEM_PICKED_UP`, `ENTITY_HURT`, `ENTITY_DIED`, `PLAYER_JOINED`\
-base adds `eaten` and `smelted`.
+base adds `base:eaten` and `base:smelted`.
 
 ### Systems and energy
 Systems run over every entity with a component all at once, which is what you want for
@@ -288,31 +307,31 @@ Inside any callback you get a `World` (`w`):
 - components, energy, menus
 - particles (`w.particles(&SPARK, pos).count(20)`)
 - sounds (`w.play_sound(&S, pos, volume)`)
-- rules (`w.rule("mymod:hard_mode")`)
+- rules (`w.rule(&HARD_MODE)`)
 - gizmos for debugging (`w.gizmo_line/box/text`)
 
 ## Client side
 
-- UI is built in code: `r.screen("about", |ui| ui.panel(..))`
-- HUD elements are built with `r.hud_element(name, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`
+- UI is built in code: `r.screen(&ABOUT, |ui| ui.panel(..))`, the engine's screens are in `screens::*`
+- HUD elements are built with `r.hud_element(&MANA_BAR, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`
 - F3 panels are at `hud_anchor::DEBUG_LEFT`
 - Looks come from themes and 9-slice sprites in `assets/ui`, so a resource pack can reskin screens
 - Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`
 
 Also:
-- key bindings (`r.key("dash", "R")`)
-- packets both ways (`r.packet` on the server, `r.client_packet` on the client, `w.send` / `client.send`)
+- key bindings (`r.key(&DASH, "R")`, read with `c.pressed(&DASH)`; the engine's keys are `keys::*`)
+- packets both ways on a `Channel` (`r.packet` on the server, `r.client_packet` on the client, `w.send` / `client.send`)
 - frame hooks (`r.client_frame`)
 - particles and screen effects from shader snippets in `assets/shaders`
 - sounds with `r.sound(..).category(..)` (every category gets its own volume slider), music
-- settings that show up in Mod Settings by themselves (`r.config("sparks").bool(true).handle(&SPARKS)`)
+- settings that show up in Mod Settings by themselves (`r.config(&SPARKS).bool(true)`)
 
 ## Debugging
 
 `--log mod:mymod=debug` (or `/log` in chat) turns on your `debug!` / `trace!` lines.\
 `info!(target: "pipes", ..)` gives you `mod:mymod::pipes` to filter on.
 
-F3 shows your mod's time per tick. `/gizmo` draws debug shapes, your own groups included (`r.gizmo_group("pipes")`).
+F3 shows your mod's time per tick. `/gizmo` draws debug shapes, your own groups included (`r.gizmo_group(&PIPES)`).
 
 A panic in your callback disables that callback and names your mod in the log instead of taking the game down.\
 Native crashes write a report into `run/crash-reports/` with the mod that was running.

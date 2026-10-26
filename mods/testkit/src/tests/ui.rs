@@ -14,15 +14,16 @@ pub async fn screens(t: T) -> R {
     t.screen("testmod:about").await?;
     t.c().close_screen();
     t.screen("core:title").await?;
-    for (name, texts) in [
-        ("core:settings", &["text:View distance", "text:Language", "text:Controls", "text:Shader Packs", "text:Done"][..]),
-        ("core:language", &["text:English", "text:Done"][..]),
-        ("core:controls", &["text:Reset All", "text:Done"][..]),
-        ("core:worlds", &["text:Create New World", "id:saves_folder"][..]),
-        ("core:mods", &["id:mod:base", "id:mod:testmod", "id:mod_description"][..]),
-        ("core:profile", &["id:profile_name", "text:Copy Key"][..]),
+    for (screen, texts) in [
+        (&screens::SETTINGS, &["text:View distance", "text:Language", "text:Controls", "text:Shader Packs", "text:Done"][..]),
+        (&screens::LANGUAGE, &["text:English", "text:Done"][..]),
+        (&screens::CONTROLS, &["text:Reset All", "text:Done"][..]),
+        (&screens::WORLDS, &["text:Create New World", "id:saves_folder"][..]),
+        (&screens::MODS, &["id:mod:base", "id:mod:testmod", "id:mod_description"][..]),
+        (&screens::PROFILE, &["id:profile_name", "text:Copy Key"][..]),
     ] {
-        t.check(t.c().open_screen(name), format!("cannot open {name}"));
+        let name = screen.name();
+        t.check(t.c().open_screen(screen), format!("cannot open {name}"));
         t.screen(name).await?;
         t.shot(name.trim_start_matches("core:")).await?;
         t.laid_out(texts);
@@ -83,7 +84,7 @@ pub async fn f3(t: T) -> R {
 }
 
 fn id(name: &str) -> u32 {
-    find_item(name).unwrap_or(u32::MAX)
+    Item::lookup(name).unwrap_or(u32::MAX)
 }
 
 /// The 2x2 grid of the inventory screen, driven by clicks on slots like a player would.
@@ -195,7 +196,7 @@ pub async fn chat(t: T) -> R {
 /// Settings mods declare get a screen built from the declarations; changes apply and are saved.
 pub async fn mod_settings(t: T) -> R {
     static SPARKS: Config<bool> = Config::named("testmod:crystal_sparks");
-    t.c().open_screen("core:mod_settings");
+    t.c().open_screen(&screens::MOD_SETTINGS);
     t.screen("core:mod_settings").await?;
     t.frames(2).await?;
     t.check(t.click_ui("text:Test Mod", 0), "test mod listed");
@@ -340,7 +341,7 @@ pub async fn inventory_hotkeys(t: T) -> R {
 
 /// A long list shows a scroll bar; clicking low on its track scrolls the list down.
 pub async fn scrollbar(t: T) -> R {
-    t.c().open_screen("core:controls");
+    t.c().open_screen(&screens::CONTROLS);
     t.screen("core:controls").await?;
     t.frames(2).await?;
     let [x, y, w, h] = t.c().ui_rect("scrollbar").ok_or("no scroll bar on the controls screen")?;

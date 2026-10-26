@@ -1,13 +1,13 @@
 use weft_sdk::*;
 
-pub static STICK: Item = Item::new();
-pub static COAL: Item = Item::new();
-pub static IRON_INGOT: Item = Item::new();
-pub static GOLD_INGOT: Item = Item::new();
-pub static DIAMOND: Item = Item::new();
-pub static WHEAT_SEEDS: Item = Item::new();
-pub static WHEAT: Item = Item::new();
-pub static BUCKET: Item = Item::new();
+pub static STICK: Item = Item::named("stick");
+pub static COAL: Item = Item::named("coal");
+pub static IRON_INGOT: Item = Item::named("iron_ingot");
+pub static GOLD_INGOT: Item = Item::named("gold_ingot");
+pub static DIAMOND: Item = Item::named("diamond");
+pub static WHEAT_SEEDS: Item = Item::named("wheat_seeds");
+pub static WHEAT: Item = Item::named("wheat");
+pub static BUCKET: Item = Item::named("bucket");
 
 value! {
     /// Read by the hunger system; other mods set it on their own food.
@@ -20,12 +20,12 @@ value! {
 }
 
 // The common vocabulary the base game reads; any mod may set these on its own content.
-pub static FOOD: Component<Food> = Component::new("food");
+pub static FOOD: Component<Food> = Component::named("food");
 /// Burn time in ticks.
-pub static FUEL: Component<u32> = Component::new("fuel");
-pub static ARMOR: Component<Armor> = Component::new("armor");
+pub static FUEL: Component<u32> = Component::named("fuel");
+pub static ARMOR: Component<Armor> = Component::named("armor");
 /// How readily fire takes it.
-pub static FLAMMABLE: Component<u32> = Component::new("flammable");
+pub static FLAMMABLE: Component<u32> = Component::named("flammable");
 /// Slot tags; `<slot>/<material>` tags pick the recipe (see recipes.rs).
 pub const ARMOR_SLOTS: [&str; 4] = abi::comp::ARMOR;
 
@@ -46,18 +46,18 @@ const MATERIALS: [Material; 5] = [
 ];
 
 pub fn register(r: &mut Registry) {
-    r.item("stick").handle(&STICK).set(&FUEL, 100).tab("ingredients");
-    r.item("coal").handle(&COAL).tag("gems/coal").set(&FUEL, 1600).tab("ingredients");
-    r.item("iron_ingot").handle(&IRON_INGOT).tag("ingots/iron").tag("materials/iron").tab("ingredients");
-    r.item("gold_ingot").handle(&GOLD_INGOT).tag("ingots/gold").tag("materials/gold").tab("ingredients");
+    r.item(&STICK).set(&FUEL, 100).tab(&crate::tabs::INGREDIENTS);
+    r.item(&COAL).tag("gems/coal").set(&FUEL, 1600).tab(&crate::tabs::INGREDIENTS);
+    r.item(&IRON_INGOT).tag("ingots/iron").tag("materials/iron").tab(&crate::tabs::INGREDIENTS);
+    r.item(&GOLD_INGOT).tag("ingots/gold").tag("materials/gold").tab(&crate::tabs::INGREDIENTS);
     // Metal ores drop raw pieces (like modern versions) that smelt into ingots.
-    r.item("raw_iron").tag("raw_ores/iron").tab("ingredients");
-    r.item("raw_gold").tag("raw_ores/gold").tab("ingredients");
-    r.item("diamond").handle(&DIAMOND).tag("gems/diamond").tag("materials/diamond").tab("ingredients");
-    r.item("wheat_seeds").handle(&WHEAT_SEEDS).places("wheat").tab("natural");
-    r.item("wheat").handle(&WHEAT).tab("ingredients");
+    r.item(Item::generated("raw_iron".into())).tag("raw_ores/iron").tab(&crate::tabs::INGREDIENTS);
+    r.item(Item::generated("raw_gold".into())).tag("raw_ores/gold").tab(&crate::tabs::INGREDIENTS);
+    r.item(&DIAMOND).tag("gems/diamond").tag("materials/diamond").tab(&crate::tabs::INGREDIENTS);
+    r.item(&WHEAT_SEEDS).places(&crate::blocks::WHEAT).tab(&crate::tabs::NATURAL);
+    r.item(&WHEAT).tab(&crate::tabs::INGREDIENTS);
     // Filled buckets come with their liquids (blocks.rs); the engine fills and pours them.
-    r.item("bucket").handle(&BUCKET).stack(16).tab("tools");
+    r.item(&BUCKET).stack(16).tab(&crate::tabs::TOOLS);
     r.set("lava_bucket", &FUEL, 20000);
 
     for (name, hunger, saturation, tag) in [
@@ -69,19 +69,19 @@ pub fn register(r: &mut Registry) {
         ("cooked_beef", 8, 12.8, "cooked_meat/beef"),
         ("rotten_flesh", 4, 0.8, ""),
     ] {
-        let i = r.item(name).set(&FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab("food");
+        let i = r.item(Item::generated(name.into())).set(&FOOD, Food { hunger, saturation }).on_use(crate::player::eat).tab(&crate::tabs::FOOD);
         if !tag.is_empty() {
             i.tag(tag);
         }
     }
-    r.item("leather").tag("materials/leather").tab("ingredients");
+    r.item(Item::generated("leather".into())).tag("materials/leather").tab(&crate::tabs::INGREDIENTS);
     for name in ["bone", "string", "sugar"] {
-        r.item(name).tab("ingredients");
+        r.item(Item::generated(name.into())).tab(&crate::tabs::INGREDIENTS);
     }
 
     for m in &MATERIALS {
         let tool = |r: &mut Registry, kind: &str, class: &str, damage: f32| {
-            r.item(&format!("{}_{kind}", m.name))
+            r.item(Item::generated(format!("{}_{kind}", m.name)))
                 .tool(class, m.level, m.speed)
                 .durability(m.durability)
                 .attack(damage + m.damage)
@@ -89,7 +89,7 @@ pub fn register(r: &mut Registry) {
                 .tag(&format!("{kind}s/{}", m.name))
                 // Vanilla: weapons wear by one per hit, tools (made for blocks) by two.
                 .set(&WEAR_PER_HIT, if kind == "sword" { 1 } else { 2 })
-                .tab(if kind == "sword" { "combat" } else { "tools" });
+                .tab(if kind == "sword" { &crate::tabs::COMBAT } else { &crate::tabs::TOOLS });
         };
         tool(r, "pickaxe", "pickaxe", 2.0);
         tool(r, "axe", "axe", 3.0);
@@ -103,13 +103,13 @@ pub fn register(r: &mut Registry) {
             let points = points + mult * (if slot == 1 { 3 } else { 1 });
             let tag = ARMOR_SLOTS[slot as usize];
             let (parts, inflate, layer) = [(worn_parts::HEAD, 1.0, 1), (worn_parts::BODY | worn_parts::ARMS, 1.0, 1), (worn_parts::BODY | worn_parts::LEGS, 0.5, 2), (worn_parts::LEGS, 1.0, 1)][slot as usize];
-            r.item(&format!("{mat}_{piece}"))
+            r.item(Item::generated(format!("{mat}_{piece}")))
                 .durability(durability * dur)
                 .set(&ARMOR, Armor { slot, points })
                 .tag(tag)
                 .tag(&format!("{tag}/{mat}"))
                 .worn(parts, inflate, &format!("armor/{mat}_{layer}"))
-                .tab("combat");
+                .tab(&crate::tabs::COMBAT);
         }
     }
 }

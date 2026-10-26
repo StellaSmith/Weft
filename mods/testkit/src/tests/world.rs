@@ -13,7 +13,7 @@ use crate::runner::{R, T};
 pub async fn missing_dimension(t: T) -> R {
     t.world(7).await?;
     t.op("put me 3 diamond 5").await?;
-    let flat = find_dimension("base:flatlands").ok_or("no flatlands")?;
+    let flat = Dimension::lookup("base:flatlands").ok_or("no flatlands")?;
     t.cmd("/dim base:flatlands").await?;
     t.until("in the flatlands", Duration::from_secs(20), |t| t.state().dim == flat).await?;
     let name = format!("test-{}", t.name());
@@ -28,7 +28,7 @@ pub async fn missing_dimension(t: T) -> R {
         std::fs::write(f.path(), src.replace("dim = base:flatlands", "dim = ghost:gone")).map_err(|e| e.to_string())?;
     }
     // Opened from the list like a player would: the missing mod is named first.
-    t.c().open_screen("core:worlds");
+    t.c().open_screen(&screens::WORLDS);
     t.screen("core:worlds").await?;
     t.frames(2).await?;
     // A click lasts 50 ms; buttons act on release.
@@ -41,7 +41,7 @@ pub async fn missing_dimension(t: T) -> R {
     t.click_ui("id:continue", 0);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED)).await?;
     t.loaded().await?;
-    t.check_eq(t.state().dim, find_dimension("base:overworld").unwrap_or(u32::MAX), "the player is in the spawn dimension");
+    t.check_eq(t.state().dim, Dimension::lookup("base:overworld").unwrap_or(u32::MAX), "the player is in the spawn dimension");
     t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "and kept the inventory");
     Ok(())
 }
@@ -52,7 +52,7 @@ pub async fn virtual_menus(t: T) -> R {
     t.flat().await?;
     let id = t.op("vmenu base:chest 27 diamond 3 stick 10").await?;
     t.screen("core:menu").await?;
-    let diamond = find_item("base:diamond").ok_or("no item base:diamond")?;
+    let diamond = Item::lookup("base:diamond").ok_or("no item base:diamond")?;
     t.until("chest contents on the client", Duration::from_secs(5), |t| t.c().menu_slot(0).item == diamond).await?;
     t.check_eq(t.c().menu_slot(1).count, 10, "second virtual slot");
     t.shot("virtual_chest").await?;
@@ -77,7 +77,7 @@ pub async fn virtual_menus(t: T) -> R {
         let p = add(f, d);
         t.set(p, block).await?;
         t.op(&format!("menu {menu} {} {} {}", p[0], p[1], p[2])).await?;
-        let want = find_menu(menu).unwrap_or(u32::MAX);
+        let want = Menu::lookup(menu).unwrap_or(u32::MAX);
         t.until(&format!("{menu} open"), Duration::from_secs(5), |t| t.c().menu().is_some_and(|m| m[0] == want)).await?;
         t.screen("core:menu").await?;
     }
@@ -234,15 +234,15 @@ pub async fn persistence(t: T) -> R {
     t.check_eq(t.op("secret me 0").await?, "1234".into(), "server keeps the secret");
     t.frames(5).await?;
     t.check_eq(crate::server::SECRET.stack_only(&t.c().inventory_slot(0)), None, "client never sees the secret");
-    t.check_eq(value(&t.op("attr me movement_speed").await?), 1.0, "speed without modifiers");
-    t.op("attr_mod me movement_speed testkit:haste 1 0.5 40").await?;
-    t.op("attr_mod me max_health testkit:vigor 0 10 0").await?;
-    let speed = t.op("attr me movement_speed").await?;
+    t.check_eq(value(&t.op("attr me core:movement_speed").await?), 1.0, "speed without modifiers");
+    t.op("attr_mod me core:movement_speed testkit:haste 1 0.5 40").await?;
+    t.op("attr_mod me core:max_health testkit:vigor 0 10 0").await?;
+    let speed = t.op("attr me core:movement_speed").await?;
     t.check_eq(value(&speed), 1.5, "speed with +50% of base");
     t.check(speed.contains("testkit:haste"), format!("explained: {speed}"));
-    t.check_eq(value(&t.op("attr me max_health").await?), 30.0, "max health +10");
+    t.check_eq(value(&t.op("attr me core:max_health").await?), 30.0, "max health +10");
     t.secs(2.5).await?;
-    t.check_eq(value(&t.op("attr me movement_speed").await?), 1.0, "the 40 tick modifier ran out");
+    t.check_eq(value(&t.op("attr me core:movement_speed").await?), 1.0, "the 40 tick modifier ran out");
 
     let name = format!("test-{}", t.name());
     t.c().leave_world();
@@ -256,13 +256,13 @@ pub async fn persistence(t: T) -> R {
     t.check_eq(t.slot("me", 0).await?.0, "base:iron_sword".into(), "the sword was saved");
     t.check_eq(t.op(&format!("inv {} {} {}", chest[0], chest[1], chest[2])).await?, "0:base:coal:5".to_string(), "the chest kept its coal");
     t.check_eq(t.op("secret me 0").await?, "none".into(), "the secret was not");
-    t.check_eq(value(&t.op("attr me max_health").await?), 30.0, "max health modifier after reload");
+    t.check_eq(value(&t.op("attr me core:max_health").await?), 30.0, "max health modifier after reload");
     // One maximum everywhere: /heal fills to it and the client hears the same.
     t.cmd("/heal").await?;
     t.check_eq(t.op("health").await?, "30".to_string(), "healed to the modified maximum");
     t.until("the client has 30", Duration::from_secs(2), |t| t.state().health == 30.0).await?;
-    t.op("attr_rm me max_health testkit:vigor").await?;
-    t.check_eq(value(&t.op("attr me max_health").await?), 20.0, "removed");
+    t.op("attr_rm me core:max_health testkit:vigor").await?;
+    t.check_eq(value(&t.op("attr me core:max_health").await?), 20.0, "removed");
     t.sync_inventory().await
 }
 
@@ -302,7 +302,7 @@ pub async fn dimensions(t: T) -> R {
         ("base:overworld", None),
     ];
     for (dim, look) in looks {
-        let Some(id) = find_dimension(dim) else {
+        let Some(id) = Dimension::lookup(dim) else {
             t.fail(format!("no dimension {dim}"));
             continue;
         };
@@ -324,7 +324,7 @@ pub async fn dimensions(t: T) -> R {
         }
     }
 
-    let void = find_dimension("core:void").ok_or("no core:void")?;
+    let void = Dimension::lookup("core:void").ok_or("no core:void")?;
     t.cmd("/dim core:void").await?;
     t.until("in the void", Duration::from_secs(20), |t| t.state().dim == void).await?;
     t.loaded().await?;

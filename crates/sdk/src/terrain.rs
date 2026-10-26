@@ -5,7 +5,7 @@
 //! fields, so a mod can ship its own.
 //!
 //! ```ignore
-//! r.terrain("mars")
+//! r.terrain(&MARS)
 //!     .stone("basalt")
 //!     .base_height(60.0)
 //!     .feature(preset::hills(8.0, 220.0))
@@ -13,7 +13,7 @@
 //!     .biome(BiomeRule::new("peaks").feature("mountains", 0.5, 9.0).surface("basalt", "basalt", 1))
 //!     .biome(BiomeRule::new("dust").surface("regolith", "regolith", 3));
 //! // Another mod:
-//! r.terrain("base:overworld").biome_before("base:desert", BiomeRule::new("savanna").temperature(0.2, 0.35).surface("base:grass", "base:dirt", 3));
+//! r.terrain(&OVERWORLD).biome_before("base:desert", BiomeRule::new("savanna").temperature(0.2, 0.35).surface("base:grass", "base:dirt", 3));
 //! ```
 
 use std::marker::PhantomData;
@@ -286,9 +286,9 @@ impl Caves {
 
 impl Registry {
     /// The terrain of a dimension: yours to describe, or another mod's to edit
-    /// (`r.terrain("base:overworld")`). Edits apply after the owner's description, in load order.
-    pub fn terrain<'a>(&'a mut self, dimension: &str) -> TerrainBuilder<'a> {
-        TerrainBuilder { raw: self.raw, ns: self.ns, dimension: qualify(self.ns, dimension), _p: PhantomData }
+    /// (`r.terrain(&OVERWORLD)`). Edits apply after the owner's description, in load order.
+    pub fn terrain<'a>(&'a mut self, dimension: &crate::Dimension) -> TerrainBuilder<'a> {
+        TerrainBuilder { raw: self.raw, ns: self.ns, dimension: dimension.name().to_string(), _p: PhantomData }
     }
 }
 

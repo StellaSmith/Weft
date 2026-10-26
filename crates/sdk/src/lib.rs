@@ -20,7 +20,7 @@ mod world;
 
 pub use abi::{ItemStack, hud_anchor, tool_tier, worn_parts};
 pub use cache::ColumnCache;
-pub use client::{Client, Packet, launch_option};
+pub use client::{Client, Packet, keys, launch_option, screens};
 pub use command::Command;
 pub use config::*;
 pub use component::*;
@@ -170,6 +170,11 @@ where
         guard(|| f(args))
     }
     Callback { func: Some(tramp::<A, F>), data: Box::into_raw(Box::new(f)) as *const c_void }
+}
+
+/// A thing's full name: one without a namespace is this mod's.
+pub(crate) fn full_name(name: &str) -> String {
+    qualify(mod_id(), name)
 }
 
 /// Prefixes the mod namespace unless the name already has one.

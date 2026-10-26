@@ -3,7 +3,7 @@
 //! so mobs walk around walls instead of into them.
 //!
 //! ```ignore
-//! r.entity("zombie").goals(Goals::new().then(attack).then(ai::follow_player(18.0, 1.0)).then(ai::wander(0.6, 10.0)));
+//! r.entity(&ZOMBIE).goals(Goals::new().then(attack).then(ai::follow_player(18.0, 1.0)).then(ai::wander(0.6, 10.0)));
 //! ```
 
 use crate::{EntityState, EntityTick, World};
@@ -67,7 +67,7 @@ pub fn nearest_player(w: &World, st: &EntityState, range: f64) -> Option<(u64, E
     let d2 = |s: &EntityState| (s.pos[0] - st.pos[0]).powi(2) + (s.pos[2] - st.pos[2]).powi(2);
     w.each_player()
         .filter_map(|p| w.entity(p).map(|s| (p, s)))
-        .filter(|(p, s)| s.health > 0.0 && (s.pos[1] - st.pos[1]).abs() < 8.0 && d2(s) < (range * w.attribute(*p, crate::abi::attribute::VISIBILITY)).powi(2))
+        .filter(|(p, s)| s.health > 0.0 && (s.pos[1] - st.pos[1]).abs() < 8.0 && d2(s) < (range * w.attribute(*p, &crate::attribute::VISIBILITY)).powi(2))
         .min_by(|a, b| d2(&a.1).total_cmp(&d2(&b.1)))
 }
 

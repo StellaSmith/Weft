@@ -19,10 +19,13 @@ use weft_sdk::*;
 
 declare_mod!(id: "examplemod", name: "Example Mod", version: "0.1.0", deps: ["base"], init: init);
 
-// Handles bound at registration with `.handle(&...)`, after that `EXAMPLE_ITEM.id()` is the
-// numeric id. Keep them `static` since hot code always works with ids.
-pub static EXAMPLE_ITEM: Item = Item::new();
-pub static GIFT_ON_JOIN: Config<bool> = Config::new();
+// Everything your mod adds is named in a `static` handle and registered by it. A name without
+// `mod:` is yours (`examplemod:example_item`), `Item::named("base:coal")` is another mod's.
+// Once the game is loaded `EXAMPLE_ITEM.id()` is the numeric id hot code works with.
+pub static EXAMPLE_ITEM: Item = Item::named("example_item");
+pub static GIFT_ON_JOIN: Config<bool> = Config::named("gift_on_join");
+// The base game's tab, by name.
+static INGREDIENTS: CreativeTab = CreativeTab::named("base:ingredients");
 
 /// Called once at startup, in parallel with the other mods: register everything here.
 /// Nothing exists in the world yet, you only describe what your mod adds.
@@ -41,10 +44,12 @@ fn init(r: &mut Registry) {
 /// Settings show up in Settings > Mod Settings by themselves and are saved to
 /// `config/examplemod.txt`. Name and tooltip come from `config.examplemod.<key>` in the lang file.
 fn config(r: &mut Registry) {
-    r.config("gift_on_join").bool(true).handle(&GIFT_ON_JOIN);
+    r.config(&GIFT_ON_JOIN).bool(true);
     // More examples:
-    //      r.config("power").int(10, 0, 100).handle(&POWER);
-    //      r.config("style").choice(0, &["warm", "cold"]).handle(&STYLE);
+    //      static POWER: Config<i32> = Config::named("power");
+    //      static STYLE: Config<u32> = Config::named("style");
+    //      r.config(&POWER).int(10, 0, 100);
+    //      r.config(&STYLE).choice(0, &["warm", "cold"]);
     // `.synced()` means server value overrides clients' values, for anything gameplay depends on
 }
 
@@ -52,29 +57,41 @@ fn config(r: &mut Registry) {
 /// More at `mods/base/src/blocks.rs` (support rules, plants, falling sand, torches, axis, etc.)
 /// And `mods/testmod/src/lib.rs` (machines, facing, replacing another mod's block etc.)
 fn blocks(_r: &mut Registry) {
-    // r.block("ruby_ore")
+    // static RUBY_ORE: Block = Block::named("ruby_ore");
+    // static NATURAL: CreativeTab = CreativeTab::named("base:natural");
+    // r.block(&RUBY_ORE)
     //     .hardness(3.0)
     //     .mineable("pickaxe")
     //     .needs_tool(tool_tier::IRON)      // drops nothing without at least an iron pickaxe
     //     .drops("ruby", 1)
-    //     .tab("base:natural");
+    //     .tab(&NATURAL);
     //
     // Light and glass-like looks plus a custom box:
-    // r.block("lamp").light_rgb(15, 10, 4).hardness(0.3);
-    // r.block("pane").model_box([0.0, 0.0, 7.0], [16.0, 16.0, 9.0], "pane").cutout();
+    // static LAMP: Block = Block::named("lamp");
+    // static PANE: Block = Block::named("pane");
+    // r.block(&LAMP).light_rgb(15, 10, 4).hardness(0.3);
+    // r.block(&PANE).model_box([0.0, 0.0, 7.0], [16.0, 16.0, 9.0], "pane").cutout();
     //
     // Behavior (all optional, all get a `World`):
-    // r.block("button").on_use(|u| { u.world(); u.pos(); u.player(); true });
+    // static BUTTON: Block = Block::named("button");
+    // r.block(&BUTTON).on_use(|u| { u.world(); u.pos(); u.player(); true });
+    //
+    // A family of blocks made in a loop gets its handles from the names:
+    // for color in ["red", "blue"] {
+    //     r.block(Block::generated(format!("{color}_brick"))).hardness(2.0);
+    // }
 }
 
 /// Your items, texture is `item/<name>.png`, translation is `item.examplemod.<name>`
 /// Gray tooltip with `item.examplemod.<name>.tooltip`, for more tooltip options check `mods/base/assets/lang/en_us.lang`
 fn items(r: &mut Registry) {
-    r.item("example_item").handle(&EXAMPLE_ITEM).tab("base:ingredients").tag("gems/example");
+    r.item(&EXAMPLE_ITEM).tab(&INGREDIENTS).tag("gems/example");
     // Tools, weapons, food, fuel are all components or tags, so other mods can use them:
-    // r.item("ruby_pickaxe").tool("pickaxe", tool_tier::DIAMOND, 8.0).durability(1200).attack(4.0).tag("tools/pickaxe");
-    // r.item("ruby_apple").set(&FOOD, ...)     // see `mods/base/src/items.rs` for food and armor
-    // r.set("examplemod:example_item", &FUEL, 1600);   // FUEL: Component<u32> = Component::new("fuel")
+    // static RUBY_PICKAXE: Item = Item::named("ruby_pickaxe");
+    // r.item(&RUBY_PICKAXE).tool("pickaxe", tool_tier::DIAMOND, 8.0).durability(1200).attack(4.0).tag("tools/pickaxe");
+    // r.item(&RUBY_APPLE).set(&FOOD, ...)     // see `mods/base/src/items.rs` for food and armor
+    // static FUEL: Component<u32> = Component::named("fuel");   // the common burn time, in ticks
+    // r.set("examplemod:example_item", &FUEL, 1600);
 }
 
 /// Recipes reference items by name or `#tag`, so a recipe made with `#ingots/iron` tag takes any mod's
@@ -91,15 +108,18 @@ fn recipes(_r: &mut Registry) {
 /// Mars as a whole planet from terrain presets is at `mods/testmod/src/lib.rs`
 /// More at `mods/base/src/worldgen.rs`
 fn worldgen(_r: &mut Registry) {
-    // r.ore("base:overworld", "ruby_ore").y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
-    // r.structure("base:overworld", "shrine").layer(&["ccc", "c c", "ccc"]).key('c', "base:cobblestone").spacing(256).chance(0.3);
+    // static OVERWORLD: Dimension = Dimension::named("base:overworld");
+    // static RUBY_ORE: Block = Block::named("ruby_ore");
+    // r.ore(&OVERWORLD, &RUBY_ORE).y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
+    // r.structure(&OVERWORLD, "shrine").layer(&["ccc", "c c", "ccc"]).key('c', "base:cobblestone").spacing(256).chance(0.3);
 }
 
 /// Mobs and other entities
 /// Models in code (`biped`, `quadruped`) or Blockbench files in `assets/models`
 /// More at `mods/base/src/mobs.rs` (AI goals, spawn rules, etc.).
 fn entities(_r: &mut Registry) {
-    // r.entity("ghost").size(0.6, 1.8).health(10.0).speed(3.0).hostile().texture("ghost", 64, 32).model(biped(false));
+    // static GHOST: Entity = Entity::named("ghost");
+    // r.entity(&GHOST).size(0.6, 1.8).health(10.0).speed(3.0).hostile().texture("ghost", 64, 32).model(biped(false));
     // r.spawn("ghost").light(0, 4).weight(1);
 }
 
@@ -120,8 +140,8 @@ fn events(r: &mut Registry) {
         }
     });
     // r.on(&BLOCK_BROKEN, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
-    // r.intercept(question::BREAK_BLOCK, |q| if q.pos()[1] < -60 { Verdict::Deny } else { Verdict::Abstain });
-    // r.modify(chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.9);
+    // r.intercept(&question::BREAK_BLOCK, |q| if q.pos()[1] < -60 { Verdict::Deny } else { Verdict::Abstain });
+    // r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.9);
 }
 
 /// Chat commands
@@ -140,7 +160,10 @@ fn commands(_r: &mut Registry) {
 /// `mods/testmod/src/lib.rs` (screens, machine panels),
 /// `mods/testmod/src/looks.rs` (particles, shaders, sounds).
 fn client(_r: &mut Registry) {
-    // r.key("dash", "R");
-    // r.screen("about", |ui| ui.panel("background", S::col().pad(8.0), |ui| ui.text("examplemod.about")));
-    // r.hud_element("mana", hud_anchor::HOTBAR_RIGHT, 2, |ui| ui.text_bind(|c, out| { /* ... */ }));
+    // static DASH: Key = Key::named("dash");
+    // static ABOUT: Screen = Screen::named("about");
+    // static MANA: HudElement = HudElement::named("mana");
+    // r.key(&DASH, "R");
+    // r.screen(&ABOUT, |ui| ui.panel("background", S::col().pad(8.0), |ui| ui.text("examplemod.about")));
+    // r.hud_element(&MANA, hud_anchor::HOTBAR_RIGHT, 2, |ui| ui.text_bind(|c, out| { /* ... */ }));
 }

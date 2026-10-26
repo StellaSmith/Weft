@@ -10,9 +10,13 @@ value! {
     pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub armor: f32, pub timer: u32 }
 }
 
-pub static HUNGER: Component<Hunger> = Component::new("base:hunger");
-pub static INVENTORY: Menu = Menu::new();
-pub static CRAFTING: Menu = Menu::new();
+pub static HUNGER: Component<Hunger> = Component::named("base:hunger");
+pub static INVENTORY: Menu = Menu::named("inventory");
+pub static CRAFTING: Menu = Menu::named("crafting_table");
+static HUD_HEALTH: HudElement = HudElement::named("health");
+static HUD_ARMOR: HudElement = HudElement::named("armor");
+static HUD_FOOD: HudElement = HudElement::named("food");
+static HUD_AIR: HudElement = HudElement::named("air");
 
 const MAX_AIR: f32 = 300.0;
 
@@ -24,12 +28,12 @@ pub fn register(r: &mut Registry) {
         &HUNGER,
         Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, armor: 0.0, timer: 0 },
         component_flags::SAVE | component_flags::SYNC_OWNER,
-        &["core:player"],
+        &[&PLAYER],
     );
-    r.hook_tick("core:player", tick_players);
+    r.hook_tick(&PLAYER, tick_players);
     // Armor is a step of the damage chain (4% per point, like 1.7.10), and wears when the hit
     // actually lands, a quarter of the damage per piece (at least 1) like vanilla.
-    r.modify(chain::DAMAGE, stage::MULTIPLY, |m| {
+    r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| {
         let q = *m.query();
         if !armor_applies(q.cause) {
             return;
@@ -64,22 +68,22 @@ pub fn register(r: &mut Registry) {
     });
 
     // Survival bars; a negative value hides them (creative).
-    r.hud_element("health", hud_anchor::HOTBAR_LEFT, 0, |ui| {
+    r.hud_element(&HUD_HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
         ui.icons("hearts", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
     });
-    r.hud_element("armor", hud_anchor::HOTBAR_LEFT, 1, |ui| {
+    r.hud_element(&HUD_ARMOR, hud_anchor::HOTBAR_LEFT, 1, |ui| {
         ui.icons("armor", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.armor > 0.0 && !c.creative() { h.armor } else { -1.0 }))
     });
-    r.hud_element("food", hud_anchor::HOTBAR_RIGHT, 0, |ui| {
+    r.hud_element(&HUD_FOOD, hud_anchor::HOTBAR_RIGHT, 0, |ui| {
         ui.icons_rtl("food", 10, |c| if c.creative() { -1.0 } else { c.component(&HUNGER).map_or(20.0, |h| h.food.ceil()) })
     });
-    r.hud_element("air", hud_anchor::HOTBAR_RIGHT, 1, |ui| {
+    r.hud_element(&HUD_AIR, hud_anchor::HOTBAR_RIGHT, 1, |ui| {
         ui.icons_rtl("air", 10, |c| c.component(&HUNGER).map_or(-1.0, |h| if h.air < MAX_AIR { (h.air.max(0.0) / MAX_AIR * 20.0).ceil() } else { -1.0 }))
     });
 
     // The worn slots, each taking its piece of armor and showing its silhouette while empty.
     const PIECES: [&str; 4] = ["helmet", "chestplate", "leggings", "boots"];
-    let mut inventory = r.menu("inventory").handle(&INVENTORY)
+    let mut inventory = r.menu(&INVENTORY)
         .group("grid", Slots::grid(2, 2))
         .group("result", Slots::one().output().big());
     for ((piece, slot), tag) in PIECES.into_iter().zip(WORN_SLOTS).zip(abi::comp::ARMOR) {
@@ -113,7 +117,7 @@ pub fn register(r: &mut Registry) {
             });
         });
 
-    r.menu("crafting_table").handle(&CRAFTING)
+    r.menu(&CRAFTING)
         .group("grid", Slots::grid(3, 3))
         .group("result", Slots::one().output().big())
         .player_inventory()
@@ -134,7 +138,7 @@ pub fn register(r: &mut Registry) {
             });
         });
     r.player_inventory(40, 9, WORN_SLOTS);
-    r.player_menu("inventory");
+    r.player_menu(&INVENTORY);
 }
 
 fn armor_applies(cause: u32) -> bool {
@@ -210,7 +214,7 @@ value! {
     pub struct Eaten { pub player: u64, pub stack: ItemStack, pub hunger: u32, pub saturation: f32 }
 }
 
-pub static EATEN: Event<Eaten> = Event::new("eaten");
+pub static EATEN: Event<Eaten> = Event::named("eaten");
 
 /// Eating: instant, consumes one item.
 pub fn eat(u: &mut ItemUse) -> bool {

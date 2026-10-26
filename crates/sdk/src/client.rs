@@ -3,13 +3,15 @@
 //! message channels between a mod's client and server parts.
 //!
 //! ```ignore
-//! r.key("jetpack", "KeyJ");
-//! r.client_frame(|c| if c.held("mymod:jetpack") { c.send("boost", &[1]) });
-//! r.packet("boost", |p| { let w = p.world(); /* server side */ });
+//! static JETPACK: Key = Key::named("jetpack");
+//! static BOOST: Channel = Channel::named("boost");
+//! r.key(&JETPACK, "J");
+//! r.client_frame(|c| if c.held(&JETPACK) { c.send(&BOOST, &[1]) });
+//! r.packet(&BOOST, |p| { let w = p.world(); /* server side */ });
 //! ```
 
 use crate::abi::{self, ItemStack, Slice, Str};
-use crate::{ClientView, Registry, World, callback, host, qualify};
+use crate::{Channel, ClientView, Key, Registry, Screen, World, callback, host};
 
 pub use abi::{ClientState, client_flags};
 
@@ -85,13 +87,14 @@ impl Client {
         self.input(abi::client_input::RELEASE_ALL, "", 0.0, 0.0);
     }
 
-    /// The action (yours from `Registry::key`, or `core:*`) was pressed this frame.
-    pub fn pressed(&self, action: &str) -> bool {
-        unsafe { (host().client_pressed)(self.raw, s(action)) & 1 != 0 }
+    /// The key (yours from `Registry::key`, or one of `keys::*`) was pressed this frame. Keys
+    /// belong to the world: while a screen has the input they are up.
+    pub fn pressed(&self, key: &Key) -> bool {
+        unsafe { (host().client_pressed)(self.raw, s(key.name())) & 1 != 0 }
     }
 
-    pub fn held(&self, action: &str) -> bool {
-        unsafe { (host().client_pressed)(self.raw, s(action)) & 2 != 0 }
+    pub fn held(&self, key: &Key) -> bool {
+        unsafe { (host().client_pressed)(self.raw, s(key.name())) & 2 != 0 }
     }
 
     pub fn control(&self, c: &abi::PlayerControl) {
@@ -165,9 +168,9 @@ impl Client {
         self.command(abi::client_op::JOIN, ticket, 0.0);
     }
 
-    /// See `abi::client_op::OPEN_SCREEN` for the names.
-    pub fn open_screen(&self, name: &str) -> bool {
-        self.command(abi::client_op::OPEN_SCREEN, name, 0.0) != 0
+    /// A mod's screen or one of the engine's (`screens::*`).
+    pub fn open_screen(&self, screen: &Screen) -> bool {
+        self.command(abi::client_op::OPEN_SCREEN, screen.name(), 0.0) != 0
     }
 
     pub fn close_screen(&self) {
@@ -299,10 +302,9 @@ impl Client {
         self.draw(3, [x as f64, y as f64, 0.0], [0.0; 3], color, text);
     }
 
-    /// Sends `data` on this mod's channel `name` to the server.
-    pub fn send(&self, channel: &str, data: &[u8]) {
-        let name = qualify(crate::mod_id(), channel);
-        unsafe { (host().client_send_packet)(self.raw, s(&name), Slice::new(data)) }
+    /// Sends `data` on `channel` to the server.
+    pub fn send(&self, channel: &Channel, data: &[u8]) {
+        unsafe { (host().client_send_packet)(self.raw, s(channel.name()), Slice::new(data)) }
     }
 }
 
@@ -348,16 +350,15 @@ impl Packet {
         unsafe { self.args.data.as_slice() }
     }
     /// Answers on `channel` to the sender.
-    pub fn reply(&self, channel: &str, data: &[u8]) {
+    pub fn reply(&self, channel: &Channel, data: &[u8]) {
         self.world().send(self.args.player, channel, data);
     }
 }
 
 impl World {
-    /// Sends `data` on this mod's channel `name` to `player`'s client.
-    pub fn send(&self, player: u64, channel: &str, data: &[u8]) {
-        let name = qualify(crate::mod_id(), channel);
-        unsafe { (host().send_packet)(self.raw(), player, s(&name), Slice::new(data)) }
+    /// Sends `data` on `channel` to `player`'s client.
+    pub fn send(&self, player: u64, channel: &Channel, data: &[u8]) {
+        unsafe { (host().send_packet)(self.raw(), player, s(channel.name()), Slice::new(data)) }
     }
 
     /// Opens `menu` on the block entity at `pos`; false (and a logged reason) if there is none.
@@ -404,24 +405,72 @@ impl Registry {
         unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::SCREEN, cb) }
     }
 
-    /// Server side of channel `name`: called when a client sends on it.
-    pub fn packet(&mut self, name: &str, f: impl Fn(&Packet) + Send + Sync + 'static) {
-        let name = qualify(self.ns, name);
+    /// Server side of `channel`: called when a client sends on it.
+    pub fn packet(&mut self, channel: &Channel, f: impl Fn(&Packet) + Send + Sync + 'static) {
+        let name = channel.name();
         let cb = callback(move |a: &mut abi::PacketArgs| f(unsafe { &*(a as *const abi::PacketArgs as *const Packet) }));
         unsafe { (host().reg_packet)(self.raw, s(&name), 0, cb) }
     }
 
     /// Client side of channel `name`: called when the server sends on it.
-    pub fn client_packet(&mut self, name: &str, f: impl Fn(&Client, &[u8]) + Send + Sync + 'static) {
-        let name = qualify(self.ns, name);
+    pub fn client_packet(&mut self, channel: &Channel, f: impl Fn(&Client, &[u8]) + Send + Sync + 'static) {
+        let name = channel.name();
         let cb = callback(move |a: &mut abi::ClientPacketArgs| f(&Client::from_raw(a.client), unsafe { a.data.as_slice() }));
         unsafe { (host().reg_packet)(self.raw, s(&name), 1, cb) }
     }
 
-    /// Key binding `<ns>:<name>` with a default key (`J`, `KeyJ`, `F6`, `space`, `lshift`, `mouse3`),
-    /// listed in Controls as `key.<ns>.<name>`; read with `Client::pressed`/`held`.
-    pub fn key(&mut self, name: &str, default: &str) {
-        let name = qualify(self.ns, name);
-        unsafe { (host().reg_key)(self.raw, s(&name), s(default)) }
+    /// Key binding with a default key (`J`, `KeyJ`, `F6`, `space`, `lshift`, `mouse3`), listed
+    /// in Controls as `key.<ns>.<name>`; read with `Client::pressed`/`held`.
+    pub fn key(&mut self, key: &Key, default: &str) {
+        unsafe { (host().reg_key)(self.raw, s(key.name()), s(default)) }
     }
+}
+
+/// The engine's key bindings.
+pub mod keys {
+    use crate::Key;
+    pub static FORWARD: Key = Key::named("core:forward");
+    pub static BACK: Key = Key::named("core:back");
+    pub static LEFT: Key = Key::named("core:left");
+    pub static RIGHT: Key = Key::named("core:right");
+    pub static JUMP: Key = Key::named("core:jump");
+    pub static SNEAK: Key = Key::named("core:sneak");
+    pub static SPRINT: Key = Key::named("core:sprint");
+    pub static FLY: Key = Key::named("core:fly");
+    pub static INVENTORY: Key = Key::named("core:inventory");
+    pub static DROP: Key = Key::named("core:drop");
+    pub static COMMAND: Key = Key::named("core:command");
+    pub static CHAT: Key = Key::named("core:chat");
+    pub static DEBUG: Key = Key::named("core:debug");
+    pub static SCREENSHOT: Key = Key::named("core:screenshot");
+    pub static PERSPECTIVE: Key = Key::named("core:perspective");
+    pub static RELOAD: Key = Key::named("core:reload");
+    pub static RECIPES: Key = Key::named("core:recipes");
+    pub static USES: Key = Key::named("core:uses");
+    pub static ATTACK: Key = Key::named("core:attack");
+    pub static USE: Key = Key::named("core:use");
+    pub static PICK: Key = Key::named("core:pick");
+}
+
+/// The engine's screens: open them, add parts to them, or register one of these handles to
+/// replace it.
+pub mod screens {
+    use crate::Screen;
+    pub static TITLE: Screen = Screen::named("core:title");
+    pub static PAUSE: Screen = Screen::named("core:pause");
+    pub static SETTINGS: Screen = Screen::named("core:settings");
+    pub static LANGUAGE: Screen = Screen::named("core:language");
+    pub static CONTROLS: Screen = Screen::named("core:controls");
+    pub static WORLDS: Screen = Screen::named("core:worlds");
+    pub static CREATE_WORLD: Screen = Screen::named("core:create_world");
+    pub static CHAT: Screen = Screen::named("core:chat");
+    pub static INVENTORY: Screen = Screen::named("core:inventory");
+    pub static MOD_SETTINGS: Screen = Screen::named("core:mod_settings");
+    pub static DEATH: Screen = Screen::named("core:death");
+    pub static MODS: Screen = Screen::named("core:mods");
+    pub static PROFILE: Screen = Screen::named("core:profile");
+    pub static MULTIPLAYER: Screen = Screen::named("core:multiplayer");
+    pub static RESOURCE_PACKS: Screen = Screen::named("core:resource_packs");
+    pub static SHADER_PACKS: Screen = Screen::named("core:shader_packs");
+    pub static SOUND: Screen = Screen::named("core:sound");
 }

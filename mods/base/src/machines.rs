@@ -10,26 +10,26 @@ value! {
     pub struct Smelting { pub burn: u32, pub burn_max: u32, pub cook: u32, pub cook_max: u32 }
 }
 
-pub static SMELTING: Component<Smelting> = Component::new("base:smelting");
+pub static SMELTING: Component<Smelting> = Component::named("base:smelting");
 
 value! {
     /// Fired when a furnace finishes one item.
     pub struct Smelted { pub furnace: u64, pub input: u32, pub output: ItemStack }
 }
 
-pub static SMELTED: Event<Smelted> = Event::new("smelted");
+pub static SMELTED: Event<Smelted> = Event::named("smelted");
 /// Value chain for a furnace's cooking time: base is the recipe's time, `entity` the furnace,
 /// `item` the input.
-pub const SMELT_TIME: &str = "base:smelt_time";
-pub static FURNACE_MENU: Menu = Menu::new();
-pub static CHEST_MENU: Menu = Menu::new();
+pub static SMELT_TIME: Chain = Chain::named("smelt_time");
+pub static FURNACE_MENU: Menu = Menu::named("furnace");
+pub static CHEST_MENU: Menu = Menu::named("chest");
 
 pub fn register(r: &mut Registry) {
     // The furnace's state syncs to whoever has it open: the screen binds to it directly.
-    r.machine("furnace", &FURNACE_MENU)
+    r.machine(&FURNACE, &FURNACE_MENU)
         .block(|b| {
             // Front towards the player; unlit and lit.
-            b.handle(&FURNACE).sounds("stone")
+            b.sounds("stone")
                 .facing_variants(Facings::HORIZONTAL, Toward::Player, 2, |d, lit, s| {
                     let mut f = ["furnace_side"; 6];
                     f[2] = "furnace_top";
@@ -40,7 +40,7 @@ pub fn register(r: &mut Registry) {
                 })
                 .hardness(3.5)
                 .mineable("pickaxe").needs_tool(0)
-                .tab("functional")
+                .tab(&crate::tabs::FUNCTIONAL)
         })
         .group("input", Slots::one())
         .group("fuel", Slots::one().accepts("fuel"))
@@ -66,9 +66,9 @@ pub fn register(r: &mut Registry) {
             });
         });
 
-    r.machine("chest", &CHEST_MENU)
+    r.machine(&CHEST, &CHEST_MENU)
         .block(|b| {
-            b.handle(&CHEST).sounds("wood")
+            b.sounds("wood")
                 .facing(Facings::HORIZONTAL, Toward::Player, |d, s| {
                     let mut f = ["chest_side"; 6];
                     f[2] = "chest_top";
@@ -78,7 +78,7 @@ pub fn register(r: &mut Registry) {
                 })
                 .hardness(2.5)
                 .mineable("axe")
-                .tab("functional")
+                .tab(&crate::tabs::FUNCTIONAL)
         })
         .group("chest", Slots::chest(3))
         .screen(|ui| {
@@ -126,7 +126,7 @@ fn tick_furnaces(t: &EntityTick) {
         if s.burn > 0 && fits {
             let (out, time) = recipe.unwrap();
             let q = abi::Query { entity: id, item: input.item, ..query() };
-            let time = w.compute(SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
+            let time = w.compute(&SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
             let Some(s) = w.component_mut(id, &SMELTING) else { continue };
             s.cook_max = time;
             s.cook += 1;

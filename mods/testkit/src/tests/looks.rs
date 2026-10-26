@@ -109,7 +109,7 @@ pub async fn tint_kinds(t: T) -> R {
         let f = t.feet();
         let (a, b) = (add(f, [-3, 0, -3]), add(f, [3, 3, -3]));
         t.fill(a, b, "testmod:glow_moss").await?;
-        let moss = find_block("testmod:glow_moss");
+        let moss = Block::lookup("testmod:glow_moss");
         // Every block of the wall must reach the client before its color can be looked at.
         t.until("the moss wall on the client", Duration::from_secs(5), |t| (a[1]..=b[1]).all(|y| (a[0]..=b[0]).all(|x| t.c().block([x, y, a[2]]) == moss))).await?;
         t.c().look(0.0, 0.0);
@@ -163,7 +163,7 @@ pub async fn pack_lang(t: T) -> R {
     t.c().setting("resource_packs", "testkit_lang");
     t.c().reload_assets();
     t.frames(2).await?;
-    t.c().open_screen("core:settings");
+    t.c().open_screen(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(2).await?;
     t.laid_out(&["text:Pack Done", "text:View distance", "text:Language"]);
@@ -172,7 +172,7 @@ pub async fn pack_lang(t: T) -> R {
     drop(std::fs::remove_dir_all(&pack));
     t.c().reload_assets();
     t.frames(2).await?;
-    t.c().open_screen("core:settings");
+    t.c().open_screen(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(2).await?;
     t.check(t.c().ui_rect("text:Pack Done").is_none(), "without the pack the key is the mod's again");

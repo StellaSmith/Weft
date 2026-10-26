@@ -1,10 +1,10 @@
 //! Particles, text conditions, screen effects: things that only change what players see.
 //!
 //! ```ignore
-//! static SPARK: Particle = Particle::new();
-//! r.particle("spark").handle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright();
+//! static SPARK: Particle = Particle::named("spark");
+//! r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright();
 //! w.particles(&SPARK, pos).count(12).speed(2.0);          // server: everyone nearby sees them
-//! r.text_condition("charged", |v| v.player_component(&CHARGE).is_some_and(|c| *c > 0));
+//! r.text_condition(&CHARGED, |v| v.player_component(&CHARGE).is_some_and(|c| *c > 0));
 //! c.post_effect("mymod:underwater", 1.0);                  // client: until turned off
 //! ```
 //! Shaders for text (`{fx:..}`), GUI panels (theme `shader`), particles, entities and screen
@@ -13,7 +13,7 @@
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{Client, ClientView, Particle, Registry, World, callback, host, qualify};
+use crate::{Client, ClientView, GizmoGroup, Music, Particle, Registry, SoundCategory, TextCondition, World, callback, host, qualify};
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -27,10 +27,6 @@ pub struct ParticleBuilder<'a> {
 }
 
 impl ParticleBuilder<'_> {
-    pub fn handle(mut self, h: &'static Particle) -> Self {
-        self.handle = Some(h);
-        self
-    }
     /// Frames over its life; relative names are under `particle/`. None: block dust (pieces of
     /// the burst's block).
     pub fn textures(mut self, names: &[&str]) -> Self {
@@ -105,14 +101,14 @@ impl Drop for ParticleBuilder<'_> {
 impl Registry {
     /// A particle kind, see `ParticleBuilder`. Registering `core:block` or `core:poof` changes how
     /// the engine's own block dust and smoke look.
-    pub fn particle<'a>(&'a mut self, name: &str) -> ParticleBuilder<'a> {
+    pub fn particle<'a>(&'a mut self, particle: &'static Particle) -> ParticleBuilder<'a> {
         ParticleBuilder {
             raw: self.raw,
             ns: self.ns,
-            name: qualify(self.ns, name),
+            name: particle.name().to_string(),
             textures: Vec::new(),
             shader: String::new(),
-            handle: None,
+            handle: Some(particle),
             desc: abi::ParticleDesc::DEFAULT,
             _p: PhantomData,
         }
@@ -120,10 +116,9 @@ impl Registry {
 
     /// `{if:<ns>:<name>}...{/if}` in any text shows its part while `f` says so; asked on the
     /// client every frame such a text is on screen.
-    pub fn text_condition(&mut self, name: &str, f: impl Fn(&ClientView) -> bool + Send + Sync + 'static) {
-        let name = qualify(self.ns, name);
+    pub fn text_condition(&mut self, condition: &TextCondition, f: impl Fn(&ClientView) -> bool + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::TextConditionArgs| a.result = f(&ClientView::from_raw(a.client)) as u32);
-        unsafe { (host().reg_text_condition)(self.raw, Str::new(&name), cb) }
+        unsafe { (host().reg_text_condition)(self.raw, Str::new(condition.name()), cb) }
     }
 }
 
@@ -192,9 +187,8 @@ impl World {
     }
 
     /// A filled box for players showing `group` (`/gizmo <group>`), see-through by `color`'s alpha.
-    pub fn gizmo_fill(&self, group: &str, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
-        let g = qualify(crate::mod_id(), group);
-        unsafe { (host().gizmo)(self.raw(), Str::new(&g), 3, &min, &max, color, ticks, Str::EMPTY) }
+    pub fn gizmo_fill(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
+        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), 3, &min, &max, color, ticks, Str::EMPTY) }
     }
 }
 
@@ -228,10 +222,6 @@ pub struct SoundBuilder<'a> {
 }
 
 impl SoundBuilder<'_> {
-    pub fn handle(mut self, h: &'static crate::Sound) -> Self {
-        self.handle = Some(h);
-        self
-    }
     /// Variants picked at random: `sounds/<name>.ogg` or `.wav`, relative to this mod.
     pub fn files(mut self, names: &[&str]) -> Self {
         self.files = names.iter().map(|n| qualify(self.ns, n)).collect();
@@ -239,8 +229,8 @@ impl SoundBuilder<'_> {
     }
     /// Category for its volume setting: the engine's (`core:creatures` ...) or one registered
     /// with `Registry::sound_category` (any mod's).
-    pub fn category(mut self, name: &str) -> Self {
-        self.category_name = qualify(self.ns, name);
+    pub fn category(mut self, category: &SoundCategory) -> Self {
+        self.category_name = category.name().to_string();
         self
     }
     pub fn volume(mut self, v: f32) -> Self {
@@ -286,8 +276,8 @@ impl MusicBuilder<'_> {
         self.tracks = names.iter().map(|n| qualify(self.ns, n)).collect();
         self
     }
-    pub fn dimension(mut self, name: &str) -> Self {
-        self.dimension = qualify(self.ns, name);
+    pub fn dimension(mut self, dimension: &crate::Dimension) -> Self {
+        self.dimension = dimension.name().to_string();
         self
     }
     /// `abi::music_when` flags.
@@ -310,20 +300,19 @@ impl Drop for MusicBuilder<'_> {
 
 impl Registry {
     /// A sound event, see `SoundBuilder`; blocks and entities name groups of them with `.sounds()`.
-    pub fn sound<'a>(&'a mut self, name: &str) -> SoundBuilder<'a> {
-        SoundBuilder { raw: self.raw, ns: self.ns, name: qualify(self.ns, name), files: Vec::new(), handle: None, desc: abi::SoundDesc::DEFAULT, category_name: String::new(), _p: PhantomData }
+    pub fn sound<'a>(&'a mut self, sound: &'static crate::Sound) -> SoundBuilder<'a> {
+        SoundBuilder { raw: self.raw, ns: self.ns, name: sound.name().to_string(), files: Vec::new(), handle: Some(sound), desc: abi::SoundDesc::DEFAULT, category_name: String::new(), _p: PhantomData }
     }
 
     /// A sound category with its own volume setting (`<ns>:volume_<name>`, in the mod's
     /// settings); `world`: heard through caves and water like block sounds.
-    pub fn sound_category(&mut self, name: &str, world: bool) {
-        let name = qualify(self.ns, name);
-        unsafe { (host().reg_sound_category)(self.raw, Str::new(&name), world as u32) }
+    pub fn sound_category(&mut self, category: &SoundCategory, world: bool) {
+        unsafe { (host().reg_sound_category)(self.raw, Str::new(category.name()), world as u32) }
     }
 
     /// Background music, see `MusicBuilder`.
-    pub fn music<'a>(&'a mut self, name: &str) -> MusicBuilder<'a> {
-        MusicBuilder { raw: self.raw, ns: self.ns, name: qualify(self.ns, name), tracks: Vec::new(), dimension: String::new(), when: 0, _p: PhantomData }
+    pub fn music<'a>(&'a mut self, music: &Music) -> MusicBuilder<'a> {
+        MusicBuilder { raw: self.raw, ns: self.ns, name: music.name().to_string(), tracks: Vec::new(), dimension: String::new(), when: 0, _p: PhantomData }
     }
 }
 
@@ -340,4 +329,15 @@ impl Client {
         let p = pos.as_ref().map_or(std::ptr::null(), |p| p as *const [f64; 3]);
         unsafe { (host().client_play_sound)(self.raw(), sound.id(), p, volume, 0.0) }
     }
+}
+
+/// The engine's sound categories, each with its volume setting.
+pub mod sound_categories {
+    use crate::SoundCategory;
+    pub static MUSIC: SoundCategory = SoundCategory::named("core:music");
+    pub static BLOCKS: SoundCategory = SoundCategory::named("core:blocks");
+    pub static CREATURES: SoundCategory = SoundCategory::named("core:creatures");
+    pub static PLAYERS: SoundCategory = SoundCategory::named("core:players");
+    pub static AMBIENT: SoundCategory = SoundCategory::named("core:ambient");
+    pub static UI: SoundCategory = SoundCategory::named("core:ui");
 }

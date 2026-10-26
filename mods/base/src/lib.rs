@@ -12,22 +12,35 @@ mod worldgen;
 
 use weft_sdk::*;
 
-pub static OVERWORLD: Dimension = Dimension::new();
-pub static FLATLANDS: Dimension = Dimension::new();
+/// Vanilla's creative tabs.
+pub mod tabs {
+    use weft_sdk::CreativeTab;
+    pub static BUILDING: CreativeTab = CreativeTab::named("building");
+    pub static COLORED: CreativeTab = CreativeTab::named("colored");
+    pub static NATURAL: CreativeTab = CreativeTab::named("natural");
+    pub static FUNCTIONAL: CreativeTab = CreativeTab::named("functional");
+    pub static TOOLS: CreativeTab = CreativeTab::named("tools");
+    pub static COMBAT: CreativeTab = CreativeTab::named("combat");
+    pub static FOOD: CreativeTab = CreativeTab::named("food");
+    pub static INGREDIENTS: CreativeTab = CreativeTab::named("ingredients");
+}
+
+pub static OVERWORLD: Dimension = Dimension::named("overworld");
+pub static FLATLANDS: Dimension = Dimension::named("flatlands");
 
 declare_mod!(id: "base", name: "Weft", version: "0.1.0", deps: [], init: init);
 
 fn init(r: &mut Registry) {
     // Vanilla's creative tabs; blocks and items join them with `.tab(..)`.
     for (tab, icon) in [
-        ("building", "bricks"),
-        ("colored", "red_stained_glass"),
-        ("natural", "grass"),
-        ("functional", "crafting_table"),
-        ("tools", "iron_pickaxe"),
-        ("combat", "iron_sword"),
-        ("food", "apple"),
-        ("ingredients", "iron_ingot"),
+        (&tabs::BUILDING, &Item::named("bricks")),
+        (&tabs::COLORED, &Item::named("red_stained_glass")),
+        (&tabs::NATURAL, &Item::named("grass")),
+        (&tabs::FUNCTIONAL, &Item::named("crafting_table")),
+        (&tabs::TOOLS, &Item::named("iron_pickaxe")),
+        (&tabs::COMBAT, &Item::named("iron_sword")),
+        (&tabs::FOOD, &Item::named("apple")),
+        (&tabs::INGREDIENTS, &items::IRON_INGOT),
     ] {
         r.creative_tab(tab, icon);
     }
@@ -40,13 +53,13 @@ fn init(r: &mut Registry) {
     mobs::register(r);
     worldgen::register(r);
     // Its terrain is described in `worldgen`.
-    r.dimension("overworld").handle(&OVERWORLD)
+    r.dimension(&OVERWORLD)
         .spawn(worldgen::spawn)
         .player_spawn()
         .sky_above(16)
         .day_length(24000);
     // Second dimension on purpose: nothing in the engine may assume there is only one world.
-    r.dimension("flatlands").handle(&FLATLANDS)
+    r.dimension(&FLATLANDS)
         .generator(worldgen::flat)
         .spawn(|_| [0, 3, 0])
         .height(-2, 8)

@@ -5,9 +5,13 @@
 
 use weft_sdk::*;
 
+static LIFT: Entity = Entity::named("lift");
+static SKIFF: Entity = Entity::named("skiff");
+static CRATE: Entity = Entity::named("crate");
+
 pub fn register(r: &mut Registry) {
     // 4 blocks up in 4 seconds, then down again.
-    r.entity("lift").size(2.0, 1.0).health(100.0).invulnerable().solid().kinematic().blocks(&[("base:oak_planks", [0, 0, 0], [1, 0, 1])]).on_tick(|t| {
+    r.entity(&LIFT).size(2.0, 1.0).health(100.0).invulnerable().solid().kinematic().blocks(&[("base:oak_planks", [0, 0, 0], [1, 0, 1])]).on_tick(|t| {
         let w = t.world();
         for &id in t.ids() {
             let Some(mut st) = w.entity(id) else { continue };
@@ -16,7 +20,7 @@ pub fn register(r: &mut Registry) {
         }
     });
     // 6 blocks a second along x for 3 seconds each way; riders stay with it up to 3 blocks up.
-    r.entity("skiff").size(3.0, 1.0).health(100.0).invulnerable().solid().kinematic().carry_height(3.0).blocks(&[("base:oak_planks", [-1, 0, -1], [1, 0, 1])]).on_tick(|t| {
+    r.entity(&SKIFF).size(3.0, 1.0).health(100.0).invulnerable().solid().kinematic().carry_height(3.0).blocks(&[("base:oak_planks", [-1, 0, -1], [1, 0, 1])]).on_tick(|t| {
         let w = t.world();
         for &id in t.ids() {
             let Some(mut st) = w.entity(id) else { continue };
@@ -24,7 +28,7 @@ pub fn register(r: &mut Registry) {
             w.set_entity(id, &st);
         }
     });
-    r.entity("crate")
+    r.entity(&CRATE)
         .size(1.0, 1.0)
         .health(10.0)
         .invulnerable()

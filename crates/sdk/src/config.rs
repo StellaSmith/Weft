@@ -2,8 +2,8 @@
 //! the declarations), saved in `config/<ns>.txt`, read with one call.
 //!
 //! ```ignore
-//! static MAX_WISPS: Config<i32> = Config::new();
-//! r.config("max_wisps").int(8, 0, 64).synced().handle(&MAX_WISPS);
+//! static MAX_WISPS: Config<i32> = Config::named("max_wisps");
+//! r.config(&MAX_WISPS).int(8, 0, 64).synced();
 //! if count < MAX_WISPS.get() { .. }
 //! ```
 //! Names show as `config.<ns>.<key>` (tooltip `.tooltip`, choices `.<choice>`) from the language
@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, config_flags as cf, config_kind as ck};
 use crate::content::{Handle, kind};
-use crate::{Registry, host, qualify};
+use crate::{Registry, host};
 
 /// Types a setting can be read as.
 pub trait ConfigValue: Copy {
@@ -46,11 +46,7 @@ pub struct Config<T> {
 }
 
 impl<T: ConfigValue> Config<T> {
-    pub const fn new() -> Self {
-        Config { h: Handle::new(), _t: PhantomData }
-    }
-
-    /// Another mod's setting by full name.
+    /// This mod's setting (`"sparks"`) or another's (`"othermod:sparks"`).
     pub const fn named(name: &'static str) -> Self {
         Config { h: Handle::named(name), _t: PhantomData }
     }
@@ -66,12 +62,6 @@ impl<T: ConfigValue> Config<T> {
     /// Changes and saves it (clamped to its range).
     pub fn set(&self, v: T) {
         unsafe { (host().config_set)(self.h.id(), v.to_f64()) }
-    }
-}
-
-impl<T: ConfigValue> Default for Config<T> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -118,10 +108,6 @@ impl ConfigBuilder<'_> {
         self.desc.flags |= cf::RESTART;
         self
     }
-    pub fn handle<T>(mut self, h: &'static Config<T>) -> Self {
-        self.cell = h.h.cell();
-        self
-    }
 }
 
 impl Drop for ConfigBuilder<'_> {
@@ -137,7 +123,7 @@ impl Drop for ConfigBuilder<'_> {
 
 impl Registry {
     /// A setting, see `ConfigBuilder` (a bool `false` unless told otherwise).
-    pub fn config<'a>(&'a mut self, key: &str) -> ConfigBuilder<'a> {
-        ConfigBuilder { raw: self.raw, name: qualify(self.ns, key), choices: Vec::new(), cell: std::ptr::null(), desc: abi::ConfigDesc::DEFAULT, _p: PhantomData }
+    pub fn config<'a, T: ConfigValue>(&'a mut self, config: &'static Config<T>) -> ConfigBuilder<'a> {
+        ConfigBuilder { raw: self.raw, name: config.h.name().to_string(), choices: Vec::new(), cell: config.h.cell(), desc: abi::ConfigDesc::DEFAULT, _p: PhantomData }
     }
 }

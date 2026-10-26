@@ -260,7 +260,7 @@ impl T {
         };
         let mut data = seq.to_le_bytes().to_vec();
         data.extend_from_slice(text.as_bytes());
-        self.c().send("op", &data);
+        self.c().send(&crate::server::OP, &data);
         let mut answer = None;
         self.until(&format!("server answer to '{text}'"), Duration::from_secs(10), |t| {
             answer = t.0.borrow_mut().replies.remove(&seq);
@@ -599,6 +599,8 @@ pub struct Runner {
     warmup: u32,
 }
 
+pub static PROBE: Key = Key::named("probe");
+
 thread_local! {
     /// Frames the test kit's own key binding was seen pressed.
     pub static PROBES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -655,7 +657,7 @@ pub fn frame(c: &Client) {
         }
         let (t, fut, began) = run.current.as_mut().unwrap();
         // Held, not pressed: a key the test taps itself is pressed only within its own frame.
-        if c.held("testkit:probe") {
+        if c.held(&PROBE) {
             PROBES.with(|p| p.set(p.get() + 1));
         }
         {

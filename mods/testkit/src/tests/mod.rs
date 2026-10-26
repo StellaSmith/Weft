@@ -61,6 +61,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::drop_and_pickup,
         gameplay::sounds,
         extend::events_batched,
+        extend::names,
         extend::facing_placement,
         liquids::mod_liquid_bucket,
         liquids::mod_sand_soil,

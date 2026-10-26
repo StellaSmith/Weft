@@ -79,10 +79,11 @@ fn tick_generators(t: &EntityTick) {
 ```
 `w.inventory(id).group("fuel")` is one group of the machine's slots, numbered from 0 (`get`, `set`, `len`); the whole inventory also has `insert`, which returns what didn't fit. `w.component_mut(id, &C)` is the machine's data, changed in place and saved and synced by itself. For stacks there are `use_one` (a lava bucket leaves its bucket), `shrink`, `grow`, `stacks_with` and `max_stack`, and the rest of the world is in `w` too (`get`, `set`, `play_sound`, `emit`).
 
-To show that a machine is working, give the block states and flip between them from the tick. The furnace has facing times lit states (`facing_variants(.., 2, |dir, lit, s| ..)`) and does
+To show that a machine is working, give the block a property and flip it from the tick. The furnace has `.facing(..)` and `.prop("lit", ["false", "true"])`, and its tick does
 ```rust
-w.set(pos, FURNACE.state(Facings::HORIZONTAL.index(dir, lit as u32)));
+w.set_prop(pos, "lit", if lit { "true" } else { "false" });
 ```
+which keeps the way it faces.
 `tick_furnaces` in `mods/base/src/machines.rs` is the whole thing in one place, with the recipe, the lit state and an event.
 
 ## The screen

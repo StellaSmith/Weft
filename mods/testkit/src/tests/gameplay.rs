@@ -192,7 +192,7 @@ pub async fn bucket(t: T) -> R {
     t.frames(2).await?;
     t.press("core:use");
     t.until("water poured", Duration::from_secs(5), |t| t.c().inventory_slot(0).item == item("base:bucket")).await?;
-    t.check_eq(t.block(water).await?, "base:water".into(), "water source");
+    t.check_eq(t.block(water).await?, "base:water[level=0]".into(), "water source");
     t.secs(1.5).await?;
     t.shot("poured").await?;
     t.look_at(water);

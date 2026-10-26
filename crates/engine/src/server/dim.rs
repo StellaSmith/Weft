@@ -1314,7 +1314,9 @@ impl Dim {
                         self.call_block(c, state, |b| b.on_grow, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
                     }
                     None => {
-                        self.set(c, p, state + 1);
+                        if let Some(next) = c.grown(state) {
+                            self.set(c, p, next);
+                        }
                     }
                 }
             }

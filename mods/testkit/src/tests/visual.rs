@@ -241,7 +241,7 @@ pub async fn break_overlay(t: T) -> R {
     let wall = add(f, [0, 0, -2]);
     t.fill(wall, add(wall, [0, 1, 0]), "cobblestone").await?;
     let ladder = add(wall, [0, 0, 1]);
-    t.set(ladder, "ladder#3").await?;
+    t.set(ladder, "ladder[facing=south]").await?;
     t.look_at(ladder);
     t.frames(3).await?;
     let (w, h) = (t.state().window[0], t.state().window[1]);
@@ -335,7 +335,7 @@ pub async fn ladder_placement(t: T) -> R {
     t.until("ladder placed", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 7).await?;
     // States face away from the wall, in face order (west, east, north, south): on a wall to
     // its north it faces south.
-    t.check_eq(t.block(at).await?, "base:ladder#3".into(), "ladder on the north wall");
+    t.check_eq(t.block(at).await?, "base:ladder[facing=south]".into(), "ladder on the north wall");
     Ok(())
 }
 
@@ -353,7 +353,7 @@ pub async fn wall_torch(t: T) -> R {
     let at = add(wall, [0, 0, 1]);
     t.until("torch placed", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 7).await?;
     // West, east, up (the floor), north, south: on a wall to its north it faces south.
-    t.check_eq(t.block(at).await?, "base:torch#4".into(), "torch on the north wall");
+    t.check_eq(t.block(at).await?, "base:torch[facing=south]".into(), "torch on the north wall");
     t.frames(5).await?;
     t.shot("wall_torch").await?;
     t.set(wall, "air").await?;

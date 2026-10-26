@@ -82,14 +82,14 @@ pub fn register(r: &mut Registry) {
     });
 }
 
+/// `stone`, `base:furnace[lit=true]`: base's when no namespace is given.
 fn block_state(name: &str) -> Result<u32, String> {
-    let (n, i) = name.split_once('#').map_or((name, 0), |(n, i)| (n, i.parse().unwrap_or(0)));
-    let n = match n {
+    let n = match name {
         "air" => "core:air".to_string(),
-        n if n.contains(':') => n.to_string(),
+        n if n.split('[').next().unwrap_or("").contains(':') => n.to_string(),
         n => format!("base:{n}"),
     };
-    Block::lookup(&n).map(|s| s + i).ok_or_else(|| format!("no block {n}"))
+    Block::lookup(&n).ok_or_else(|| format!("no block {n}"))
 }
 
 fn item(name: &str) -> Result<u32, String> {
@@ -176,6 +176,11 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
         }
         "get" => Ok(block_name(w.get(a.pos()?)).to_string()),
+        "setprop" => {
+            let p = a.pos()?;
+            let (name, value) = (a.word()?, a.word()?);
+            Ok((w.set_prop(p, name, value) as u32).to_string())
+        }
         "sblock" => {
             // `sblock #id x y z [block]`: a block of a moving structure, or set it.
             let id = a.owner(w, player)?;

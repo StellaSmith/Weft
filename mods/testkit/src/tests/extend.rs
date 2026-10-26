@@ -60,7 +60,14 @@ pub async fn facing_placement(t: T) -> R {
     t.frames(2).await?;
     t.press("core:use");
     t.secs(0.3).await?;
-    t.check_eq(t.block(add(wall, [0, 0, -1])).await?, "testmod:vent#2".to_string(), "the vent faces north (east, up, north in face order)");
+    t.check_eq(t.block(add(wall, [0, 0, -1])).await?, "testmod:vent[facing=north]".to_string(), "the vent faces north");
+    // States by name in a command, and one property changed by name keeping the other.
+    let p = add(f, [3, 0, 0]);
+    t.cmd(&format!("/setblock {} base:furnace[lit=true,facing=east]", at(p))).await?;
+    t.check_eq(t.block(p).await?, "base:furnace[facing=east,lit=true]".to_string(), "/setblock with properties");
+    t.check_eq(t.op(&format!("setprop {} lit false", at(p))).await?, "1".to_string(), "set_prop");
+    t.check_eq(t.block(p).await?, "base:furnace[facing=east,lit=false]".to_string(), "put out, still facing east");
+    t.check_eq(t.op(&format!("setprop {} lit maybe", at(p))).await?, "0".to_string(), "an unknown value is refused");
     Ok(())
 }
 

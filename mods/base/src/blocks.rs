@@ -57,13 +57,13 @@ pub static DIAMOND_BLOCK: Block = Block::named("diamond_block");
 pub static COAL_BLOCK: Block = Block::named("coal_block");
 pub static WOOL: Block = Block::named("wool");
 
-/// Log axis from the clicked face: 0 = Y, 1 = X, 2 = Z.
-fn axis_placement(p: &Place) -> u32 {
-    match p.face() {
-        0 | 1 => 1,
-        4 | 5 => 2,
-        _ => 0,
-    }
+/// Log axis along the clicked face, like vanilla.
+fn axis_placement(p: &Place, props: &mut Props) {
+    props.set("axis", match p.face() {
+        0 | 1 => "x",
+        4 | 5 => "z",
+        _ => "y",
+    });
 }
 
 fn log(r: &mut Registry, handle: &'static Block, wood: &str, tree: &str) {
@@ -77,9 +77,10 @@ fn log(r: &mut Registry, handle: &'static Block, wood: &str, tree: &str) {
         .tag("logs")
         .set(&FLAMMABLE, 5)
         .set(&FUEL, 300)
-        .states(3, |i, s| match i {
-            0 => s.textures(&top, &side, &top),
-            1 => s.faces([&top, &top, &side, &side, &side, &side]),
+        .prop("axis", ["y", "x", "z"])
+        .states(move |p, s| match p.get("axis") {
+            "y" => s.textures(&top, &side, &top),
+            "x" => s.faces([&top, &top, &side, &side, &side, &side]),
             _ => s.faces([&side, &side, &side, &side, &top, &top]),
         })
         .placement(axis_placement)
@@ -171,7 +172,8 @@ pub fn register(r: &mut Registry) {
         .needs_below("cactus_soil")
         .grows(270.0, 0).on_grow(|e| grow_column(e, &CACTUS)).tab(&crate::tabs::NATURAL);
     r.block(&WHEAT).sounds("grass")
-        .states(8, |i, s| s.texture(&format!("wheat_stage_{i}")))
+        .prop("age", 0..=7)
+        .states(|p, s| s.texture(&format!("wheat_stage_{}", p.get("age"))))
         .plant()
         .needs_below("crop_soil")
         .no_item()
@@ -200,7 +202,8 @@ pub fn register(r: &mut Registry) {
         .set(&FUEL, 300)
         .on_use(crate::machines::open_crafting).tab(&crate::tabs::FUNCTIONAL);
     r.block(&TORCH).sounds("wood")
-        .facing(TORCH_FACINGS, Toward::Face, |d, s| torch_state(d, s, "torch"))
+        .facing(TORCH_FACINGS, Toward::Face)
+        .states(|p, s| torch_state(p.facing(), s, "torch"))
         .item_texture("torch")
         .not_solid()
         .light_rgb(15, 13, 10)
@@ -208,7 +211,9 @@ pub fn register(r: &mut Registry) {
         .tab(&crate::tabs::FUNCTIONAL);
     // Facing away from the solid wall it hangs on.
     r.block(&LADDER).sounds("wood")
-        .facing(Facings::HORIZONTAL, Toward::Face, |d, s| {
+        .facing(Facings::HORIZONTAL, Toward::Face)
+        .states(|p, s| {
+            let d = p.facing();
             let (min, max) = match d {
                 Dir::South => ([0.0, 0.0, 0.0], [16.0, 16.0, 1.0]),
                 Dir::North => ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]),

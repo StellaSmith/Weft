@@ -35,6 +35,8 @@ pub static HOST: Host = Host {
     reg_set,
     find,
     block_of,
+    state_prop,
+    state_with,
     state_flags,
     find_component,
     components,
@@ -878,6 +880,7 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
             n = b.states;
             Some(b.first_state)
         }),
+        abi::entry_kind::BLOCK if name.contains('[') => c.state_by_name(name),
         abi::entry_kind::BLOCK => c.block_names.get(name).map(|&b| {
             n = c.blocks[b as usize].states;
             c.blocks[b as usize].first_state
@@ -917,6 +920,22 @@ unsafe extern "C" fn name_of(kind: u32, id: u32) -> Str {
         _ => None,
     };
     name.map_or(Str::EMPTY, Str::new)
+}
+
+unsafe extern "C" fn state_prop(state: u32, name: Str) -> Str {
+    let c = content();
+    if state as usize >= c.states.len() {
+        return Str::EMPTY;
+    }
+    c.state_prop(state, unsafe { name.as_str() }).map_or(Str::EMPTY, Str::new)
+}
+
+unsafe extern "C" fn state_with(state: u32, name: Str, value: Str) -> u32 {
+    let c = content();
+    if state as usize >= c.states.len() {
+        return u32::MAX;
+    }
+    unsafe { c.state_with(state, name.as_str(), value.as_str()) }.unwrap_or(u32::MAX)
 }
 
 unsafe extern "C" fn block_of(state: u32) -> u32 {

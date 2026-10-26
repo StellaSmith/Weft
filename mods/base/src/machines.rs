@@ -30,13 +30,16 @@ pub fn register(r: &mut Registry) {
         .block(|b| {
             // Front towards the player; unlit and lit.
             b.sounds("stone")
-                .facing_variants(Facings::HORIZONTAL, Toward::Player, 2, |d, lit, s| {
+                .facing(Facings::HORIZONTAL, Toward::Player)
+                .prop("lit", ["false", "true"])
+                .states(|p, s| {
+                    let lit = p.is("lit", "true");
                     let mut f = ["furnace_side"; 6];
                     f[2] = "furnace_top";
                     f[3] = "furnace_top";
-                    f[d.face() as usize] = if lit == 1 { "furnace_front_lit" } else { "furnace_front" };
+                    f[p.facing().face() as usize] = if lit { "furnace_front_lit" } else { "furnace_front" };
                     let s = s.faces(f);
-                    if lit == 1 { s.light_rgb(13, 11, 8) } else { s }
+                    if lit { s.light_rgb(13, 11, 8) } else { s }
                 })
                 .hardness(3.5)
                 .mineable("pickaxe").needs_tool(0)
@@ -69,7 +72,9 @@ pub fn register(r: &mut Registry) {
     r.machine(&CHEST, &CHEST_MENU)
         .block(|b| {
             b.sounds("wood")
-                .facing(Facings::HORIZONTAL, Toward::Player, |d, s| {
+                .facing(Facings::HORIZONTAL, Toward::Player)
+                .states(|p, s| {
+                    let d = p.facing();
                     let mut f = ["chest_side"; 6];
                     f[2] = "chest_top";
                     f[3] = "chest_top";
@@ -143,10 +148,8 @@ fn tick_furnaces(t: &EntityTick) {
         let Some(s) = w.component(id, &SMELTING) else { continue };
         let lit = s.burn > 0;
         if lit != was_lit {
-            let state = w.get(pos);
-            if FURNACE.is(state) {
-                let (d, _) = Facings::HORIZONTAL.parse(FURNACE.index(state));
-                w.set(pos, FURNACE.state(Facings::HORIZONTAL.index(d, lit as u32)));
+            if FURNACE.is(w.get(pos)) {
+                w.set_prop(pos, "lit", if lit { "true" } else { "false" });
             }
         }
     }

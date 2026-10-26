@@ -1,9 +1,10 @@
 //! Which way a block faces. Any block may face any of the six directions or only some of them;
-//! a direction it cannot face makes no state (three allowed directions are three states).
+//! `.facing(..)` makes a `facing` property whose values are the allowed directions.
 //!
 //! ```ignore
-//! // A furnace: four directions, each lit or not (eight states), front towards the player.
-//! r.block(&FURNACE).facing_variants(Facings::HORIZONTAL, Toward::Player, 2, |dir, lit, s| ...);
+//! // A furnace: four directions, each lit or not, front towards the player.
+//! r.block(&FURNACE).facing(Facings::HORIZONTAL, Toward::Player).prop("lit", ["false", "true"])
+//!     .states(|p, s| s.faces(..p.facing()..p.is("lit", "true")..));
 //! ```
 
 /// A direction, in face order (`-X +X -Y +Y -Z +Z`), so `face()` is the face index blocks and
@@ -36,6 +37,13 @@ impl Dir {
     pub fn horizontal(self) -> bool {
         !matches!(self, Dir::Down | Dir::Up)
     }
+    /// The value of a `facing` property.
+    pub fn name(self) -> &'static str {
+        ["west", "east", "down", "up", "north", "south"][self as usize]
+    }
+    pub fn from_name(name: &str) -> Option<Dir> {
+        Dir::ALL.into_iter().find(|d| d.name() == name)
+    }
     /// The direction closest to `v` among `allowed`.
     pub fn nearest(v: [f32; 3], allowed: Facings) -> Dir {
         let score = |d: Dir| {
@@ -67,21 +75,11 @@ impl Facings {
     pub fn allows(self, d: Dir) -> bool {
         self.0 & (1 << d as u8) != 0
     }
-    /// How many states one variant takes.
     pub fn count(self) -> u32 {
         self.0.count_ones()
     }
     pub fn dirs(self) -> impl Iterator<Item = Dir> {
         Dir::ALL.into_iter().filter(move |&d| self.allows(d))
-    }
-    /// State index of facing `d` in variant `variant` (variants are blocks of `count()` states).
-    pub fn index(self, d: Dir, variant: u32) -> u32 {
-        variant * self.count() + (self.0 & ((1u8 << d as u8) - 1)).count_ones()
-    }
-    /// The facing and variant of state index `i`.
-    pub fn parse(self, i: u32) -> (Dir, u32) {
-        let n = self.count().max(1);
-        (self.dirs().nth((i % n) as usize).unwrap_or(Dir::Up), i / n)
     }
 }
 
@@ -113,12 +111,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_allowed_directions_make_states() {
+    fn only_allowed_directions() {
         let f = Facings::only(&[Dir::Up, Dir::North, Dir::East]);
         assert_eq!(f.count(), 3);
-        assert_eq!([Dir::East, Dir::Up, Dir::North].map(|d| f.index(d, 0)), [0, 1, 2]);
-        assert_eq!(f.parse(4), (Dir::Up, 1));
-        assert_eq!(Facings::HORIZONTAL.index(Dir::South, 1), 7);
+        assert_eq!(f.dirs().collect::<Vec<_>>(), [Dir::East, Dir::Up, Dir::North]);
+        assert_eq!(Dir::from_name("north"), Some(Dir::North));
         assert_eq!(Toward::Player.choose(Facings::HORIZONTAL, 3, [0.0, -0.9, -0.4]), Dir::South);
         assert_eq!(Toward::Face.choose(f, 3, [0.0, -1.0, 0.0]), Dir::Up);
     }

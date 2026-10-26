@@ -280,8 +280,11 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
                 Value::Id(c.item_names[&n], n)
             }
             Kind::Block => {
-                let n = resolve(c.block_names.keys(), tok).ok_or_else(|| format!("unknown block {tok}"))?;
-                Value::Id(c.state_by_name(&n).unwrap_or(0), n)
+                // `base:furnace[lit=true,facing=east]`: the name completes, the properties are checked.
+                let (name, props) = tok.split_once('[').map_or((tok, ""), |(n, p)| (n, p));
+                let n = resolve(c.block_names.keys(), name).ok_or_else(|| format!("unknown block {name}"))?;
+                let full = if props.is_empty() { n.clone() } else { format!("{n}[{props}") };
+                Value::Id(c.parse_state(&full)?, full)
             }
             Kind::Entity => {
                 let n = resolve(c.game.entity_names.keys(), tok).ok_or_else(|| format!("unknown entity {tok}"))?;

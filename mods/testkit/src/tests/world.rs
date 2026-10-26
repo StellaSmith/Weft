@@ -192,7 +192,7 @@ pub async fn growth(t: T) -> R {
     t.set(cane, "sugar_cane").await?;
     t.op("time 200000").await?;
     t.secs(0.5).await?;
-    t.check_eq(t.block(add(farm, [0, 1, 0])).await?, "base:wheat#7".to_string(), "wheat after a jump of 2.5 hours");
+    t.check_eq(t.block(add(farm, [0, 1, 0])).await?, "base:wheat[age=7]".to_string(), "wheat after a jump of 2.5 hours");
     t.check_eq(t.block(add(cane, [0, 2, 0])).await?, "base:sugar_cane".to_string(), "sugar cane after the jump");
     // Far away the cane's area unloads; time passes; coming back, it has grown.
     let cane2 = add(f, [-4, 0, 0]);

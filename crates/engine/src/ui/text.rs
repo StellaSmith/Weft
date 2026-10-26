@@ -3,8 +3,8 @@
 //! - `{0}`..`{9}` insert arguments, so each language orders values its own way
 //! - `{#rrggbb}` switches color, `{/}` goes back to the default
 //! - `{key:core:inventory}` shows the key the player bound to an action
-//! - `{item:base:diamond}` draws an item icon inline, `{block:base:furnace#2}` a block state (the
-//!   third state of the furnace; without `#` the first)
+//! - `{item:base:diamond}` draws an item icon inline, `{block:base:furnace[lit=true]}` a block
+//!   state (properties not named at their defaults)
 //! - `{img:base:gui/arrow}` draws a GUI texture inline at its own size, `{img:base:gui/arrow 32x16}`
 //!   at another one (GUI pixels); a line grows to fit it
 //! - `{align:center}` lays the lines after it out centered (`left`, `right`) until `{/align}`, so an
@@ -248,12 +248,7 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
                 out.push(st.span(Piece::Icon(id), None));
             }
         } else if let Some(spec) = tag.strip_prefix("block:") {
-            let (name, index) = spec.split_once('#').map_or((spec, 0), |(n, i)| (n, i.parse().unwrap_or(0)));
-            let state = crate::content::try_content().and_then(|c| {
-                let b = c.block_names.get(name)?;
-                let def = c.blocks.get(*b as usize)?;
-                (index < def.states).then_some(def.first_state + index)
-            });
+            let state = crate::content::try_content().and_then(|c| c.state_by_name(spec));
             if let Some(s) = state {
                 out.push(st.span(Piece::Block(s), None));
             }

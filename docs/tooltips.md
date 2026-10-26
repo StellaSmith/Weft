@@ -20,7 +20,7 @@ They work in any translation, not only in tooltips:
 |---|---|
 | `{#rrggbb}text{/}` | colors the text, `{/}` goes back to the default |
 | `{item:base:coal}` | draws the item's icon inline |
-| `{block:base:furnace#1}` | draws a block state like a block item, `#` picks the state (the first without it) |
+| `{block:base:furnace[lit=true]}` | draws a block state like a block item; properties not named keep their defaults |
 | `{img:base:gui/arrow}` | draws a GUI texture at its own size, `{img:base:gui/arrow 32x16}` at another (GUI pixels); the line grows to fit |
 | `{align:center}text{/align}` | lays out the lines inside centered (`left`, `right`); a picture alone on such a line is a centered picture |
 | `{key:core:sneak}` | the key the player has bound to that action |

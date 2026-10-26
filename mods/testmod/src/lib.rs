@@ -153,9 +153,10 @@ fn init(r: &mut Registry) {
     r.item(&STEEL_PICKAXE).tool("pickaxe", 250, 7.0).durability(800).attack(4.0).set(&WEAR_PER_HIT, 2).tag("tools/pickaxe").tab(&BASE_TOOLS);
     // May face up, north or east only: three states, not six.
     r.block(&VENT)
-        .facing(Facings::only(&[Dir::Up, Dir::North, Dir::East]), Toward::Player, |d, s| {
+        .facing(Facings::only(&[Dir::Up, Dir::North, Dir::East]), Toward::Player)
+        .states(|p, s| {
             let mut f = ["vent_side"; 6];
-            f[d.face() as usize] = "vent_front";
+            f[p.facing().face() as usize] = "vent_front";
             s.faces(f)
         })
         .hardness(2.0)

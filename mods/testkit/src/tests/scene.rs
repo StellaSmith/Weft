@@ -93,7 +93,7 @@ async fn pos_of(t: &T, id: u64) -> Result<[f64; 3], String> {
 async fn sync_edits(t: T, o: [i32; 3]) -> R {
     t.fill(o, add(o, [4, 2, 4]), "cobblestone").await?;
     t.fill(add(o, [1, 1, 1]), add(o, [3, 1, 3]), "glass").await?;
-    t.set(add(o, [2, 2, 2]), "furnace#5").await?;
+    t.set(add(o, [2, 2, 2]), "furnace[facing=east,lit=true]").await?;
     t.set(add(o, [0, 2, 0]), "air").await?;
     t.frames(5).await?;
     t.sync_blocks(o, add(o, [4, 2, 4])).await?;
@@ -142,7 +142,7 @@ async fn furnace(t: T, o: [i32; 3]) -> R {
     t.op(&format!("insert {} lava_bucket 1", at(b))).await?;
     t.secs(1.0).await?;
     let lit = t.block(a).await?;
-    t.check(lit.starts_with("base:furnace#") && lit.trim_start_matches("base:furnace#").parse::<u32>().unwrap_or(0) >= 4, format!("burning furnace is {lit}"));
+    t.check(lit.starts_with("base:furnace[") && lit.contains("lit=true"), format!("burning furnace is {lit}"));
     t.check_eq(t.wait_slot(&at(a), 2, 20.0).await?, ("base:iron_ingot".into(), 1, 0), "furnace output");
     t.check_eq(t.wait_slot(&at(b), 2, 5.0).await?.0, "base:glass".into(), "sand smelted with lava");
     t.check_eq(t.slot(&at(b), 1).await?.0, "base:bucket".into(), "lava bucket leaves the bucket");
@@ -155,10 +155,10 @@ async fn water_flow(t: T, s: [i32; 3]) -> R {
     t.set(s, "water").await?;
     // Ring k arrives after k * 5 ticks: at one second only about four rings exist.
     t.secs(1.0).await?;
-    t.check_eq(t.block(add(s, [3, 0, 0])).await?, "base:water#3".into(), "three blocks out after a second");
+    t.check_eq(t.block(add(s, [3, 0, 0])).await?, "base:water[level=3]".into(), "three blocks out after a second");
     t.check_eq(t.block(add(s, [6, 0, 0])).await?, "core:air".into(), "six blocks out after a second");
     t.secs(2.5).await?;
-    for (d, want) in [([7, 0, 0], "base:water#7"), ([0, 0, -7], "base:water#7"), ([4, 0, 3], "base:water#7"), ([8, 0, 0], "core:air"), ([4, 0, 4], "core:air"), ([1, 0, 0], "base:water#1")] {
+    for (d, want) in [([7, 0, 0], "base:water[level=7]"), ([0, 0, -7], "base:water[level=7]"), ([4, 0, 3], "base:water[level=7]"), ([8, 0, 0], "core:air"), ([4, 0, 4], "core:air"), ([1, 0, 0], "base:water[level=1]")] {
         t.check_eq(t.block(add(s, d)).await?, want.into(), &format!("water at {d:?}"));
     }
     Ok(())
@@ -170,7 +170,7 @@ async fn water_finds_hole(t: T, s: [i32; 3]) -> R {
     t.set(hole, "air").await?;
     t.set(s, "water").await?;
     t.secs(3.0).await?;
-    t.check_eq(t.block(hole).await?, "base:water#8".into(), "the hole filled (falling water)");
+    t.check_eq(t.block(hole).await?, "base:water[level=8]".into(), "the hole filled (falling water)");
     t.check_eq(t.block(add(s, [-1, 0, 0])).await?, "core:air".into(), "no spread away from the hole");
     t.check_eq(t.block(add(s, [0, 0, 1])).await?, "core:air".into(), "no spread sideways");
     Ok(())
@@ -181,7 +181,7 @@ async fn infinite_water(t: T, a: [i32; 3]) -> R {
     t.set(a, "water").await?;
     t.set(add(a, [2, 0, 0]), "water").await?;
     t.secs(1.5).await?;
-    t.check_eq(t.block(add(a, [1, 0, 0])).await?, "base:water".into(), "new source between two");
+    t.check_eq(t.block(add(a, [1, 0, 0])).await?, "base:water[level=0]".into(), "new source between two");
     Ok(())
 }
 
@@ -201,7 +201,7 @@ async fn lava_and_water(t: T, o: [i32; 3]) -> R {
     t.check_eq(t.block(a).await?, "base:obsidian".into(), "lava source next to water");
     // Lava needs 30 ticks per step.
     t.secs(1.0).await?;
-    t.check_eq(t.block(add(b, [1, 0, 0])).await?, "base:lava#2".into(), "lava flowed one block");
+    t.check_eq(t.block(add(b, [1, 0, 0])).await?, "base:lava[level=2]".into(), "lava flowed one block");
     t.set(add(b, [1, 1, 0]), "water").await?;
     t.secs(0.5).await?;
     t.check_eq(t.block(add(b, [1, 0, 0])).await?, "base:cobblestone".into(), "flowing lava under water");
@@ -382,14 +382,18 @@ async fn watcher_sync(t: &T, o: [i32; 3]) -> R {
     Ok(())
 }
 
-/// Blocks have one state per allowed facing: the vent (up, north, east) three, the furnace four
-/// times lit or not, the torch five.
+/// A facing property holds only the allowed directions: the vent faces up, north or east, the
+/// torch any way but down; the furnace's `lit` combines with its facing.
 async fn facing_states(t: &T) -> R {
     static VENT: Block = Block::named("testmod:vent");
     static FURNACE: Block = Block::named("base:furnace");
     static TORCH: Block = Block::named("base:torch");
-    t.check_eq(VENT.state_count(), 3, "the vent's states");
-    t.check_eq(FURNACE.state_count(), 8, "the furnace's states");
-    t.check_eq(TORCH.state_count(), 5, "the torch's states");
+    t.check(VENT.with(&[("facing", "north")]) != u32::MAX, "the vent faces north");
+    t.check_eq(VENT.with(&[("facing", "down")]), u32::MAX, "the vent never faces down");
+    t.check_eq(TORCH.with(&[("facing", "down")]), u32::MAX, "the torch never faces down");
+    let lit = FURNACE.with(&[("facing", "east"), ("lit", "true")]);
+    t.check_eq(state_prop(lit, "facing"), Some("east"), "facing of a lit furnace");
+    t.check_eq(state_with(lit, "lit", "false").and_then(|s| state_prop(s, "facing")), Some("east"), "putting it out keeps its facing");
+    t.check_eq(block_name(lit).to_string(), "base:furnace[facing=east,lit=true]".to_string(), "the state's name");
     Ok(())
 }

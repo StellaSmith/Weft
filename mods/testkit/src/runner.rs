@@ -274,7 +274,7 @@ impl T {
         }
     }
 
-    /// The block's name as the server has it (`base:furnace#4`).
+    /// The block's name as the server has it (`base:furnace[facing=north,lit=true]`).
     pub async fn block(&self, pos: [i32; 3]) -> Result<String, String> {
         self.op(&format!("get {} {} {}", pos[0], pos[1], pos[2])).await
     }

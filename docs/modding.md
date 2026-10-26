@@ -193,8 +193,11 @@ is dropped.
 - `grows(seconds, min_light)` + `on_grow(..)` for plants
 - `random_ticks(..)`
 - `on_use`, `on_placed`, `on_broken`, `on_neighbor`, `on_scheduled`
-- `facing(Facings::HORIZONTAL, Toward::Player, |dir, state| ..)` for rotated blocks
-- `states(n, |i, s| ..)` for anything else with states
+- `prop("lit", ["false", "true"])`, `prop("age", 0..=7)` and `facing(Facings::HORIZONTAL, Toward::Player)` for states, like blockstates in modern Minecraft: every combination of values is a state
+- `states(|p, s| ..)` to make each state look different (`p.facing()`, `p.is("lit", "true")`), `placement(|place, p| p.set(..))` to pick values when placed
+
+In code a state is read and changed by name, `w.prop(pos, "lit")` and `w.set_prop(pos, "lit", "true")`, the other properties stay as they are.
+Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in structures, `r.set(..)`, `{block:..}` and commands (`/setblock ~ ~ ~ base:furnace[facing=east]`).
 
 ### Items
 `r.item(&ITEM)` and then:

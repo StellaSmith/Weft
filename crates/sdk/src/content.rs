@@ -113,28 +113,16 @@ impl<K: kind::HasId> Handle<K> {
         (id != u32::MAX).then_some(id)
     }
 
-    /// The `i`-th state of a block (`u32::MAX` if the block is unknown).
-    #[inline]
-    pub fn state(&self, i: u32) -> u32 {
-        self.id().saturating_add(i)
-    }
-
-    /// How many states the block has (1 until it is known).
-    pub fn state_count(&self) -> u32 {
-        self.id();
-        self.count.load(Ordering::Relaxed)
+    /// The block's state with properties `props` set, the others at their defaults:
+    /// `FURNACE.with(&[("lit", "true")])`. `u32::MAX` if the block or a value is unknown.
+    pub fn with(&self, props: &[(&str, &str)]) -> u32 {
+        props.iter().fold(self.id(), |s, (k, v)| if s == u32::MAX { s } else { unsafe { (host().state_with)(s, Str::new(k), Str::new(v)) } })
     }
 
     /// True if `state` belongs to this block.
     #[inline]
     pub fn is(&self, state: u32) -> bool {
         state.wrapping_sub(self.id()) < self.count.load(Ordering::Relaxed)
-    }
-
-    /// State index inside the block for a state id of this block.
-    #[inline]
-    pub fn index(&self, state: u32) -> u32 {
-        state.wrapping_sub(self.id())
     }
 
     pub(crate) fn cell(&self) -> *const AtomicU32 {
@@ -269,7 +257,7 @@ fn raw_values(list: &[Pending], scratch: &mut Vec<Vec<u8>>) -> Vec<abi::CompValu
 
 /// What `Registry::set_on` applies to; names without a namespace are this mod's.
 pub enum Target<'a> {
-    /// The block (all states, or one with `name#3`) and item of that name.
+    /// The block and item of that name; `name[prop=value]` only the block's states with that value.
     Name(&'a str),
     /// Blocks and items with a matching tag (`*` matches any text).
     Tagged(&'a str),
@@ -307,6 +295,10 @@ impl Registry {
             replace: false,
             own_states: false,
             retexture: Vec::new(),
+            props: Vec::new(),
+            looks: None,
+            facing: None,
+            placement: None,
         }
     }
 
@@ -754,6 +746,74 @@ pub struct BlockBuilder<'a> {
     replace: bool,
     own_states: bool,
     retexture: Vec<(String, String)>,
+    props: Vec<(String, Vec<String>)>,
+    looks: Option<Box<dyn for<'s> Fn(&Props, State<'s>) -> State<'s>>>,
+    facing: Option<(crate::Facings, crate::Toward)>,
+    placement: Option<std::sync::Arc<dyn Fn(&Place, &mut Props) + Send + Sync>>,
+}
+
+/// Values a property can take: names (`["false", "true"]`) or numbers (`0..=7`).
+pub trait PropValues {
+    fn values(self) -> Vec<String>;
+}
+impl<const N: usize> PropValues for [&str; N] {
+    fn values(self) -> Vec<String> {
+        self.iter().map(|v| v.to_string()).collect()
+    }
+}
+impl PropValues for &[&str] {
+    fn values(self) -> Vec<String> {
+        self.iter().map(|v| v.to_string()).collect()
+    }
+}
+impl PropValues for std::ops::RangeInclusive<u32> {
+    fn values(self) -> Vec<String> {
+        self.map(|v| v.to_string()).collect()
+    }
+}
+
+/// The property values of one state (in `.states(..)`) or of the state being placed (in
+/// `.placement(..)`, where `set` changes them).
+#[derive(Clone)]
+pub struct Props {
+    values: Vec<(String, String)>,
+}
+
+impl Props {
+    /// The value of `name` (empty if the block has no such property).
+    pub fn get(&self, name: &str) -> &str {
+        self.values.iter().find(|v| v.0 == name).map_or("", |v| v.1.as_str())
+    }
+    pub fn is(&self, name: &str, value: &str) -> bool {
+        self.get(name) == value
+    }
+    /// A number property (`age`); 0 if it is not a number.
+    pub fn int(&self, name: &str) -> u32 {
+        self.get(name).parse().unwrap_or(0)
+    }
+    /// The `facing` property.
+    pub fn facing(&self) -> crate::Dir {
+        crate::Dir::from_name(self.get("facing")).unwrap_or(crate::Dir::Up)
+    }
+    pub fn set(&mut self, name: &str, value: &str) {
+        if let Some(v) = self.values.iter_mut().find(|v| v.0 == name) {
+            v.1 = value.to_string();
+        }
+    }
+}
+
+/// Every combination of property values, the last property changing fastest.
+fn combinations(props: &[(String, Vec<String>)]) -> Vec<Props> {
+    let mut out = vec![Props { values: Vec::new() }];
+    for (name, values) in props {
+        out = out.into_iter().flat_map(|p| values.iter().map(move |v| { let mut q = p.clone(); q.values.push((name.clone(), v.clone())); q })).collect();
+    }
+    out
+}
+
+/// The state index of `p` among `combinations(props)`; values it does not know count as the first.
+fn index_of(props: &[(String, Vec<String>)], p: &Props) -> u32 {
+    props.iter().fold(0, |i, (name, values)| i * values.len() as u32 + values.iter().position(|v| v == p.get(name)).unwrap_or(0) as u32)
 }
 
 impl<'a> BlockBuilder<'a> {
@@ -766,15 +826,20 @@ impl<'a> BlockBuilder<'a> {
 
     state_setters!();
 
-    /// Makes `n` states copied from the current settings, then customizes each one.
-    pub fn states(mut self, n: u32, f: impl Fn(u32, State) -> State) -> Self {
+    /// A named property with its values, the first being the default: `.prop("lit", ["false",
+    /// "true"])`, `.prop("age", 0..=7)`. The block has a state for every combination of its
+    /// properties; read and change them with `World::prop` / `set_prop`.
+    pub fn prop(mut self, name: &str, values: impl PropValues) -> Self {
         self.own_states = true;
-        let base = self.states[0].clone();
-        self.states = (0..n).map(|_| base.clone()).collect();
-        let ns = self.reg.ns;
-        for (i, s) in self.states.iter_mut().enumerate() {
-            f(i as u32, State { def: s, ns });
-        }
+        self.props.push((name.to_string(), values.values()));
+        self
+    }
+
+    /// Customizes each state by its property values, on top of the block's own settings:
+    /// `.states(|p, s| if p.is("lit", "true") { s.light(13) } else { s })`.
+    pub fn states(mut self, f: impl for<'s> Fn(&Props, State<'s>) -> State<'s> + 'static) -> Self {
+        self.own_states = true;
+        self.looks = Some(Box::new(f));
         self
     }
 
@@ -900,28 +965,17 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// One state per direction in `allowed` (`f` builds each), placed by `toward`: three allowed
-    /// directions are three states.
-    pub fn facing(self, allowed: crate::Facings, toward: crate::Toward, f: impl Fn(crate::Dir, State) -> State) -> Self {
-        self.facing_variants(allowed, toward, 1, move |d, _, s| f(d, s))
+    /// A `facing` property with the directions in `allowed` (`p.facing()` in `.states`), set by
+    /// `toward` when placed: three allowed directions are three values.
+    pub fn facing(mut self, allowed: crate::Facings, toward: crate::Toward) -> Self {
+        self.facing = Some((allowed, toward));
+        self.prop("facing", allowed.dirs().map(|d| d.name()).collect::<Vec<_>>().as_slice())
     }
 
-    /// `facing` times `variants` (lit or not, ...): state `Facings::index(dir, variant)`;
-    /// placing gives variant 0.
-    pub fn facing_variants(self, allowed: crate::Facings, toward: crate::Toward, variants: u32, f: impl Fn(crate::Dir, u32, State) -> State) -> Self {
-        self.states(allowed.count() * variants.max(1), |i, s| {
-            let (d, v) = allowed.parse(i);
-            f(d, v, s)
-        })
-        .placement(move |p| allowed.index(toward.choose(allowed, p.face(), p.look()), 0))
-    }
-
-    pub fn placement(mut self, f: impl Fn(&Place) -> u32 + Send + Sync + 'static) -> Self {
-        self.callbacks.placement = Some(callback(move |a: &mut abi::PlaceArgs| {
-            let first = a.state;
-            let i = f(Place::wrap(a));
-            a.state = first + i;
-        }));
+    /// Chooses property values when a player places it (after `facing`):
+    /// `.placement(|p, props| props.set("axis", if p.face() < 2 { "x" } else { "y" }))`.
+    pub fn placement(mut self, f: impl Fn(&Place, &mut Props) + Send + Sync + 'static) -> Self {
+        self.placement = Some(std::sync::Arc::new(f));
         self
     }
 }
@@ -931,6 +985,38 @@ impl Drop for BlockBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
+        // One state per combination of property values, each customized by `.states(..)`.
+        let looks = self.looks.take();
+        if !self.props.is_empty() || looks.is_some() {
+            let template = self.states[0].clone();
+            let ns = self.reg.ns;
+            self.states = combinations(&self.props)
+                .iter()
+                .map(|p| {
+                    let mut d = template.clone();
+                    if let Some(f) = &looks {
+                        f(p, State { def: &mut d, ns });
+                    }
+                    d
+                })
+                .collect();
+        }
+        if self.facing.is_some() || self.placement.is_some() {
+            let (props, facing, user) = (self.props.clone(), self.facing, self.placement.take());
+            self.callbacks.placement = Some(callback(move |a: &mut abi::PlaceArgs| {
+                let mut p = Props { values: props.iter().map(|(n, v)| (n.clone(), v[0].clone())).collect() };
+                if let Some((allowed, toward)) = facing {
+                    p.set("facing", toward.choose(allowed, a.face, a.look).name());
+                }
+                let first = a.state;
+                if let Some(f) = &user {
+                    f(Place::wrap(a), &mut p);
+                }
+                a.state = first + index_of(&props, &p);
+            }));
+        }
+        let prop_values: Vec<Vec<Str>> = self.props.iter().map(|(_, v)| v.iter().map(|x| Str::new(x)).collect()).collect();
+        let props: Vec<abi::PropDesc> = self.props.iter().zip(&prop_values).map(|((n, _), v)| abi::PropDesc { name: Str::new(n), values: Slice::new(v) }).collect();
         let boxes: Vec<Vec<abi::ModelBox>> = self
             .states
             .iter()
@@ -974,6 +1060,7 @@ impl Drop for BlockBuilder<'_> {
             name: Str::new(&self.name),
             cell: cell(self.handle),
             states: Slice::new(&states),
+            props: Slice::new(&props),
             components: Slice::new(&values),
             drop: Str::new(&self.drop),
             drop_count: self.drop_count,
@@ -1247,7 +1334,7 @@ impl StructureBuilder<'_> {
         self.layers.push(rows.iter().map(|r| r.to_string()).collect());
         self
     }
-    /// `block` may name a state (`furnace#2`) or `air` to clear.
+    /// `block` may name a state (`furnace[lit=true]`) or `air` to clear.
     pub fn key(mut self, c: char, block: &str) -> Self {
         let block = if block == "air" { "core:air".to_string() } else { qualify(self.ns, block) };
         self.keys.push((c, block));
@@ -1580,7 +1667,7 @@ impl Drop for LiquidBuilder<'_> {
         let short = self.handle.path().to_string();
         let tex = if self.texture.is_empty() { format!("{short}_still") } else { self.texture.clone() };
         let (tint, light, opacity, drag) = (self.tint, self.light, self.opacity, self.drag);
-        let mut b = self.reg.block(self.handle).texture(&tex).states(16, |i, s| s.liquid(if i >= 8 { 0 } else { i as u8 })).light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
+        let mut b = self.reg.block(self.handle).texture(&tex).prop("level", 0..=15).states(|p, s| s.liquid(if p.int("level") >= 8 { 0 } else { p.int("level") as u8 })).light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
         if tint {
             b = b.tint_water();
         }

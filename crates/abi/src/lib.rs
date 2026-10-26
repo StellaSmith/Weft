@@ -401,7 +401,12 @@ pub struct BlockDesc {
     pub name: Str,
     /// Receives the id of the first state once registries are frozen (null = no handle).
     pub cell: *const AtomicU32,
+    /// One per combination of `props` values, the last property changing fastest (with no
+    /// properties, one state).
     pub states: Slice<StateDesc>,
+    /// Named properties (`facing`, `lit`, `age`), each with its values; the first value is the
+    /// default.
+    pub props: Slice<PropDesc>,
     /// Components of every state (tags, mining, fuel ...). Its item gets them too unless it sets
     /// its own.
     pub components: Slice<CompValue>,
@@ -438,6 +443,7 @@ defaults!(BlockDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     states: Slice::EMPTY,
+    props: Slice::EMPTY,
     components: Slice::EMPTY,
     drop: Str::EMPTY,
     drop_count: 1,
@@ -455,6 +461,13 @@ defaults!(BlockDesc {
     own_states: 1,
     retexture: Slice::EMPTY,
 });
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PropDesc {
+    pub name: Str,
+    pub values: Slice<Str>,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1318,6 +1331,11 @@ pub struct Host {
     pub find: unsafe extern "C" fn(kind: u32, name: Str, count: *mut u32) -> u32,
     /// State id -> first state id of its block.
     pub block_of: unsafe extern "C" fn(state: u32) -> u32,
+    /// The value of property `name` in `state` (empty if the block has no such property).
+    pub state_prop: unsafe extern "C" fn(state: u32, name: Str) -> Str,
+    /// `state` with property `name` set to `value`, the others kept; `u32::MAX` if the block has
+    /// no such property or value.
+    pub state_with: unsafe extern "C" fn(state: u32, name: Str, value: Str) -> u32,
     pub state_flags: unsafe extern "C" fn(state: u32) -> u32,
     /// Component id by name, `u32::MAX` if nothing uses it. A non-empty `schema` that differs from
     /// the registered one is an error (logged) and also gives `u32::MAX`.

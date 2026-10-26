@@ -90,10 +90,86 @@ pub struct BlockDef {
     pub owner: ModId,
     pub first_state: u32,
     pub states: u32,
+    /// Named properties and their values; states are every combination, the last property
+    /// changing fastest.
+    pub props: Vec<Prop>,
     /// Resolved after items are frozen. `None` = drops nothing.
     pub drop: Option<u32>,
     pub drop_count: u32,
     pub cb: BlockCallbacks,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Prop {
+    pub name: String,
+    pub values: Vec<String>,
+    /// States between two neighboring values.
+    pub stride: u32,
+}
+
+impl BlockDef {
+    /// The value index of every property in state `i` of this block (0-based within the block).
+    pub fn prop_values(&self, i: u32) -> impl Iterator<Item = (&Prop, u32)> {
+        self.props.iter().map(move |p| (p, (i / p.stride) % p.values.len() as u32))
+    }
+
+    /// `state` with property `name` at value index `v`.
+    pub fn with_value(&self, state: u32, prop: usize, v: u32) -> u32 {
+        let p = &self.props[prop];
+        let i = state - self.first_state;
+        let cur = (i / p.stride) % p.values.len() as u32;
+        self.first_state + i - cur * p.stride + v * p.stride
+    }
+
+    /// `name` or `name[a=x,b=y]` with every property.
+    pub fn state_name(&self, state: u32) -> String {
+        if self.props.is_empty() {
+            return self.name.clone();
+        }
+        let props: Vec<String> = self.prop_values(state - self.first_state).map(|(p, v)| format!("{}={}", p.name, p.values[v as usize])).collect();
+        format!("{}[{}]", self.name, props.join(","))
+    }
+
+    /// The state with `props` (`a=x` pairs), the others at their defaults.
+    pub fn state_of(&self, props: &[(&str, &str)]) -> Result<u32, String> {
+        let mut state = self.first_state;
+        for (k, v) in props {
+            let pi = self.props.iter().position(|p| p.name == *k).ok_or_else(|| format!("{} has no property {k}", self.name))?;
+            let vi = self.props[pi].values.iter().position(|x| x == v).ok_or_else(|| format!("{} property {k} has no value {v} (values: {})", self.name, self.props[pi].values.join(", ")))?;
+            state = self.with_value(state, pi, vi as u32);
+        }
+        Ok(state)
+    }
+
+    /// States matching `props` (`a=x` pairs, the others any value); an error names what does
+    /// not exist.
+    pub fn matching(&self, props: &[(&str, &str)]) -> Result<Vec<u32>, String> {
+        let mut fixed = Vec::new();
+        for (name, value) in props {
+            let Some(pi) = self.props.iter().position(|p| p.name == *name) else {
+                let known: Vec<&str> = self.props.iter().map(|p| p.name.as_str()).collect();
+                return Err(format!("{} has no property {name} (it has: {})", self.name, if known.is_empty() { "none".into() } else { known.join(", ") }));
+            };
+            let p = &self.props[pi];
+            let Some(v) = p.values.iter().position(|x| x == value) else {
+                return Err(format!("{} property {name} has no value {value} (values: {})", self.name, p.values.join(", ")));
+            };
+            fixed.push((p, v as u32));
+        }
+        Ok((0..self.states).filter(|&i| fixed.iter().all(|(p, v)| (i / p.stride) % p.values.len() as u32 == *v)).map(|i| self.first_state + i).collect())
+    }
+}
+
+/// Splits `name[a=x,b=y]` into the name and the pairs.
+pub fn split_state(text: &str) -> Result<(&str, Vec<(&str, &str)>), String> {
+    let Some((name, rest)) = text.split_once('[') else { return Ok((text, Vec::new())) };
+    let Some(inner) = rest.strip_suffix(']') else { return Err(format!("{text}: missing ]")) };
+    let mut pairs = Vec::new();
+    for kv in inner.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some((k, v)) = kv.split_once('=') else { return Err(format!("{text}: {kv} is not property=value")) };
+        pairs.push((k.trim(), v.trim()));
+    }
+    Ok((name, pairs))
 }
 
 pub struct ItemDef {
@@ -328,8 +404,16 @@ impl Content {
     /// Whether a block in `state` has growth steps ahead of it: (mean ticks, light needed).
     pub fn grows(&self, state: u32) -> Option<(f64, u32)> {
         let b = self.block_of(state);
-        let last = state + 1 == b.first_state + b.states;
-        b.cb.grow.filter(|_| b.cb.on_grow.is_some() || !last)
+        b.cb.grow.filter(|_| b.cb.on_grow.is_some() || self.grown(state).is_some())
+    }
+
+    /// The default growth step: the `age` property one higher, `None` at the last age.
+    pub fn grown(&self, state: u32) -> Option<u32> {
+        let b = self.block_of(state);
+        let pi = b.props.iter().position(|p| p.name == "age")?;
+        let p = &b.props[pi];
+        let v = ((state - b.first_state) / p.stride) % p.values.len() as u32;
+        (v + 1 < p.values.len() as u32).then(|| b.with_value(state, pi, v + 1))
     }
 
     /// The item a middle click on this block picks: the block's own item, else what it drops.
@@ -396,20 +480,35 @@ impl Content {
         self.mods.get(id.0 as usize).map_or("engine", |m| m.id.as_str())
     }
 
-    /// Full name of a state for saves and the network: `"base:furnace#3"`.
+    /// Full name of a state for saves, the network and players: `base:furnace[facing=north,lit=false]`.
     pub fn state_name(&self, state: u32) -> String {
-        let b = self.block_of(state);
-        let i = state - b.first_state;
-        if i == 0 { b.name.clone() } else { format!("{}#{i}", b.name) }
+        self.block_of(state).state_name(state)
     }
 
+    /// `name` (its default state) or `name[a=x,..]`, the properties not given at their defaults.
     pub fn state_by_name(&self, name: &str) -> Option<u32> {
-        let (block, idx) = match name.rsplit_once('#') {
-            Some((b, i)) => (b, i.parse::<u32>().ok()?),
-            None => (name, 0),
-        };
-        let b = &self.blocks[*self.block_names.get(block)? as usize];
-        (idx < b.states).then_some(b.first_state + idx)
+        self.parse_state(name).ok()
+    }
+
+    /// Like `state_by_name`, saying what is wrong.
+    pub fn parse_state(&self, text: &str) -> Result<u32, String> {
+        let (name, pairs) = split_state(text)?;
+        self.blocks[*self.block_names.get(name).ok_or_else(|| format!("unknown block {name}"))? as usize].state_of(&pairs)
+    }
+
+    /// The value of property `name` in `state`.
+    pub fn state_prop(&self, state: u32, name: &str) -> Option<&str> {
+        let b = self.block_of(state);
+        let p = b.props.iter().find(|p| p.name == name)?;
+        Some(&p.values[(((state - b.first_state) / p.stride) % p.values.len() as u32) as usize])
+    }
+
+    /// `state` with property `name` set to `value`.
+    pub fn state_with(&self, state: u32, name: &str, value: &str) -> Option<u32> {
+        let b = self.block_of(state);
+        let pi = b.props.iter().position(|p| p.name == name)?;
+        let v = b.props[pi].values.iter().position(|x| x == value)?;
+        Some(b.with_value(state, pi, v as u32))
     }
 }
 
@@ -458,6 +557,7 @@ pub struct RawBlock {
     pub name: String,
     pub cell: usize,
     pub states: Vec<RawState>,
+    pub props: Vec<(String, Vec<String>)>,
     pub components: Vec<RawValue>,
     pub drop: String,
     pub drop_count: u32,
@@ -511,6 +611,7 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
             *t = to.clone();
         }
     };
+    b.props = old.props.clone();
     b.states = old
         .states
         .iter()
@@ -568,6 +669,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
             states,
+            props: d.props.as_slice().iter().map(|p| (p.name.as_str().to_string(), p.values.as_slice().iter().map(|v| v.as_str().to_string()).collect())).collect(),
             components: RawValue::list(d.components),
             drop: d.drop.as_str().to_string(),
             drop_count: d.drop_count,
@@ -935,6 +1037,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         owner: ModId(u32::MAX),
         first_state: 0,
         states: 1,
+        props: Vec::new(),
         drop: None,
         drop_count: 0,
         cb: BlockCallbacks::default(),
@@ -1010,11 +1113,26 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let drop = if b.drop.is_empty() { b.name.clone() } else { b.drop.clone() };
         block_drops.push(drop);
         block_values.push((owner, b.components, state_values, supports));
+        let count = (states.len() as u32) - first;
+        let mut props = Vec::new();
+        let mut stride = 1;
+        for (name, values) in b.props.iter().rev() {
+            props.push(Prop { name: name.clone(), values: values.clone(), stride });
+            stride *= values.len().max(1) as u32;
+        }
+        props.reverse();
+        if stride != count {
+            errors.push(format!("{}: block {} has {count} states, its properties make {stride}", mods.get(owner.0 as usize).map_or("engine", |m| m.id.as_str()), b.name));
+        }
+        if b.cb.grow.is_some() && b.cb.on_grow.is_none() && !b.props.iter().any(|p| p.0 == "age") {
+            errors.push(format!("{}: block {} grows, but has no `age` property and no on_grow", mods.get(owner.0 as usize).map_or("engine", |m| m.id.as_str()), b.name));
+        }
         block_defs.push(BlockDef {
             name: b.name,
             owner,
             first_state: first,
-            states: (states.len() as u32) - first,
+            states: count,
+            props,
             drop: None,
             drop_count: b.drop_count,
             cb: b.cb,
@@ -1231,19 +1349,21 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             let mut hits: Vec<(usize, u32)> = Vec::new();
             match &s.target {
                 Target::Name(n) => {
-                    let (base, idx) = match n.rsplit_once('#') {
-                        Some((b, i)) => (b, i.parse::<u32>().ok()),
-                        None => (n.as_str(), None),
+                    // `name[prop=value]` narrows a block to the states with those values.
+                    let (base, props) = match split_state(n) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            errors.push(format!("{}: component {}: {e}", m.1, s.value.name));
+                            continue;
+                        }
                     };
                     if let Some(&b) = block_names.get(base) {
-                        let d = &block_defs[b as usize];
-                        match idx {
-                            Some(i) if i < d.states => hits.push((comps::BLOCK, d.first_state + i)),
-                            Some(_) => {}
-                            None => hits.extend((0..d.states).map(|i| (comps::BLOCK, d.first_state + i))),
+                        match block_defs[b as usize].matching(&props) {
+                            Ok(list) => hits.extend(list.into_iter().map(|st| (comps::BLOCK, st))),
+                            Err(e) => errors.push(format!("{}: component {}: {e}", m.1, s.value.name)),
                         }
                     }
-                    if let (Some(&i), None) = (item_names.get(base), idx) {
+                    if let (Some(&i), true) = (item_names.get(base), props.is_empty()) {
                         hits.push((comps::ITEM, i));
                     }
                 }
@@ -1373,14 +1493,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         };
         let mut blocks = Vec::with_capacity(s.blocks.len());
         for (p, name) in &s.blocks {
-            // `base:furnace#2`: the block's third state.
-            let (block, index) = match name.split_once('#') {
-                Some((b, i)) => (b, i.parse().unwrap_or(u32::MAX)),
-                None => (name.as_str(), 0),
-            };
-            match block_names.get(block).map(|&b| &block_defs[b as usize]).filter(|b| index < b.states) {
-                Some(b) => blocks.push((glam::IVec3::from_array(*p), b.first_state + index)),
-                None => errors.push(format!("structure {}: unknown block {name}", s.name)),
+            // `base:furnace[facing=east]`: that state, other properties at their defaults.
+            let state = split_state(name).and_then(|(block, props)| block_defs[*block_names.get(block).ok_or_else(|| format!("unknown block {block}"))? as usize].state_of(&props));
+            match state {
+                Ok(st) => blocks.push((glam::IVec3::from_array(*p), st)),
+                Err(e) => errors.push(format!("structure {}: {e}", s.name)),
             }
         }
         let biome = match s.biome.as_str() {

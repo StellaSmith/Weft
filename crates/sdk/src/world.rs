@@ -57,6 +57,35 @@ impl World {
     pub fn flags(&self, pos: [i32; 3]) -> u32 {
         state_flags(self.get(pos))
     }
+
+    /// The value of property `name` of the block at `pos`: `w.prop(pos, "lit")`.
+    pub fn prop(&self, pos: [i32; 3], name: &str) -> Option<&'static str> {
+        state_prop(self.get(pos), name)
+    }
+
+    /// Changes one property of the block at `pos`, keeping the others (its facing stays):
+    /// `w.set_prop(pos, "lit", "true")`. False if the block has no such property or value.
+    pub fn set_prop(&self, pos: [i32; 3], name: &str, value: &str) -> bool {
+        match state_with(self.get(pos), name, value) {
+            Some(s) => {
+                self.set(pos, s);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// The value of property `name` in `state` (`None` if its block has no such property).
+pub fn state_prop(state: u32, name: &str) -> Option<&'static str> {
+    let v = unsafe { (host().state_prop)(state, Str::new(name)).as_str() };
+    (!v.is_empty()).then_some(v)
+}
+
+/// `state` with property `name` set to `value`, its other properties kept.
+pub fn state_with(state: u32, name: &str, value: &str) -> Option<u32> {
+    let s = unsafe { (host().state_with)(state, Str::new(name), Str::new(value)) };
+    (s != u32::MAX).then_some(s)
 }
 
 pub fn state_flags(state: u32) -> u32 {
@@ -67,7 +96,7 @@ pub fn block_of(state: u32) -> u32 {
     unsafe { (host().block_of)(state) }
 }
 
-/// Full name of a block state (`base:furnace#4` for a state past the first), item, entity kind ...
+/// Full name of a block state (`base:furnace[facing=north,lit=false]`), item, entity kind ...
 /// by its id; `kind` is `abi::entry_kind`. Empty if unknown.
 pub fn name_of(kind: u32, id: u32) -> &'static str {
     unsafe { (host().name_of)(kind, id).as_str() }

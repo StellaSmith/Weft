@@ -121,7 +121,7 @@ fn worldgen(_r: &mut Registry) {
 /// More at `mods/base/src/mobs.rs` (AI goals, spawn rules, etc.).
 fn entities(_r: &mut Registry) {
     // static GHOST: Entity = Entity::named("ghost");
-    // r.entity(&GHOST).size(0.6, 1.8).health(10.0).speed(3.0).hostile().texture("ghost", 64, 32).model(biped(false));
+    // r.entity(&GHOST).size(0.6, 1.8).health(10.0).speed(3.0).hostile().model(biped(false)).sound("hurt");
     // r.spawn("ghost").light(0, 4).weight(1);
 }
 

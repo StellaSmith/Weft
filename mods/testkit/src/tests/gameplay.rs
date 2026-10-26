@@ -305,6 +305,15 @@ pub async fn sounds(t: T) -> R {
     t.until("steps", std::time::Duration::from_secs(3), |t| t.state().sounds >= before + 2).await?;
     t.cmd("/music").await?;
     t.until("music", std::time::Duration::from_secs(3), |t| t.flag(weft_sdk::client::client_flags::MUSIC)).await?;
+    // A mob's voice comes from `sounds/entity/<kind>/hurt*` by itself.
+    let pig = add(t.feet(), [0, 0, -2]);
+    t.op(&format!("spawn pig {}", at(pig))).await?;
+    t.secs(0.3).await?;
+    t.look_at(pig);
+    t.frames(2).await?;
+    let before = t.state().sounds;
+    t.press("core:attack");
+    t.until("the pig's hurt sound", std::time::Duration::from_secs(2), |t| t.state().sounds > before).await?;
     Ok(())
 }
 

@@ -95,12 +95,12 @@ pub fn register(r: &mut Registry) {
         .speed(1.5)
         .flags(entity_flags::NO_GRAVITY)
         .unpushable()
-        .texture("wisp", 32, 16)
-        .model(vec![Part::new([0.0, 3.0, 0.0], abi::part_role::STATIC).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])])
+        
+        .model(Model::from(vec![Part::new([0.0, 3.0, 0.0], abi::part_role::STATIC).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])]).uv(32, 16))
         .shader("ghost")
         .on_tick(wisps);
 
-    r.entity(&IDOL).size(0.6, 1.1).health(20.0).texture("idol", 64, 32).model_file("idol").animations("idol").on_interact(|e| {
+    r.entity(&IDOL).size(0.6, 1.1).health(20.0).model_file("idol").animations("idol").on_interact(|e| {
         let mut bowed = BOWED.lock().unwrap();
         let id = e.entity();
         if let Some(i) = bowed.iter().position(|&b| b == id) {
@@ -123,8 +123,8 @@ pub fn register(r: &mut Registry) {
         .size(0.6, 0.9)
         .health(4.0)
         .flags(entity_flags::NO_GRAVITY)
-        .texture("orb", 32, 16)
-        .model(vec![Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]);
+        
+        .model(Model::from(vec![Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]).uv(32, 16));
 
     r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
     r.item(&RUNE).max_stack(1).on_use(|u| {

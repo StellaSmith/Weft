@@ -412,20 +412,41 @@ pub fn sphere(center: [f32; 3], radius: f32, rings: u32, segments: u32, uv: [f32
 }
 
 /// Classic humanoid on a 64x32 skin; `arms_forward` for zombies.
-pub fn biped(arms_forward: bool) -> Vec<Part> {
+/// A model built in code: its parts and the size of the skin its UVs are laid out on (the
+/// picture itself may be bigger, a pack's high resolution skin keeps lining up).
+pub struct Model {
+    pub parts: Vec<Part>,
+    pub uv: [u32; 2],
+}
+
+impl Model {
+    /// The UV size, if the layout isn't on a 64 x 32 skin.
+    pub fn uv(mut self, width: u32, height: u32) -> Self {
+        self.uv = [width, height];
+        self
+    }
+}
+
+impl From<Vec<Part>> for Model {
+    fn from(parts: Vec<Part>) -> Model {
+        Model { parts, uv: [64, 32] }
+    }
+}
+
+pub fn biped(arms_forward: bool) -> Model {
     let (l, r) = if arms_forward { (part_role::ARM_FORWARD_LEFT, part_role::ARM_FORWARD_RIGHT) } else { (part_role::ARM_LEFT, part_role::ARM_RIGHT) };
-    vec![
+    Model::from(vec![
         Part::new([0.0, 24.0, 0.0], part_role::HEAD).cube([-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0]),
         Part::new([0.0, 24.0, 0.0], part_role::STATIC).cube([-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0]),
         Part::new([-6.0, 22.0, 0.0], l).cube([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
         Part::new([6.0, 22.0, 0.0], r).cube([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
         Part::new([-2.0, 12.0, 0.0], part_role::LEG_LEFT).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
         Part::new([2.0, 12.0, 0.0], part_role::LEG_RIGHT).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
-    ]
+    ])
 }
 
 /// Vanilla's spider on a 64x32 skin: head, thorax, abdomen and eight splayed legs.
-pub fn spider() -> Vec<Part> {
+pub fn spider() -> Model {
     use std::f32::consts::FRAC_PI_4 as Q;
     let mut parts = vec![
         Part::new([0.0, 9.0, -3.0], part_role::HEAD).cube([-4.0, -4.0, -8.0], [8.0, 8.0, 8.0], [32.0, 4.0]),
@@ -438,12 +459,12 @@ pub fn spider() -> Vec<Part> {
         parts.push(Part::new([-4.0, 9.0, z], a).cube([-15.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, fan * Q / 2.0, splay * Q));
         parts.push(Part::new([4.0, 9.0, z], b).cube([-1.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, -fan * Q / 2.0, -splay * Q));
     }
-    parts
+    Model::from(parts)
 }
 
 /// Four-legged animal: body (width, height, length), leg height and head size in model pixels.
 /// Skin is 64x64: head at (0,0), legs at (0,16), body at (0,32).
-pub fn quadruped(body: [f32; 3], leg: f32, head: [f32; 3]) -> Vec<Part> {
+pub fn quadruped(body: [f32; 3], leg: f32, head: [f32; 3]) -> Model {
     let [bw, bh, bl] = body;
     let y = leg;
     let legs = [
@@ -459,7 +480,7 @@ pub fn quadruped(body: [f32; 3], leg: f32, head: [f32; 3]) -> Vec<Part> {
     for (pivot, role) in legs {
         parts.push(Part::new(pivot, role).cube([-2.0, -leg, -2.0], [4.0, leg, 4.0], [0.0, 16.0]));
     }
-    parts
+    Model::from(parts).uv(64, 64)
 }
 
 pub struct EntityBuilder<'a> {
@@ -577,14 +598,38 @@ impl EntityBuilder<'_> {
         self.category_name = "core:passive".into();
         self
     }
-    /// Skin texture, relative names are under `entity/`.
-    pub fn texture(mut self, t: &str, w: u32, h: u32) -> Self {
+    /// Skin texture under `entity/`; without this, the kind's name (`entity/zombie`).
+    pub fn texture(mut self, t: &str) -> Self {
         self.texture = crate::asset("entity", t);
-        self.texture_size = [w, h];
         self
     }
-    pub fn model(mut self, parts: Vec<Part>) -> Self {
-        self.parts = parts;
+    /// A model built in code (`biped(..)`, `quadruped(..)`, `spider()`, or parts of your own).
+    pub fn model(mut self, model: impl Into<Model>) -> Self {
+        let m = model.into();
+        (self.parts, self.texture_size) = (m.parts, m.uv);
+        self
+    }
+    /// Sound event `event` (`hurt`, `death`, `ambient`, `step`): one of the files
+    /// `sounds/entity/<kind>/<event>*.ogg|wav` at random.
+    pub fn sound(self, event: &str) -> Self {
+        let file = format!("entity/{}/{event}*", self.kind_path());
+        self.sound_files(event, &[&file])
+    }
+    /// Sound event `event` from these files of `sounds/entity/<kind>/`, one at random.
+    pub fn sound_variants(self, event: &str, files: &[&str]) -> Self {
+        let path = self.kind_path();
+        let files: Vec<String> = files.iter().map(|f| format!("entity/{path}/{f}")).collect();
+        let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        self.sound_files(event, &files)
+    }
+    fn kind_path(&self) -> String {
+        self.name.split_once(':').map_or(self.name.as_str(), |x| x.1).to_string()
+    }
+    fn sound_files(mut self, event: &str, files: &[&str]) -> Self {
+        let sound = crate::Sound::generated(format!("{}.{event}", self.name));
+        self.reg.sound(sound).files(files).category(&crate::sound_categories::CREATURES).pitch(0.8, 1.2);
+        self.components.retain(|p| p.name != abi::comp::SOUND);
+        self.components.push(Pending::text(abi::comp::SOUND, &self.name));
         self
     }
     /// Sounds from `<ns>:entity.<group>` (`.hurt`, `.death`, `.ambient`, `.step` events); a name
@@ -991,7 +1036,7 @@ impl Registry {
             eye: d.eye,
             speed: d.speed,
             flags: d.flags,
-            texture: String::new(),
+            texture: crate::asset("entity", kind.name()),
             texture_size: d.texture_size,
             parts: Vec::new(),
             on_tick: abi::Callback::NONE,

@@ -50,6 +50,8 @@ pub struct Audio {
     /// Per category (`sound_category`): its track.
     groups: Vec<TrackHandle>,
     files: FxHashMap<String, Option<StaticSoundData>>,
+    /// Files of a `name*` pattern.
+    globs: FxHashMap<String, Vec<String>>,
     music: Option<StreamingSoundHandle<kira::sound::FromFileError>>,
     next_music: Instant,
     state: (bool, bool),
@@ -98,6 +100,7 @@ impl Audio {
                 lowpass,
                 groups,
                 files: FxHashMap::default(),
+                globs: FxHashMap::default(),
                 music: None,
                 next_music: Instant::now() + Duration::from_secs(20),
                 state: (false, false),
@@ -237,7 +240,25 @@ impl Audio {
         if def.files.is_empty() {
             return;
         }
-        let file = def.files[(self.random() * def.files.len() as f32) as usize % def.files.len()].clone();
+        let mut file = def.files[(self.random() * def.files.len() as f32) as usize % def.files.len()].clone();
+        // `hurt*`: one of the files whose names start so, found once.
+        if let Some(prefix) = file.strip_suffix('*') {
+            let found = self.globs.entry(file.clone()).or_insert_with(|| {
+                let mut v: Vec<String> = ["ogg", "wav"].iter().flat_map(|e| assets.list("sounds", e)).map(|f| f.0).filter(|n| n.starts_with(prefix)).collect();
+                v.sort();
+                v.dedup();
+                if v.is_empty() {
+                    log::warn!("no sound files {file}");
+                }
+                v
+            });
+            if found.is_empty() {
+                return;
+            }
+            let n = found.len();
+            let i = (self.random() * n as f32) as usize % n;
+            file = self.globs[&file][i].clone();
+        }
         let Some(data) = self.file(assets, &file) else { return };
         let pitch = if p.pitch > 0.0 { p.pitch } else { def.pitch[0] + (def.pitch[1] - def.pitch[0]) * self.random() };
         let volume = (p.volume * def.volume).max(0.0);

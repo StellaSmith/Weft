@@ -18,15 +18,16 @@ An entity has a size, which is its hitbox, and a model, which is what gets drawn
 
 A model is a list of bones. Each one has a pivot (the point it turns around), boxes or loose triangles drawn around that point, and optionally a parent bone it moves with. Everything is measured in model pixels, 16 to a block, with y up from the feet and the model looking along -Z (north).
 
-The skin lives in `textures/entity/<name>.png`:
+The skin lives in `textures/entity/<name>.png`, named like the entity, and so do its sounds in `sounds/entity/<name>/`:
 ```rust
 static GHOST: Entity = Entity::named("ghost");
-r.entity(&GHOST).size(0.6, 1.8).health(10.0).texture("ghost", 64, 32).model(biped(false));
+r.entity(&GHOST).size(0.6, 1.8).health(10.0).model(biped(false)).sound("hurt").sound("death");
 ```
-`texture` takes the file (`entity/ghost.png` of your mod, or a full name for someone else's) and the skin's size in pixels, which the boxes need to work out their UV unwrap.
+`.texture("other")` picks another file under `entity/` (`"base:zombie"` for someone else's). The model says how big a skin its UVs are laid out on, so a resource pack can swap in a skin of twice the resolution and everything still lines up.\
+`.sound("hurt")` plays one of `hurt*.ogg` (or `.wav`) from the entity's sound folder at random, `.sound_variants("hurt", &["groan", "growl"])` names the files. The events the engine plays are `hurt`, `death`, `ambient` and `step`.
 
 ## Model in code
-`.model(parts)` takes a `Vec<Part>`. Three are ready made: `biped(arms_forward)` is the classic humanoid on a 64x32 skin (`true` holds the arms out like a zombie), `quadruped(body, leg, head)` is an animal on a 64x64 skin with sizes in model pixels, and `spider()` is head, two body parts and eight legs.
+`.model(..)` takes a `Model`, or a `Vec<Part>` laid out on a 64x32 skin (`Model::from(parts).uv(64, 64)` for another size). Three are ready made: `biped(arms_forward)` is the classic humanoid on a 64x32 skin (`true` holds the arms out like a zombie), `quadruped(body, leg, head)` is an animal on a 64x64 skin with sizes in model pixels, and `spider()` is head, two body parts and eight legs.
 
 For your own, a `Part` starts from a pivot and a [role](#roles) and collects boxes with `cube`:
 ```rust

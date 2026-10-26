@@ -226,8 +226,9 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 `r.entity(&ENTITY)` and then:
 - `size(w, h)`, `health`, `speed`
 - `hostile()` or `passive()` or `category(..)`
-- `texture`
+- `texture` (by default `entity/<name>`)
 - `model(biped(..))` or `model_file("thing")` (Blockbench geo.json)
+- `sound("hurt")`, `sound("death")`, `sound("ambient")`: files from `sounds/entity/<name>/`
 - `animations(..)`
 - `goals(..)` for AI (see `weft_sdk::ai`)
 - `on_tick`, `on_hurt`, `on_death`, `on_interact`

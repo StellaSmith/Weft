@@ -11,14 +11,7 @@ use weft_sdk::*;
 static COUNTS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 const EVENT_NAMES: [&str; 8] = ["block_broken", "block_placed", "item_picked_up", "entity_died", "entity_hurt", "player_joined", "eaten", "smelted"];
 
-value! {
-    struct Eaten { player: u64, stack: ItemStack, hunger: u32, saturation: f32 }
-}
-value! {
-    struct Smelted { furnace: u64, input: u32, output: ItemStack }
-}
-static EATEN: Event<Eaten> = Event::named("base:eaten");
-static SMELTED: Event<Smelted> = Event::named("base:smelted");
+use base_api::{EATEN, SMELTED};
 static GOLD: Block = Block::named("base:gold_block");
 /// Shared with everyone who sees the entity, for the sync test.
 pub static MARK: Component<u32> = Component::named("testkit:mark");

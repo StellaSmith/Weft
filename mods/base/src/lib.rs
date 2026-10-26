@@ -12,21 +12,7 @@ mod worldgen;
 
 use weft_sdk::*;
 
-/// Vanilla's creative tabs.
-pub mod tabs {
-    use weft_sdk::CreativeTab;
-    pub static BUILDING: CreativeTab = CreativeTab::named("building");
-    pub static COLORED: CreativeTab = CreativeTab::named("colored");
-    pub static NATURAL: CreativeTab = CreativeTab::named("natural");
-    pub static FUNCTIONAL: CreativeTab = CreativeTab::named("functional");
-    pub static TOOLS: CreativeTab = CreativeTab::named("tools");
-    pub static COMBAT: CreativeTab = CreativeTab::named("combat");
-    pub static FOOD: CreativeTab = CreativeTab::named("food");
-    pub static INGREDIENTS: CreativeTab = CreativeTab::named("ingredients");
-}
-
-pub static OVERWORLD: Dimension = Dimension::named("overworld");
-pub static FLATLANDS: Dimension = Dimension::named("flatlands");
+pub use base_api::{FLATLANDS, OVERWORLD, tabs};
 
 declare_mod!(deps: [], init: init);
 

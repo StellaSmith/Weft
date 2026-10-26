@@ -9,23 +9,7 @@ pub static WHEAT_SEEDS: Item = Item::named("wheat_seeds");
 pub static WHEAT: Item = Item::named("wheat");
 pub static BUCKET: Item = Item::named("bucket");
 
-value! {
-    /// Read by the hunger system; other mods set it on their own food.
-    pub struct Food { pub hunger: u32, pub saturation: f32 }
-}
-
-value! {
-    /// Protection while worn: 4% less damage per point, like 1.7.10.
-    pub struct Armor { pub points: u32 }
-}
-
-// The common vocabulary the base game reads; any mod may set these on its own content.
-pub static FOOD: Component<Food> = Component::named("food");
-/// Burn time in ticks.
-pub static FUEL: Component<u32> = Component::named("fuel");
-pub static ARMOR: Component<Armor> = Component::named("armor");
-/// How readily fire takes it.
-pub static FLAMMABLE: Component<u32> = Component::named("flammable");
+pub use base_api::{ARMOR, Armor, FLAMMABLE, FOOD, FUEL, Food};
 /// Tags of armor pieces, head to feet; `<tag>/<material>` picks the recipe (see recipes.rs).
 pub const ARMOR_SLOTS: [&str; 4] = ["armor_head", "armor_chest", "armor_legs", "armor_feet"];
 

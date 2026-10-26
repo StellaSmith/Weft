@@ -152,7 +152,7 @@ Properties are named values on content. Things like fuel, food, durability, etc 
 This is done so any mod reads and writes them without depending on whoever added a certain block.
 
 ```rust
-// Declared the same way in every mod that uses it
+// Declared where it's used, or taken from the mod that reads it (`base_api::FUEL`, see below)
 static FUEL: Component<u32> = Component::named("fuel");
 static HOT: Tag = Tag::named("hot");
 
@@ -186,6 +186,19 @@ Per-entity components like a state of a machine, hunger or anything else that ch
 `.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`.\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.
+
+### Sharing types with other mods
+Events and components carry values, and two mods have to agree on their layout. Copying a struct into every mod works, but the mistake shows up only when the game loads.
+So a mod can publish a small crate with just its types and handles, the way the base game does with `base_api` (`mods/base/api`): the `value!` structs of its events and components, and `Event`, `Component`, `Chain`, `RecipeKind`, `EquipmentSlot`, `Dimension` and tab handles with full names (`base:eaten`, since the statics compile into whoever uses them).
+```toml
+[dependencies]
+weft_sdk = { path = "../../crates/sdk" }
+base_api = { path = "../../mods/base/api" }
+```
+```rust
+r.on(&base_api::EATEN, |b| for e in b.iter() { /* e.player, e.stack, e.hunger */ });
+```
+The mod itself uses the same crate, so there's one declaration of everything, and other mods depend on types only, never on the mod's code. The engine still compares the layouts at load.
 
 ## Content builders
 

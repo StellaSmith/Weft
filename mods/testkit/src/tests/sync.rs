@@ -2,15 +2,11 @@
 
 use std::time::Duration;
 
-use weft_sdk::*;
 
 use super::add;
 use crate::runner::{R, T};
 
-value! {
-    struct Smelting { burn: u32, burn_max: u32, cook: u32, cook_max: u32 }
-}
-static SMELTING: Component<Smelting> = Component::named("base:smelting");
+use base_api::SMELTING_STATE as SMELTING;
 
 pub async fn menu_sync(t: T) -> R {
     t.flat().await?;

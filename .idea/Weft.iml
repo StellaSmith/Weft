@@ -12,6 +12,7 @@
       <sourceFolder url="file://$MODULE_DIR$/mods/testkit/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/mods/testmod/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/noise/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/mods/base/api/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

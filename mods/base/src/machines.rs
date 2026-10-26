@@ -5,21 +5,7 @@ use weft_sdk::*;
 use crate::blocks::{CHEST, FURNACE};
 use crate::items::FUEL;
 
-value! {
-    pub struct Smelting { pub burn: u32, pub burn_max: u32, pub cook: u32, pub cook_max: u32 }
-}
-
-pub static SMELTING: Component<Smelting> = Component::named("base:smelting");
-
-value! {
-    /// Fired when a furnace finishes one item.
-    pub struct Smelted { pub furnace: u64, pub input: u32, pub output: ItemStack }
-}
-
-pub static SMELTED: Event<Smelted> = Event::named("smelted");
-/// Value chain for a furnace's cooking time: base is the recipe's time, `entity` the furnace,
-/// `item` the input.
-pub static SMELT_TIME: Chain = Chain::named("smelt_time");
+pub use base_api::{SMELT_TIME, SMELTED, SMELTING_STATE as SMELTING, Smelted, Smelting};
 pub static FURNACE_MENU: Menu = Menu::named("furnace");
 pub static CHEST_MENU: Menu = Menu::named("chest");
 

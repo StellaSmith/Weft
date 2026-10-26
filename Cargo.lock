@@ -266,6 +266,7 @@ dependencies = [
 name = "base"
 version = "0.1.0"
 dependencies = [
+ "base_api",
  "weft_sdk",
 ]
 
@@ -292,6 +293,13 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
+name = "base_api"
+version = "0.1.0"
+dependencies = [
+ "weft_sdk",
+]
 
 [[package]]
 name = "bit-set"
@@ -4306,6 +4314,7 @@ dependencies = [
 name = "testkit"
 version = "0.1.0"
 dependencies = [
+ "base_api",
  "png",
  "weft_sdk",
 ]
@@ -4314,6 +4323,7 @@ dependencies = [
 name = "testmod"
 version = "0.1.0"
 dependencies = [
+ "base_api",
  "weft_sdk",
 ]
 

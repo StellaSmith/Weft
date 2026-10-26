@@ -99,7 +99,7 @@ pub async fn load_benchmark(t: T) -> R {
     Ok(())
 }
 
-static OVERWORLD: Dimension = Dimension::named("base:overworld");
+use base_api::OVERWORLD;
 
 /// Testmod edits base's overworld from outside: a biome of its own tried before base's desert,
 /// with its own surface and boulders, and a rock needle from a feature written in testmod.

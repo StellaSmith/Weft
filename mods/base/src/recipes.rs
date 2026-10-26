@@ -3,8 +3,7 @@
 
 use weft_sdk::*;
 
-pub static CRAFTING: RecipeKind = RecipeKind::named("crafting");
-pub static SMELTING: RecipeKind = RecipeKind::named("smelting");
+pub use base_api::{CRAFTING, SMELTING};
 const C: &RecipeKind = &CRAFTING;
 const S: &RecipeKind = &SMELTING;
 

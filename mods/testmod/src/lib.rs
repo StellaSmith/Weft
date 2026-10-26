@@ -1,9 +1,9 @@
 //! Proves the engine is moddable without touching the core. Everything here uses only
-//! `weft_sdk`:
+//! `weft_sdk` and the base game's API crate `base_api` (types, no game code):
 //! - a generator, a cable and an electric furnace talking through the engine's energy contract,
 //! - a block with its own screen (energy bar bound to synced menu data),
-//! - reads the base game's data (fuel values, smelting recipes) by name, no code dependency: it
-//!   declares the common `fuel` component itself and the engine checks both agree on its type,
+//! - reads the base game's data (fuel values, smelting recipes) through `base_api`, checked when
+//!   it compiles and again by the engine when the mods load,
 //! - replaces a base game block (torches burn blue),
 //! - adds its own dimensions, one of them a planet built only from terrain presets,
 //! - adds an ore to the base game's overworld,
@@ -34,16 +34,15 @@ static OIL_BUCKET: Item = Item::named("oil_bucket");
 static MACHINES: SoundCategory = SoundCategory::named("machines");
 static ENERGY_GIZMOS: GizmoGroup = GizmoGroup::named("energy");
 // The base game's things, by name: no code dependency on it.
-pub static OVERWORLD: Dimension = Dimension::named("base:overworld");
+pub use base_api::OVERWORLD;
 static BUCKET: Item = Item::named("base:bucket");
 static ZOMBIE: Entity = Entity::named("base:zombie");
-static BASE_TOOLS: CreativeTab = CreativeTab::named("base:tools");
-static BASE_BUILDING: CreativeTab = CreativeTab::named("base:building");
+use base_api::tabs::{BUILDING as BASE_BUILDING, TOOLS as BASE_TOOLS};
 static SOUL_TORCH: Block = Block::named("base:torch");
 static GENERATOR_MENU: Menu = Menu::named("generator");
 static FURNACE_MENU: Menu = Menu::named("electric_furnace");
 static BATTERY_MENU: Menu = Menu::named("battery");
-static SMELTING_RECIPES: RecipeKind = RecipeKind::named("base:smelting");
+use base_api::SMELTING as SMELTING_RECIPES;
 static VOID: Dimension = Dimension::named("void");
 static MARS: Dimension = Dimension::named("mars");
 static DUST: Biome = Biome::named("dust");
@@ -60,14 +59,10 @@ value! {
 
 static MACHINE: Component<Machine> = Component::named("testmod:machine");
 /// The common fuel value; the base game sets it, this mod only reads it.
-static FUEL: Component<u32> = Component::named("fuel");
+use base_api::FUEL;
 static FOOD_HEAL: Component<f32> = Component::named("testmod:food_heal");
 
-value! {
-    /// The base game's `eaten` event, declared here the same way (no code dependency).
-    struct Eaten { player: u64, stack: ItemStack, hunger: u32, saturation: f32 }
-}
-static EATEN: Event<Eaten> = Event::named("base:eaten");
+use base_api::EATEN;
 
 const PER_TICK: i64 = 40;
 const FURNACE_USE: i64 = 20;
@@ -135,7 +130,7 @@ fn init(r: &mut Registry) {
         .screen(|ui| machine_screen(ui, "testmod.battery", |_| {}));
 
     // The base game's kinds, by name: no code dependency on it.
-    static CRAFTING: RecipeKind = RecipeKind::named("base:crafting");
+    use base_api::CRAFTING;
     recipe_showcase(r);
     r.shaped(&CRAFTING, "generator", 1, &["iii", "ifi", "iii"], &[('i', "#ingots/iron"), ('f', "base:furnace")]);
     r.shaped(&CRAFTING, "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "base:furnace"), ('c', "cable")]);

@@ -9,12 +9,7 @@ fn item(name: &str) -> u32 {
     Item::lookup(name).unwrap_or(u32::MAX)
 }
 
-value! {
-    /// The base game's hunger component, declared here the same way so the engine checks both
-    /// agree on its layout.
-    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub timer: u32 }
-}
-static HUNGER: Component<Hunger> = Component::named("base:hunger");
+use base_api::HUNGER;
 
 /// Shaped crafting with tag ingredients (`#planks`) at a crafting table.
 pub async fn crafting_table_tags(t: T) -> R {

@@ -5,11 +5,7 @@ use weft_sdk::*;
 
 use crate::items::{ARMOR, FOOD};
 
-value! {
-    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub timer: u32 }
-}
-
-pub static HUNGER: Component<Hunger> = Component::named("base:hunger");
+pub use base_api::{EATEN, Eaten, FEET, HEAD, HUNGER, Hunger, LEGS};
 pub static INVENTORY: Menu = Menu::named("inventory");
 pub static CRAFTING: Menu = Menu::named("crafting_table");
 static HUD_HEALTH: HudElement = HudElement::named("health");
@@ -19,12 +15,8 @@ static HUD_AIR: HudElement = HudElement::named("air");
 
 const MAX_AIR: f32 = 300.0;
 
-pub static HEAD: EquipmentSlot = EquipmentSlot::named("head");
-pub static CHEST: EquipmentSlot = EquipmentSlot::named("chest");
-pub static LEGS: EquipmentSlot = EquipmentSlot::named("legs");
-pub static FEET: EquipmentSlot = EquipmentSlot::named("feet");
 /// Head to feet.
-pub const EQUIPMENT: [&EquipmentSlot; 4] = [&HEAD, &CHEST, &LEGS, &FEET];
+pub const EQUIPMENT: [&EquipmentSlot; 4] = [&HEAD, &base_api::CHEST, &LEGS, &FEET];
 
 /// Armor points of what `entity` wears.
 fn armor_points(w: &World, entity: u64) -> u32 {
@@ -34,7 +26,7 @@ fn armor_points(w: &World, entity: u64) -> u32 {
 
 pub fn register(r: &mut Registry) {
     r.player_inventory().group("hotbar", Slots::row(9).hotbar()).group("main", Slots::grid(9, 3));
-    for (slot, parts, piece) in [(&HEAD, worn_parts::HEAD, "helmet"), (&CHEST, worn_parts::BODY | worn_parts::ARMS, "chestplate"), (&LEGS, worn_parts::BODY | worn_parts::LEGS, "leggings"), (&FEET, worn_parts::LEGS, "boots")] {
+    for (slot, parts, piece) in [(&HEAD, worn_parts::HEAD, "helmet"), (&base_api::CHEST, worn_parts::BODY | worn_parts::ARMS, "chestplate"), (&LEGS, worn_parts::BODY | worn_parts::LEGS, "leggings"), (&FEET, worn_parts::LEGS, "boots")] {
         r.equipment_slot(slot, parts, &format!("slot_{piece}"));
     }
     r.entity_component(
@@ -212,12 +204,6 @@ fn tick_players(t: &EntityTick) {
     }
 }
 
-value! {
-    /// Fired after a player ate: other mods add effects without touching eating.
-    pub struct Eaten { pub player: u64, pub stack: ItemStack, pub hunger: u32, pub saturation: f32 }
-}
-
-pub static EATEN: Event<Eaten> = Event::named("eaten");
 
 /// Eating: instant, consumes one item.
 pub fn eat(u: &mut ItemUse) -> bool {

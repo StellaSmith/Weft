@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "backends/*", "mods/*"]
+members = ["crates/*", "backends/*", "mods/*", "mods/base/api"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,7 @@ weft_noise = { path = "crates/noise" }
 weft_render = { path = "crates/render" }
 weft_engine = { path = "crates/engine" }
 weft_vulkan = { path = "backends/vulkan" }
+base_api = { path = "mods/base/api" }
 
 ash = "0.38"
 ash-window = "0.13"

@@ -32,9 +32,7 @@ fn tab_title(cx: &BuildCx, name: &str) -> Vec<Span> {
         return cx.t(&key, &[]);
     }
     // Automatic tab of a mod: its display name.
-    let id = name.split(':').next().unwrap_or(name);
-    let c = content();
-    text::plain(c.mods.iter().find(|m| m.id == id).map_or(id, |m| m.name.as_str()))
+    text::plain(&crate::screens::mod_name(cx.lang, name.split(':').next().unwrap_or(name)))
 }
 
 /// Tab row, search field and the items of the open tab (or of every tab matching the search) as
@@ -124,7 +122,7 @@ impl Screen for MenuScreen {
                         if !def.recipes.is_empty() {
                             let tip = cx.t("recipes.show", &[]);
                             for n in &mut ui.nodes[first..] {
-                                if matches!(&n.kind, Kind::Progress { class, .. } if class == "arrow") {
+                                if n.recipes {
                                     n.tooltip = Some(tip.clone());
                                 }
                             }
@@ -528,7 +526,8 @@ fn recipe_entry(ui: &mut Ui, cx: &BuildCx, kind: &str, index: usize) {
         ui.container(Style::row().gap(6.0), |ui| {
             recipe_grid(ui, cx.lang, cx.input, kind, r, false);
             ui.container(Style::default().gap(1.0).center(), |ui| {
-                ui.add(Kind::Progress { class: "arrow".into(), bind: Box::new(|_: &Ctx| 0.0), value: 0.0, dir: weft_abi::ui_dir::RIGHT }, Style::default().size(24.0, 16.0));
+                let [w, h] = crate::ui::RECIPE_ARROW;
+                ui.add(Kind::Progress { class: "arrow".into(), bind: Box::new(|_: &Ctx| 0.0), value: 0.0, dir: weft_abi::ui_dir::RIGHT }, Style::default().size(w, h));
                 if r.time > 0 && def.is_none_or(|d| d.info.is_none()) {
                     label(ui, cx, "recipes.time", &[text::Arg::Float(r.time as f64 / 20.0, 1)], "dim");
                 }

@@ -294,6 +294,7 @@ impl Registry {
             own_states: false,
             retexture: Vec::new(),
             props: Vec::new(),
+            opens: String::new(),
             looks: None,
             facing: None,
             placement: None,
@@ -729,6 +730,7 @@ pub struct BlockBuilder<'a> {
     own_states: bool,
     retexture: Vec<(String, String)>,
     props: Vec<(String, Vec<String>)>,
+    opens: String,
     looks: Option<Box<dyn for<'s> Fn(&Props, State<'s>) -> State<'s>>>,
     facing: Option<(crate::Facings, crate::Toward)>,
     placement: Option<std::sync::Arc<dyn Fn(&Place, &mut Props) + Send + Sync>>,
@@ -851,7 +853,7 @@ impl<'a> BlockBuilder<'a> {
 
     /// Sounds from the group `<ns>:block.<group>` (`.break`, `.place`, `.step`, `.hit` events);
     /// a name with a namespace is used as it is (`base:block.stone` from another mod).
-    pub fn sounds(mut self, group: &str) -> Self {
+    pub fn sound_group(mut self, group: &str) -> Self {
         let prefix = if group.contains(':') { group.to_string() } else { format!("{}:block.{group}", self.reg.ns) };
         self.components.push(Pending::text(abi::comp::SOUND, &prefix));
         self
@@ -883,7 +885,7 @@ impl<'a> BlockBuilder<'a> {
     /// `.states(...)` it keeps that block's states (shapes, textures, support, placement and other
     /// callbacks it does not set itself), taking only light, hardness, friction and drag from
     /// this builder.
-    pub fn replace(mut self) -> Self {
+    pub fn replacing(mut self) -> Self {
         self.replace = true;
         self.item = false;
         self
@@ -901,7 +903,7 @@ impl<'a> BlockBuilder<'a> {
     /// Grows over time, a step every `mean_seconds` on average (spread like random ticks) while
     /// the light is at least `min_light`: by default to the next state until the last. Timed by
     /// world time, so unloaded plants catch up when their area loads again.
-    pub fn grows(mut self, mean_seconds: f32, min_light: u32) -> Self {
+    pub fn growth(mut self, mean_seconds: f32, min_light: u32) -> Self {
         self.callbacks.grow = (mean_seconds, min_light);
         self
     }
@@ -913,7 +915,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    pub fn random_ticks(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
+    pub fn on_random_tick(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
         self.callbacks.on_random_tick = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
         self
     }
@@ -943,6 +945,14 @@ impl<'a> BlockBuilder<'a> {
 
     pub fn on_scheduled(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
         self.callbacks.on_scheduled = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+        self
+    }
+
+    /// Using it opens `menu`, on the block's block entity if it has one (machines), else a menu
+    /// of its own (a crafting table). A menu with `.recipes(..)` makes the block a station of
+    /// those recipes in the recipe viewer.
+    pub fn opens(mut self, menu: &crate::Menu) -> Self {
+        self.opens = menu.name().to_string();
         self
     }
 
@@ -1058,6 +1068,7 @@ impl Drop for BlockBuilder<'_> {
             on_grow: cb.on_grow.unwrap_or(abi::Callback::NONE),
             own_states: (self.own_states || !self.replace) as u32,
             retexture: Slice::new(&retexture),
+            opens: Str::new(&self.opens),
             ..abi::BlockDesc::DEFAULT
         };
         if let Some(h) = self.handle {
@@ -1099,23 +1110,31 @@ impl ItemBuilder<'_> {
         self
     }
     /// Stack size (`max_stack`).
-    pub fn stack(self, n: u32) -> Self {
+    pub fn max_stack(self, n: u32) -> Self {
         self.set(&c::MAX_STACK, n)
     }
     /// Uses before it breaks (`durability`); damageable items do not stack.
     pub fn durability(self, d: u32) -> Self {
         self.set(&c::DURABILITY, d).set(&c::MAX_STACK, 1)
     }
-    /// A tool of `class` (tag `tools/<class>`) mining blocks `mineable/<class>` at `speed`, good
-    /// for blocks needing up to `level` (`abi::tool_tier`).
-    pub fn tool(self, class: &str, level: u32, speed: f32) -> Self {
+    /// A tool of `class` (tag `tools/<class>`): it mines blocks `mineable/<class>`, at its
+    /// `mining_speed`, those needing up to its `tool_level`.
+    pub fn tool(self, class: &str) -> Self {
         let tag = format!("tools/{class}");
-        self.tag(&tag).set(&c::TOOL_LEVEL, level).set(&c::MINING_SPEED, speed)
+        self.tag(&tag)
     }
-    pub fn attack(self, damage: f32) -> Self {
+    /// The highest `needs_tool` level it harvests (`abi::tool_tier`: wood 0 ... diamond 300).
+    pub fn tool_level(self, level: u32) -> Self {
+        self.set(&c::TOOL_LEVEL, level)
+    }
+    /// How fast it mines its class's blocks (vanilla wood 2 ... gold 12).
+    pub fn mining_speed(self, speed: f32) -> Self {
+        self.set(&c::MINING_SPEED, speed)
+    }
+    pub fn attack_damage(self, damage: f32) -> Self {
         self.set(&c::ATTACK_DAMAGE, damage)
     }
-    pub fn places(mut self, block: &Block) -> Self {
+    pub fn placed_block(mut self, block: &Block) -> Self {
         self.block = block.name().to_string();
         self
     }
@@ -1294,7 +1313,7 @@ impl Drop for DimensionBuilder<'_> {
 /// ```ignore
 /// r.structure("overworld", "well")
 ///     .layer(&["ccc", "cwc", "ccc"]).layer(&["c c", "   ", "c c"])
-///     .key('c', "cobblestone").key('w', "water").spacing(64).chance(0.3).biome("#animals").sink(1);
+///     .key('c', "cobblestone").key('w', "water").spacing(64).chance(0.3).biome("#animals").buried(1);
 /// ```
 pub struct StructureBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -1334,7 +1353,7 @@ impl StructureBuilder<'_> {
         self
     }
     /// How far into the ground its bottom layer goes.
-    pub fn sink(mut self, blocks: i32) -> Self {
+    pub fn buried(mut self, blocks: i32) -> Self {
         self.desc.sink = blocks;
         self
     }
@@ -1558,8 +1577,8 @@ impl ItemUse {
 /// A liquid: its block (16 states) and flow rules, optionally a filled bucket item.
 ///
 /// ```ignore
-/// r.liquid(&OIL).texture("oil_still").delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
-/// r.liquid_reaction("#hot", "#water").source("obsidian").flowing("cobblestone").falls_into("stone");
+/// r.liquid(&OIL).texture("oil_still").flow_delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
+/// r.liquid_reaction("#hot", "#water").source_block("obsidian").flowing_block("cobblestone").turns_below_into("stone");
 /// ```
 pub struct LiquidBuilder<'a> {
     reg: &'a mut Registry,
@@ -1601,7 +1620,7 @@ impl LiquidBuilder<'_> {
         self
     }
     /// Ticks between flow steps (water 5, lava 30).
-    pub fn delay(mut self, ticks: u32) -> Self {
+    pub fn flow_delay(mut self, ticks: u32) -> Self {
         self.desc.delay = ticks;
         self
     }
@@ -1615,13 +1634,15 @@ impl LiquidBuilder<'_> {
         self.desc.slope_find = n;
         self
     }
-    /// Sources needed side by side to make a new one (water 2), 0 = never.
-    pub fn infinite(mut self, sources: u32) -> Self {
-        self.desc.infinite = sources;
+    /// New sources form where at least `sources` sources are beside a spot over solid ground
+    /// (vanilla water 2). 0: always, one bucket fills everything up to its level; more than the
+    /// sides there are: never, as without this call.
+    pub fn renewable(mut self, sources: u32) -> Self {
+        self.desc.renewable = sources;
         self
     }
     /// Rises instead of falling.
-    pub fn rises(mut self) -> Self {
+    pub fn flows_up(mut self) -> Self {
         self.desc.density = -self.desc.density.abs().max(1);
         self
     }
@@ -1655,7 +1676,7 @@ impl Drop for LiquidBuilder<'_> {
         let desc = abi::LiquidDesc { name: Str::new(&self.name), ..self.desc };
         unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
         if let Some((item, empty, tab)) = self.bucket.take() {
-            self.reg.item(item).stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tag(&format!("tab/{tab}"));
+            self.reg.item(item).max_stack(1).set_text(&c::LIQUID, &self.name).set_text(&c::REMAINDER, &empty).tag(&format!("tab/{tab}"));
         }
     }
 }
@@ -1667,17 +1688,17 @@ pub struct ReactionBuilder<'a> {
 
 impl ReactionBuilder<'_> {
     /// What a source of the liquid becomes.
-    pub fn source(mut self, block: &str) -> Self {
+    pub fn source_block(mut self, block: &str) -> Self {
         self.names[2] = qualify(self.reg.ns, block);
         self
     }
     /// What flowing liquid becomes.
-    pub fn flowing(mut self, block: &str) -> Self {
+    pub fn flowing_block(mut self, block: &str) -> Self {
         self.names[3] = qualify(self.reg.ns, block);
         self
     }
     /// What the touched liquid becomes when this one flows down into it.
-    pub fn falls_into(mut self, block: &str) -> Self {
+    pub fn turns_below_into(mut self, block: &str) -> Self {
         self.names[4] = qualify(self.reg.ns, block);
         self
     }

@@ -1259,12 +1259,19 @@ impl Dim {
     /// True if the block consumed the click.
     pub fn player_use(&mut self, c: &'static Content, p: IVec3, face: u8, player: u64) -> bool {
         let Some(state) = self.get(p) else { return false };
-        if c.block_of(state).cb.on_use.is_some() {
+        let opens = c.block_of(state).opens;
+        if c.block_of(state).cb.on_use.is_some() || opens.is_some() {
             let mut q = abi::Query { entity: player, pos: p.to_array(), state, ..abi::Query::DEFAULT };
             if !self.ask(c, abi::question::USE_BLOCK, &mut q) {
                 // Refused uses are consumed: no item use or placement behind them.
                 return true;
             }
+        }
+        if let Some(menu) = opens {
+            // Its block entity's menu, or one of its own (a crafting table).
+            let owner = self.entities.anchors.get(&p).copied().unwrap_or(0);
+            self.events.push(crate::server::DimEvent::OpenMenu { player, menu, owner });
+            return true;
         }
         let r = self.call_block(c, state, |b| b.on_use, |w| abi::UseArgs { world: w, pos: p.to_array(), state, face: face as u32, player, handled: 0 });
         self.flush_neighbors(c);

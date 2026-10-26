@@ -57,6 +57,7 @@ testmod.about.text = A screen of the mod's own, opened by name.
 testmod.about.hover = Hover me
 testmod.about.button = About Test Mod
 testmod.about.tip = {#ff6060}A tooltip of the mod's own screen
+mod.testmod.name = Test Mod
 mod.testmod.description = Proves that a mod needs no engine changes.
     {align:center}{img:testmod:icon 32x32}{/align}
     Energy, its own dimensions, a biome in {#ffe070}another mod's{/} overworld, machines and recipes of its own.

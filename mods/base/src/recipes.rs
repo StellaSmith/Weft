@@ -12,7 +12,6 @@ pub fn register(r: &mut Registry) {
     // A crafting table's grid is 3 x 3 in the recipe viewer, whatever a recipe fills of it.
     r.recipe_kind(C).inputs(3, 3).outputs(1, 1);
     r.recipe_kind(S).inputs(1, 1).outputs(1, 1);
-    r.recipe_station(C, &Item::named("crafting_table"));
     for wood in ["oak", "birch", "spruce"] {
         r.shapeless(C, &format!("{wood}_planks"), 4, &[&format!("{wood}_log")], 0);
     }

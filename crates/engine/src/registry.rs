@@ -510,7 +510,6 @@ pub struct RawGame {
     /// (handle cell, setting).
     pub configs: Vec<(usize, crate::config::ConfigDef)>,
     /// (recipe type, item).
-    pub recipe_stations: Vec<(String, String)>,
     /// (handle cell, event).
     pub sounds: Vec<(usize, SoundDef)>,
     /// (dimension name, music).
@@ -934,7 +933,6 @@ pub fn freeze(
     let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0), (abi::attribute::VISIBILITY.into(), 1.0, 0.0, 16.0)];
     let mut particles: Vec<RawParticle> = engine_particles();
     let mut configs: Vec<(usize, crate::config::ConfigDef)> = crate::config::engine_configs().into_iter().map(|d| (0, d)).collect();
-    let mut stations: Vec<(String, String)> = Vec::new();
     let mut sounds: Vec<(usize, SoundDef)> = engine_sounds();
     let mut music: Vec<(String, MusicDef)> = Vec::new();
     let mut spawns: Vec<RawSpawn> = Vec::new();
@@ -950,7 +948,6 @@ pub fn freeze(
         music.extend(r.music);
         particles.extend(r.particles);
         configs.extend(r.configs);
-        stations.extend(r.recipe_stations);
         for (owner, name, cb) in r.text_conditions {
             if g.text_conditions.insert(name.clone(), (owner, cb)).is_some() {
                 errors.push(format!("text condition {name} registered twice"));
@@ -1030,15 +1027,6 @@ pub fn freeze(
             }
         }
         g.music.push(m);
-    }
-    for (kind, item) in stations {
-        if !g.recipe_kinds.contains(&kind) {
-            errors.push(format!("recipe station {item}: no recipe kind {kind}"));
-        }
-        match item_names.get(&item) {
-            Some(&i) => g.recipe_stations.entry(kind).or_default().push(i),
-            None => errors.push(format!("recipe station {item} for {kind} is not an item")),
-        }
     }
     configs.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     for (cell, d) in configs {

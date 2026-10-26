@@ -28,8 +28,8 @@ pub fn register(r: &mut Registry) {
         &HUNGER,
         Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, armor: 0.0, timer: 0 },
         component_flags::SAVE | component_flags::SYNC_OWNER,
-        &[&PLAYER],
     );
+    r.attach(&PLAYER, &HUNGER);
     r.hook_tick(&PLAYER, tick_players);
     // Armor is a step of the damage chain (4% per point, like 1.7.10), and wears when the hit
     // actually lands, a quarter of the damage per piece (at least 1) like vanilla.
@@ -85,14 +85,14 @@ pub fn register(r: &mut Registry) {
     const PIECES: [&str; 4] = ["helmet", "chestplate", "leggings", "boots"];
     let mut inventory = r.menu(&INVENTORY)
         .group("grid", Slots::grid(2, 2))
-        .group("result", Slots::one().output().big());
+        .group("result", Slots::single().output().large());
     for ((piece, slot), tag) in PIECES.into_iter().zip(WORN_SLOTS).zip(abi::comp::ARMOR) {
-        inventory = inventory.group(piece, Slots::one().player(slot).accepts(tag).background(&format!("slot_{piece}")));
+        inventory = inventory.group(piece, Slots::single().player(slot).accepts(tag).background(&format!("slot_{piece}")));
     }
     inventory
         .player_inventory()
         .recipes(&crate::recipes::CRAFTING)
-        .on_change(|m| craft_result(m, 2))
+        .on_change(craft_result)
         .on_take(consume_grid)
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(5.0), |ui| {
@@ -108,7 +108,7 @@ pub fn register(r: &mut Registry) {
                         ui.text("container.crafting");
                         ui.row(S::row().gap(4.0), |ui| {
                             ui.group("grid");
-                            ui.progress_bind("arrow", S::default().size(24.0, 16.0), |_| 0.0);
+                            ui.recipe_arrow();
                             ui.group("result");
                         });
                     });
@@ -119,10 +119,10 @@ pub fn register(r: &mut Registry) {
 
     r.menu(&CRAFTING)
         .group("grid", Slots::grid(3, 3))
-        .group("result", Slots::one().output().big())
+        .group("result", Slots::single().output().large())
         .player_inventory()
         .recipes(&crate::recipes::CRAFTING)
-        .on_change(|m| craft_result(m, 3))
+        .on_change(craft_result)
         .on_take(consume_grid)
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
@@ -130,7 +130,7 @@ pub fn register(r: &mut Registry) {
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
                     ui.group("grid");
-                    ui.progress_bind("arrow", S::default().size(24.0, 16.0), |_| 0.0);
+                    ui.recipe_arrow();
                     ui.group("result");
                     ui.spacer();
                 });
@@ -145,11 +145,11 @@ fn armor_applies(cause: u32) -> bool {
     cause & damage::BYPASSES_ARMOR == 0
 }
 
-/// The `result` slot shows what the `size` x `size` `grid` makes.
-fn craft_result(m: &MenuCtx, size: u32) {
+/// The `result` slot shows what the `grid` makes.
+fn craft_result(m: &MenuCtx) {
     let grid = m.group("grid");
     let cells: Vec<ItemStack> = (0..grid.len()).map(|i| grid.get(i)).collect();
-    m.group("result").set(0, recipe_match(&crate::recipes::CRAFTING, &cells, size, size));
+    m.group("result").set(0, recipe_match(&crate::recipes::CRAFTING, &cells, grid.cols(), grid.rows()));
 }
 
 /// Takes one of each ingredient; the last of a stack leaves its `remainder` (a bucket).

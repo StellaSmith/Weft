@@ -52,7 +52,8 @@ pub fn discover(mod_dirs: &[PathBuf], cache: &Path) -> Vec<(String, PathBuf, Pat
             let lib = [Some(root.join(&file)), exe_dir.as_ref().map(|d| d.join(&file))].into_iter().flatten().find(|p| p.exists());
             match lib {
                 Some(lib) => found.push((name, root, lib)),
-                None => log::warn!("mod {} has no {}", root.display(), file.to_string_lossy()),
+                // The library is named after the mod (its crate), and so must be the folder or zip.
+                None => log::error!("mod {}: no {} in it; a mod's folder or zip is named like its crate", root.display(), file.to_string_lossy()),
             }
         }
     }
@@ -171,7 +172,7 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
         }
         let id = unsafe { decl.id.as_str() }.to_string();
         if id != name {
-            log::warn!("mod directory {name} contains mod '{id}'");
+            return Err(format!("mod {name} is the crate {id}: name its folder or zip {id}"));
         }
         mods.push(LoadedMod { id, assets: dir.join("assets"), _lib: lib, decl });
     }
@@ -183,7 +184,6 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
         .map(|m| unsafe {
             ModMeta {
                 id: m.id.clone(),
-                name: m.decl.name.as_str().to_string(),
                 version: m.decl.version.as_str().to_string(),
                 deps: m.decl.deps.as_slice().iter().map(|d| d.as_str().to_string()).collect(),
                 order: 0,
@@ -227,7 +227,7 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
     let mut order: Vec<&ModMeta> = content.mods.iter().collect();
     order.sort_by_key(|m| m.order);
     for m in order {
-        log::info!("loaded mod [{}] {} {} (load position {})", m.id, m.name, m.version, m.order);
+        log::info!("loaded mod {} {} (load position {})", m.id, m.version, m.order);
     }
     content::set(content);
     Ok(mods)

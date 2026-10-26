@@ -62,6 +62,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::sounds,
         extend::events_batched,
         extend::names,
+        extend::key_to_server,
         extend::facing_placement,
         liquids::mod_liquid_bucket,
         liquids::mod_sand_soil,

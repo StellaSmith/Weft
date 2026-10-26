@@ -35,10 +35,10 @@ Part::new([0.0, 3.0, 0.0], part_role::STATIC)
 ```
 Everything you can do with a part:
 - `cube(origin, size, uv)`: a box. `origin` is relative to the pivot, `uv` the top-left corner of its unwrap on the skin
-- `mirror()`: mirrors the last box's unwrap, handy for an arm that shares its texture with the other one
+- `mirrored()`: mirrors the last box's unwrap, handy for an arm that shares its texture with the other one
 - `named("ring")`: the name animations use for this bone
 - `child_of(index)`: hangs it from the part at that index in the same list
-- `rotate(x, y, z)`: a resting rotation in radians
+- `rotation(x, y, z)`: a resting rotation in radians
 - `mesh(triangles)`: loose triangles in model pixels, three corners each. `sphere(center, radius, rings, segments, uv)` builds a ball
 
 This is the orb from testmod, a ball with a ring of stones hanging off it:

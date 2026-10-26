@@ -182,6 +182,13 @@ async fn infinite_water(t: T, a: [i32; 3]) -> R {
     t.set(add(a, [2, 0, 0]), "water").await?;
     t.secs(1.5).await?;
     t.check_eq(t.block(add(a, [1, 0, 0])).await?, "base:water[level=0]".into(), "new source between two");
+    // Lava is not renewable: between two sources it only flows.
+    let l = add(a, [0, 0, 12]);
+    t.set(l, "lava").await?;
+    t.set(add(l, [2, 0, 0]), "lava").await?;
+    t.secs(2.0).await?;
+    let mid = t.block(add(l, [1, 0, 0])).await?;
+    t.check(mid.starts_with("base:lava[") && mid != "base:lava[level=0]", format!("between two lava sources: {mid}"));
     Ok(())
 }
 

@@ -122,13 +122,10 @@ pub fn parts(ui: &mut Ui, cx: &BuildCx, screen: &str, area: &str) {
     });
 }
 
-/// A mod's name as players see it: `mod.<id>.name` from the language files, else what it declared.
+/// A mod's name as players see it: `mod.<id>.name` from the language files, else its id.
 pub fn mod_name(lang: &Lang, id: &str) -> String {
     let key = format!("mod.{id}.name");
-    if lang.has(&key) {
-        return lang.get(&key).to_string();
-    }
-    crate::content::try_content().and_then(|c| c.mods.iter().find(|m| m.id == id)).map_or(id.to_string(), |m| m.name.clone())
+    if lang.has(&key) { lang.get(&key).to_string() } else { id.to_string() }
 }
 
 // ---------------------------------------------------------------- mods

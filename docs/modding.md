@@ -35,8 +35,8 @@ The bare minimum looks like this:
 ```toml
 # Cargo.toml
 [package]
-name = "mymod"            # the library name must be your mod id
-version = "0.1.0"
+name = "mymod"            # your mod id: the library, the mod's folder and its lang keys go by it
+version = "0.1.0"         # the version players see in the Mods screen
 edition = "2024"
 
 [lib]
@@ -54,7 +54,7 @@ weft_sdk = { path = "../../crates/sdk" }
 // lib.rs
 use weft_sdk::*;
 
-declare_mod!(id: "mymod", name: "My Mod", version: "0.1.0", deps: ["base"], init: init);
+declare_mod!(deps: ["base"], init: init);
 
 pub static RUBY: Item = Item::named("ruby");
 pub static RUBY_ORE: Block = Block::named("ruby_ore");
@@ -81,6 +81,9 @@ run/mods/mymod/
 
 `weft --pack-mod run/mods/mymod` makes a `mymod.zip` of the same thing, which is what you can send to anyone.\
 The folder has to hold the library that's what gets packed.
+
+The mod's id and version come from `Cargo.toml`, and its name from the lang file (`mod.mymod.name`), so `declare_mod!` only lists the mods yours needs.\
+A folder or zip named differently from the crate stops the game at load, since the library inside wouldn't match.
 
 A word on versioning: the mod interface is checked by a hash of its source. If your mod was built
 using another engine version, it just refuses to load and tells you to rebuild.
@@ -110,8 +113,8 @@ static RUBY: Item = Item::named("ruby");
 static DASH: Key = Key::named("dash");
 static STONE: Block = Block::named("base:stone");   // someone else's, only read
 
-r.item(&RUBY).stack(16);
-r.key(&DASH, "R");
+r.item(&RUBY).max_stack(16);
+r.key(&DASH, "R").on_press_server(|p| dash(p.world(), p.player()));
 if STONE.is(w.get(pos)) { .. }
 ```
 
@@ -179,7 +182,8 @@ static MACHINE: Component<Machine> = Component::named("mymod:machine");
 ```
 
 Per-entity components like a state of a machine, hunger or anything else that changes in time go through
-`r.entity_component(&COMP, default, flags, &[&PLAYER])` or the `.attach_with(..)` of a builder.\
+`r.entity_component(&COMP, default, flags)`, declared once, and then carried by the kinds that need it: `.attach(&COMP)` on an entity or machine builder, `r.attach(&PLAYER, &COMP)` for someone else's kind, `.attach_with(&COMP, value)` to start from another value.\
+`.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`.\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.
 
@@ -198,8 +202,8 @@ is dropped.
 - `cutout()`, `translucent()`
 - `model_box(min, max, texture)`, `collision(..)`
 - `needs_below("#soil")`
-- `grows(seconds, min_light)` + `on_grow(..)` for plants
-- `random_ticks(..)`
+- `growth(seconds, min_light)` + `on_grow(..)` for plants
+- `on_random_tick(..)`
 - `on_use`, `on_placed`, `on_broken`, `on_neighbor`, `on_scheduled`
 - `prop("lit", ["false", "true"])`, `prop("age", 0..=7)` and `facing(Facings::HORIZONTAL, Toward::Player)` for states, like blockstates in modern Minecraft: every combination of values is a state
 - `states(|p, s| ..)` to make each state look different (`p.facing()`, `p.is("lit", "true")`), `placement(|place, p| p.set(..))` to pick values when placed
@@ -210,11 +214,11 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 ### Items
 `r.item(&ITEM)` and then:
 - `texture`
-- `stack(N)`
+- `max_stack(N)`
 - `durability`
-- `tool("pickaxe", tier, speed)`
-- `attack`
-- `places(block)`
+- `tool("pickaxe")`, `tool_level(tier)`, `mining_speed(speed)`
+- `attack_damage`
+- `placed_block(&BLOCK)`
 - `worn(..)` for armor
 - `on_use`
 
@@ -237,12 +241,12 @@ Look at testmod's generator for an example.
 
 ### Liquids
 `r.liquid(&LIQUID)` and then:
-- `delay`, `drop_off`, `slope_find`
-- `infinite`
+- `flow_delay`, `drop_off`, `slope_find`, `flows_up()`
+- `renewable(n)`: a new source where n sources meet (water 2)
 - `temperature`
 - `bucket(..)`
 
-Reactions: `r.liquid_reaction("#hot", "#water").source("obsidian")`.
+Reactions: `r.liquid_reaction("#hot", "#water").source_block("obsidian")`.
 
 ### World
 - `r.biome(..)`
@@ -267,7 +271,7 @@ Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with
 and other mods' tables without replacing them: `r.loot_modify(&ZOMBIE).add_pool(..)` with `ZOMBIE = Entity::named("base:zombie")`.
 
 ### Replacing something of another mod
-Register their handle (`Block::named("base:torch")`) with `.replace()`.\
+Register their handle (`Block::named("base:torch")`) with `.replacing()`.\
 Their handle, item and recipes now point at yours. testmod does it with the torch.
 
 ## Hooking into the game
@@ -316,10 +320,10 @@ Inside any callback you get a `World` (`w`):
 - entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `navigate`, `walk`)
 - inventories (`inventory(id).get/set/insert`)
 - components, energy, menus
-- particles (`w.particles(&SPARK, pos).count(20)`)
+- particles (`w.spawn_particles(&SPARK, pos).count(20)`)
 - sounds (`w.play_sound(&S, pos, volume)`)
 - rules (`w.rule(&HARD_MODE)`)
-- gizmos for debugging (`w.gizmo_line/box/text`)
+- gizmos for debugging (`w.draw_line/box/text/fill(&GROUP, ..)`)
 
 ## Client side
 
@@ -330,7 +334,7 @@ Inside any callback you get a `World` (`w`):
 - Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`
 
 Also:
-- key bindings (`r.key(&DASH, "R")`, read with `c.pressed(&DASH)`; the engine's keys are `keys::*`)
+- key bindings, one declaration each: `r.key(&DASH, "R").on_press(|c| ..)` on the client, or `.on_press_server(|p| ..)` and the engine carries the press to the server for you. They only act while the world has the input, typing in the chat doesn't trigger them. `c.pressed(&DASH)` / `c.held(&DASH)` read them in a frame hook; the engine's keys are `keys::*`
 - packets both ways on a `Channel` (`r.packet` on the server, `r.client_packet` on the client, `w.send` / `client.send`)
 - frame hooks (`r.client_frame`)
 - particles and screen effects from shader snippets in `assets/shaders`

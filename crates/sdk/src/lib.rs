@@ -90,14 +90,16 @@ macro_rules! debug { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::D
 #[macro_export]
 macro_rules! trace { ($($t:tt)*) => { $crate::__log_macro!($crate::abi::level::TRACE, $($t)*) } }
 
-/// Declares the mod entry point.
+/// Declares the mod entry point. The mod's id is the crate's name (also the library's and the
+/// mod folder's), its version the crate's version; players see the name from the language file
+/// (`mod.<id>.name`).
 ///
 /// ```ignore
-/// weft_sdk::declare_mod!(id: "mymod", name: "My Mod", version: "1.0.0", deps: ["base"], init: init);
+/// weft_sdk::declare_mod!(deps: ["base"], init: init);
 /// ```
 #[macro_export]
 macro_rules! declare_mod {
-    (id: $id:literal, name: $name:literal, version: $ver:literal, deps: [$($dep:literal),* $(,)?], init: $init:path $(,)?) => {
+    (deps: [$($dep:literal),* $(,)?], init: $init:path $(,)?) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn weft_mod() -> *const $crate::abi::ModDecl {
             static DEPS: &[$crate::abi::Str] = &[$($crate::abi::Str::new($dep)),*];
@@ -106,13 +108,12 @@ macro_rules! declare_mod {
                 me: $crate::abi::ModId,
                 reg: *mut $crate::abi::Registrar,
             ) -> u32 {
-                unsafe { $crate::__init(host, me, reg, $id, $init) }
+                unsafe { $crate::__init(host, me, reg, env!("CARGO_CRATE_NAME"), $init) }
             }
             static DECL: $crate::abi::ModDecl = $crate::abi::ModDecl {
                 abi_version: $crate::abi::ABI_VERSION,
-                id: $crate::abi::Str::new($id),
-                name: $crate::abi::Str::new($name),
-                version: $crate::abi::Str::new($ver),
+                id: $crate::abi::Str::new(env!("CARGO_CRATE_NAME")),
+                version: $crate::abi::Str::new(env!("CARGO_PKG_VERSION")),
                 deps: $crate::abi::Slice::new(DEPS),
                 init: __weft_init,
             };

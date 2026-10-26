@@ -54,10 +54,10 @@ pub fn register(r: &mut Registry) {
     r.item(Item::generated("raw_iron".into())).tag("raw_ores/iron").tab(&crate::tabs::INGREDIENTS);
     r.item(Item::generated("raw_gold".into())).tag("raw_ores/gold").tab(&crate::tabs::INGREDIENTS);
     r.item(&DIAMOND).tag("gems/diamond").tag("materials/diamond").tab(&crate::tabs::INGREDIENTS);
-    r.item(&WHEAT_SEEDS).places(&crate::blocks::WHEAT).tab(&crate::tabs::NATURAL);
+    r.item(&WHEAT_SEEDS).placed_block(&crate::blocks::WHEAT).tab(&crate::tabs::NATURAL);
     r.item(&WHEAT).tab(&crate::tabs::INGREDIENTS);
     // Filled buckets come with their liquids (blocks.rs); the engine fills and pours them.
-    r.item(&BUCKET).stack(16).tab(&crate::tabs::TOOLS);
+    r.item(&BUCKET).max_stack(16).tab(&crate::tabs::TOOLS);
     r.set("lava_bucket", &FUEL, 20000);
 
     for (name, hunger, saturation, tag) in [
@@ -80,22 +80,22 @@ pub fn register(r: &mut Registry) {
     }
 
     for m in &MATERIALS {
-        let tool = |r: &mut Registry, kind: &str, class: &str, damage: f32| {
+        // `.tool(kind)` tags it `tools/<kind>`; `<kind>s/<material>` picks its recipe.
+        let tool = |r: &mut Registry, kind: &str, damage: f32| {
             r.item(Item::generated(format!("{}_{kind}", m.name)))
-                .tool(class, m.level, m.speed)
+                .tool(kind).tool_level(m.level).mining_speed(m.speed)
                 .durability(m.durability)
-                .attack(damage + m.damage)
-                .tag(&format!("tools/{kind}"))
+                .attack_damage(damage + m.damage)
                 .tag(&format!("{kind}s/{}", m.name))
                 // Vanilla: weapons wear by one per hit, tools (made for blocks) by two.
                 .set(&WEAR_PER_HIT, if kind == "sword" { 1 } else { 2 })
                 .tab(if kind == "sword" { &crate::tabs::COMBAT } else { &crate::tabs::TOOLS });
         };
-        tool(r, "pickaxe", "pickaxe", 2.0);
-        tool(r, "axe", "axe", 3.0);
-        tool(r, "shovel", "shovel", 1.0);
-        tool(r, "hoe", "hoe", 1.0);
-        tool(r, "sword", "sword", 4.0);
+        tool(r, "pickaxe", 2.0);
+        tool(r, "axe", 3.0);
+        tool(r, "shovel", 1.0);
+        tool(r, "hoe", 1.0);
+        tool(r, "sword", 4.0);
     }
 
     for (mat, mult, durability) in [("leather", 0u32, 5u32), ("iron", 1, 15), ("gold", 1, 7), ("diamond", 2, 33)] {

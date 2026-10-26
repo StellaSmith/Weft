@@ -288,6 +288,8 @@ pub async fn recipe_viewer(t: T) -> R {
     t.screen("core:recipes").await?;
     t.frames(3).await?;
     t.check(t.c().ui_rect("text:Recipes").is_some() && t.c().ui_rect("id:tab:base:crafting").is_some(), "the arrow shows the crafting recipes");
+    // The crafting table opens the crafting menu, so it is the station of its recipes.
+    t.check(t.c().ui_rect(&format!("icon:{}", id("base:crafting_table"))).is_some(), "the crafting table shown as the station");
     t.shot("arrow").await?;
     t.c().close_screen();
     t.c().close_screen();

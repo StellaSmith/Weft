@@ -1,5 +1,5 @@
 //! Sound events: block groups (`block.<group>.break|place|step|hit`) blocks pick with
-//! `.sounds(group)`, mobs' voices, and the background music. Files are in `assets/sounds/`.
+//! `.sound_group(group)`, mobs' voices, and the background music. Files are in `assets/sounds/`.
 
 use weft_sdk::abi::music_when as mw;
 use weft_sdk::*;

@@ -832,7 +832,7 @@ impl Running {
         }
         let Some((_, ui)) = self.screens.last_mut() else { return };
         if self.input.pressed_button(0) && menu_screen {
-            let arrow = hovered.is_some_and(|h| matches!(&ui.nodes[h].kind, Kind::Progress { class, .. } if class == "arrow"));
+            let arrow = hovered.is_some_and(|h| ui.nodes[h].recipes);
             let kinds = self.game.as_ref().and_then(|g| g.client.menu.as_ref()).and_then(|m| content().game.menus.get(m.kind as usize)).map(|d| d.recipes.clone()).unwrap_or_default();
             if arrow && !kinds.is_empty() {
                 requests.push(Request::Open(Box::new(crate::game_screens::RecipeView::new(crate::game_screens::RecipeQuery::Kinds(kinds)))));

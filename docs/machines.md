@@ -20,12 +20,13 @@ static FURNACE: Block = Block::named("furnace");
 static FURNACE_MENU: Menu = Menu::named("furnace");
 static SMELTING: Component<Smelting> = Component::named("base:smelting");
 
+r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
 r.machine(&FURNACE, &FURNACE_MENU)
     .block(|b| b.hardness(3.5).mineable("pickaxe").needs_tool(0).tab(&FUNCTIONAL))
-    .group("input", Slots::one())
-    .group("fuel", Slots::one().accepts("fuel"))
-    .group("output", Slots::one().output())
-    .component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU)
+    .group("input", Slots::single())
+    .group("fuel", Slots::single().accepts("fuel"))
+    .group("output", Slots::single().output())
+    .attach(&SMELTING)
     .on_tick(tick_furnaces)
     .screen(|ui| { /* see below */ });
 ```
@@ -35,12 +36,12 @@ Slots come in named groups. The machine's inventory holds all of its groups, the
 
 | | |
 |---|---|
-| `Slots::one()`, `row(n)`, `column(n)`, `grid(cols, rows)`, `chest(rows)` | how many slots and how the screen lays them out |
+| `Slots::single()`, `row(n)`, `column(n)`, `grid(cols, rows)`, `chest(rows)` | how many slots and how the screen lays them out |
 | `output()` | items only come out (results) |
 | `input()` | items only go in, nothing comes back out by hand (fuel a machine burns) |
 | `accepts("fuel")` | only items with that tag or component, any mod's |
 | `limit(16)` | at most this many items per slot |
-| `big()`, `size(px)` | a bigger slot, 18 GUI pixels by default |
+| `large()`, `size(px)` | a bigger slot, 18 GUI pixels by default |
 | `background("flame_slot")` | a texture from `gui/` shown while the slot is empty, like the armor silhouettes |
 | `tooltip("mymod.fuel_slot")` | a translation shown over the empty slot |
 | `priority(n)` | shift-clicks from the inventory fill groups with a higher priority first |
@@ -94,7 +95,7 @@ which keeps the way it faces.
         ui.text("container.furnace");
         ui.row(S::row().gap(8.0), |ui| {
             ui.group("input");
-            ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
+            ui.recipe_arrow_bind(|c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
             ui.group("output");
         });
         ui.player_inventory(true);
@@ -114,12 +115,13 @@ r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
 // in the tick:
 if let Some((output, time)) = recipe_process(&SMELTING_RECIPES, input.item) { .. }
 ```
-`recipe_process` gives the output and the time in ticks for one input. Recipes are added the usual way, `r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200)`, so every machine that uses the kind smelts it, whichever mod it comes from. `recipes(..)` makes the `arrow` bars of the machine's screen open the kind in the recipe viewer, with "Recipes" over them; a block that is no machine (a crafting table) is named with `r.recipe_station(&KIND, &CRAFTING_TABLE)` instead.
+`recipe_process` gives the output and the time in ticks for one input. Recipes are added the usual way, `r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200)`, so every machine that uses the kind smelts it, whichever mod it comes from. `recipes(..)` makes the machine's `ui.recipe_arrow_bind(..)` (or `ui.recipe_arrow()` without progress) open the kind in the recipe viewer, with "Recipes" over it, and shows the machine there as where those recipes are made.
+An ordinary menu works the same way: `r.menu(&CRAFTING).recipes(&CRAFTING_RECIPES)`, and a block with `.opens(&CRAFTING)` opens it and becomes a station of those recipes (that's the whole crafting table). The grid's size comes from its group, `m.group("grid").cols()`.
 
 A recipe can say more than one output and a time:
 ```rust
 r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
-    .counts(&[3, 1])                              // 3 iron and 1 coal
+    .input_amounts(&[3, 1])                              // 3 iron and 1 coal
     .chance_output("base:diamond", 1, 0.05)       // and a diamond now and then
     .value(&ENERGY_PER_TICK, 32);                 // data the machine reads
 ```
@@ -129,17 +131,17 @@ A kind of your own is registered with `r.recipe_kind(&KIND)`, and recipes that n
 ```rust
 r.recipe_kind(&ALLOYING)
     .inputs(2, 1).outputs(2, 1)                   // always these grids, like a crafting table's 3 x 3
-    .info("recipe.mymod.alloying.info", &["mymod:energy_per_tick", "time"]);
+    .info_line("recipe.mymod.alloying.info", &["mymod:energy_per_tick", "time"]);
 ```
-`info` is a line under every recipe, a translation like `Uses {0} FE/t for {1} s` whose numbers come from the recipe's values and its time. For a layout of your own, `display(|ui, recipe| ..)` builds each recipe with the usual UI parts plus `ui.recipe_inputs()`, `ui.recipe_outputs()` and `ui.recipe_input(i)` for its slots (`infusing` in testmod is one, with a fluid).
+`info_line` is a line under every recipe, a translation like `Uses {0} FE/t for {1} s` whose numbers come from the recipe's values and its time. For a layout of your own, `layout(|ui, recipe| ..)` builds each recipe with the usual UI parts plus `ui.recipe_inputs()`, `ui.recipe_outputs()` and `ui.recipe_input(i)` for its slots (`infusing` in testmod is one, with a fluid).
 
 ## Energy
 Generators, cables and machines from different mods work together through one contract in the engine. An entity with the `core:energy` component takes part, and a block tagged `conductor` is a cable. The block entities next to a cable, or a chain of them, form a network, and once per tick the engine shares what the generators offer among the machines that want it.
 
 ```rust
 r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
-    .group("input", Slots::one())
-    .group("output", Slots::one().output())
+    .group("input", Slots::single())
+    .group("output", Slots::single().output())
     .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
     .on_tick(tick_furnaces);
 r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor");

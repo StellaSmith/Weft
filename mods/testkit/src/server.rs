@@ -30,13 +30,17 @@ pub static PROTECT_GOLD: Rule = Rule::named("protect_gold");
 pub static HALF_DAMAGE: Rule = Rule::named("half_damage");
 pub static OP: Channel = Channel::named("op");
 pub static REPLY: Channel = Channel::named("reply");
+/// A key whose presses reach the server: the test counts them there.
+pub static PING: Key = Key::named("ping");
+static PINGS: AtomicU32 = AtomicU32::new(0);
 
 fn count(i: usize, n: usize) {
     COUNTS[i].fetch_add(n as u32, Ordering::Relaxed);
 }
 
 pub fn register(r: &mut Registry) {
-    r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS, &[&PIG]);
+    r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS);
+    r.attach(&PIG, &MARK);
     r.rule(&COUNT_MARKS, 0);
     // While the rule is on, every marked pig counts up once a tick.
     r.system(&MARK, |b| {
@@ -65,6 +69,9 @@ pub fn register(r: &mut Registry) {
     r.on(&PLAYER_JOINED, |b| count(5, b.len()));
     r.on(&EATEN, |b| count(6, b.len()));
     r.on(&SMELTED, |b| count(7, b.len()));
+    r.key(&PING, "F10").on_press_server(|_| {
+        PINGS.fetch_add(1, Ordering::Relaxed);
+    });
     r.packet(&OP, |p| {
         let data = p.data();
         if data.len() < 4 {
@@ -176,6 +183,7 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
         }
         "get" => Ok(block_name(w.get(a.pos()?)).to_string()),
+        "pings" => Ok(PINGS.load(Ordering::Relaxed).to_string()),
         "setprop" => {
             let p = a.pos()?;
             let (name, value) = (a.word()?, a.word()?);

@@ -28,7 +28,7 @@ pub mod tabs {
 pub static OVERWORLD: Dimension = Dimension::named("overworld");
 pub static FLATLANDS: Dimension = Dimension::named("flatlands");
 
-declare_mod!(id: "base", name: "Weft", version: "0.1.0", deps: [], init: init);
+declare_mod!(deps: [], init: init);
 
 fn init(r: &mut Registry) {
     // Vanilla's creative tabs; blocks and items join them with `.tab(..)`.

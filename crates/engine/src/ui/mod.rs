@@ -231,7 +231,12 @@ pub struct Node {
     pub clip: Option<Rect>,
     /// A scrolling node whose content is longer than itself shows a bar.
     pub scrollbar: Option<Scrollbar>,
+    /// Opens the recipes of the open menu when clicked (`ui.recipe_arrow`).
+    pub recipes: bool,
 }
+
+/// A recipe arrow's size in GUI pixels, wherever one is drawn.
+pub const RECIPE_ARROW: [f32; 2] = [24.0, 16.0];
 
 /// Where a scrolling node's bar is and how far it is scrolled, GUI units.
 #[derive(Clone, Copy, Debug)]
@@ -306,6 +311,7 @@ impl Ui {
             measured: [0.0; 2],
             clip: None,
             scrollbar: None,
+            recipes: false,
         };
         Ui {
             nodes: vec![root],
@@ -382,7 +388,7 @@ impl Ui {
 
     pub fn add(&mut self, kind: Kind, style: Style) -> NodeId {
         let id = self.nodes.len();
-        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, icon: None, measured: [0.0; 2], clip: None, scrollbar: None });
+        self.nodes.push(Node { kind, style, children: Vec::new(), rect: Rect::default(), id: None, tooltip: None, icon: None, measured: [0.0; 2], clip: None, scrollbar: None, recipes: false });
         let parent = *self.stack.last().unwrap();
         self.nodes[parent].children.push(id);
         self.dirty = true;

@@ -57,8 +57,10 @@ impl MenuCall {
     }
 
     /// First menu slot and slot count of group `name`.
-    pub fn group(&self, c: &Content, name: &str) -> Option<(u32, u32)> {
-        c.game.menus[self.m().kind as usize].group(&c.game.player_layout, name).map(|g| (g.1, g.2))
+    /// (first menu slot, slot count, columns) of group `name`.
+    pub fn group(&self, c: &Content, name: &str) -> Option<(u32, u32, u32)> {
+        let layout = &c.game.player_layout;
+        c.game.menus[self.m().kind as usize].group(layout, name).map(|g| (g.1, g.2, g.0.span(layout).2))
     }
 
     pub fn get(&self, slot: u32) -> ItemStack {

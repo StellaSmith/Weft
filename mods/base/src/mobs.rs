@@ -16,9 +16,9 @@ pub static COW: Entity = Entity::named("cow");
 
 
 pub fn register(r: &mut Registry) {
-    r.entity_component(&BRAIN, Brain::default(), 0, &[]);
+    r.entity_component(&BRAIN, Brain::default(), 0);
     r.entity(&ZOMBIE)
-        .sounds("zombie")
+        .sound_group("zombie")
         .size(0.6, 1.95)
         .health(20.0)
         .speed(2.6)
@@ -26,38 +26,38 @@ pub fn register(r: &mut Registry) {
         .flags(entity_flags::BURNS_IN_SUN)
         .texture("zombie", 64, 32)
         .model(biped(true))
-        .attach_with(&BRAIN, Brain::default())
+        .attach(&BRAIN)
         .goals(hostile(3.0, false));
     r.entity(&SPIDER)
-        .sounds("spider")
+        .sound_group("spider")
         .size(1.3, 0.9)
         .health(16.0)
         .speed(3.6)
         .hostile()
         .texture("spider", 64, 32)
         .model(spider())
-        .attach_with(&BRAIN, Brain::default())
+        .attach(&BRAIN)
         .goals(hostile(2.0, true));
     r.entity(&PIG)
-        .sounds("pig")
+        .sound_group("pig")
         .size(0.9, 0.9)
         .health(10.0)
         .speed(2.5)
         .passive()
         .texture("pig", 64, 64)
         .model(quadruped([10.0, 8.0, 16.0], 6.0, [8.0, 8.0, 8.0]))
-        .attach_with(&BRAIN, Brain::default())
+        .attach(&BRAIN)
         .goals(passive())
         .on_hurt(panic);
     r.entity(&COW)
-        .sounds("cow")
+        .sound_group("cow")
         .size(0.9, 1.3)
         .health(10.0)
         .speed(2.2)
         .passive()
         .texture("cow", 64, 64)
         .model(quadruped([12.0, 10.0, 18.0], 12.0, [8.0, 8.0, 6.0]))
-        .attach_with(&BRAIN, Brain::default())
+        .attach(&BRAIN)
         .goals(passive())
         .on_hurt(panic);
     // Vanilla amounts; meat comes out cooked when the animal burns.

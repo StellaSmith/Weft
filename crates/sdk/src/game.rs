@@ -1,6 +1,6 @@
 use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::{Component, ENERGY, Value};
-use crate::content::{Block, Biome, Entity, EntityCategory, GizmoGroup, HudElement, Item, Menu, Pending, RecipeKind, Screen, TintKind};
+use crate::content::{Block, Biome, Entity, EntityCategory, GizmoGroup, HudElement, Menu, Pending, RecipeKind, Screen, TintKind};
 use crate::ui::{Ui, ui_callback};
 use crate::{Registry, World, callback, host, qualify};
 
@@ -134,11 +134,11 @@ impl World {
     }
 
     /// Accepts up to `amount`, respecting capacity and input rate. Returns what was accepted.
-    pub fn energy_insert(&self, id: u64, amount: i64, simulate: bool) -> i64 {
+    pub fn insert_energy(&self, id: u64, amount: i64, simulate: bool) -> i64 {
         unsafe { (host().energy_insert)(self.raw(), id, amount, simulate as u32) }
     }
 
-    pub fn energy_extract(&self, id: u64, amount: i64, simulate: bool) -> i64 {
+    pub fn extract_energy(&self, id: u64, amount: i64, simulate: bool) -> i64 {
         unsafe { (host().energy_extract)(self.raw(), id, amount, simulate as u32) }
     }
 
@@ -177,13 +177,13 @@ impl World {
         unsafe { (host().gizmo_on)(self.raw(), Str::new(group.name())) != 0 }
     }
     /// A line seen by players showing `group`, color `0xRRGGBBAA`, for `ticks`.
-    pub fn gizmo_line(&self, group: &GizmoGroup, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32) {
+    pub fn draw_line(&self, group: &GizmoGroup, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32) {
         self.gizmo(group, abi::gizmo_kind::LINE, a, b, color, ticks, "");
     }
-    pub fn gizmo_box(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
+    pub fn draw_box(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
         self.gizmo(group, abi::gizmo_kind::BOX, min, max, color, ticks, "");
     }
-    pub fn gizmo_text(&self, group: &GizmoGroup, pos: [f64; 3], text: &str, color: u32, ticks: u32) {
+    pub fn draw_text(&self, group: &GizmoGroup, pos: [f64; 3], text: &str, color: u32, ticks: u32) {
         self.gizmo(group, abi::gizmo_kind::LABEL, pos, pos, color, ticks, text);
     }
     fn gizmo(&self, group: &GizmoGroup, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32, text: &str) {
@@ -344,7 +344,7 @@ impl Part {
         Part { pivot, role, boxes: Vec::new(), rest: [0.0; 3], name: String::new(), parent: -1, mesh: Vec::new() }
     }
     /// Resting rotation in radians about x, y, z (applied in that order).
-    pub fn rotate(mut self, x: f32, y: f32, z: f32) -> Part {
+    pub fn rotation(mut self, x: f32, y: f32, z: f32) -> Part {
         self.rest = [x, y, z];
         self
     }
@@ -354,7 +354,7 @@ impl Part {
         self
     }
     /// The last box's unwrap mirrored left to right.
-    pub fn mirror(mut self) -> Part {
+    pub fn mirrored(mut self) -> Part {
         if let Some(b) = self.boxes.last_mut() {
             b.mirror = 1;
         }
@@ -422,8 +422,8 @@ pub fn spider() -> Vec<Part> {
     // (z, sideways splay, fan) back to front; right legs mirror the left ones.
     for (i, (z, splay, fan)) in [(2.0, 1.0, 2.0), (1.0, 0.74, 1.0), (0.0, 0.74, -1.0), (-1.0, 1.0, -2.0)].into_iter().enumerate() {
         let (a, b) = if i % 2 == 0 { (part_role::LEG_SWEEP_A, part_role::LEG_SWEEP_B) } else { (part_role::LEG_SWEEP_B, part_role::LEG_SWEEP_A) };
-        parts.push(Part::new([-4.0, 9.0, z], a).cube([-15.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotate(0.0, fan * Q / 2.0, splay * Q));
-        parts.push(Part::new([4.0, 9.0, z], b).cube([-1.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotate(0.0, -fan * Q / 2.0, -splay * Q));
+        parts.push(Part::new([-4.0, 9.0, z], a).cube([-15.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, fan * Q / 2.0, splay * Q));
+        parts.push(Part::new([4.0, 9.0, z], b).cube([-1.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, -fan * Q / 2.0, -splay * Q));
     }
     parts
 }
@@ -481,7 +481,14 @@ impl crate::WithComponents for EntityBuilder<'_> {
 }
 
 impl EntityBuilder<'_> {
-    /// Every entity of this kind gets `component` (declared by any mod), starting at `value`.
+    /// Every entity of this kind carries `component` (declared with `r.entity_component`, by any
+    /// mod), starting at its declared value. Not `.set`: that is one value of the kind itself,
+    /// `.attach` gives each entity its own, which changes.
+    pub fn attach<T: Value>(mut self, component: &'static Component<T>) -> Self {
+        self.attached.push((component.name(), Vec::new()));
+        self
+    }
+    /// `attach` with another starting value.
     pub fn attach_with<T: Value>(mut self, component: &'static Component<T>, value: T) -> Self {
         self.attached.push((component.name(), crate::component::pod_bytes(&value)));
         self
@@ -498,7 +505,7 @@ impl EntityBuilder<'_> {
         self
     }
     /// Neither pushes nor is pushed by other entities (ghosts, projectiles).
-    pub fn no_push(mut self) -> Self {
+    pub fn unpushable(mut self) -> Self {
         self.flags &= !entity_flags::PUSHABLE;
         self
     }
@@ -509,7 +516,7 @@ impl EntityBuilder<'_> {
         self
     }
     /// A solid body that hurts what it squeezes into blocks instead of only pushing it.
-    pub fn crushes(mut self) -> Self {
+    pub fn crushing(mut self) -> Self {
         self.flags |= entity_flags::CRUSHES;
         self
     }
@@ -520,7 +527,7 @@ impl EntityBuilder<'_> {
         self
     }
     /// Replaces the entity kind with this name from a mod listed in `deps`.
-    pub fn replace(mut self) -> Self {
+    pub fn replacing(mut self) -> Self {
         self.replace = true;
         self
     }
@@ -569,7 +576,7 @@ impl EntityBuilder<'_> {
     }
     /// Sounds from `<ns>:entity.<group>` (`.hurt`, `.death`, `.ambient`, `.step` events); a name
     /// with a namespace is used as it is.
-    pub fn sounds(mut self, group: &str) -> Self {
+    pub fn sound_group(mut self, group: &str) -> Self {
         let prefix = if group.contains(':') { group.to_string() } else { format!("{}:entity.{group}", self.reg.ns) };
         self.components.push(Pending::text(abi::comp::SOUND, &prefix));
         self
@@ -686,9 +693,9 @@ impl MenuCtx {
     }
     /// Slot group `name` of this menu.
     pub fn group(&self, name: &str) -> MenuGroup<'_> {
-        let mut out = [0u32; 2];
+        let mut out = [0u32; 3];
         unsafe { (host().menu_group)(self.args.menu, Str::new(name), &mut out) };
-        MenuGroup { m: self, start: out[0], len: out[1] }
+        MenuGroup { m: self, start: out[0], len: out[1], cols: out[2] }
     }
 }
 
@@ -697,11 +704,19 @@ pub struct MenuGroup<'a> {
     m: &'a MenuCtx,
     start: u32,
     len: u32,
+    cols: u32,
 }
 
 impl MenuGroup<'_> {
     pub fn len(&self) -> u32 {
         self.len
+    }
+    /// Its width as laid out (a 3 x 3 grid has 3).
+    pub fn cols(&self) -> u32 {
+        self.cols
+    }
+    pub fn rows(&self) -> u32 {
+        self.len.div_ceil(self.cols.max(1))
     }
     pub fn is_empty(&self) -> bool {
         self.len == 0
@@ -726,8 +741,8 @@ pub const HOTBAR_GROUP: &str = "core:hotbar";
 /// ```ignore
 /// r.machine(&ALLOY_SMELTER, &MENU)
 ///     .group("input", Slots::row(2))
-///     .group("fuel", Slots::one().accepts("fuel").background("flame_slot"))
-///     .group("output", Slots::one().output().big());
+///     .group("fuel", Slots::single().accepts("fuel").background("flame_slot"))
+///     .group("output", Slots::single().output().large());
 /// ```
 #[derive(Clone)]
 pub struct Slots {
@@ -754,7 +769,7 @@ impl Slots {
     pub fn column(n: u32) -> Slots {
         Slots::grid(1, n)
     }
-    pub fn one() -> Slots {
+    pub fn single() -> Slots {
         Slots::grid(1, 1)
     }
     /// Rows of nine, like a chest.
@@ -808,7 +823,7 @@ impl Slots {
         self
     }
     /// The big slot vanilla uses for results.
-    pub fn big(self) -> Self {
+    pub fn large(self) -> Self {
         self.size(26.0)
     }
     /// A texture from `gui/` shown while a slot is empty (the armor silhouettes).
@@ -848,10 +863,10 @@ impl GroupList {
     }
     fn player_inventory(&mut self) {
         self.names.push(INVENTORY_GROUP.into());
-        self.groups.push(Slots { owner: Some(abi::slot_owner::PLAYER_MAIN), ..Slots::one() });
+        self.groups.push(Slots { owner: Some(abi::slot_owner::PLAYER_MAIN), ..Slots::single() });
         self.strings.push(Default::default());
         self.names.push(HOTBAR_GROUP.into());
-        self.groups.push(Slots { owner: Some(abi::slot_owner::PLAYER_HOTBAR), ..Slots::one() });
+        self.groups.push(Slots { owner: Some(abi::slot_owner::PLAYER_HOTBAR), ..Slots::single() });
         self.strings.push(Default::default());
     }
     fn descs(&self) -> Vec<abi::SlotGroupDesc> {
@@ -969,9 +984,10 @@ impl Registry {
         }
     }
 
-    /// Per-entity storage for `comp`, created with `default` on every spawned entity of the kinds
-    /// in `attach_to` (`&PLAYER`); flags from `component_flags`.
-    pub fn entity_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32, attach_to: &[&Entity]) {
+    /// Declares per-entity storage for `comp`: the value an entity starts with and the
+    /// `component_flags` (saved, synced to whom). Kinds carry it with `.attach(&COMP)` (or
+    /// `r.attach(&KIND, &COMP)` for another mod's kind).
+    pub fn entity_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32) {
         let bytes = crate::component::pod_bytes(&default);
         let schema = T::schema();
         let desc = abi::ComponentDesc {
@@ -983,9 +999,6 @@ impl Registry {
             ..abi::ComponentDesc::DEFAULT
         };
         unsafe { (host().reg_component)(self.raw, &desc) }
-        for kind in attach_to {
-            unsafe { (host().reg_attach_value)(self.raw, Str::new(kind.name()), Str::new(comp.name()), Slice::EMPTY) }
-        }
     }
 
     /// Adds behavior to an entity kind registered elsewhere (the engine's player, another mod's mob).
@@ -1022,12 +1035,13 @@ impl Registry {
         unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(entity.name()), slots) }
     }
 
-    /// Attaches a component (by full name, e.g. "core:energy") to an entity kind.
-    pub fn attach(&mut self, kind: &Entity, component: &str) {
-        unsafe { (host().reg_attach_value)(self.raw, Str::new(kind.name()), Str::new(component), Slice::EMPTY) }
+    /// Every entity of `kind` (any mod's, `&PLAYER`) carries `component`, starting at its
+    /// declared value.
+    pub fn attach<T: Value>(&mut self, kind: &Entity, component: &Component<T>) {
+        unsafe { (host().reg_attach_value)(self.raw, Str::new(kind.name()), Str::new(component.name()), Slice::EMPTY) }
     }
 
-    /// `attach` with the value this kind starts with (a battery's capacity).
+    /// `attach` with another starting value (a battery's capacity).
     pub fn attach_with<T: Value>(&mut self, kind: &Entity, component: &Component<T>, value: T) {
         let bytes = crate::component::pod_bytes(&value);
         unsafe { (host().reg_attach_value)(self.raw, Str::new(kind.name()), Str::new(component.name()), Slice::new(&bytes)) }
@@ -1110,10 +1124,6 @@ impl Registry {
         RecipeKindBuilder { raw: self.raw, name: kind.name().to_string(), input_grid: [0; 2], output_grid: [0; 2], info: String::new(), info_values: Vec::new(), display: abi::Callback::NONE, _p: std::marker::PhantomData }
     }
 
-    pub fn recipe_station(&mut self, kind: &RecipeKind, item: &Item) {
-        unsafe { (host().reg_recipe_station)(self.raw, Str::new(kind.name()), Str::new(item.name())) }
-    }
-
     /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or
     /// `#tag`. More results and data with the builder it returns.
     pub fn shaped<'a>(&'a mut self, kind: &RecipeKind, output: &str, count: u32, pattern: &[&str], keys: &[(char, &str)]) -> RecipeBuilder<'a> {
@@ -1157,7 +1167,7 @@ pub struct RecipeBuilder<'a> {
 
 impl RecipeBuilder<'_> {
     /// How many of each input it takes, in the order of the inputs (millibuckets for fluids).
-    pub fn counts(mut self, counts: &[u32]) -> Self {
+    pub fn input_amounts(mut self, counts: &[u32]) -> Self {
         self.counts = counts.to_vec();
         self
     }
@@ -1237,14 +1247,14 @@ impl RecipeKindBuilder<'_> {
     }
     /// A line under each recipe: translation `key`, its `{0}`.. filled with `values`: `time`
     /// (seconds) or components the recipe carries (`mymod:energy_per_tick`).
-    pub fn info(mut self, key: &str, values: &[&str]) -> Self {
+    pub fn info_line(mut self, key: &str, values: &[&str]) -> Self {
         self.info = key.to_string();
         self.info_values = values.iter().map(|v| v.to_string()).collect();
         self
     }
     /// Builds each recipe yourself instead of the usual inputs, arrow, outputs:
     /// `ui.recipe_inputs()`, `ui.recipe_outputs()` and `ui.recipe_input(i)` place its slots.
-    pub fn display(mut self, f: impl Fn(&mut Ui, &Recipe) + Send + Sync + 'static) -> Self {
+    pub fn layout(mut self, f: impl Fn(&mut Ui, &Recipe) + Send + Sync + 'static) -> Self {
         self.display = callback(move |a: &mut abi::RecipeUiArgs| {
             let mut ui = Ui::from_raw(a.ui, a.client);
             let r = Recipe { kind: unsafe { a.kind.as_str() }.to_string(), index: a.recipe };
@@ -1383,19 +1393,6 @@ impl Drop for SpawnBuilder<'_> {
     }
 }
 
-/// Using a block opens `menu` on its block entity.
-pub fn open_menu_on_use(menu: &'static Menu) -> impl Fn(&mut crate::Use) -> bool + Send + Sync + 'static {
-    move |u| {
-        let w = u.world();
-        let owner = w.block_entity(u.pos());
-        if owner == 0 {
-            return false;
-        }
-        w.open_menu(u.player(), menu, owner);
-        true
-    }
-}
-
 type BlockLook = Box<dyn for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::BlockBuilder<'r>>;
 
 /// A machine in one go: the block (its look and mining from `block`), an entity of the same
@@ -1405,10 +1402,10 @@ type BlockLook = Box<dyn for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::Block
 /// ```ignore
 /// r.machine(&FURNACE, &FURNACE_MENU)
 ///     .block(|b| b.textures(..).hardness(3.5))
-///     .group("input", Slots::one())
-///     .group("fuel", Slots::one().accepts("fuel"))
-///     .group("output", Slots::one().output().big())
-///     .component(&SMELTING, Smelting::default(), component_flags::SAVE | component_flags::SYNC_MENU)
+///     .group("input", Slots::single())
+///     .group("fuel", Slots::single().accepts("fuel"))
+///     .group("output", Slots::single().output().large())
+///     .attach(&SMELTING)
 ///     .on_tick(tick_furnaces)
 ///     .screen(|ui| ..);
 /// ```
@@ -1448,15 +1445,10 @@ impl MachineBuilder<'_> {
         self.groups.push((name.to_string(), slots));
         self
     }
-    /// A component every machine of this kind carries (`component_flags`).
-    pub fn component<T: Value>(mut self, comp: &'static Component<T>, default: T, flags: u32) -> Self {
-        self.with.push(Box::new(move |r, kind| r.entity_component(comp, default, flags, &[kind])));
-        self
-    }
-    /// A component declared elsewhere (by full name, like `core:energy`).
-    pub fn attach(mut self, component: &str) -> Self {
-        let component = component.to_string();
-        self.with.push(Box::new(move |r, kind| r.attach(kind, &component)));
+    /// Every machine of this kind carries `component` (declared with `r.entity_component`),
+    /// starting at its declared value.
+    pub fn attach<T: Value>(mut self, component: &'static Component<T>) -> Self {
+        self.with.push(Box::new(move |r, kind| r.attach(kind, component)));
         self
     }
     /// `attach` with the value this machine starts with.
@@ -1485,7 +1477,7 @@ impl Drop for MachineBuilder<'_> {
         let full = block.name().to_string();
         let kind = Entity::generated(full.clone());
         let look = self.block.take().unwrap_or_else(|| Box::new(|b| b));
-        look(reg.block(block)).on_use(open_menu_on_use(menu));
+        look(reg.block(block)).opens(menu);
         let mut e = reg.entity(kind).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE);
         e.on_tick = self.tick;
         drop(e);
@@ -1510,11 +1502,7 @@ impl Drop for MachineBuilder<'_> {
         }
         m.entity = full.clone();
         m.recipes = std::mem::take(&mut self.recipes);
-        let kinds = m.recipes.clone();
         let m = m.player_inventory();
-        for k in kinds {
-            unsafe { (host().reg_recipe_station)(m.reg.raw, Str::new(&k), Str::new(&full)) }
-        }
         match self.screen.take() {
             Some(s) => drop(m.screen(s)),
             None => drop(m),

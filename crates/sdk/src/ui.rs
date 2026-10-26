@@ -307,6 +307,19 @@ impl Ui {
         });
     }
 
+    /// The arrow of a menu that makes recipes (`.recipes(..)` on the menu or machine): clicking
+    /// it opens them in the recipe viewer. Empty, for a crafting grid.
+    pub fn recipe_arrow(&mut self) {
+        self.leaf(node(k::RECIPE_ARROW, S::default()))
+    }
+
+    /// `recipe_arrow` showing progress (a furnace's cooking).
+    pub fn recipe_arrow_bind(&mut self, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
+        let mut n = node(k::RECIPE_ARROW, S::default());
+        n.bind = bind(f);
+        self.leaf(n)
+    }
+
     /// Progress from any value 0..1.
     pub fn progress_bind(&mut self, class: &str, s: S, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) {
         self.progress_bind_dir(class, s, abi::ui_dir::RIGHT, f)

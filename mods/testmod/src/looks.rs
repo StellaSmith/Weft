@@ -59,7 +59,7 @@ pub fn register(r: &mut Registry) {
     for _ in 0..4 {
         obelisk = obelisk.layer(&["   ", " g ", "   "]);
     }
-    obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("#dry").sink(1);
+    obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("#dry").buried(1);
     // Glow crystals grow only in the overworld's deep caves (an underground biome).
     r.ore(&crate::OVERWORLD, &GLOW_CRYSTAL).veins(3).size(6).replace("#stone_ore_replaceables").biome("#cave");
     // A 64x64 texture among 16x16 ones: every texture keeps its own size.
@@ -77,12 +77,12 @@ pub fn register(r: &mut Registry) {
     r.block(&GLOW_CRYSTAL)
         .hardness(1.5)
         .mineable("pickaxe")
-        .random_ticks(|e| {
+        .on_random_tick(|e| {
             if !CRYSTAL_SPARKS.get() {
                 return;
             }
             let [x, y, z] = e.pos();
-            e.world().particles(&SPARK, [x as f64 + 0.5, y as f64 + 1.1, z as f64 + 0.5]).count(3).spread(0.4).speed(0.4);
+            e.world().spawn_particles(&SPARK, [x as f64 + 0.5, y as f64 + 1.1, z as f64 + 0.5]).count(3).spread(0.4).speed(0.4);
         });
 
     // Its own category (no spawning rule: wisps come only from commands and creative): they
@@ -94,7 +94,7 @@ pub fn register(r: &mut Registry) {
         .health(4.0)
         .speed(1.5)
         .flags(entity_flags::NO_GRAVITY)
-        .no_push()
+        .unpushable()
         .texture("wisp", 32, 16)
         .model(vec![Part::new([0.0, 3.0, 0.0], abi::part_role::STATIC).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])])
         .shader("ghost")
@@ -127,27 +127,26 @@ pub fn register(r: &mut Registry) {
         .model(vec![Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]);
 
     r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
-    r.item(&RUNE).stack(1).on_use(|u| {
+    r.item(&RUNE).max_stack(1).on_use(|u| {
         let w = u.world();
         w.play_animation(u.player(), "wave", false);
         if let Some(st) = w.entity(u.player()) {
-            w.particles(&SPARK, [st.pos[0], st.pos[1] + 1.2, st.pos[2]]).count(40).spread(0.2).speed(4.0);
+            w.spawn_particles(&SPARK, [st.pos[0], st.pos[1] + 1.2, st.pos[2]]).count(40).spread(0.2).speed(4.0);
         }
         true
     });
     r.text_condition(&HURT, |v| v.me().is_some_and(|m| m.health < m.max_health));
 
-    r.key(&DREAM_KEY, "N");
-    r.client_frame(|c| {
-        if c.pressed(&DREAM_KEY) {
-            let on = DREAM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-            let effect = if DREAM_STYLE.get() == 1 { "dream_cold" } else { "dream" };
-            c.post_effect("dream", 0.0);
-            c.post_effect("dream_cold", 0.0);
-            if !on {
-                c.post_effect(effect, DREAM_STRENGTH.get());
-            }
+    r.key(&DREAM_KEY, "N").on_press(|c| {
+        let on = DREAM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+        let effect = if DREAM_STYLE.get() == 1 { "dream_cold" } else { "dream" };
+        c.post_effect("dream", 0.0);
+        c.post_effect("dream_cold", 0.0);
+        if !on {
+            c.post_effect(effect, DREAM_STRENGTH.get());
         }
+    });
+    r.client_frame(|c| {
         // Holding the rune shows what it would reach: a see-through sheet over the ground around.
         let st = c.state();
         if c.inventory_slot(st.selected).item == RUNE.id() {
@@ -174,7 +173,7 @@ fn wisps(t: &EntityTick) {
         w.set_entity(id, &st);
         w.walk(id, [-st.yaw.sin(), -st.yaw.cos()], 1.0, false);
         if (time + phase) % 20 == 0 {
-            w.particles(&SPARK, [st.pos[0], st.pos[1] + 0.2, st.pos[2]]).count(WISP_SPARKS.get().max(0) as u32).spread(0.15).speed(0.3);
+            w.spawn_particles(&SPARK, [st.pos[0], st.pos[1] + 0.2, st.pos[2]]).count(WISP_SPARKS.get().max(0) as u32).spread(0.15).speed(0.3);
         }
     }
 }

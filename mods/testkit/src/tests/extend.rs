@@ -90,3 +90,27 @@ pub async fn names(t: T) -> R {
     t.check_eq(NOWHERE.id(), u32::MAX, "an unknown block");
     Ok(())
 }
+
+/// A key declared with `on_press_server` reaches the server by itself, and not while the chat
+/// has the input.
+pub async fn key_to_server(t: T) -> R {
+    t.flat().await?;
+    let before: u32 = t.op("pings").await?.parse().unwrap_or(0);
+    t.c().key("F10", 0.2);
+    let mut now = before;
+    for _ in 0..50 {
+        now = t.op("pings").await?.parse().unwrap_or(0);
+        if now > before {
+            break;
+        }
+        t.frames(2).await?;
+    }
+    t.check_eq(now, before + 1, "presses the server got");
+    t.press("core:chat");
+    t.screen("core:chat").await?;
+    t.c().key("F10", 0.2);
+    t.secs(0.5).await?;
+    t.check_eq(t.op("pings").await?.parse().unwrap_or(0), now, "presses while typing in the chat");
+    t.c().key("Escape", 0.0);
+    t.no_screen().await
+}

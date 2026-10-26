@@ -157,7 +157,6 @@ pub static HOST: Host = Host {
     reg_config,
     config_value,
     config_set,
-    reg_recipe_station,
     reg_sound,
     reg_music,
     play_animation,
@@ -302,9 +301,6 @@ unsafe extern "C" fn play_sound(w: *mut abi::WorldCtx, sound: u32, pos: *const [
     }
 }
 
-unsafe extern "C" fn reg_recipe_station(r: *mut abi::Registrar, kind: Str, item: Str) {
-    unsafe { reg(r).game.recipe_stations.push((kind.as_str().to_string(), item.as_str().to_string())) }
-}
 
 // ---------------------------------------------------------------- profiling per mod
 
@@ -727,11 +723,11 @@ unsafe fn menu<'a>(m: *mut abi::MenuCtx) -> &'a mut MenuCall {
     unsafe { &mut *(m as *mut MenuCall) }
 }
 
-unsafe extern "C" fn menu_group(m: *mut abi::MenuCtx, name: Str, out: *mut [u32; 2]) -> u32 {
+unsafe extern "C" fn menu_group(m: *mut abi::MenuCtx, name: Str, out: *mut [u32; 3]) -> u32 {
     unsafe {
         match menu(m).group(content(), name.as_str()) {
-            Some((start, count)) => {
-                *out = [start, count];
+            Some((start, count, cols)) => {
+                *out = [start, count, cols];
                 1
             }
             None => {

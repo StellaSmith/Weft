@@ -4,7 +4,6 @@ use weft_sdk::*;
 
 use crate::blocks::{CHEST, FURNACE};
 use crate::items::FUEL;
-use crate::player::CRAFTING;
 
 value! {
     pub struct Smelting { pub burn: u32, pub burn_max: u32, pub cook: u32, pub cook_max: u32 }
@@ -25,11 +24,12 @@ pub static FURNACE_MENU: Menu = Menu::named("furnace");
 pub static CHEST_MENU: Menu = Menu::named("chest");
 
 pub fn register(r: &mut Registry) {
+    r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
     // The furnace's state syncs to whoever has it open: the screen binds to it directly.
     r.machine(&FURNACE, &FURNACE_MENU)
         .block(|b| {
             // Front towards the player; unlit and lit.
-            b.sounds("stone")
+            b.sound_group("stone")
                 .facing(Facings::HORIZONTAL, Toward::Player)
                 .prop("lit", ["false", "true"])
                 .states(|p, s| {
@@ -45,11 +45,11 @@ pub fn register(r: &mut Registry) {
                 .mineable("pickaxe").needs_tool(0)
                 .tab(&crate::tabs::FUNCTIONAL)
         })
-        .group("input", Slots::one())
-        .group("fuel", Slots::one().accepts("fuel"))
-        .group("output", Slots::one().output())
+        .group("input", Slots::single())
+        .group("fuel", Slots::single().accepts("fuel"))
+        .group("output", Slots::single().output())
         .recipes(&crate::recipes::SMELTING)
-        .component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU)
+        .attach(&SMELTING)
         .on_tick(tick_furnaces)
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
@@ -61,7 +61,7 @@ pub fn register(r: &mut Registry) {
                         ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.burn, s.burn_max)));
                         ui.group("fuel");
                     });
-                    ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
+                    ui.recipe_arrow_bind(|c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
                     ui.group("output");
                     ui.spacer();
                 });
@@ -71,7 +71,7 @@ pub fn register(r: &mut Registry) {
 
     r.machine(&CHEST, &CHEST_MENU)
         .block(|b| {
-            b.sounds("wood")
+            b.sound_group("wood")
                 .facing(Facings::HORIZONTAL, Toward::Player)
                 .states(|p, s| {
                     let d = p.facing();
@@ -97,11 +97,6 @@ pub fn register(r: &mut Registry) {
 
 fn ratio(a: u32, b: u32) -> f32 {
     if b == 0 { 0.0 } else { a as f32 / b as f32 }
-}
-
-pub fn open_crafting(u: &mut Use) -> bool {
-    u.world().open_menu(u.player(), &CRAFTING, 0);
-    true
 }
 
 fn tick_furnaces(t: &EntityTick) {

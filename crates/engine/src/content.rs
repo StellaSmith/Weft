@@ -97,6 +97,8 @@ pub struct BlockDef {
     pub drop: Option<u32>,
     pub drop_count: u32,
     pub cb: BlockCallbacks,
+    /// The menu using the block opens.
+    pub opens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -197,7 +199,7 @@ pub struct LiquidDef {
     pub delay: u32,
     pub drop_off: u32,
     pub slope_find: u32,
-    pub infinite: u32,
+    pub renewable: u32,
     /// Lighter than air: flows up.
     pub rises: bool,
     pub temperature: u32,
@@ -302,7 +304,6 @@ pub struct StructureDef {
 
 pub struct ModMeta {
     pub id: String,
-    pub name: String,
     pub version: String,
     pub deps: Vec<String>,
     /// Position when every mod comes after its dependencies (ties by id): the order in which
@@ -567,6 +568,8 @@ pub struct RawBlock {
     /// False for a replacement that keeps the replaced block's states.
     pub own_states: bool,
     pub retexture: Vec<(String, String)>,
+    /// Menu name, see `abi::BlockDesc::opens`.
+    pub opens: String,
     /// Handles of blocks this one replaced; they resolve to this block.
     pub extra_cells: Vec<usize>,
 }
@@ -607,6 +610,9 @@ fn cb(c: Callback) -> Option<Callback> {
 /// the replacement too.
 fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
     let own = b.states[0].clone();
+    if b.opens.is_empty() {
+        b.opens = old.opens.clone();
+    }
     let rename = |t: &mut String| {
         if let Some((_, to)) = b.retexture.iter().find(|r| &r.0 == t) {
             *t = to.clone();
@@ -688,6 +694,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
             replace: d.replace != 0,
             own_states: d.own_states != 0,
             retexture: d.retexture.as_slice().chunks_exact(2).map(|p| (p[0].as_str().to_string(), p[1].as_str().to_string())).collect(),
+            opens: d.opens.as_str().to_string(),
             extra_cells: Vec::new(),
         }
     }
@@ -1033,12 +1040,15 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         support_near: None,
         sounds: [u32::MAX; 4],
     }];
+    // What each registered block opens, by menu name (resolved once menus are frozen).
+    let mut opens_names: Vec<String> = Vec::new();
     let mut block_defs = vec![BlockDef {
         name: "core:air".into(),
         owner: ModId(u32::MAX),
         first_state: 0,
         states: 1,
         props: Vec::new(),
+        opens: None,
         drop: None,
         drop_count: 0,
         cb: BlockCallbacks::default(),
@@ -1138,7 +1148,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         if b.cb.grow.is_some() && b.cb.on_grow.is_none() && !b.props.iter().any(|p| p.0 == "age") {
             errors.push(format!("{}: block {} grows, but has no `age` property and no on_grow", mods.get(owner.0 as usize).map_or("engine", |m| m.id.as_str()), b.name));
         }
+        opens_names.push(b.opens.clone());
         block_defs.push(BlockDef {
+            opens: None,
             name: b.name,
             owner,
             first_state: first,
@@ -1644,6 +1656,21 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &order_of, &mut errors);
+    // Blocks open their menus; one with recipe kinds makes the block a station of them.
+    for (b, menu) in opens_names.iter().enumerate().filter(|m| !m.1.is_empty()) {
+        let def = &mut block_defs[b + 1];
+        match game.menu_names.get(menu) {
+            Some(&m) => {
+                def.opens = Some(m);
+                if let Some(item) = item_defs.iter().position(|i| i.block == Some(def.first_state)) {
+                    for kind in &game.menus[m as usize].recipes {
+                        game.recipe_stations.entry(kind.clone()).or_default().push(item as u32);
+                    }
+                }
+            }
+            None => errors.push(format!("{}: block {} opens unknown menu {menu}", mods.get(def.owner.0 as usize).map_or("engine", |m| m.id.as_str()), def.name)),
+        }
+    }
     word_sets.entry("core:rules".into()).or_default().extend(game.rules.iter().map(|r| r.0.clone()));
     for (table, t) in &loot {
         for k in t.pools.iter().flat_map(|p| &p.entries).filter_map(|e| e.smelt.as_ref()) {
@@ -1762,7 +1789,7 @@ fn freeze_liquids(
             delay: d.delay.max(1),
             drop_off: d.drop_off.clamp(1, 7),
             slope_find: d.slope_find.min(8),
-            infinite: d.infinite,
+            renewable: d.renewable,
             rises: d.density < 0,
             temperature: d.temperature,
         });

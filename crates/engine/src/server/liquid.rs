@@ -62,7 +62,7 @@ impl Dim {
                 max = max.max(f.amount);
             }
         }
-        if def.infinite > 0 && sources >= def.infinite {
+        if sources >= def.renewable {
             let under = self.fluid(c, p + down);
             if self.solid(c, p + down) || under.is_some_and(|f| f.id == l && f.source) {
                 return Some(def.first_state);

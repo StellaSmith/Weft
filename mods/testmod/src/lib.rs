@@ -18,7 +18,7 @@ mod looks;
 use weft_sdk::terrain::*;
 use weft_sdk::*;
 
-declare_mod!(id: "testmod", name: "Test Mod", version: "0.1.0", deps: ["base"], init: init);
+declare_mod!(deps: ["base"], init: init);
 
 static GENERATOR: Block = Block::named("generator");
 static HUM: Sound = Sound::named("machine.hum");
@@ -84,22 +84,22 @@ fn init(r: &mut Registry) {
     // It keeps the base torch's states (floor and walls) and placement, only its texture and
     // light are its own.
     r.block(&SOUL_TORCH)
-        .replace()
+        .replacing()
         .retexture("base:torch", "soul_torch")
         .light_rgb(3, 9, 15)
         .hardness(0.0);
 
     // Machines: block, entity with the machine and energy components, menu, all in one builder.
     // The components sync to open menus; screens bind to them.
-    let flags = component_flags::SAVE | component_flags::SYNC_MENU;
+    r.entity_component(&MACHINE, Machine::default(), component_flags::SAVE | component_flags::SYNC_MENU);
     // Machines' sounds have their own category (and volume setting `testmod:volume_machines`).
     r.sound_category(&MACHINES, true);
     r.sound(&HUM).files(&["base:dig/stone1"]).category(&MACHINES).pitch(0.45, 0.5);
     r.machine(&GENERATOR, &GENERATOR_MENU)
         .block(|b| b.textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
-        .group("fuel", Slots::one().accepts("fuel").input().tooltip("testmod.fuel_slot"))
-        .component(&MACHINE, Machine::default(), flags)
+        .group("fuel", Slots::single().accepts("fuel").input().tooltip("testmod.fuel_slot"))
+        .attach(&MACHINE)
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
         .on_tick(tick_generators)
         .screen(|ui| {
@@ -113,16 +113,16 @@ fn init(r: &mut Registry) {
     r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
         .block(|b| b.textures("machine_top", "electric_furnace", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         // At most 16 to smelt at a time.
-        .group("input", Slots::one().limit(16))
-        .group("output", Slots::one().output())
+        .group("input", Slots::single().limit(16))
+        .group("output", Slots::single().output())
         .recipes(&SMELTING_RECIPES)
-        .component(&MACHINE, Machine::default(), flags)
+        .attach(&MACHINE)
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
         .on_tick(tick_furnaces)
         .screen(|ui| {
             machine_screen(ui, "testmod.electric_furnace", |ui| {
                 ui.group("input");
-                ui.progress_bind("arrow", S::default().size(24.0, 16.0), |c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.progress, m.progress_max)));
+                ui.recipe_arrow_bind(|c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.progress, m.progress_max)));
                 ui.group("output");
             })
         });
@@ -150,7 +150,7 @@ fn init(r: &mut Registry) {
     r.item(&TIN_INGOT).tag("ingots/tin");
     // A tier between vanilla's iron (200) and diamond (300): mines everything iron does plus
     // reinforced stone, which iron cannot.
-    r.item(&STEEL_PICKAXE).tool("pickaxe", 250, 7.0).durability(800).attack(4.0).set(&WEAR_PER_HIT, 2).tag("tools/pickaxe").tab(&BASE_TOOLS);
+    r.item(&STEEL_PICKAXE).tool("pickaxe").tool_level(250).mining_speed(7.0).durability(800).attack_damage(4.0).set(&WEAR_PER_HIT, 2).tab(&BASE_TOOLS);
     // May face up, north or east only: three states, not six.
     r.block(&VENT)
         .facing(Facings::only(&[Dir::Up, Dir::North, Dir::East]), Toward::Player)
@@ -191,7 +191,7 @@ fn init(r: &mut Registry) {
         .sky(0xd8a080, 0xe0b090);
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
-    r.liquid(&OIL).texture("oil_still").opacity(4).drag(0.4).delay(15).drop_off(2).slope_find(3).infinite(0).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
+    r.liquid(&OIL).texture("oil_still").opacity(4).drag(0.4).flow_delay(15).drop_off(2).slope_find(3).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
 
     // Healing food without touching the base game's eating code.
     r.set("#cooked_meat/*", &FOOD_HEAL, 2.0);
@@ -310,7 +310,7 @@ fn energy_gizmos(t: &EntityTick) {
     for &id in t.ids() {
         if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
             let text = format!("{} / {} EU", e.stored, e.capacity);
-            w.gizmo_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], &text, 0x60FF60FF, 11);
+            w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], &text, 0x60FF60FF, 11);
         }
     }
 }
@@ -399,24 +399,24 @@ static ENERGY_PER_TICK: Component<u32> = Component::named("testmod:energy_per_ti
 /// Recipe kinds of this mod, only for the recipe viewer: one shown the usual way with an info line
 /// from the recipe's values and a result that comes by chance, one laid out by hand with a fluid.
 fn recipe_showcase(r: &mut Registry) {
-    r.recipe_kind(&ALLOYING).inputs(2, 1).outputs(2, 1).info("recipe.testmod.alloying.info", &["testmod:energy_per_tick", "time"]);
+    r.recipe_kind(&ALLOYING).inputs(2, 1).outputs(2, 1).info_line("recipe.testmod.alloying.info", &["testmod:energy_per_tick", "time"]);
     r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
-        .counts(&[3, 1])
+        .input_amounts(&[3, 1])
         .chance_output("base:diamond", 1, 0.05)
         .value(&ENERGY_PER_TICK, 32);
-    r.recipe_kind(&INFUSING).display(|ui, recipe| {
+    r.recipe_kind(&INFUSING).layout(|ui, recipe| {
         ui.column(S::col().gap(2.0), |ui| {
             ui.row(S::row().gap(4.0).center(), |ui| {
                 ui.recipe_input(0);
                 ui.text("testmod.infusing.plus");
                 ui.recipe_input(1);
-                ui.progress_bind("arrow", S::default().size(24.0, 16.0), |_| 0.0);
+                ui.recipe_arrow();
                 ui.recipe_outputs();
             });
             ui.text_args("testmod.infusing.time", &[Arg::Int(recipe.time() as i64 / 20)]);
         });
     });
-    r.shapeless(&INFUSING, "glow_crystal", 1, &["base:diamond", "fluid:base:water"], 200).counts(&[1, 1000]);
+    r.shapeless(&INFUSING, "glow_crystal", 1, &["base:diamond", "fluid:base:water"], 200).input_amounts(&[1, 1000]);
 }
 
 /// Where the needle stands in base's overworld.

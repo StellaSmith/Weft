@@ -110,7 +110,7 @@ A menu is a set of slots that the server runs, plus the screen that shows them. 
 static CRAFTING: Menu = Menu::named("crafting_table");
 r.menu(&CRAFTING)
     .group("grid", Slots::grid(3, 3))
-    .group("result", Slots::one().output().big())
+    .group("result", Slots::single().output().large())
     .player_inventory()
     .on_change(|m| {
         // a slot changed: show what the grid makes
@@ -129,7 +129,7 @@ r.menu(&CRAFTING)
         });
     });
 ```
-A group of a plain menu is the menu's own slots, given back to the player when the menu closes; `Slots::player(start)` shows slots of the player's inventory instead (the armor slots of the inventory screen), and machines' groups are the machine's inventory. `player_inventory()` adds the player's inventory and hotbar, which `ui.player_inventory(title)` draws. The shapes and rules a group can have (`output`, `input`, `accepts`, `limit`, `big`, `background`, `tooltip`, `priority`) are listed in the [machines guide](machines.md#creating-a-machine). In `on_change` and `on_take`, `m.group(name)` reads and writes a group's slots by their place in it.
+A group of a plain menu is the menu's own slots, given back to the player when the menu closes; `Slots::player(start)` shows slots of the player's inventory instead (the armor slots of the inventory screen), and machines' groups are the machine's inventory. `player_inventory()` adds the player's inventory and hotbar, which `ui.player_inventory(title)` draws. The shapes and rules a group can have (`output`, `input`, `accepts`, `limit`, `large`, `background`, `tooltip`, `priority`) are listed in the [machines guide](machines.md#creating-a-machine). In `on_change` and `on_take`, `m.group(name)` reads and writes a group's slots by their place in it.
 
 Machines are menus tied to a block, with their own data and tick. The [machines guide](machines.md) covers them, including the component flags that their screens read.
 

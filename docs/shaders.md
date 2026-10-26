@@ -88,7 +88,7 @@ r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright()
 ```
 `ParticleFrag` has `uv` (0 to 1 across the quad), `albedo` (the texture sample), `color` (the kind's color at this age, between the two you gave to `color(start, end)`), `life` (0 at birth, 1 at the end) and `time`.
 
-The rest of the builder is `life(min, max)` in seconds, `size(min, max)` in blocks, `gravity(g)` (negative rises), `drag(d)`, `collide()`, `fullbright()`, `translucent()` and `shrink()`. From the server, `world.particles(&SPARK, pos).count(12).spread(0.4).speed(2.0)` makes them appear for everyone nearby. Registering a particle named `core:block` or `core:poof` changes how the engine's own block dust and smoke look.
+The rest of the builder is `life(min, max)` in seconds, `size(min, max)` in blocks, `gravity(g)` (negative rises), `drag(d)`, `colliding()`, `fullbright()`, `translucent()` and `shrinking()`. From the server, `world.spawn_particles(&SPARK, pos).count(12).spread(0.4).speed(2.0)` makes them appear for everyone nearby. Registering a particle named `core:block` or `core:poof` changes how the engine's own block dust and smoke look.
 
 ## Screen effects
 A screen effect works on the finished picture of the world, and fades in and out with a strength from 0 to 1:
@@ -101,10 +101,7 @@ fn apply(p: PostPixel) -> vec4<f32> {
 ```
 ```rust
 static DREAM: Key = Key::named("dream");
-r.key(&DREAM, "N");
-r.client_frame(|c| {
-    if c.pressed(&DREAM) { c.post_effect("dream", 1.0); }
-});
+r.key(&DREAM, "N").on_press(|c| c.post_effect("dream", 1.0));
 ```
 `PostPixel` has `uv` (0 to 1, top left first), `color` (the picture so far at that point, linear), `strength`, `time` and `size` in pixels, and `scene_at(p, uv)` reads the picture anywhere else, for blur and waves. `post_effect(name, 0.0)` turns an effect off, and several can be on at once, applied one after another in the order they were turned on.
 

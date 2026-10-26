@@ -2,9 +2,11 @@
 //! examples with your stuff.
 //!
 //! Rename checklist:
-//! - `Cargo.toml`: `name` (it's also the library's file name, so it must equal your mod id).
-//! - `declare_mod!`: `id`, `name`, `version`, `deps`.
-//! - `assets/lang/*.lang`: the keys start with your mod id.
+//! - `Cargo.toml`: `name` is your mod id (and the library's file name and the mod folder's),
+//!   `version` the version players see.
+//! - `declare_mod!`: `deps`, the mods yours needs.
+//! - `assets/lang/*.lang`: the keys start with your mod id; `mod.<id>.name` is the name players
+//!   see (without it, the id).
 //!
 //! Build: `cargo build --release`. Then make `run/mods/<your id>/` with the library from
 //! `target/release/` and the `assets` folder next to it.
@@ -17,7 +19,7 @@
 
 use weft_sdk::*;
 
-declare_mod!(id: "examplemod", name: "Example Mod", version: "0.1.0", deps: ["base"], init: init);
+declare_mod!(deps: ["base"], init: init);
 
 // Everything your mod adds is named in a `static` handle and registered by it. A name without
 // `mod:` is yours (`examplemod:example_item`), `Item::named("base:coal")` is another mod's.
@@ -88,7 +90,7 @@ fn items(r: &mut Registry) {
     r.item(&EXAMPLE_ITEM).tab(&INGREDIENTS).tag("gems/example");
     // Tools, weapons, food, fuel are all components or tags, so other mods can use them:
     // static RUBY_PICKAXE: Item = Item::named("ruby_pickaxe");
-    // r.item(&RUBY_PICKAXE).tool("pickaxe", tool_tier::DIAMOND, 8.0).durability(1200).attack(4.0).tag("tools/pickaxe");
+    // r.item(&RUBY_PICKAXE).tool("pickaxe").tool_level(tool_tier::DIAMOND).mining_speed(8.0).durability(1200).attack_damage(4.0);
     // r.item(&RUBY_APPLE).set(&FOOD, ...)     // see `mods/base/src/items.rs` for food and armor
     // static FUEL: Component<u32> = Component::named("fuel");   // the common burn time, in ticks
     // r.set("examplemod:example_item", &FUEL, 1600);
@@ -163,7 +165,7 @@ fn client(_r: &mut Registry) {
     // static DASH: Key = Key::named("dash");
     // static ABOUT: Screen = Screen::named("about");
     // static MANA: HudElement = HudElement::named("mana");
-    // r.key(&DASH, "R");
+    // r.key(&DASH, "R").on_press_server(|p| { let w = p.world(); info!("{} dashes", p.player()); w.time(); });
     // r.screen(&ABOUT, |ui| ui.panel("background", S::col().pad(8.0), |ui| ui.text("examplemod.about")));
     // r.hud_element(&MANA, hud_anchor::HOTBAR_RIGHT, 2, |ui| ui.text_bind(|c, out| { /* ... */ }));
 }

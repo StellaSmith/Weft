@@ -104,7 +104,7 @@ impl ConfigBuilder<'_> {
         self
     }
     /// Only read at start: the screen says a restart is needed.
-    pub fn restart(mut self) -> Self {
+    pub fn restart_required(mut self) -> Self {
         self.desc.flags |= cf::RESTART;
         self
     }

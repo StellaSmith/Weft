@@ -129,8 +129,9 @@ pub struct WorldCtx {
 #[repr(C)]
 pub struct ModDecl {
     pub abi_version: u64,
+    /// The crate name, which is also the library's and the mod folder's name.
     pub id: Str,
-    pub name: Str,
+    /// The crate version.
     pub version: Str,
     /// Mod ids this one must load after. Registration itself is parallel, this only orders
     /// `post_init` and callback priority.
@@ -438,6 +439,9 @@ pub struct BlockDesc {
     /// Replacements keeping the replaced block's states: (old texture, new texture) pairs, full
     /// names, applied to those states and the block's item.
     pub retexture: Slice<Str>,
+    /// A menu using the block opens (on its block entity, if it has one). A block opening a
+    /// menu with recipe kinds is a station of those kinds in the recipe viewer.
+    pub opens: Str,
 }
 defaults!(BlockDesc {
     name: Str::EMPTY,
@@ -460,6 +464,7 @@ defaults!(BlockDesc {
     on_grow: Callback::NONE,
     own_states: 1,
     retexture: Slice::EMPTY,
+    opens: Str::EMPTY,
 });
 
 #[repr(C)]
@@ -1191,6 +1196,9 @@ pub mod ui_kind {
     pub const RECIPE_SLOT: u32 = 10;
     /// What mods add to place `text` of screen `class` (`Host::reg_screen_part`).
     pub const PARTS: u32 = 11;
+    /// A progress bar (`bind`, class `arrow` unless given) that opens the open menu's recipe
+    /// kinds when clicked, with "Recipes" over it.
+    pub const RECIPE_ARROW: u32 = 12;
 }
 
 /// Fill directions of progress bars.
@@ -1390,7 +1398,8 @@ pub struct Host {
     pub open_menu: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, menu: u32, owner: u64),
 
     /// Group `name` of an open menu: its first menu slot and how many slots it has. 0 if none.
-    pub menu_group: unsafe extern "C" fn(menu: *mut MenuCtx, name: Str, out: *mut [u32; 2]) -> u32,
+    /// Group `name` of an open menu: its first slot, slot count and columns.
+    pub menu_group: unsafe extern "C" fn(menu: *mut MenuCtx, name: Str, out: *mut [u32; 3]) -> u32,
     /// Group `name` of a machine (`MenuDesc::entity`) in `entity`'s inventory: first index and
     /// count. 0 if the entity has no such group.
     pub inventory_group: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str, out: *mut [u32; 2]) -> u32,
@@ -1601,9 +1610,6 @@ pub struct Host {
     pub config_value: unsafe extern "C" fn(id: u32) -> f64,
     /// Changes config `id` (clamped to its range, saved). Synced ones only on the server.
     pub config_set: unsafe extern "C" fn(id: u32, value: f64),
-    /// The recipe viewer shows `item` (the machine) with recipes of type `kind`; its title is
-    /// `recipe.<ns>.<kind>` from the language files.
-    pub reg_recipe_station: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, item: Str),
     /// A sound event, see `SoundDesc`.
     pub reg_sound: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SoundDesc),
     /// Background music, see `MusicDesc`.
@@ -2234,15 +2240,15 @@ pub struct LiquidDesc {
     pub drop_off: u32,
     /// How far flowing liquid looks for a way down before choosing directions (water 4, lava 2).
     pub slope_find: u32,
-    /// Sources on two sides over solid ground (or a source) make a new source when this is 2;
-    /// 0 never.
-    pub infinite: u32,
+    /// A spot over solid ground (or a source) with at least this many sources beside it
+    /// becomes one (vanilla water 2); 0 always; `u32::MAX` never.
+    pub renewable: u32,
     /// Positive: falls; negative: rises (lighter than air).
     pub density: i32,
     /// Roughly Kelvin: water 300, lava 1300. From 1000 up it burns what touches it.
     pub temperature: u32,
 }
-defaults!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, infinite: 2, density: 1000, temperature: 300 });
+defaults!(LiquidDesc { name: Str::EMPTY, delay: 5, drop_off: 1, slope_find: 4, renewable: u32::MAX, density: 1000, temperature: 300 });
 
 /// What happens where two liquids meet. `liquid` and `touching` are block names or `#tags` of
 /// liquid blocks. When `liquid` has `touching` beside or above it, it turns into `source` (if

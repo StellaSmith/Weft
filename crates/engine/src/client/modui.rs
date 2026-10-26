@@ -253,6 +253,14 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 parts(b.ui, lang, input, b.client, &screen, &area);
                 id
             }
+            uk::RECIPE_ARROW => {
+                let bind = if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
+                let [w, h] = crate::ui::RECIPE_ARROW;
+                let style = Style { w: if n.width.is_nan() { Len::Px(w) } else { style.w }, h: if n.height.is_nan() { Len::Px(h) } else { style.h }, ..style };
+                let id = b.ui.open(Kind::Progress { class: if class.is_empty() { "arrow".into() } else { class }, bind, value: 0.0, dir: n.dir }, style);
+                b.ui.nodes[id].recipes = true;
+                id
+            }
             uk::PROGRESS => {
                 let bind = if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
                 b.ui.open(Kind::Progress { class: if class.is_empty() { "progress".into() } else { class }, bind, value: 0.0, dir: n.dir }, style)

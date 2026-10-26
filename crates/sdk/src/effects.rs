@@ -3,7 +3,7 @@
 //! ```ignore
 //! static SPARK: Particle = Particle::named("spark");
 //! r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright();
-//! w.particles(&SPARK, pos).count(12).speed(2.0);          // server: everyone nearby sees them
+//! w.spawn_particles(&SPARK, pos).count(12).speed(2.0);          // server: everyone nearby sees them
 //! r.text_condition(&CHARGED, |v| v.player_component(&CHARGE).is_some_and(|c| *c > 0));
 //! c.post_effect("mymod:underwater", 1.0);                  // client: until turned off
 //! ```
@@ -57,7 +57,7 @@ impl ParticleBuilder<'_> {
         (self.desc.color, self.desc.color_end) = (start, end);
         self
     }
-    pub fn collide(mut self) -> Self {
+    pub fn colliding(mut self) -> Self {
         self.desc.flags |= pf::COLLIDE;
         self
     }
@@ -69,7 +69,7 @@ impl ParticleBuilder<'_> {
         self.desc.flags |= pf::TRANSLUCENT;
         self
     }
-    pub fn shrink(mut self) -> Self {
+    pub fn shrinking(mut self) -> Self {
         self.desc.flags |= pf::SHRINK;
         self
     }
@@ -126,7 +126,7 @@ enum Target {
     Client(Client),
 }
 
-/// Particles sent when this is dropped: `w.particles(&SPARK, pos).count(10).speed(1.5)`.
+/// Particles sent when this is dropped: `w.spawn_particles(&SPARK, pos).count(10).speed(1.5)`.
 pub struct Burst {
     target: Target,
     burst: abi::ParticleBurst,
@@ -181,19 +181,19 @@ fn burst(target: Target, kind: &Particle, pos: [f64; 3]) -> Burst {
 
 impl World {
     /// Particles every player near `pos` sees (one by default).
-    pub fn particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
+    pub fn spawn_particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
         burst(Target::World(*self), kind, pos)
     }
 
     /// A filled box for players showing `group` (`/gizmo <group>`), see-through by `color`'s alpha.
-    pub fn gizmo_fill(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
+    pub fn draw_fill(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
         unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), 3, &min, &max, color, ticks, Str::EMPTY) }
     }
 }
 
 impl Client {
     /// Particles only this client shows.
-    pub fn particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
+    pub fn spawn_particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
         burst(Target::Client(*self), kind, pos)
     }
 
@@ -296,7 +296,7 @@ impl Drop for MusicBuilder<'_> {
 }
 
 impl Registry {
-    /// A sound event, see `SoundBuilder`; blocks and entities name groups of them with `.sounds()`.
+    /// A sound event, see `SoundBuilder`; blocks and entities name groups of them with `.sound_group()`.
     pub fn sound<'a>(&'a mut self, sound: &'static crate::Sound) -> SoundBuilder<'a> {
         SoundBuilder { raw: self.raw, name: sound.name().to_string(), files: Vec::new(), handle: Some(sound), desc: abi::SoundDesc::DEFAULT, category_name: String::new(), _p: PhantomData }
     }

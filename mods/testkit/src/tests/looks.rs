@@ -14,7 +14,7 @@ pub async fn particles(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
     let pos = [f[0] as f64 + 0.5, f[1] as f64 + 1.5, f[2] as f64 - 2.5];
-    drop(t.c().particles(&SPARK, pos).count(200).spread(0.5).speed(1.0));
+    drop(t.c().spawn_particles(&SPARK, pos).count(200).spread(0.5).speed(1.0));
     t.until("client particles", Duration::from_secs(2), |t| t.state().particles >= 200).await?;
     // Sparks live at most 1.2 s.
     t.until("particles gone", Duration::from_secs(4), |t| t.state().particles == 0).await?;
@@ -33,7 +33,7 @@ pub async fn particle_crowd(t: T) -> R {
     let f = t.feet();
     let pos = [f[0] as f64 + 0.5, f[1] as f64 + 1.5, f[2] as f64 - 2.5];
     for _ in 0..10 {
-        drop(t.c().particles(&SPARK, pos).count(10_000).spread(4.0).speed(1.0));
+        drop(t.c().spawn_particles(&SPARK, pos).count(10_000).spread(4.0).speed(1.0));
     }
     t.frames(2).await?;
     let n = t.state().particles;

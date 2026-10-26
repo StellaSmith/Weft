@@ -1,6 +1,6 @@
 //! Settings mods (and the engine, namespace `core`) declare: typed, ranged values read with one
 //! atomic load, stored per namespace in `config/<ns>.txt`, edited on a screen built from the
-//! declarations. `SYNCED` ones follow the server: a joining player gets its values.
+//! declarations. `SYNCED` ones follow the server: players get its values on joining and on every change.
 
 use std::path::Path;
 use std::sync::OnceLock;

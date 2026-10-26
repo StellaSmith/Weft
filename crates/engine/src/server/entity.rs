@@ -134,6 +134,7 @@ impl Entity {
             age: self.age,
             fall: self.fall,
             moved: self.moved,
+            size: { let (hw, h, eye) = self.dims(c); [hw as f32 * 2.0, h as f32, eye as f32] },
         }
     }
 }

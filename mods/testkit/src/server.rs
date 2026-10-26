@@ -230,6 +230,14 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let e = w.entity(id).ok_or("no such entity")?;
             Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos[0], e.pos[1], e.pos[2], e.health))
         }
+        "size" => {
+            let id: u64 = match a.word()? {
+                "me" => player,
+                w => w.trim_start_matches('#').parse().map_err(|_| "bad id".to_string())?,
+            };
+            let s = w.entity(id).ok_or("no such entity")?.size;
+            Ok(format!("{:.3} {:.3} {:.3}", s[0], s[1], s[2]))
+        }
         "near" => {
             let p = a.pos()?;
             let r: f64 = a.num()?;

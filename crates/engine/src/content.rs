@@ -1248,7 +1248,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                     }
                 }
                 Target::Tagged(pattern) => {
+                    let pattern = pattern.strip_prefix('#').unwrap_or(pattern);
                     let tags: Vec<u32> = cb.names().iter().enumerate().filter(|(_, n)| comps::matches(pattern, n)).map(|(i, _)| i as u32).collect();
+                    if tags.is_empty() {
+                        errors.push(format!("{}: component {} set on tag #{pattern}, which no tag matches", m.1, s.value.name));
+                    }
                     for kind in [comps::BLOCK, comps::ITEM] {
                         hits.extend(cb.entries_with_any(kind, &tags).into_iter().map(|e| (kind, e)));
                     }

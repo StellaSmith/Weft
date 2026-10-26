@@ -87,6 +87,9 @@ pub async fn tooltips(t: T) -> R {
         if name == "coal" {
             let red = t.shot("coal_lines").await?.share(cx + 0.02, cy - 0.05, cx + 0.3, cy + 0.12, probe::red);
             t.probe("the test mod's red line under coal's tooltip", red, red > 0.002);
+            // `{block:..}` in a tooltip draws the block, not an item icon.
+            let block = t.shot("coal_block_icon").await?.share(cx + 0.02, cy - 0.05, cx + 0.3, cy + 0.12, probe::cyan);
+            t.probe("diamond block icon in the tooltip", block, block > 0.0008);
         }
     }
     t.c().close_screen();
@@ -400,7 +403,9 @@ pub async fn multiplayer(t: T) -> R {
     let ticket = format!("{dir}/ticket.txt");
     let script = format!("{dir}/join.txt");
     std::fs::write(&ticket, t.c().ticket()).map_err(|e| e.to_string())?;
-    std::fs::write(&script, format!("join {ticket}\nloaded\nchat hello from the second player\nwait 3\nquit\n")).map_err(|e| e.to_string())?;
+    std::fs::write(&script, format!("join {ticket}\nloaded\nchat hello from the second player\nwait 3\nsay_config testmod:wisp_sparks\nwait 1\nquit\n")).map_err(|e| e.to_string())?;
+    static SPARKS: weft_sdk::Config<i32> = weft_sdk::Config::named("testmod:wisp_sparks");
+    let sparks = SPARKS.get();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut child = std::process::Command::new(exe)
         .args(["--run-dir", &dir, "--script", &script, "--size", "640x360"])
@@ -410,7 +415,11 @@ pub async fn multiplayer(t: T) -> R {
         .until("the second player's chat", Duration::from_secs(90), |t| (0..5).any(|i| t.c().chat_line(i).contains("hello from the second player")))
         .await;
     let seen = t.c().entities().iter().filter_map(|&id| t.c().entity(id)).any(|e| name_of(abi::entry_kind::ENTITY, e.kind) == "core:player");
-    if heard.is_err() {
+    // A synced setting the host changes while the other player is in reaches them.
+    SPARKS.set(7);
+    let synced = t.until("the second player's config", Duration::from_secs(30), |t| (0..5).any(|i| t.c().chat_line(i).contains("config testmod:wisp_sparks = 7"))).await;
+    SPARKS.set(sparks);
+    if heard.is_err() || synced.is_err() {
         let _ = child.kill();
     }
     let mut status = None;
@@ -424,6 +433,7 @@ pub async fn multiplayer(t: T) -> R {
         let _ = child.kill();
     }
     heard?;
+    synced?;
     t.check(seen, "the host does not see the second player");
     t.check(status.is_some_and(|s| s.success()), format!("second client ended with {status:?}"));
     Ok(())

@@ -187,5 +187,40 @@ pub fn parse_key(s: &str) -> Option<Key> {
         Backquote, CapsLock, Insert, Delete, Home, End, PageUp, PageDown, Numpad0, Numpad1, Numpad2, Numpad3,
         Numpad4, Numpad5, Numpad6, Numpad7, Numpad8, Numpad9,
     ];
-    ALL.iter().find(|c| format!("{c:?}") == s).map(|c| Key::Code(*c))
+    // Short names ("R", "5", "space", "lshift") as well as winit's ("KeyR", "Digit5", "ShiftLeft").
+    let short = match s.to_ascii_lowercase().as_str() {
+        l if l.len() == 1 && l.as_bytes()[0].is_ascii_alphabetic() => format!("Key{}", l.to_ascii_uppercase()),
+        l if l.len() == 1 && l.as_bytes()[0].is_ascii_digit() => format!("Digit{l}"),
+        "lshift" | "shift" => "ShiftLeft".into(),
+        "rshift" => "ShiftRight".into(),
+        "lctrl" | "ctrl" | "control" => "ControlLeft".into(),
+        "rctrl" => "ControlRight".into(),
+        "lalt" | "alt" => "AltLeft".into(),
+        "ralt" => "AltRight".into(),
+        "esc" => "Escape".into(),
+        "up" => "ArrowUp".into(),
+        "down" => "ArrowDown".into(),
+        "left" => "ArrowLeft".into(),
+        "right" => "ArrowRight".into(),
+        _ => s.into(),
+    };
+    ALL.iter().find(|c| format!("{c:?}").eq_ignore_ascii_case(&short)).map(|c| Key::Code(*c))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::KeyCode;
+
+    #[test]
+    fn key_names() {
+        assert_eq!(parse_key("R"), Some(Key::Code(KeyCode::KeyR)));
+        assert_eq!(parse_key("KeyR"), Some(Key::Code(KeyCode::KeyR)));
+        assert_eq!(parse_key("5"), Some(Key::Code(KeyCode::Digit5)));
+        assert_eq!(parse_key("space"), Some(Key::Code(KeyCode::Space)));
+        assert_eq!(parse_key("LShift"), Some(Key::Code(KeyCode::ShiftLeft)));
+        assert_eq!(parse_key("F6"), Some(Key::Code(KeyCode::F6)));
+        assert_eq!(parse_key("mouse3"), Some(Key::Mouse(3)));
+        assert_eq!(parse_key("Rr"), None);
+    }
 }

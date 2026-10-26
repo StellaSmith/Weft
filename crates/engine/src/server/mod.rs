@@ -168,6 +168,8 @@ pub struct Server {
     load_seen: (u64, u64),
     /// World rule values by rule id.
     rules: Arc<[i64]>,
+    /// Synced config values as players last got them.
+    configs: Vec<(u32, f64)>,
 }
 
 /// Handle the client side uses to reach a running server thread.
@@ -322,7 +324,21 @@ impl Server {
             steps: 0,
             sprint: None,
             load_seen: (0, 0),
+            configs: crate::config::synced(),
         }
+    }
+
+    /// Synced settings the host changed since the last tick, to everyone.
+    fn send_configs(&mut self) {
+        let now = crate::config::synced();
+        if now == self.configs {
+            return;
+        }
+        let changed: Vec<(u32, f64)> = now.iter().filter(|v| !self.configs.contains(v)).copied().collect();
+        for p in &mut self.players {
+            p.conn.send(ToClient::Configs(changed.clone()));
+        }
+        self.configs = now;
     }
 
     /// Inserts generated cubes and keeps the workers fed until `deadline`, between ticks.
@@ -420,6 +436,7 @@ impl Server {
         self.receive_generated(c, start + Duration::from_millis(15));
         lap(0, &self.shared);
         self.handle_messages(c);
+        self.send_configs();
         lap(1, &self.shared);
 
         // Every region of every dimension is independent: tick them all in parallel. A frozen
@@ -667,7 +684,7 @@ impl Server {
         s.meta.times = self.dims.iter().map(|d| (c.dims[d.id as usize].name.clone(), d.time)).collect();
         s.meta.rules = c.game.rules.iter().zip(self.rules.iter()).map(|(r, v)| (r.0.clone(), *v)).collect();
         s.meta.next_entity = self.next_id.load(Ordering::Relaxed);
-        for p in &self.players {
+        for p in &mut self.players {
             if p.joined || players {
                 if let Some(r) = self.dims[p.dim as usize].entity_region_ref(p.entity) {
                     save_player(&s, p, r);
@@ -788,6 +805,10 @@ impl Server {
                     }
                     let free = c.states.get(d.get(pos).unwrap_or(0) as usize).is_some_and(|s| s.hardness <= 0.0);
                     let done = d.break_block(c, pos, held, entity, !creative);
+                    // The client already shows air: a refused break sends the block back.
+                    if !done && let Some(state) = d.get(pos) {
+                        d.changes.push((pos, state));
+                    }
                     d.flush_neighbors(c);
                     d.finish_tick(c);
                     done && !free

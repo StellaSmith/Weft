@@ -259,6 +259,10 @@ pub unsafe extern "C" fn client_input(c: *mut abi::ClientCtx, op: u32, text: Str
 pub unsafe extern "C" fn client_pressed(c: *mut abi::ClientCtx, action: Str) -> u32 {
     unsafe {
         let Some(r) = run(c) else { return 0 };
+        // Mod keys belong to the world: while a screen (chat, inventory) has the input they stay up.
+        if !r.input.captured || !r.screens.is_empty() {
+            return 0;
+        }
         let a = action.as_str();
         r.input.pressed(a) as u32 | (r.input.held(a) as u32) << 1
     }

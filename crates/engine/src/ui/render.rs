@@ -578,11 +578,7 @@ impl UiRenderer {
             let counts = std::mem::take(&mut self.icon_counts);
             for (i, (x, y, s, item)) in icons.into_iter().enumerate() {
                 let start = self.quads.len();
-                if item & super::text::STATE_ICON != 0 {
-                    self.state_icon(c, t, x, y, s, item & !super::text::STATE_ICON);
-                } else {
-                    self.item_icon(c, t, x, y, s, item);
-                }
+                self.text_icon(c, t, x, y, s, item);
                 // The count over the icon, at its bottom right like in a slot.
                 if let Some(&(_, n, px)) = counts.iter().find(|c| c.0 == i) {
                     let layout = super::text::layout(&super::text::plain(&n.to_string()), &self.font, None);
@@ -625,8 +621,17 @@ impl UiRenderer {
         self.glyph_run(&layout.items, x + pad, y + pad, px, color, Some(0x3F3F3FFF), &mut icons);
         if let Some((c, t)) = game {
             for (ix, iy, s, item) in icons {
-                self.item_icon(c, t, ix, iy, s, item);
+                self.text_icon(c, t, ix, iy, s, item);
             }
+        }
+    }
+
+    /// An icon placed by rich text: an item, or a block state (`{block:..}`).
+    fn text_icon(&mut self, c: &Content, t: &GameTextures, x: f32, y: f32, s: f32, icon: u32) {
+        if icon & super::text::STATE_ICON != 0 {
+            self.state_icon(c, t, x, y, s, icon & !super::text::STATE_ICON);
+        } else {
+            self.item_icon(c, t, x, y, s, icon);
         }
     }
 

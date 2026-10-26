@@ -73,6 +73,19 @@ pub async fn mining_and_wear(t: T) -> R {
     let d = item("base:dirt");
     let got = t.until("dirt picked up", Duration::from_secs(5), |t| (0..36).any(|i| t.c().inventory_slot(i).item == d)).await;
     t.check(got.is_ok(), "digging dirt by hand gave nothing");
+    // A break an interceptor refuses puts the block back on the client too.
+    let gold = add(f, [-2, 0, 0]);
+    t.set(gold, "gold_block").await?;
+    t.op("put me 1 diamond_pickaxe 1").await?;
+    t.c().select(1);
+    t.cmd("/rule testkit:protect_gold 1").await?;
+    t.look_at(gold);
+    t.frames(2).await?;
+    t.hold("core:attack", 1.0);
+    t.secs(1.5).await?;
+    t.cmd("/rule testkit:protect_gold 0").await?;
+    t.check_eq(t.block(gold).await?, "base:gold_block".into(), "protected gold on the server");
+    t.sync_blocks(gold, gold).await?;
     Ok(())
 }
 
@@ -200,6 +213,27 @@ pub async fn fall_damage(t: T) -> R {
     t.secs(0.5).await?;
     let hp = t.state().health;
     t.check((10.0..=12.0).contains(&hp), format!("health after a 12 block fall: {hp}, vanilla 11"));
+    Ok(())
+}
+
+/// The server and the client measure the player with the same box, before and after `/morph`.
+pub async fn player_box(t: T) -> R {
+    t.flat().await?;
+    for step in ["start", "morphed", "back"] {
+        match step {
+            "morphed" => t.cmd("/morph base:pig").await.map(|_| ())?,
+            "back" => t.cmd("/morph").await.map(|_| ())?,
+            _ => {}
+        }
+        t.secs(0.3).await?;
+        let server = t.op("size me").await?;
+        let c = t.c().entity(0).ok_or("no local player")?.size;
+        let client = format!("{:.3} {:.3} {:.3}", c[0], c[1], c[2]);
+        t.check(server == client, format!("{step}: server box {server}, client box {client}"));
+        if step == "start" {
+            t.check(server.starts_with("0.600 1.800"), format!("player box is {server}, not 0.6 x 1.8"));
+        }
+    }
     Ok(())
 }
 

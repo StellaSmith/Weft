@@ -864,6 +864,8 @@ pub struct EntityState {
     /// Distance walked this tick (hunger exhaustion); read on a client, the limb swing (0
     /// standing, 1 running) in the frame of what it stands on.
     pub moved: f32,
+    /// Box width and height and eye height now (crouching and `set_size` included).
+    pub size: [f32; 3],
 }
 defaults!(EntityState {
     kind: 0,
@@ -879,6 +881,7 @@ defaults!(EntityState {
     age: 0,
     fall: 0.0,
     moved: 0.0,
+    size: [0.0; 3],
 });
 
 impl Default for EntityState {

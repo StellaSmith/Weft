@@ -28,7 +28,7 @@ entity.testmod.orb = Orb
 entity.testmod.lift = Lift
 entity.testmod.skiff = Skiff
 entity.testmod.crate = Crate
-item.base.coal.tooltip.testmod = {#ff6060}Seen by the test mod.{/}
+item.base.coal.tooltip.testmod = {#ff6060}Seen by the test mod.{/} {block:base:diamond_block}
 item.testmod.rune = Rune of Light
 item.testmod.rune.tooltip = {fx:core:rainbow}Shines in every color{/fx}, {fx:testmod:glitch}flickers{/fx} and {fx:core:wave}hums{/fx}.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Use it to scatter {fx:core:pulse}sparks{/fx}; held, it shows its reach.{/on_key}{if:testmod:hurt}

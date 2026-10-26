@@ -13,6 +13,7 @@
 //! key Tab             # a key by its settings name
 //! look 90 -20         # yaw, pitch in degrees
 //! chat /give stone 10
+//! say_config testmod:x  # a config's value as this client has it, into the chat
 //! shot name.png       # into run/screenshots (or --shot-dir)
 //! bench 5 label       # BENCH line over 5 seconds
 //! host ticket.txt     # host, write the join ticket there
@@ -73,6 +74,10 @@ pub async fn run(t: T, src: String) -> R {
             }
             "look" => t.c().look(num(0, 0.0), num(1, 0.0)),
             "chat" => t.c().chat(rest),
+            "say_config" => {
+                let cfg = weft_sdk::Config::<f64>::named(Box::leak(rest.to_string().into_boxed_str()));
+                t.c().chat(&format!("config {rest} = {}", cfg.get()));
+            }
             "shot" => {
                 let path = match launch_option("shot-dir") {
                     Some(d) => format!("{d}/{rest}"),

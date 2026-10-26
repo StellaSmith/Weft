@@ -129,9 +129,6 @@ impl ClientEntity {
     /// Half width, height and eye height of its box, like the server's `Entity::dims`.
     pub fn dims(&self) -> (f64, f64, f64) {
         let k = &content().game.entities[self.kind as usize];
-        if !self.item.is_empty() {
-            return (0.125, 0.25, 0.125);
-        }
         let [w, h, eye] = self.size.unwrap_or([k.width, k.height, k.eye]).map(|v| v as f64);
         let (h, eye) = if self.crouched { physics::crouched(h, eye) } else { (h, eye) };
         (w / 2.0, h, eye)
@@ -394,7 +391,7 @@ on: {on}", list.join("
                 fov_mul: 1.0,
                 crouched: false,
                 support: None,
-                size: [0.6, 1.8, 1.62],
+                size: { let k = &c.game.entities[c.game.player_kind as usize]; [k.width, k.height, k.eye].map(|v| v as f64) },
                 carried: DVec3::ZERO,
                 carried_prev: DVec3::ZERO,
                 riding: None,

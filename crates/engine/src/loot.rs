@@ -134,7 +134,7 @@ impl Resolve<'_> {
                 let tag = if c.text.is_empty() {
                     u32::MAX
                 } else {
-                    self.components.id(&c.text).unwrap_or_else(|| {
+                    self.components.id(c.text.strip_prefix('#').unwrap_or(&c.text)).unwrap_or_else(|| {
                         errors.push(format!("loot table {table}: a condition names unknown tag {}", c.text));
                         u32::MAX
                     })

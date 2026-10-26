@@ -333,6 +333,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                 in_liquid: cl.player.in_liquid as u32,
                 health: cl.health,
                 max_health: cl.max_health,
+                size: { let (hw, h, eye) = cl.player.dims(); [hw as f32 * 2.0, h as f32, eye as f32] },
                 ..Default::default()
             };
             *out = state;
@@ -352,6 +353,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                         let attr = &content.game.attributes[crate::server::MAX_HEALTH as usize];
                         attr.comp.and_then(|id| content.components.get::<f64>(crate::components::ENTITY, e.kind, id)).unwrap_or(attr.default) as f32
                     },
+                    size: { let (hw, h, eye) = e.dims(); [hw as f32 * 2.0, h as f32, eye as f32] },
                     ..Default::default()
                 };
                 *out = state;

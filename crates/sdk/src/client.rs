@@ -418,7 +418,7 @@ impl Registry {
         unsafe { (host().reg_packet)(self.raw, s(&name), 1, cb) }
     }
 
-    /// Key binding `<ns>:<name>` with a default key (settings name: `KeyJ`, `F6`, `mouse3`),
+    /// Key binding `<ns>:<name>` with a default key (`J`, `KeyJ`, `F6`, `space`, `lshift`, `mouse3`),
     /// listed in Controls as `key.<ns>.<name>`; read with `Client::pressed`/`held`.
     pub fn key(&mut self, name: &str, default: &str) {
         let name = qualify(self.ns, name);

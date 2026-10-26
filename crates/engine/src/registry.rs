@@ -862,12 +862,12 @@ pub struct Entities {
 
 pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entities {
     let mut entities: Vec<RawEntity> = raws.iter_mut().flat_map(|r| std::mem::take(&mut r.entities)).collect();
-    let mut player = builtin(PLAYER, 0.3, 1.8, ef::FALL_DAMAGE | ef::PUSHABLE);
+    let mut player = builtin(PLAYER, 0.6, 1.8, ef::FALL_DAMAGE | ef::PUSHABLE);
     player.eye = 1.62;
     player.texture = "core:entity/player".into();
     player.parts = player_parts();
     entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false, components: Vec::new() });
-    entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.125, 0.25, ef::INVULNERABLE), replace: false, components: Vec::new() });
+    entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.25, 0.25, ef::INVULNERABLE), replace: false, components: Vec::new() });
     entities.push(RawEntity { name: VIRTUAL.into(), cell: 0, desc: builtin(VIRTUAL, 0.0, 0.0, ef::INVULNERABLE | ef::NO_GRAVITY), replace: false, components: Vec::new() });
     entities.push(RawEntity { name: FALLING.into(), cell: 0, desc: builtin(FALLING, 0.98, 1.0, ef::INVULNERABLE | ef::SOLID), replace: false, components: Vec::new() });
     entities.sort_by(|a, b| a.name.cmp(&b.name).then(a.replace.cmp(&b.replace)));

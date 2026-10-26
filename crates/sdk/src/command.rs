@@ -18,6 +18,7 @@ pub struct Command<'a> {
 impl Command<'_> {
     /// The world it runs in; client commands (`Registry::client_command`) have none, use `client`.
     pub fn world(&self) -> World {
+        assert!(!self.args.world.is_null(), "Command::world() in a client command: client commands have no world, use client()");
         World::from_raw(self.args.world)
     }
 

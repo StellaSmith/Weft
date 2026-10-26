@@ -140,6 +140,11 @@ pub async fn chat(t: T) -> R {
     t.screen("core:chat").await?;
     t.until("the command list", Duration::from_secs(2), |t| t.c().ui_rect("text:gamemode").is_some()).await?;
     t.check_eq(t.c().input_text(), "/".to_string(), "the line");
+    // A mod's key does not fire while the chat has the input.
+    let probes = crate::runner::PROBES.with(|p| p.get());
+    t.c().key("F9", 0.3);
+    t.secs(0.5).await?;
+    t.check(crate::runner::PROBES.with(|p| p.get()) == probes, "the testkit:probe key fired while typing in the chat");
     t.c().key("Backspace", 0.0);
     t.frames(2).await?;
     for (typed, want) in [("/give @p birch_lo", "/give @p base:birch_log"), ("/giz", "/gizmo"), ("/gizmo cu", "/gizmo cubes"), ("/gizmo testm", "/gizmo testmod:energy"), ("/gizmo pro", "/gizmo probe"), ("/probe al", "/probe alpha"), ("/rule mob", "/rule core:mob_spawning")] {

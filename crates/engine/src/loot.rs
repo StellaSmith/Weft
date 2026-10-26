@@ -108,7 +108,7 @@ pub unsafe fn copy_pool(p: &abi::LootPool) -> RawPool {
 
 pub struct Resolve<'a> {
     pub items: &'a FxHashMap<String, u32>,
-    pub by_tag: &'a dyn Fn(&str) -> Option<u32>,
+    pub tag_items: &'a FxHashMap<u32, Vec<u32>>,
     pub components: &'a Components,
 }
 
@@ -117,12 +117,8 @@ impl Resolve<'_> {
         if s.is_empty() {
             return 0;
         }
-        let found = match s.strip_prefix('#') {
-            Some(t) => (self.by_tag)(t),
-            None => self.items.get(s).copied(),
-        };
-        found.unwrap_or_else(|| {
-            errors.push(format!("loot table {table} names unknown item {s}"));
+        crate::refs::Ref::parse(s).and_then(|r| crate::refs::item(&r, self.items, self.components, self.tag_items)).unwrap_or_else(|e| {
+            errors.push(format!("loot table {table}: {e}"));
             0
         })
     }
@@ -134,8 +130,8 @@ impl Resolve<'_> {
                 let tag = if c.text.is_empty() {
                     u32::MAX
                 } else {
-                    self.components.id(c.text.strip_prefix('#').unwrap_or(&c.text)).unwrap_or_else(|| {
-                        errors.push(format!("loot table {table}: a condition names unknown tag {}", c.text));
+                    crate::refs::tag(self.components, &c.text).unwrap_or_else(|e| {
+                        errors.push(format!("loot table {table}: condition: {e}"));
                         u32::MAX
                     })
                 };

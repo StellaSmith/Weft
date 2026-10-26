@@ -1448,6 +1448,9 @@ pub struct Host {
     /// Key binding `name` (shown in Controls as `key.<ns>.<name>`), default key by its settings
     /// name (`KeyJ`, `mouse3`, ...). Read with `client_pressed`.
     pub reg_key: unsafe extern "C" fn(reg: *mut Registrar, name: Str, key: Str),
+    /// A mistake in what a mod registers that the SDK caught (a bad asset path ...): loading
+    /// stops at freeze with it, named with the mod.
+    pub reg_error: unsafe extern "C" fn(reg: *mut Registrar, message: Str),
     /// Value of `--name value` on the command line, empty if not given.
     pub launch_option: unsafe extern "C" fn(name: Str) -> Str,
 

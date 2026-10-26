@@ -96,6 +96,7 @@ pub static HOST: Host = Host {
     reg_client_hook,
     reg_packet,
     reg_key,
+    reg_error,
     launch_option: crate::app::api::launch_option,
     send_packet,
     open_menu_at,
@@ -202,7 +203,7 @@ unsafe extern "C" fn reg_structure(r: *mut abi::Registrar, d: *const abi::Struct
             blocks: d.blocks.as_slice().iter().map(|b| (b.pos, b.block.as_str().to_string())).collect(),
             spacing: d.spacing,
             chance: d.chance,
-            biome: d.biome.as_str().trim_start_matches('#').to_string(),
+            biome: d.biome.as_str().to_string(),
             sink: d.sink,
         });
     }
@@ -245,7 +246,7 @@ unsafe extern "C" fn biome_at(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u3
 unsafe extern "C" fn reg_spawn(r: *mut abi::Registrar, d: *const abi::SpawnDesc) {
     unsafe {
         let d = *d;
-        let tag = |s: Str| s.as_str().trim_start_matches('#').to_string();
+        let tag = |s: Str| s.as_str().to_string();
         reg(r).game.spawns.push(registry::RawSpawn {
             entity: d.entity.as_str().to_string(),
             biome: tag(d.biome),
@@ -875,11 +876,9 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
     let mut n = 1;
     let id = match kind {
         // `#tag`: the first block carrying it, in mod load order (biome surfaces by tag).
-        abi::entry_kind::BLOCK if name.starts_with('#') => c.components.id(&name[1..]).and_then(|t| {
-            let b = c.blocks.iter().filter(|b| c.components.has(crate::components::BLOCK, b.first_state, t)).min_by_key(|b| (c.mods.get(b.owner.0 as usize).map_or(u32::MAX, |m| m.order), b.first_state))?;
-            n = b.states;
-            Some(b.first_state)
-        }),
+        // `#tag`: its preferred block (mod load order) or item.
+        abi::entry_kind::BLOCK if name.starts_with('#') => crate::refs::Ref::parse(name).ok().and_then(|r| crate::refs::state(&r, &c.block_names, &c.blocks, &c.components).ok()).inspect(|&s| n = c.block_of(s).states),
+        abi::entry_kind::ITEM if name.starts_with('#') => crate::refs::Ref::parse(name).ok().and_then(|r| crate::refs::item(&r, &c.item_names, &c.components, &c.tag_items).ok()),
         abi::entry_kind::BLOCK if name.contains('[') => c.state_by_name(name),
         abi::entry_kind::BLOCK => c.block_names.get(name).map(|&b| {
             n = c.blocks[b as usize].states;
@@ -1081,6 +1080,8 @@ unsafe extern "C" fn reg_set(r: *mut abi::Registrar, d: *const abi::SetDesc) {
         let r = reg(r);
         let name = d.target.as_str().to_string();
         let target = match d.target_kind {
+            // A reference: `#pattern` for everything tagged, else a name.
+            abi::set_target::NAME if name.starts_with('#') => Target::Tagged(name[1..].to_string()),
             abi::set_target::NAME => Target::Name(name),
             abi::set_target::TAGGED => Target::Tagged(name),
             abi::set_target::ENTITY => Target::Entity(name),
@@ -1145,7 +1146,7 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
             max_y: d.max_y,
             veins: d.veins,
             size: d.blocks,
-            biome: d.biome.as_str().trim_start_matches('#').to_string(),
+            biome: d.biome.as_str().to_string(),
         });
     }
 }
@@ -1487,6 +1488,10 @@ unsafe extern "C" fn reg_packet(r: *mut abi::Registrar, name: Str, side: u32, cb
         let owner = r.owner;
         r.game.packets.push((owner, name.as_str().to_string(), side.min(1), cb));
     }
+}
+
+unsafe extern "C" fn reg_error(r: *mut abi::Registrar, message: Str) {
+    unsafe { reg(r).errors.push(message.as_str().to_string()) }
 }
 
 unsafe extern "C" fn reg_key(r: *mut abi::Registrar, name: Str, key: Str) {

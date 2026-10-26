@@ -15,9 +15,9 @@
 //! symmetry = opposite    # random: none, opposite (pairs opposite faces), all
 //! width = 2              # repeat
 //! height = 2
-//! blocks = base:stone    # only for these blocks
+//! blocks = base:stone #ores/*
 //! heights = 0-40 100-    # world y ranges
-//! biomes = !base:desert  # `!` inverts the list
+//! biomes = !base:desert #cold
 //!
 //! [another rule]         # starts a further rule; the first one whose filters pass wins
 //! ```
@@ -286,13 +286,21 @@ pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
             } else {
                 Vec::new()
             };
-            let blocks = kv.get("blocks").map_or(Vec::new(), |v| v.split_whitespace().filter_map(|b| c.block_names.get(b).copied()).collect());
+            // References like anywhere else: names, `name[prop=value]`, `#tag`, `#pattern/*`.
+            let mut blocks = Vec::new();
+            for b in kv.get("blocks").map_or("", |v| *v).split_whitespace() {
+                match crate::refs::Ref::parse(b).and_then(|r| crate::refs::blocks(&r, &c.block_names, &c.blocks, &c.components, c.states.len() as u32)) {
+                    Ok(list) => blocks.extend(list),
+                    Err(e) => log::error!("{name}.ctm: blocks: {e}"),
+                }
+            }
             let biomes = kv.get("biomes").map(|v| {
                 let (invert, list) = v.strip_prefix('!').map_or((false, *v), |r| (true, r));
                 let mut set = [0u64; 4];
                 for b in list.split_whitespace() {
-                    if let Some(i) = c.biomes.iter().position(|d| d.name == b).filter(|&i| i < 256) {
-                        set[i / 64] |= 1 << (i % 64);
+                    match crate::refs::Ref::parse(b).and_then(|r| crate::refs::biomes(&r, &c.biome_names, &c.components, c.biomes.len() as u32)) {
+                        Ok(list) => list.into_iter().filter(|&i| i < 256).for_each(|i| set[i as usize / 64] |= 1 << (i % 64)),
+                        Err(e) => log::error!("{name}.ctm: biomes: {e}"),
                     }
                 }
                 (invert, set)

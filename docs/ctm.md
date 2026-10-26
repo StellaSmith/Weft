@@ -101,9 +101,10 @@ values: `true`, `false`
 ---
 
 ### blocks
-Only for these blocks, full names separated by spaces.
+Only for these blocks, separated by spaces. Written like blocks are named anywhere else: a full name, a state (`base:furnace[lit=true]`) or a tag (`#logs`, `#ores/*`).
+A name nothing has is reported in the log with the file.
 
-example: `blocks = base:stone base:cobblestone`
+example: `blocks = base:stone base:cobblestone #ores/*`
 
 ---
 
@@ -116,10 +117,11 @@ example: `heights = 0-40 100-`\
 ---
 
 ### biomes
-Only in these biomes. A `!` in front turns the list around.
+Only in these biomes, by name or by tag. A `!` in front turns the list around.
 
 examples:\
 `biomes = base:desert base:beach`\
+`biomes = #cold`\
 `biomes = !base:desert`
 
 ---

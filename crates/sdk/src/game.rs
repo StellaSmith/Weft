@@ -559,7 +559,7 @@ impl EntityBuilder<'_> {
     }
     /// Skin texture, relative names are under `entity/`.
     pub fn texture(mut self, t: &str, w: u32, h: u32) -> Self {
-        self.texture = if t.contains(':') { t.to_string() } else { format!("{}:entity/{t}", self.reg.ns) };
+        self.texture = crate::asset("entity", t);
         self.texture_size = [w, h];
         self
     }
@@ -577,7 +577,7 @@ impl EntityBuilder<'_> {
     /// Model from `models/<name>.geo.json` (Bedrock geometry, as Blockbench exports it) instead of
     /// the parts in code. A file named like the kind is used even without this.
     pub fn model_file(mut self, name: &str) -> Self {
-        let name = crate::qualify(self.reg.ns, name);
+        let name = crate::asset("", name);
         self.components.push(Pending::text(abi::comp::MODEL, &name));
         self
     }
@@ -585,7 +585,7 @@ impl EntityBuilder<'_> {
     /// themselves, others with `World::play_animation`. A file named like the kind is used even
     /// without this.
     pub fn animations(mut self, name: &str) -> Self {
-        let name = crate::qualify(self.reg.ns, name);
+        let name = crate::asset("", name);
         self.components.push(Pending::text(abi::comp::ANIMATIONS, &name));
         self
     }
@@ -602,7 +602,7 @@ impl EntityBuilder<'_> {
     }
     /// Shades the model with `shaders/entity/<name>.wgsl` (namespace optional).
     pub fn shader(mut self, name: &str) -> Self {
-        let name = crate::qualify(self.reg.ns, name);
+        let name = crate::asset("", name);
         self.components.push(Pending::text(abi::comp::SHADER, &name));
         self
     }
@@ -726,7 +726,7 @@ pub const HOTBAR_GROUP: &str = "core:hotbar";
 /// ```ignore
 /// r.machine(&ALLOY_SMELTER, &MENU)
 ///     .group("input", Slots::row(2))
-///     .group("fuel", Slots::one().accepts("fuel").background("mymod:gui/flame_slot"))
+///     .group("fuel", Slots::one().accepts("fuel").background("flame_slot"))
 ///     .group("output", Slots::one().output().big());
 /// ```
 #[derive(Clone)]
@@ -811,9 +811,9 @@ impl Slots {
     pub fn big(self) -> Self {
         self.size(26.0)
     }
-    /// A GUI texture shown while a slot is empty (the armor silhouettes).
+    /// A texture from `gui/` shown while a slot is empty (the armor silhouettes).
     pub fn background(mut self, texture: &str) -> Self {
-        self.background = texture.to_string();
+        self.background = crate::asset("gui", texture);
         self
     }
     /// A translation shown over an empty slot.
@@ -1318,7 +1318,7 @@ impl Recipe {
 }
 
 /// A natural spawning rule (see `abi::SpawnDesc`):
-/// `r.spawn("pig").biome("animals").ground("animal_spawn").light(9, 15).group(2, 3).chance(0.05)`.
+/// `r.spawn("pig").biome("#animals").ground("#animal_spawn").light(9, 15).group(2, 3).chance(0.05)`.
 pub struct SpawnBuilder<'a> {
     raw: *mut abi::Registrar,
     names: [String; 4],

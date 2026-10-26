@@ -113,6 +113,6 @@ An item shows up on the wearer when it sits in an equipment slot:
 ```rust
 r.item(&RUBY_HELMET).worn(worn_parts::HEAD, 1.0, "armor/ruby_1")
 ```
-The first argument says which bones it covers (`worn_parts::HEAD`, `BODY`, `ARMS`, `LEGS`, combined with `|`), the second how far it sticks out from the body in pixels (vanilla armor uses 1.0, and 0.5 for the leggings layer), and the third is its texture. That texture is drawn on the same boxes as the wearer's, so it follows the wearer's skin layout, and the 64x32 files in `mods/base/assets/textures/armor/` show how. It works on any model with the right roles, mobs made with `biped` included.
+The first argument says which bones it covers (`worn_parts::HEAD`, `BODY`, `ARMS`, `LEGS`, combined with `|`), the second how far it sticks out from the body in pixels (vanilla armor uses 1.0, and 0.5 for the leggings layer), and the third is its texture. That texture is drawn on the same boxes as the wearer's, so it follows the wearer's skin layout, and the 64x32 files in `mods/base/assets/textures/entity/armor/` show how (the name is under `entity/`). It works on any model with the right roles, mobs made with `biped` included.
 
 Items in the world and in the hand are flat sprites with some thickness, or the boxes of a block, so there are no custom item models. `F3+T` reloads models and animations along with textures while the game runs.

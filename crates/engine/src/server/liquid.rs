@@ -96,7 +96,7 @@ impl Dim {
     fn falls_into(&self, c: &Content, l: u16, p: IVec3) -> Option<u32> {
         let state = self.get(p)?;
         let mine = c.liquids[l as usize].first_state;
-        c.reactions.iter().find(|r| r.falls_into.is_some() && c.matches(r.liquid, mine) && c.matches(r.touching, state)).and_then(|r| r.falls_into)
+        c.reactions.iter().find(|r| r.falls_into.is_some() && c.matches(&r.liquid, mine) && c.matches(&r.touching, state)).and_then(|r| r.falls_into)
     }
 
     fn spread_to(&mut self, c: &'static Content, p: IVec3, state: u32, falling_in: bool, l: u16) {
@@ -212,7 +212,7 @@ impl Dim {
                 continue;
             }
             let Some(n) = self.get(p + d) else { continue };
-            let hit = c.reactions.iter().find(|r| c.matches(r.liquid, state) && c.matches(r.touching, n));
+            let hit = c.reactions.iter().find(|r| c.matches(&r.liquid, state) && c.matches(&r.touching, n));
             if let Some(b) = hit.and_then(|r| if f.source { r.source } else { r.flowing }) {
                 self.set(c, p, b);
                 return;

@@ -204,11 +204,9 @@ pub struct LiquidDef {
 }
 
 /// A block or any block with a tag.
-#[derive(Clone, Copy, Debug)]
-pub enum Match {
-    Block(u32),
-    Tag(u32),
-}
+#[derive(Clone, Debug)]
+/// The blocks a reaction side names (any of them matches).
+pub struct Match(pub Vec<u32>);
 
 pub struct ReactionDef {
     pub liquid: Match,
@@ -344,6 +342,8 @@ pub struct Content {
     pub ids: Ids,
     /// (`mineable/<class>`, `tools/<class>`) component ids per tool class.
     pub tool_classes: Vec<(u32, Option<u32>)>,
+    /// Items carrying each tag, the preferred first (`refs::tag_items`).
+    pub tag_items: FxHashMap<u32, Vec<u32>>,
     /// Block texture names, index = array layer.
     pub block_textures: Vec<String>,
     /// Block breaking stages, indices into `block_textures`.
@@ -455,11 +455,8 @@ impl Content {
         Some((w, self.components.text(comps::ITEM, item, self.ids.worn_texture?)?))
     }
 
-    pub fn matches(&self, m: Match, state: u32) -> bool {
-        match m {
-            Match::Block(b) => self.states[state as usize].block == b,
-            Match::Tag(t) => self.components.has(comps::BLOCK, state, t),
-        }
+    pub fn matches(&self, m: &Match, state: u32) -> bool {
+        m.0.contains(&self.states[state as usize].block)
     }
 
     /// Tool level a block needs (`harvest_level`, see `abi::tool_tier`).
@@ -490,10 +487,14 @@ impl Content {
         self.parse_state(name).ok()
     }
 
-    /// Like `state_by_name`, saying what is wrong.
+    /// Like `state_by_name`, saying what is wrong; a tag gives its preferred block.
     pub fn parse_state(&self, text: &str) -> Result<u32, String> {
-        let (name, pairs) = split_state(text)?;
-        self.blocks[*self.block_names.get(name).ok_or_else(|| format!("unknown block {name}"))? as usize].state_of(&pairs)
+        crate::refs::state(&crate::refs::Ref::parse(text)?, &self.block_names, &self.blocks, &self.components)
+    }
+
+    /// An item by reference: its name, or the preferred item of a tag (`#ingots/iron`).
+    pub fn item_by_ref(&self, text: &str) -> Option<u32> {
+        crate::refs::Ref::parse(text).and_then(|r| crate::refs::item(&r, &self.item_names, &self.components, &self.tag_items)).ok()
     }
 
     /// The value of property `name` in `state`.
@@ -661,7 +662,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 drag: s.drag,
                 support_side: s.support_side,
                 support: s.support.as_str().to_string(),
-                support_near: s.support_near.as_str().trim_start_matches('#').to_string(),
+                support_near: s.support_near.as_str().to_string(),
                 components: RawValue::list(s.components),
             })
         });
@@ -1107,7 +1108,17 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 support_near: None,
                 sounds: [u32::MAX; 4],
             });
-            supports.push((s.support, s.support_near));
+            // Support rules name tags (`#plant_soil`); the tag exists by being named here.
+            let mut support_tag = |t: String| -> String {
+                if t.is_empty() {
+                    return t;
+                }
+                crate::refs::tag_name(&t).map(str::to_string).unwrap_or_else(|e| {
+                    errors.push(format!("{}: block {}: support: {e}", mods.get(owner.0 as usize).map_or("engine", |m| m.id.as_str()), b.name));
+                    String::new()
+                })
+            };
+            supports.push((support_tag(s.support), support_tag(s.support_near)));
             state_values.push(s.components);
         }
         let drop = if b.drop.is_empty() { b.name.clone() } else { b.drop.clone() };
@@ -1368,7 +1379,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                     }
                 }
                 Target::Tagged(pattern) => {
-                    let pattern = pattern.strip_prefix('#').unwrap_or(pattern);
                     let tags: Vec<u32> = cb.names().iter().enumerate().filter(|(_, n)| comps::matches(pattern, n)).map(|(i, _)| i as u32).collect();
                     if tags.is_empty() {
                         errors.push(format!("{}: component {} set on tag #{pattern}, which no tag matches", m.1, s.value.name));
@@ -1449,15 +1459,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         };
         let mut replace: Vec<u32> = Vec::new();
         for r in &o.replace {
-            match r.strip_prefix('#') {
-                Some(tag) => match components.id(tag) {
-                    Some(t) => replace.extend((0..states.len() as u32).filter(|&s| components.has(comps::BLOCK, s, t)).map(|s| states[s as usize].block)),
-                    None => errors.push(format!("ore {} in {}: no block carries the tag {tag} it replaces", o.block, o.dimension)),
-                },
-                None => match block_names.get(r) {
-                    Some(&b) => replace.push(b),
-                    None => errors.push(format!("ore {} in {}: unknown block {r} to replace", o.block, o.dimension)),
-                },
+            match crate::refs::Ref::parse(r).and_then(|r| crate::refs::blocks(&r, &block_names, &block_defs, &components, states.len() as u32)) {
+                Ok(b) => replace.extend(b),
+                Err(e) => errors.push(format!("ore {} in {}: replace: {e}", o.block, o.dimension)),
             }
         }
         replace.sort_unstable();
@@ -1465,10 +1469,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let salt = o.block.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
         let biome = match o.biome.as_str() {
             "" => None,
-            t => match components.id(t) {
-                Some(t) => Some(t),
-                None => {
-                    errors.push(format!("ore {} in {}: no biome tag {t}", o.block, o.dimension));
+            t => match crate::refs::tag(&components, t) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    errors.push(format!("ore {} in {}: biome: {e}", o.block, o.dimension));
                     continue;
                 }
             },
@@ -1502,10 +1506,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
         let biome = match s.biome.as_str() {
             "" => None,
-            t => match components.id(t) {
-                Some(t) => Some(t),
-                None => {
-                    errors.push(format!("structure {}: no biome tag {t}", s.name));
+            t => match crate::refs::tag(&components, t) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    errors.push(format!("structure {}: biome: {e}", s.name));
                     continue;
                 }
             },
@@ -1619,7 +1623,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &components, &mut errors);
     let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
     ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
-    let first_tagged = |t: &str| components.id(t).and_then(|t| ordered_items.iter().copied().find(|&i| components.has(comps::ITEM, i, t)));
+    let tag_items = crate::refs::tag_items(&components, &ordered_items);
     let mut defaults: FxHashMap<String, crate::loot::Table> = FxHashMap::default();
     for b in &block_defs[1..] {
         if let Some(item) = b.drop {
@@ -1628,7 +1632,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let raw_loot: Vec<crate::loot::RawLoot> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.loot)).collect();
     let raw_mods: Vec<crate::loot::RawLootMod> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.loot_mods)).collect();
-    let resolve = crate::loot::Resolve { items: &item_names, by_tag: &first_tagged, components: &components };
+    let resolve = crate::loot::Resolve { items: &item_names, tag_items: &tag_items, components: &components };
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
     let loot = crate::loot::freeze(raw_loot, raw_mods, &order_of, &resolve, defaults, &mut errors);
     let mut stack_flags: FxHashMap<u32, u32> = FxHashMap::default();
@@ -1639,7 +1643,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             }
         }
     }
-    let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &order_of, &mut errors);
+    let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &order_of, &mut errors);
     word_sets.entry("core:rules".into()).or_default().extend(game.rules.iter().map(|r| r.0.clone()));
     for (table, t) in &loot {
         for k in t.pools.iter().flat_map(|p| &p.entries).filter_map(|e| e.smelt.as_ref()) {
@@ -1695,6 +1699,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         components,
         ids,
         tool_classes,
+        tag_items,
         block_textures,
         crack_textures,
         fire_texture,
@@ -1763,15 +1768,13 @@ fn freeze_liquids(
         });
     }
     let matcher = |s: &str, errors: &mut Vec<String>| -> Option<Match> {
-        if let Some(t) = s.strip_prefix('#') {
-            // A tag nothing has matches nothing.
-            return Some(Match::Tag(components.id(t).unwrap_or(u32::MAX)));
+        match crate::refs::Ref::parse(s).and_then(|r| crate::refs::blocks(&r, block_names, blocks, components, blocks.iter().map(|b| b.states).sum())) {
+            Ok(b) => Some(Match(b)),
+            Err(e) => {
+                errors.push(format!("liquid reaction: {e}"));
+                None
+            }
         }
-        let m = block_names.get(s).map(|&b| Match::Block(b));
-        if m.is_none() {
-            errors.push(format!("liquid reaction names unknown block {s}"));
-        }
-        m
     };
     let result = |s: &str, errors: &mut Vec<String>| -> Option<u32> {
         if s.is_empty() {

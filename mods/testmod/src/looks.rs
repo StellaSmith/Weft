@@ -44,7 +44,7 @@ pub fn register(r: &mut Registry) {
     r.config(&DREAM_STRENGTH).float(1.0, 0.1, 1.0).step(0.05);
     r.config(&DREAM_STYLE).choice(0, &["warm", "cold"]);
     r.particle(&SPARK)
-        .textures(&["core:particle/glint_3", "core:particle/glint_2", "core:particle/glint_1", "core:particle/glint_0"])
+        .textures(&["core:glint_3", "core:glint_2", "core:glint_1", "core:glint_0"])
         .life(0.6, 1.2)
         .size(0.12, 0.2)
         .gravity(-0.6)
@@ -59,9 +59,9 @@ pub fn register(r: &mut Registry) {
     for _ in 0..4 {
         obelisk = obelisk.layer(&["   ", " g ", "   "]);
     }
-    obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("dry").sink(1);
+    obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("#dry").sink(1);
     // Glow crystals grow only in the overworld's deep caves (an underground biome).
-    r.ore(&crate::OVERWORLD, &GLOW_CRYSTAL).veins(3).size(6).replace("#stone_ore_replaceables").biome("cave");
+    r.ore(&crate::OVERWORLD, &GLOW_CRYSTAL).veins(3).size(6).replace("#stone_ore_replaceables").biome("#cave");
     // A 64x64 texture among 16x16 ones: every texture keeps its own size.
     r.block(&MOSAIC).hardness(1.5).mineable("pickaxe");
     // A tint kind of the mod's own: violet by default (and on the item), teal in plains.
@@ -73,7 +73,7 @@ pub fn register(r: &mut Registry) {
     static TREE: Component<Text> = Component::named("tree");
     r.block(&GLOW_LOG).textures("glow_log_top", "glow_log", "glow_log_top").hardness(2.0).mineable("axe").tag("logs").set_text(&TREE, "round testmod:glow_leaves");
     r.block(&GLOW_LEAVES).cutout().opacity(1).tint(&GLOW).hardness(0.2).tag("leaves").mineable("shears");
-    r.block(&GLOW_FLOWER).plant().needs_below("plant_soil").tint(&GLOW);
+    r.block(&GLOW_FLOWER).plant().needs_below("#plant_soil").tint(&GLOW);
     r.block(&GLOW_CRYSTAL)
         .hardness(1.5)
         .mineable("pickaxe")

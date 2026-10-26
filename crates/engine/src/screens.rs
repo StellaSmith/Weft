@@ -27,7 +27,7 @@ pub struct BuildCx<'a> {
 impl BuildCx<'_> {
     pub fn t(&self, key: &str, args: &[Arg]) -> Vec<Span> {
         let mut out = Vec::new();
-        let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+        let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
         let cx = text::Ctx { lang: self.lang, input: Some(self.input), item_name: &items };
         text::format(self.lang.get(key), args, &cx, &mut out);
         out
@@ -134,7 +134,7 @@ pub fn mod_name(lang: &Lang, id: &str) -> String {
 // ---------------------------------------------------------------- mods
 
 /// Every loaded mod with its icon, version, authors and description (translations
-/// `mod.<id>.description`, `.authors`, `.url`; icon `textures/icon.png`), and its settings.
+/// `mod.<id>.description`, `.authors`, `.url`; icon `textures/gui/icon.png`), and its settings.
 #[derive(Default)]
 pub struct ModList {
     selected: Rc<std::cell::Cell<usize>>,
@@ -152,7 +152,7 @@ impl Screen for ModList {
         let sel = self.selected.get().min(mods.len().saturating_sub(1));
         let tall = (cx.size.y - 120.0).clamp(80.0, 300.0);
         let icon = |id: &str| {
-            let name = format!("{id}:icon");
+            let name = format!("{id}:gui/icon");
             crate::assets::texture_size(&name).map(|_| name)
         };
         frame(ui, cx, "mods.title", |ui| {

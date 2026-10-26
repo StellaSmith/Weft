@@ -6,7 +6,7 @@
 //! pub static FUEL: Component<u32> = Component::named("fuel");
 //! pub static PLANT_SOIL: Tag = Tag::named("plant_soil");
 //! r.item(&PEAT).set(&FUEL, 800);
-//! r.set_tagged("logs", &FUEL, 300);                  // every block and item tagged `logs`
+//! r.set("#logs", &FUEL, 300);                        // every block and item tagged `logs`
 //! if let Some(ticks) = FUEL.on_item(stack.item) { .. }
 //! if PLANT_SOIL.on_block(w.get(below)) { .. }
 //! ```

@@ -41,7 +41,7 @@ Slots come in named groups. The machine's inventory holds all of its groups, the
 | `accepts("fuel")` | only items with that tag or component, any mod's |
 | `limit(16)` | at most this many items per slot |
 | `big()`, `size(px)` | a bigger slot, 18 GUI pixels by default |
-| `background("gui/flame_slot")` | a texture shown while the slot is empty, like the armor silhouettes |
+| `background("flame_slot")` | a texture from `gui/` shown while the slot is empty, like the armor silhouettes |
 | `tooltip("mymod.fuel_slot")` | a translation shown over the empty slot |
 | `priority(n)` | shift-clicks from the inventory fill groups with a higher priority first |
 

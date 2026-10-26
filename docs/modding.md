@@ -4,7 +4,7 @@
 1. [Introduction](#introduction)
 2. [Creating a mod in two minutes](#creating-a-mod-in-two-minutes)
 3. [Names and paths](#names-and-paths)
-   - [Names](#names), [Tags](#tags), [Handles](#handles), [Textures](#textures), [Translations](#translations)
+   - [Names](#names), [References](#references), [Handles](#handles), [Textures](#textures), [Translations](#translations)
 4. [Components and tags as inter-mod communication](#components-and-tags-as-inter-mod-communication)
 5. [Content builders](#content-builders)
    - [Blocks](#blocks), [Items](#items), [Entities](#entities), [Machines](#machines), [Liquids](#liquids), [World](#world), [Recipes](#recipes), [Loot](#loot), [Replacing something of another mod](#replacing-something-of-another-mod)
@@ -92,9 +92,15 @@ settings, sounds, particles, events, keys, screens, HUD elements, rules, recipe 
 In your own mod you write just `ruby` and it becomes `mymod:ruby`, the same when you register it and when you read it.\
 Other mods' things go by their full name: `base:furnace`. The engine's own are `core:..`.
 
-### Tags
-`#tag` in a recipe, an ore replace list or a loot condition means "anything with this tag".\
-`#ingots/*` means anything with a tag starting with `ingots/`.
+### References
+Wherever a block, item or biome is named as text (recipes, loot, ore and structure filters, `r.set`, support rules, spawn rules, `.ctm` files, `{block:..}` and `{item:..}`, commands), it is written the same way:
+- `base:stone` is that thing, `base:furnace[lit=true]` the furnace's states with that value
+- `#logs` is anything with the tag, `#ingots/*` anything with a tag starting with `ingots/`
+- calls that only make sense with a tag (`needs_below`, `.biome(..)`, tool conditions) still take it with `#`, so it never looks like a name
+
+A name nothing has, or a tag pattern no tag matches, stops the game at load with your mod's name and what was wrong.\
+Where one item has to come out of a tag (a recipe output, a loot entry), it's the preferred one: the first registered in mod load order.\
+Recipes have one more form, a variable: `#ores/{m}` in and `#ingots/{m}` out makes one recipe per material that has both.
 
 ### Handles
 The name lives in a handle, and you register by the handle:
@@ -113,16 +119,18 @@ Every kind of thing works like this, so there is nothing else to remember.\
 Once the game is loaded a handle gives you the numeric id (`RUBY.id()`), and hot code works only with ids.\
 Families made in a loop take `Item::generated(format!("{metal}_ingot"))`, a handle made from a name at runtime.
 
-### Textures
-`.texture("ruby")` for a block means `mymod:block/ruby`, for an item it means `mymod:item/ruby`.\
-A full path stays as written. Resource packs can replace any of them.\
+### Textures and other assets
+Every call that takes a file knows its folder: blocks look in `block/`, items in `item/`, mobs and worn armor in `entity/`, particles in `particle/`, slot backgrounds and `{img:..}` in `gui/`, sounds in `sounds/`.\
+So `.texture("ruby")` for a block means `mymod:block/ruby`, for an item `mymod:item/ruby`, and `"base:ruby"` is the same folder of the base game.\
+Subfolders are fine (`.worn(.., "armor/ruby_1")` is `entity/armor/ruby_1`), but a name can't leave its folder: `"block/ruby"` for an item, `..` or an absolute path stop the game at load. An item that wants to look like a block gets a model, not the block's texture path.\
+Resource packs replace any of them by putting a file at the same place.\
 Textures can also be [animated, glow and have overlays](textures.md), or [be connected](ctm.md)).
 
 ### Translations
 Format: `type.modname.name = value`, e.g. `item.examplemod.example_item = Example Item`\
 Any item can have a tooltip using `type.modname.name.tooltip = Some tooltip`, more in the [tooltips guide](tooltips.md).\
 If the player's language doesn't have a key (or a whole file), English is shown, so `en_us.lang` is the one you always need.\
-The Mods screen reads your mod's page from there too: `mod.mymod.name`, `mod.mymod.description` (as long as you like, with pictures), `mod.mymod.authors` and `mod.mymod.url`, and its icon is `assets/textures/icon.png`.
+The Mods screen reads your mod's page from there too: `mod.mymod.name`, `mod.mymod.description` (as long as you like, with pictures), `mod.mymod.authors` and `mod.mymod.url`, and its icon is `assets/textures/gui/icon.png`.
 
 Text can carry colors and effects:
 - `{#ff8080}This text is red{/}`
@@ -130,7 +138,7 @@ Text can carry colors and effects:
 - `{on_key:!core:sneak}This text will appear when the bound key is NOT pressed{/on_key}`
 - `{on_key:core:sneak}This text will appear only when the bound key is pressed{/on_key}`
 - `{if:creative}This text will appear if the player is in creative mode{/if}`
-- `{img:mymod:gui/logo}`, `{block:base:furnace}` and `{align:center}..{/align}` for pictures, blocks and centered lines
+- `{img:mymod:logo}` (from `gui/`), `{block:base:furnace}` and `{align:center}..{/align}` for pictures, blocks and centered lines
 
 All of it works in any text the game shows, chat and command replies included, so there is no second kind of text to learn.
 
@@ -147,7 +155,7 @@ static HOT: Tag = Tag::named("hot");
 
 r.item(&COAL_DUST).set(&FUEL, 800).tag("hot");      // on your own content
 r.set("base:stick", &FUEL, 100);                    // on someone else's
-r.set_tagged("planks/*", &FUEL, 300);               // on everything with a tag
+r.set("#planks/*", &FUEL, 300);                     // on everything with a tag
 r.tag("hot", &["base:lava", "base:magma"]);
 
 // Reading
@@ -189,7 +197,7 @@ is dropped.
 - `light(15)` or `light_rgb(r, g, b)`
 - `cutout()`, `translucent()`
 - `model_box(min, max, texture)`, `collision(..)`
-- `needs_below("soil")`
+- `needs_below("#soil")`
 - `grows(seconds, min_light)` + `on_grow(..)` for plants
 - `random_ticks(..)`
 - `on_use`, `on_placed`, `on_broken`, `on_neighbor`, `on_scheduled`
@@ -242,7 +250,7 @@ Reactions: `r.liquid_reaction("#hot", "#water").source("obsidian")`.
 - `r.terrain(dim)` for its terrain, yours or another mod's
 - `r.ore(dim, block)`
 - `r.structure(dim, name)` with layers
-- `r.spawn(entity).biome("animals").light(7, 15)`
+- `r.spawn(entity).biome("#animals").light(7, 15)`
 
 The terrain has presets like hills, canyons, dunes, caves, lava lakes if you don't want to write noise by hand.\
 Mars in testmod is built from presets only.\

@@ -17,7 +17,6 @@ use crate::{Client, ClientView, GizmoGroup, Music, Particle, Registry, SoundCate
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
-    ns: &'static str,
     name: String,
     textures: Vec<String>,
     shader: String,
@@ -30,7 +29,7 @@ impl ParticleBuilder<'_> {
     /// Frames over its life; relative names are under `particle/`. None: block dust (pieces of
     /// the burst's block).
     pub fn textures(mut self, names: &[&str]) -> Self {
-        self.textures = names.iter().map(|t| if t.contains(':') { t.to_string() } else { format!("{}:particle/{t}", self.ns) }).collect();
+        self.textures = names.iter().map(|t| crate::asset("particle", t)).collect();
         self
     }
     /// Seconds, picked between the two.
@@ -76,7 +75,7 @@ impl ParticleBuilder<'_> {
     }
     /// Colors it with `shaders/particle/<name>.wgsl` (`fn shade(p: ParticleFrag) -> vec4<f32>`).
     pub fn shader(mut self, name: &str) -> Self {
-        self.shader = qualify(self.ns, name);
+        self.shader = crate::asset("", name);
         self
     }
 }
@@ -104,7 +103,7 @@ impl Registry {
     pub fn particle<'a>(&'a mut self, particle: &'static Particle) -> ParticleBuilder<'a> {
         ParticleBuilder {
             raw: self.raw,
-            ns: self.ns,
+
             name: particle.name().to_string(),
             textures: Vec::new(),
             shader: String::new(),
@@ -212,7 +211,6 @@ impl Client {
 
 pub struct SoundBuilder<'a> {
     raw: *mut abi::Registrar,
-    ns: &'static str,
     name: String,
     files: Vec<String>,
     handle: Option<&'static crate::Sound>,
@@ -224,7 +222,7 @@ pub struct SoundBuilder<'a> {
 impl SoundBuilder<'_> {
     /// Variants picked at random: `sounds/<name>.ogg` or `.wav`, relative to this mod.
     pub fn files(mut self, names: &[&str]) -> Self {
-        self.files = names.iter().map(|n| qualify(self.ns, n)).collect();
+        self.files = names.iter().map(|n| crate::asset("", n)).collect();
         self
     }
     /// Category for its volume setting: the engine's (`core:creatures` ...) or one registered
@@ -262,7 +260,6 @@ impl Drop for SoundBuilder<'_> {
 
 pub struct MusicBuilder<'a> {
     raw: *mut abi::Registrar,
-    ns: &'static str,
     name: String,
     tracks: Vec<String>,
     dimension: String,
@@ -273,7 +270,7 @@ pub struct MusicBuilder<'a> {
 impl MusicBuilder<'_> {
     /// Files streamed (`sounds/<name>.ogg|.wav`), relative to this mod.
     pub fn tracks(mut self, names: &[&str]) -> Self {
-        self.tracks = names.iter().map(|n| qualify(self.ns, n)).collect();
+        self.tracks = names.iter().map(|n| crate::asset("", n)).collect();
         self
     }
     pub fn dimension(mut self, dimension: &crate::Dimension) -> Self {
@@ -301,7 +298,7 @@ impl Drop for MusicBuilder<'_> {
 impl Registry {
     /// A sound event, see `SoundBuilder`; blocks and entities name groups of them with `.sounds()`.
     pub fn sound<'a>(&'a mut self, sound: &'static crate::Sound) -> SoundBuilder<'a> {
-        SoundBuilder { raw: self.raw, ns: self.ns, name: sound.name().to_string(), files: Vec::new(), handle: Some(sound), desc: abi::SoundDesc::DEFAULT, category_name: String::new(), _p: PhantomData }
+        SoundBuilder { raw: self.raw, name: sound.name().to_string(), files: Vec::new(), handle: Some(sound), desc: abi::SoundDesc::DEFAULT, category_name: String::new(), _p: PhantomData }
     }
 
     /// A sound category with its own volume setting (`<ns>:volume_<name>`, in the mod's
@@ -312,7 +309,7 @@ impl Registry {
 
     /// Background music, see `MusicBuilder`.
     pub fn music<'a>(&'a mut self, music: &Music) -> MusicBuilder<'a> {
-        MusicBuilder { raw: self.raw, ns: self.ns, name: music.name().to_string(), tracks: Vec::new(), dimension: String::new(), when: 0, _p: PhantomData }
+        MusicBuilder { raw: self.raw, name: music.name().to_string(), tracks: Vec::new(), dimension: String::new(), when: 0, _p: PhantomData }
     }
 }
 

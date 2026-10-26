@@ -605,7 +605,7 @@ pub fn recipe_slot(ui: &mut Ui, lang: &crate::ui::lang::Lang, input: &crate::inp
     use crate::registry::Ingredient;
     let c = content();
     let fmt = |key: &str, args: &[text::Arg]| {
-        let items = |name: &str| c.item_names.get(name).copied();
+        let items = |name: &str| c.item_by_ref(name);
         let tcx = text::Ctx { lang, input: Some(input), item_name: &items };
         let mut out = Vec::new();
         text::format(lang.get(key), args, &tcx, &mut out);
@@ -633,9 +633,10 @@ pub fn recipe_slot(ui: &mut Ui, lang: &crate::ui::lang::Lang, input: &crate::inp
             tip.extend(fmt("recipes.fluid_amount", &[text::Arg::Int(count as i64)]));
             b
         }
-        Ingredient::Item(_) | Ingredient::Tag(_) => {
+        Ingredient::Item(_) | Ingredient::Tag(_) | Ingredient::Any(_) => {
             let items: Vec<u32> = match ing {
                 Ingredient::Item(i) => vec![*i],
+                Ingredient::Any(list) => list.clone(),
                 Ingredient::Tag(t) => (1..c.items.len() as u32).filter(|&i| c.components.has(crate::components::ITEM, i, *t)).collect(),
                 _ => Vec::new(),
             };

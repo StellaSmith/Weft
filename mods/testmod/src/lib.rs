@@ -85,7 +85,7 @@ fn init(r: &mut Registry) {
     // light are its own.
     r.block(&SOUL_TORCH)
         .replace()
-        .retexture("base:block/torch", "soul_torch")
+        .retexture("base:torch", "soul_torch")
         .light_rgb(3, 9, 15)
         .hardness(0.0);
 
@@ -194,7 +194,7 @@ fn init(r: &mut Registry) {
     r.liquid(&OIL).texture("oil_still").opacity(4).drag(0.4).delay(15).drop_off(2).slope_find(3).infinite(0).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
 
     // Healing food without touching the base game's eating code.
-    r.set_tagged("cooked_meat/*", &FOOD_HEAL, 2.0);
+    r.set("#cooked_meat/*", &FOOD_HEAL, 2.0);
     r.on(&EATEN, |b| {
         let w = b.world();
         for e in b.iter() {

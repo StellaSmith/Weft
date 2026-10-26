@@ -162,7 +162,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             if key.len == 0 {
                 return out;
             }
-            let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+            let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
             let cx = text::Ctx { lang, input, item_name: &items };
             text::format(lang.get(key.as_str()), &args(a), &cx, &mut out);
             out

@@ -106,7 +106,7 @@ fn leaves(r: &mut Registry, handle: &'static Block, tex: &str) {
 }
 
 fn plant(r: &mut Registry, handle: &'static Block, tex: &str) {
-    r.block(handle).sounds("grass").texture(tex).plant().needs_below("plant_soil").tab(&crate::tabs::NATURAL);
+    r.block(handle).sounds("grass").texture(tex).plant().needs_below("#plant_soil").tab(&crate::tabs::NATURAL);
 }
 
 /// Sand and gravel: with nothing under them they fall as an entity and land as a block.
@@ -159,23 +159,23 @@ pub fn register(r: &mut Registry) {
     r.liquid(&LAVA).texture("lava_still").light(15).drag(0.3).delay(30).drop_off(2).slope_find(2).infinite(0).temperature(1300).tag("lava").tag("hot").bucket(Item::generated("lava_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid_reaction("#hot", "#water").source("obsidian").flowing("cobblestone").falls_into("stone");
 
-    r.block(&TALL_GRASS).sounds("grass").texture("tallgrass").plant().needs_below("plant_soil").tint_grass().no_item();
+    r.block(&TALL_GRASS).sounds("grass").texture("tallgrass").plant().needs_below("#plant_soil").tint_grass().no_item();
     r.loot(&TALL_GRASS).pool(Pool::new().when(Cond::Chance(0.125)).item("wheat_seeds"));
     plant(r, &DANDELION, "flower_dandelion");
     plant(r, &ROSE, "flower_rose");
-    r.block(&SAPLING).sounds("grass").texture("sapling_oak").plant().needs_below("plant_soil").grows(470.0, 9).on_grow(|e| worldgen::grow_tree(e.world(), e.pos())).tab(&crate::tabs::NATURAL);
-    r.block(&SUGAR_CANE).sounds("grass").texture("reeds").plant().needs_below("sugar_cane_soil").needs_near_support("water").grows(270.0, 0).on_grow(|e| grow_column(e, &SUGAR_CANE)).tab(&crate::tabs::NATURAL);
+    r.block(&SAPLING).sounds("grass").texture("sapling_oak").plant().needs_below("#plant_soil").grows(470.0, 9).on_grow(|e| worldgen::grow_tree(e.world(), e.pos())).tab(&crate::tabs::NATURAL);
+    r.block(&SUGAR_CANE).sounds("grass").texture("reeds").plant().needs_below("#sugar_cane_soil").needs_near_support("#water").grows(270.0, 0).on_grow(|e| grow_column(e, &SUGAR_CANE)).tab(&crate::tabs::NATURAL);
     r.block(&CACTUS).sounds("cloth")
         .textures("cactus_top", "cactus_side", "cactus_top")
         .model_box_faces([1.0, 0.0, 1.0], [15.0, 16.0, 15.0], ["cactus_side", "cactus_side", "cactus_top", "cactus_top", "cactus_side", "cactus_side"])
         .hardness(0.4)
-        .needs_below("cactus_soil")
+        .needs_below("#cactus_soil")
         .grows(270.0, 0).on_grow(|e| grow_column(e, &CACTUS)).tab(&crate::tabs::NATURAL);
     r.block(&WHEAT).sounds("grass")
         .prop("age", 0..=7)
         .states(|p, s| s.texture(&format!("wheat_stage_{}", p.get("age"))))
         .plant()
-        .needs_below("crop_soil")
+        .needs_below("#crop_soil")
         .no_item()
         .drops("wheat", 1)
         .grows(205.0, 9);
@@ -237,12 +237,12 @@ pub fn register(r: &mut Registry) {
 
     // What may grow or stand where, from the common `dirt` and `sand` tags like modern vanilla:
     // a mod's sand tagged `sand` gets cactus and sugar cane, in the world and from players.
-    r.tag_on(Target::Tagged("dirt"), "plant_soil");
+    r.tag("plant_soil", &["#dirt"]);
     r.tag("plant_soil", &["farmland"]);
-    r.tag_on(Target::Tagged("dirt"), "sugar_cane_soil");
-    r.tag_on(Target::Tagged("sand"), "sugar_cane_soil");
+    r.tag("sugar_cane_soil", &["#dirt"]);
+    r.tag("sugar_cane_soil", &["#sand"]);
     r.tag("sugar_cane_soil", &["sugar_cane"]);
-    r.tag_on(Target::Tagged("sand"), "cactus_soil");
+    r.tag("cactus_soil", &["#sand"]);
     r.tag("cactus_soil", &["cactus"]);
     r.tag("crop_soil", &["farmland"]);
     r.tag("grass_spreads_to", &["dirt"]);

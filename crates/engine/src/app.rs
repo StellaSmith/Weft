@@ -1013,7 +1013,7 @@ impl Running {
             stats: &self.stats,
             debug: self.debug,
         };
-        let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+        let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
         let tcx = text::Ctx { lang: &self.lang, input: Some(ctx.input), item_name: &items };
         // Each condition is asked once per frame however many texts use it.
         let asked: std::cell::RefCell<Vec<(String, bool)>> = Default::default();

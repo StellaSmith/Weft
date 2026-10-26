@@ -35,13 +35,13 @@ pub fn register(r: &mut Registry) {
     r.shapeless(C, "blue_stained_glass", 1, &["glass", "ice"], 0);
 
     // Every mod's `ore_blocks/<m>` packs its `ingots/<m>` or `gems/<m>`, and its ores smelt into them.
-    for kind in ["#ingots/*", "#gems/*"] {
-        r.shaped(C, "#ore_blocks/*", 1, &["###", "###", "###"], &[('#', kind)]);
-        r.shapeless(C, kind, 9, &["#ore_blocks/*"], 0);
-        r.shapeless(S, kind, 1, &["#ores/*"], 200);
+    for kind in ["#ingots/{m}", "#gems/{m}"] {
+        r.shaped(C, "#ore_blocks/{m}", 1, &["###", "###", "###"], &[('#', kind)]);
+        r.shapeless(C, kind, 9, &["#ore_blocks/{m}"], 0);
+        r.shapeless(S, kind, 1, &["#ores/{m}"], 200);
     }
-    r.shapeless(S, "#cooked_meat/*", 1, &["#raw_meat/*"], 200);
-    r.shapeless(S, "#ingots/*", 1, &["#raw_ores/*"], 200);
+    r.shapeless(S, "#cooked_meat/{m}", 1, &["#raw_meat/{m}"], 200);
+    r.shapeless(S, "#ingots/{m}", 1, &["#raw_ores/{m}"], 200);
 
     // A `pickaxes/<m>` or `armor_chest/<m>` item is made from `materials/<m>`.
     for (tool, pattern) in [
@@ -51,10 +51,10 @@ pub fn register(r: &mut Registry) {
         ("hoes", &["XX", " #", " #"]),
         ("swords", &["X", "X", "#"]),
     ] {
-        r.shaped(C, &format!("#{tool}/*"), 1, pattern, &[('X', "#materials/*"), ('#', "stick")]);
+        r.shaped(C, &format!("#{tool}/{{m}}"), 1, pattern, &[('X', "#materials/{m}"), ('#', "stick")]);
     }
     for (slot, pattern) in crate::items::ARMOR_SLOTS.iter().zip([&["XXX", "X X"][..], &["X X", "XXX", "XXX"], &["XXX", "X X", "X X"], &["X X", "X X"]]) {
-        r.shaped(C, &format!("#{slot}/*"), 1, pattern, &[('X', "#materials/*")]);
+        r.shaped(C, &format!("#{slot}/{{m}}"), 1, pattern, &[('X', "#materials/{m}")]);
     }
 
     for (input, output, ticks) in [

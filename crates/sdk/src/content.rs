@@ -259,8 +259,6 @@ fn raw_values(list: &[Pending], scratch: &mut Vec<Vec<u8>>) -> Vec<abi::CompValu
 pub enum Target<'a> {
     /// The block and item of that name; `name[prop=value]` only the block's states with that value.
     Name(&'a str),
-    /// Blocks and items with a matching tag (`*` matches any text).
-    Tagged(&'a str),
     Entity(&'a str),
     Biome(&'a str),
     Dimension(&'a str),
@@ -280,7 +278,7 @@ impl Registry {
     /// the block's components). Texture defaults to `block/<name>` for all faces.
     pub fn block<'a>(&'a mut self, block: &'static Block) -> BlockBuilder<'a> {
         let name = block.name().to_string();
-        let tex = asset_path(self.ns, "block", &name);
+        let tex = crate::asset("block", &name);
         BlockBuilder {
             reg: self,
             name,
@@ -308,12 +306,11 @@ impl Registry {
             _p: PhantomData,
             raw: self.raw,
             name: item.name().to_string(),
-            texture: asset_path(self.ns, "item", item.name()),
+            texture: crate::asset("item", item.name()),
             handle: Some(item),
             block: String::new(),
             components: Vec::new(),
             on_use: abi::Callback::NONE,
-            ns: self.ns,
         }
     }
 
@@ -360,16 +357,11 @@ impl Registry {
         DimensionBuilder { raw: self.raw, name: dimension.name().to_string(), handle: Some(dimension), desc: abi::DimensionDesc::DEFAULT, components: Vec::new(), _p: PhantomData }
     }
 
-    /// Sets a component on the block and item called `name`, whoever registered them:
-    /// `r.set("base:coal", &FUEL, 1600)`. The last mod in load order wins; overrides are logged.
-    pub fn set<T: Value>(&mut self, name: &str, comp: &Component<T>, v: T) {
-        self.set_on(Target::Name(name), comp, v)
-    }
-
-    /// Sets a component on every block and item with a matching tag: `r.set_tagged("logs", &FUEL, 300)`,
-    /// `r.set_tagged("cooked_meat/*", &HEAL, 2.0)`.
-    pub fn set_tagged<T: Value>(&mut self, pattern: &str, comp: &Component<T>, v: T) {
-        self.set_on(Target::Tagged(pattern), comp, v)
+    /// Sets a component on blocks and items of any mod, by reference: `r.set("base:coal", &FUEL,
+    /// 1600)`, `r.set("#planks/*", &FUEL, 300)`, `r.set("base:furnace[lit=true]", &HOT, ..)`. The
+    /// last mod in load order wins; overrides are logged.
+    pub fn set<T: Value>(&mut self, what: &str, comp: &Component<T>, v: T) {
+        self.set_on(Target::Name(what), comp, v)
     }
 
     pub fn set_on<T: Value>(&mut self, target: Target, comp: &Component<T>, v: T) {
@@ -377,8 +369,8 @@ impl Registry {
         self.send_set(target, &p, false);
     }
 
-    /// Adds `tag` to blocks and items of any mod, e.g. `r.tag("ingots/tin", &["othermod:tin_ingot"])`
-    /// or `r.tag("plant_soil", &["othermod:mud"])`.
+    /// Adds `tag` to blocks and items of any mod, by reference: `r.tag("ingots/tin",
+    /// &["othermod:tin_ingot"])`, `r.tag("plant_soil", &["#dirt"])`.
     pub fn tag(&mut self, tag: &str, names: &[&str]) {
         for n in names {
             self.send_set(Target::Name(n), &Pending::tag(tag), false);
@@ -404,7 +396,6 @@ impl Registry {
         use abi::set_target as st;
         let (kind, name) = match target {
             Target::Name(n) => (st::NAME, qualify(self.ns, n)),
-            Target::Tagged(t) => (st::TAGGED, t.to_string()),
             Target::Entity(n) => (st::ENTITY, qualify(self.ns, n)),
             Target::Biome(n) => (st::BIOME, qualify(self.ns, n)),
             Target::Dimension(n) => (st::DIMENSION, qualify(self.ns, n)),
@@ -557,15 +548,15 @@ macro_rules! state_setters {
             });
             self
         }
-        /// Needs a block tagged `tag` underneath (`#` optional): placed only there, and breaks
+        /// Needs a block with `tag` underneath (`#plant_soil`): placed only there, and breaks
         /// off when it goes.
         pub fn needs_below(self, tag: &str) -> Self {
             self.needs(2, tag)
         }
-        /// Needs the neighbor on `face` (-X, +X, -Y, +Y, -Z, +Z) to be tagged `tag`, or solid
-        /// if `tag` is empty.
+        /// Needs the neighbor on `face` (-X, +X, -Y, +Y, -Z, +Z) to carry `tag` (`#plant_soil`),
+        /// or to be solid if `tag` is empty.
         pub fn needs(mut self, face: u32, tag: &str) -> Self {
-            let tag = tag.trim_start_matches('#').to_string();
+            let tag = tag.to_string();
             self.each(|s, _| {
                 s.support_side = face as u8;
                 s.support = tag.clone();
@@ -575,7 +566,7 @@ macro_rules! state_setters {
         /// The supporting block must have a block tagged `tag` beside it (sugar cane: `water`),
         /// unless it is this same block.
         pub fn needs_near_support(mut self, tag: &str) -> Self {
-            let tag = tag.trim_start_matches('#').to_string();
+            let tag = tag.to_string();
             self.each(|s, _| s.support_near = tag.clone());
             self
         }
@@ -701,19 +692,10 @@ macro_rules! state_setters {
     };
 }
 
-fn block_tex(ns: &str, t: &str) -> String {
-    asset_path(ns, "block", t)
+fn block_tex(_ns: &str, t: &str) -> String {
+    crate::asset("block", t)
 }
 
-/// `name` as an asset under `folder`: `torch` -> `<ns>:block/torch`, `base:torch` ->
-/// `base:block/torch`, a full path (`base:block/torch`) stays as it is.
-pub(crate) fn asset_path(ns: &str, folder: &str, name: &str) -> String {
-    match name.split_once(':') {
-        Some((_, path)) if path.contains('/') => name.to_string(),
-        Some((owner, path)) => format!("{owner}:{folder}/{path}"),
-        None => format!("{ns}:{folder}/{name}"),
-    }
-}
 
 impl<'a> State<'a> {
     fn each(&mut self, f: impl Fn(&mut StateDef, &str)) {
@@ -886,10 +868,9 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// The block's item shows this flat texture (a block texture name, or `ns:path`) instead of
-    /// the block model.
+    /// The block's item shows this flat texture from `item/` instead of the block model.
     pub fn item_texture(mut self, t: &str) -> Self {
-        self.item_texture = block_tex(self.reg.ns, t);
+        self.item_texture = crate::asset("item", t);
         self
     }
 
@@ -908,11 +889,11 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// On a replacement keeping the replaced block's states: texture `from` (its full name, like
-    /// `base:block/torch`) becomes `to` there and on the item.
+    /// On a replacement keeping the replaced block's states: block texture `from` (another
+    /// mod's, `base:torch`) becomes `to` there, and the item texture of that name too.
     pub fn retexture(mut self, from: &str, to: &str) -> Self {
-        let to = block_tex(self.reg.ns, to);
-        self.retexture.push((from.to_string(), to));
+        self.retexture.push((crate::asset("block", from), crate::asset("block", to)));
+        self.retexture.push((crate::asset("item", from), crate::asset("item", to)));
         self
     }
 
@@ -1095,7 +1076,6 @@ impl Drop for BlockBuilder<'_> {
                 block: self.name.clone(),
                 components: Vec::new(),
                 on_use: abi::Callback::NONE,
-                ns: self.reg.ns,
             };
             drop(item);
         }
@@ -1105,7 +1085,6 @@ impl Drop for BlockBuilder<'_> {
 pub struct ItemBuilder<'a> {
     _p: PhantomData<&'a mut Registry>,
     raw: *mut abi::Registrar,
-    ns: &'static str,
     name: String,
     texture: String,
     handle: Option<&'static Item>,
@@ -1116,7 +1095,7 @@ pub struct ItemBuilder<'a> {
 
 impl ItemBuilder<'_> {
     pub fn texture(mut self, t: &str) -> Self {
-        self.texture = if t.contains(':') { t.to_string() } else { format!("{}:item/{t}", self.ns) };
+        self.texture = crate::asset("item", t);
         self
     }
     /// Stack size (`max_stack`).
@@ -1146,9 +1125,9 @@ impl ItemBuilder<'_> {
         self.tag(&tag)
     }
     /// Shown on the wearer's model while in an equipment slot: `parts` from `worn_parts`, `texture`
-    /// in the wearer's skin layout.
+    /// (under `entity/`, like `armor/iron_1`) in the wearer's skin layout.
     pub fn worn(self, parts: u32, inflate: f32, texture: &str) -> Self {
-        let tex = qualify(self.ns, texture);
+        let tex = crate::asset("entity", texture);
         self.set(&c::WORN, abi::Worn { roles: parts, inflate }).set_text(&c::WORN_TEXTURE, &tex)
     }
 
@@ -1315,7 +1294,7 @@ impl Drop for DimensionBuilder<'_> {
 /// ```ignore
 /// r.structure("overworld", "well")
 ///     .layer(&["ccc", "cwc", "ccc"]).layer(&["c c", "   ", "c c"])
-///     .key('c', "cobblestone").key('w', "water").spacing(64).chance(0.3).biome("animals").sink(1);
+///     .key('c', "cobblestone").key('w', "water").spacing(64).chance(0.3).biome("#animals").sink(1);
 /// ```
 pub struct StructureBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -1715,9 +1694,6 @@ impl Drop for ReactionBuilder<'_> {
     }
 }
 
-fn block_or_tag(ns: &str, s: &str) -> String {
-    if s.starts_with('#') { s.to_string() } else { qualify(ns, s) }
-}
 
 impl Registry {
     /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers.
@@ -1739,7 +1715,7 @@ impl Registry {
 
     /// When `liquid` touches `touching` (names or `#tags` of liquid blocks), see `ReactionBuilder`.
     pub fn liquid_reaction<'a>(&'a mut self, liquid: &str, touching: &str) -> ReactionBuilder<'a> {
-        let names = [block_or_tag(self.ns, liquid), block_or_tag(self.ns, touching), String::new(), String::new(), String::new()];
+        let names = [qualify(self.ns, liquid), qualify(self.ns, touching), String::new(), String::new(), String::new()];
         ReactionBuilder { reg: self, names }
     }
 }

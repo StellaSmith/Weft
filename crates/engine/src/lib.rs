@@ -24,6 +24,7 @@ pub mod net;
 pub mod packs;
 pub mod physics;
 pub mod post;
+pub mod refs;
 pub mod registry;
 pub mod saves;
 pub mod screens;

@@ -32,7 +32,7 @@ Anything a mod keeps in `assets`, at the same path:
 |---|---|
 | `textures/block/`, `item/`, `entity/` | blocks, items and mob skins. `_e` glow masks and `.anim` files go along, see the [textures guide](textures.md) |
 | `textures/gui/` | windows, buttons and bars, with `.gui` files for how they stretch ([UI guide](ui.md#gui-textures)) |
-| `textures/armor/`, `textures/particle/` | worn armor and particles |
+| `textures/entity/armor/`, `textures/particle/` | worn armor and particles |
 | `lang/en_us.lang` | all text, [tooltips](tooltips.md) included |
 | `ui/theme.theme` | colors and textures of every screen |
 | `models/`, `animations/` | mob models and keyframes ([models guide](models.md)) |

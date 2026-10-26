@@ -41,6 +41,8 @@ use abi::{Callback, Host, ModId, Str};
 static HOST: AtomicPtr<Host> = AtomicPtr::new(std::ptr::null_mut());
 static ME: AtomicU32 = AtomicU32::new(u32::MAX);
 static MOD_ID: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+/// The registrar while `init` runs, so the SDK can report mistakes as load errors.
+static REGISTRAR: AtomicPtr<abi::Registrar> = AtomicPtr::new(std::ptr::null_mut());
 
 pub fn host() -> &'static Host {
     let p = HOST.load(Ordering::Relaxed);
@@ -132,7 +134,53 @@ pub unsafe fn __init(
     let _ = MOD_ID.set(id);
     install_panic_hook();
     let mut r = Registry { raw: reg, ns: id };
-    guard(|| f(&mut r))
+    REGISTRAR.store(reg, Ordering::Relaxed);
+    let result = guard(|| f(&mut r));
+    REGISTRAR.store(std::ptr::null_mut(), Ordering::Relaxed);
+    result
+}
+
+/// A mistake in a registration: a load error while the mod registers, a logged error later.
+pub(crate) fn mistake(message: &str) {
+    let reg = REGISTRAR.load(Ordering::Relaxed);
+    if reg.is_null() {
+        error!("{message}");
+    } else {
+        unsafe { (host().reg_error)(reg, Str::new(message)) }
+    }
+}
+
+/// Texture folders: an asset name never starts with one of them, the call already picks it.
+const TEXTURE_FOLDERS: [&str; 5] = ["block", "item", "entity", "gui", "particle"];
+
+/// Every asset argument goes through here. The call implies a folder (`block`, `item`, `entity`,
+/// `gui`, `particle`, or one of the asset kinds that have their own root: sounds, models,
+/// animations, shaders): `"x"` is that folder of this mod, `"other:x"` the same folder of mod
+/// `other`, and subfolders are fine (`"armor/iron_1"`). Leaving the folder (`"block/x"` for an
+/// item, `..`, an absolute path) is a load error. Gives `ns:folder/path` (or `ns:path` for an
+/// empty folder).
+pub(crate) fn asset(folder: &str, name: &str) -> String {
+    let (ns, path) = name.split_once(':').unwrap_or((mod_id(), name));
+    if let Err(why) = asset_check(folder, ns, path) {
+        let shown = if folder.is_empty() { String::new() } else { format!(" in {folder}/") };
+        mistake(&format!("asset `{name}`{shown}: {why}"));
+    }
+    if folder.is_empty() { format!("{ns}:{path}") } else { format!("{ns}:{folder}/{path}") }
+}
+
+fn asset_check(folder: &str, ns: &str, path: &str) -> Result<(), &'static str> {
+    let bad = if path.is_empty() || ns.is_empty() {
+        Some("an empty name")
+    } else if path.starts_with('/') || path.contains('\\') || path.contains(':') {
+        Some("not a name inside the folder")
+    } else if path.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
+        Some("a path leaving the folder")
+    } else if TEXTURE_FOLDERS.contains(&folder) && path.split('/').next().is_some_and(|f| TEXTURE_FOLDERS.contains(&f)) {
+        Some("names start inside the folder, without it")
+    } else {
+        None
+    };
+    bad.map_or(Ok(()), Err)
 }
 
 fn install_panic_hook() {
@@ -177,7 +225,25 @@ pub(crate) fn full_name(name: &str) -> String {
     qualify(mod_id(), name)
 }
 
-/// Prefixes the mod namespace unless the name already has one.
+/// Prefixes the mod namespace unless the name already has one. Tag references (`#logs`) are
+/// vocabulary and stay as written.
 pub(crate) fn qualify(ns: &str, name: &str) -> String {
-    if name.contains(':') { name.to_string() } else { format!("{ns}:{name}") }
+    let base = name.split('[').next().unwrap_or(name);
+    if name.starts_with('#') || base.contains(':') || name.is_empty() { name.to_string() } else { format!("{ns}:{name}") }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn assets_stay_in_their_folder() {
+        use super::asset_check as ok;
+        assert!(ok("block", "base", "stone").is_ok());
+        assert!(ok("entity", "base", "armor/iron_1").is_ok());
+        assert!(ok("", "base", "dig/stone1").is_ok());
+        assert!(ok("item", "base", "block/torch").is_err());
+        assert!(ok("block", "base", "block/torch").is_err());
+        assert!(ok("block", "base", "../item/x").is_err());
+        assert!(ok("block", "base", "/x").is_err());
+        assert!(ok("block", "base", "").is_err());
+    }
 }

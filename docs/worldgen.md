@@ -31,7 +31,7 @@ r.ore(&OVERWORLD, &TIN_ORE).y(-64, 48).veins(4).size(7).replace("#stone_ore_repl
 - `veins(n)`: how many veins are started per cube
 - `size(n)`: blocks in a vein
 - `replace(..)`: what the ore may replace, block names or `#tags` separated by spaces
-- `biome("cave")`: only in biomes with this tag, underground ones included
+- `biome("#cave")`: only in biomes with this tag, underground ones included
 
 ## Structures
 A structure is a fixed shape of blocks the engine places on the surface now and then. You draw it in layers from the bottom up: each layer is a list of rows along z, and each character in a row is one block along x. A key says which block a character means, a space leaves whatever is already there, and `air` clears it.
@@ -41,7 +41,7 @@ r.structure("base:overworld", "obelisk")
     .layer(&["sss", "sss", "sss"])
     .layer(&["   ", " g ", "   "])
     .key('s', "base:sandstone").key('g', "glow_crystal")
-    .spacing(128).chance(0.5).biome("dry").sink(1);
+    .spacing(128).chance(0.5).biome("#dry").sink(1);
 ```
 That's a sandstone obelisk with a glowing crystal inside, in every dry biome (so deserts) of base's overworld.
 
@@ -59,7 +59,7 @@ Structures stand on the surface of the dimension's [terrain](#terrain). A dimens
 
 ```rust
 r.spawn("ghost").light(0, 4).weight(1);
-r.spawn("sheep").biome("animals").ground("animal_spawn").light(7, 15).group(2, 3).chance(0.05);
+r.spawn("sheep").biome("#animals").ground("#animal_spawn").light(7, 15).group(2, 3).chance(0.05);
 ```
 
 ## Biomes

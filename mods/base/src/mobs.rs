@@ -69,9 +69,9 @@ pub fn register(r: &mut Registry) {
     // caves), animals in small herds on grass by day, rarely once the world is loaded.
     r.spawn("zombie").light(0, 6).weight(2);
     r.spawn("spider").light(0, 6);
-    r.spawn("spider").light(0, 6).biome("cave").weight(4);
+    r.spawn("spider").light(0, 6).biome("#cave").weight(4);
     for animal in ["pig", "cow"] {
-        r.spawn(animal).biome("animals").ground("animal_spawn").light(7, 15).group(2, 3).chance(0.05);
+        r.spawn(animal).biome("#animals").ground("#animal_spawn").light(7, 15).group(2, 3).chance(0.05);
     }
 }
 

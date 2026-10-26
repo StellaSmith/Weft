@@ -70,7 +70,7 @@ impl RawValue {
 
 #[derive(Clone, Debug)]
 pub enum Target {
-    /// Block (all states, or one with `#i`) and item of that name.
+    /// Block (all states, or those with `[prop=value]`) and item of that name.
     Name(String),
     /// Blocks and items with a tag matching the pattern (`*` matches any text).
     Tagged(String),

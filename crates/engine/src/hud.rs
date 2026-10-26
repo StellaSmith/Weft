@@ -419,7 +419,7 @@ pub fn item_name_spans(lang: &Lang, input: Option<&crate::input::Input>, item: u
 /// `{on_key:core:sneak}`) and the mods' own lines under it, then durability for damaged tools.
 pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::ItemStack) -> Vec<text::Span> {
     const GRAY: u32 = 0xA8A8A8;
-    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
     let cx = text::Ctx { lang, input: Some(input), item_name: &items };
     let mut out = item_name_spans(lang, Some(input), stack.item);
     let line = |template: &str, args: &[text::Arg], out: &mut Vec<text::Span>| {

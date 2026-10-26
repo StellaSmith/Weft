@@ -87,7 +87,7 @@ pub fn register(r: &mut Registry) {
         .group("grid", Slots::grid(2, 2))
         .group("result", Slots::one().output().big());
     for ((piece, slot), tag) in PIECES.into_iter().zip(WORN_SLOTS).zip(abi::comp::ARMOR) {
-        inventory = inventory.group(piece, Slots::one().player(slot).accepts(tag).background(&format!("gui/slot_{piece}")));
+        inventory = inventory.group(piece, Slots::one().player(slot).accepts(tag).background(&format!("slot_{piece}")));
     }
     inventory
         .player_inventory()

@@ -5,7 +5,7 @@
 //! - `{key:core:inventory}` shows the key the player bound to an action
 //! - `{item:base:diamond}` draws an item icon inline, `{block:base:furnace[lit=true]}` a block
 //!   state (properties not named at their defaults)
-//! - `{img:base:gui/arrow}` draws a GUI texture inline at its own size, `{img:base:gui/arrow 32x16}`
+//! - `{img:base:arrow}` draws a GUI texture (`gui/arrow`) inline at its own size, `{img:base:arrow 32x16}`
 //!   at another one (GUI pixels); a line grows to fit it
 //! - `{align:center}` lays the lines after it out centered (`left`, `right`) until `{/align}`, so an
 //!   image alone on a centered line is a centered picture
@@ -159,7 +159,7 @@ pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
 /// A template without arguments: a translation, a chat line, a pack's description, text a mod
 /// draws. Item names in it resolve against the loaded content.
 pub fn rich(template: &str, lang: &Lang, input: Option<&Input>) -> Vec<Span> {
-    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_names.get(name).copied());
+    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
     let cx = Ctx { lang, input, item_name: &items };
     let mut out = Vec::new();
     format(template, &[], &cx, &mut out);
@@ -183,6 +183,21 @@ impl State {
     fn span(&self, piece: Piece, color: Option<u32>) -> Span {
         Span { piece, color, fx: self.fx, when: self.when.clone(), hidden: false, align: self.align }
     }
+}
+
+/// `ns:name` under `gui/`; a name leaving the folder is logged once and shows nothing.
+fn gui_texture(name: &str) -> String {
+    let (ns, path) = name.split_once(':').unwrap_or(("core", name));
+    if path.is_empty() || path.starts_with('/') || path.split('/').any(|p| p == ".." || p.is_empty()) || path.starts_with("gui/") {
+        static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut said = SAID.lock().unwrap();
+        if !said.iter().any(|s| s == name) {
+            log::error!("{{img:{name}}}: names are inside gui/, without the folder");
+            said.push(name.to_string());
+        }
+        return String::new();
+    }
+    format!("{ns}:gui/{path}")
 }
 
 fn texture_size(name: &str) -> Option<(u32, u32)> {
@@ -254,7 +269,8 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
             }
         } else if let Some(spec) = tag.strip_prefix("img:") {
             let mut parts = spec.split_whitespace();
-            let name = parts.next().unwrap_or("");
+            // A GUI texture: `base:arrow` is `base:gui/arrow`, like every asset name in a call.
+            let name = &gui_texture(parts.next().unwrap_or(""));
             let size = parts.next().and_then(|s| s.split_once('x')).and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?)));
             if let Some((w, h)) = size.or_else(|| texture_size(name).map(|(w, h)| (w as f32, h as f32))) {
                 out.push(st.span(Piece::Image(image_id(name), w * FONT_PER_GUI, h * FONT_PER_GUI), None));
@@ -543,7 +559,7 @@ mod tests {
         let lang = Lang::load(&crate::assets::Assets::new([], Vec::new()), "en_us", false);
         let cx = Ctx { lang: &lang, input: None, item_name: &|_| None };
         let mut spans = Vec::new();
-        format("{align:center}{img:base:gui/x 16x12}{/align}
+        format("{align:center}{img:base:x 16x12}{/align}
 ab", &[], &cx, &mut spans);
         let font = Font::parse_hex(include_str!("../../assets/fonts/unifont.hex"));
         let l = layout(&spans, &font, Some(100.0));

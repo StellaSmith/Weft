@@ -388,7 +388,7 @@ async fn creative_clicks_fast(t: &T) -> R {
 }
 
 /// Food: eating raises hunger, and another mod's component on the base game's food plus the
-/// `eaten` event heals (the owner's example).
+/// engine's `item_used` event heals (the owner's example).
 pub async fn food(t: T) -> R {
     t.flat().await?;
     let s = t.state();

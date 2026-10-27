@@ -472,8 +472,6 @@ impl StateDef {
 #[derive(Default)]
 struct BlockCallbacks {
     on_use: Option<abi::Callback>,
-    on_placed: Option<abi::Callback>,
-    on_broken: Option<abi::Callback>,
     on_random_tick: Option<abi::Callback>,
     on_neighbor: Option<abi::Callback>,
     on_scheduled: Option<abi::Callback>,
@@ -929,13 +927,27 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    pub fn on_placed(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_placed = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+    /// One of these was placed: `BLOCK_PLACED` for this block, at the end of the tick.
+    pub fn on_placed(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
+        let Some(block) = self.handle else { return self };
+        self.reg.on(&crate::BLOCK_PLACED, move |b| {
+            let w = b.world();
+            for p in b.iter().filter(|p| block.is(p.state)) {
+                f(&w, p);
+            }
+        });
         self
     }
 
-    pub fn on_broken(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_broken = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+    /// One of these was broken, by a player (`player`) or by losing its support (0).
+    pub fn on_broken(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
+        let Some(block) = self.handle else { return self };
+        self.reg.on(&crate::BLOCK_BROKEN, move |b| {
+            let w = b.world();
+            for p in b.iter().filter(|p| block.is(p.state)) {
+                f(&w, p);
+            }
+        });
         self
     }
 
@@ -1057,8 +1069,7 @@ impl Drop for BlockBuilder<'_> {
             drop: Str::new(&self.drop),
             drop_count: self.drop_count,
             on_use: cb.on_use.unwrap_or(abi::Callback::NONE),
-            on_placed: cb.on_placed.unwrap_or(abi::Callback::NONE),
-            on_broken: cb.on_broken.unwrap_or(abi::Callback::NONE),
+
             on_random_tick: cb.on_random_tick.unwrap_or(abi::Callback::NONE),
             on_neighbor: cb.on_neighbor.unwrap_or(abi::Callback::NONE),
             on_scheduled: cb.on_scheduled.unwrap_or(abi::Callback::NONE),

@@ -39,8 +39,38 @@ pub async fn events_batched(t: T) -> R {
     let n = counts(&t.op("events").await?);
     t.check_eq(n["block_broken"], 3, "block_broken events");
     t.check_eq(n["block_placed"], 1, "block_placed events");
-    t.check_eq(n["eaten"], 1, "eaten events (base game's own event)");
+    t.check_eq(n["item_used"], 1, "item_used events (eating; placing a block is not one)");
     t.check(n["item_picked_up"] >= 1, format!("item_picked_up events: {}", n["item_picked_up"]));
+    Ok(())
+}
+
+/// The questions before things happen and timers: a denied `HURT` keeps a player alive, a
+/// denied `USE_ITEM` keeps the bread, a timer fires its event once, when due.
+pub async fn vetoes_and_timers(t: T) -> R {
+    t.flat().await?;
+    t.cmd("/rule testkit:no_hurt 1").await?;
+    t.cmd("/kill").await?;
+    t.secs(0.3).await?;
+    t.check(!t.flag(weft_sdk::client::client_flags::DEAD), "question::HURT denied, the player lives");
+    t.cmd("/rule testkit:no_hurt 0").await?;
+    t.cmd("/feed 10").await?;
+    t.op("put me 1 bread 2").await?;
+    t.c().select(1);
+    t.cmd("/rule testkit:no_use 1").await?;
+    t.secs(0.3).await?;
+    t.press("core:use");
+    t.secs(0.5).await?;
+    t.check_eq(t.c().inventory_slot(1).count, 2, "question::USE_ITEM denied, the bread stays");
+    t.cmd("/rule testkit:no_use 0").await?;
+    t.press("core:use");
+    t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(1).count == 1).await?;
+    let before: u32 = t.op("rings").await?.parse().unwrap_or(0);
+    t.op("after 30").await?;
+    t.op("after 20").await?;
+    t.secs(0.5).await?;
+    t.check_eq(t.op("rings").await?, before.to_string(), "not before it is due");
+    t.secs(1.5).await?;
+    t.check_eq(t.op("rings").await?, (before + 1).to_string(), "one timer per entity and event: the second moved the first");
     Ok(())
 }
 

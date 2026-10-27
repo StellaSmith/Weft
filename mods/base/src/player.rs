@@ -5,7 +5,11 @@ use weft_sdk::*;
 
 use crate::items::{ARMOR, FOOD};
 
-pub use base_api::{EATEN, Eaten, FEET, HEAD, HUNGER, Hunger, LEGS};
+pub use base_api::{FEET, HEAD, HUNGER, Hunger, LEGS};
+
+/// Every 4 seconds a player with a full belly heals and a starving one hurts, like vanilla's.
+static HUNGER_PULSE: Event<u64> = Event::named("hunger_pulse");
+const PULSE_TICKS: u32 = 80;
 pub static INVENTORY: Menu = Menu::named("inventory");
 pub static CRAFTING: Menu = Menu::named("crafting_table");
 static HUD_HEALTH: HudElement = HudElement::named("health");
@@ -31,11 +35,34 @@ pub fn register(r: &mut Registry) {
     }
     r.entity_component(
         &HUNGER,
-        Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, timer: 0 },
+        Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR },
         component_flags::SAVE | component_flags::SYNC_OWNER,
     );
     r.attach(&PLAYER, &HUNGER);
-    r.hook_tick(&PLAYER, tick_players);
+    r.world_tick(tick_players);
+    r.on(&PLAYER_JOINED, |b| {
+        let w = b.world();
+        for j in b.iter() {
+            w.after(j.player, PULSE_TICKS, &HUNGER_PULSE, j.player);
+        }
+    });
+    r.on(&HUNGER_PULSE, |b| {
+        let w = b.world();
+        for &id in b.iter() {
+            w.after(id, PULSE_TICKS, &HUNGER_PULSE, id);
+            let (Some(mut st), Some(h)) = (w.entity(id), w.component_mut(id, &HUNGER)) else { continue };
+            if w.creative(id) {
+                continue;
+            }
+            if h.food >= 18.0 && st.health < st.max_health {
+                st.health = (st.health + 1.0).min(st.max_health);
+                h.exhaustion += 3.0;
+                w.set_entity(id, &st);
+            } else if h.food <= 0.0 && st.health > 1.0 {
+                w.damage(id, 1.0, 0, damage::STARVE);
+            }
+        }
+    });
     // Armor is a step of the damage chain (4% per point, like 1.7.10), and wears when the hit
     // actually lands, a quarter of the damage per piece (at least 1) like vanilla.
     r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| {
@@ -171,10 +198,9 @@ fn consume_grid(m: &MenuCtx) {
     }
 }
 
-fn tick_players(t: &EntityTick) {
-    let w = t.world();
-    for &id in t.ids() {
-        let Some(mut st) = w.entity(id) else { continue };
+fn tick_players(w: &World) {
+    for id in w.players() {
+        let Some(st) = w.entity(id) else { continue };
         if w.creative(id) {
             continue;
         }
@@ -186,17 +212,6 @@ fn tick_players(t: &EntityTick) {
                 h.saturation = (h.saturation - 1.0).max(0.0);
             } else {
                 h.food = (h.food - 1.0).max(0.0);
-            }
-        }
-        h.timer += 1;
-        if h.timer >= 80 {
-            h.timer = 0;
-            if h.food >= 18.0 && st.health < st.max_health {
-                st.health = (st.health + 1.0).min(st.max_health);
-                h.exhaustion += 3.0;
-                w.set_entity(id, &st);
-            } else if h.food <= 0.0 && st.health > 1.0 {
-                w.damage(id, 1.0, 0, damage::STARVE);
             }
         }
         let eye = [st.pos[0].floor() as i32, (st.pos[1] + st.size[2] as f64).floor() as i32, st.pos[2].floor() as i32];
@@ -227,6 +242,5 @@ pub fn eat(u: &mut ItemUse) -> bool {
     h.food = (h.food + food.hunger as f32).min(20.0);
     h.saturation = (h.saturation + food.saturation).min(h.food);
     u.set_stack(stack.shrink(1));
-    w.emit(&EATEN, Eaten { player: u.player(), stack: ItemStack { count: 1, ..stack }, hunger: food.hunger, saturation: food.saturation });
     true
 }

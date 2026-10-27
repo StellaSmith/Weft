@@ -2,7 +2,7 @@
 //! in-process transport. Each dimension is a set of regions ticked in parallel.
 
 mod builtin;
-mod dim;
+pub mod dim;
 pub mod energy;
 pub mod entity;
 mod extend;
@@ -880,6 +880,12 @@ impl Server {
                 let Some(sel) = r.entities.get(entity).map(|e| e.selected) else { return };
                 let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
                 let Some(def) = c.items.get(held.item as usize) else { return };
+                let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
+                let state = target.and_then(|_| r.get(pos)).unwrap_or(0);
+                let mut q = abi::Query { entity, item: held.item, pos: pos.to_array(), state, ..abi::Query::DEFAULT };
+                if !r.ask(c, abi::question::USE_ITEM, &mut q) {
+                    return;
+                }
                 let mut used = false;
                 if def.on_use.is_none() {
                     if let Some(after) = r.use_container(c, entity, held) {
@@ -889,7 +895,6 @@ impl Server {
                         }
                     }
                 } else if let Some(cb) = def.on_use {
-                    let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
                     let a = r.call(def.owner, cb, |w| abi::ItemUseArgs {
                         world: w,
                         player: entity,
@@ -903,6 +908,9 @@ impl Server {
                         r.entities.set_slot(entity, sel, a.stack);
                     }
                     used = a.handled != 0;
+                }
+                if used {
+                    r.emit_engine(c, abi::event::ITEM_USED, &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array(), has_target: target.is_some() as u32 });
                 }
                 r.flush_neighbors(c);
                 r.finish_tick(c);
@@ -950,6 +958,12 @@ impl Server {
             ToServer::Interact(target) => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(kind) = r.entities.get(target).map(|e| e.kind) else { return };
+                let sel = r.entities.get(entity).map_or(0, |e| e.selected);
+                let held = r.entities.inventories.get(&entity).and_then(|i| i.get(sel as usize)).copied().unwrap_or_default();
+                let mut q = abi::Query { entity: target, other: entity, item: held.item, ..abi::Query::DEFAULT };
+                if !r.ask(c, abi::question::INTERACT_ENTITY, &mut q) {
+                    return;
+                }
                 let mut handled = false;
                 for &(owner, cb) in &c.game.entities[kind as usize].on_interact {
                     handled |= r.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: target, other: entity, amount: 0.0, cause: 0, handled: 0 }).handled != 0;

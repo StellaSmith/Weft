@@ -53,16 +53,22 @@ static TIN_ORE: Block = Block::named("tin_ore");
 static TIN_INGOT: Item = Item::named("tin_ingot");
 
 value! {
+    /// A generator's fire.
     #[derive(Default)]
-    struct Machine { burn: u32, burn_max: u32, progress: u32, progress_max: u32 }
+    struct Burner { burn: u32, burn_max: u32 }
+}
+value! {
+    /// An electric furnace's work on the item in it.
+    #[derive(Default)]
+    struct Work { progress: u32, progress_max: u32 }
 }
 
-static MACHINE: Component<Machine> = Component::named("testmod:machine");
+static BURNER: Component<Burner> = Component::named("testmod:burner");
+static WORK: Component<Work> = Component::named("testmod:work");
 /// The common fuel value; the base game sets it, this mod only reads it.
 use base_api::FUEL;
 static FOOD_HEAL: Component<f32> = Component::named("testmod:food_heal");
 
-use base_api::EATEN;
 
 const PER_TICK: i64 = 40;
 const FURNACE_USE: i64 = 20;
@@ -86,7 +92,11 @@ fn init(r: &mut Registry) {
 
     // Machines: block, entity with the machine and energy components, menu, all in one builder.
     // The components sync to open menus; screens bind to them.
-    r.entity_component(&MACHINE, Machine::default(), component_flags::SAVE | component_flags::SYNC_MENU);
+    // Each kind ticks as a system over its own state: every machine of a region in one call.
+    r.entity_component(&BURNER, Burner::default(), component_flags::SAVE | component_flags::SYNC_MENU);
+    r.entity_component(&WORK, Work::default(), component_flags::SAVE | component_flags::SYNC_MENU);
+    r.system(&BURNER, tick_generators);
+    r.system(&WORK, tick_furnaces);
     // Machines' sounds have their own category (and volume setting `testmod:volume_machines`).
     r.sound_category(&MACHINES, true);
     r.sound(&HUM).files(&["base:dig/stone1"]).category(&MACHINES).pitch(0.45, 0.5);
@@ -94,14 +104,13 @@ fn init(r: &mut Registry) {
         .block(|b| b.textures("machine_top", "generator", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
         .group("fuel", Slots::single().accepts("fuel").input().tooltip("testmod.fuel_slot"))
-        .attach(&MACHINE)
+        .attach(&BURNER)
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
-        .on_tick(tick_generators)
         .screen(|ui| {
             machine_screen(ui, |ui| {
                 ui.column(S::col().gap(2.0).center(), |ui| {
                     ui.group("fuel");
-                    ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.burn, m.burn_max)));
+                    ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&BURNER).map_or(0.0, |m| ratio(m.burn, m.burn_max)));
                 });
             })
         });
@@ -111,13 +120,12 @@ fn init(r: &mut Registry) {
         .group("input", Slots::single().limit(16))
         .group("output", Slots::single().output())
         .recipes(&SMELTING_RECIPES)
-        .attach(&MACHINE)
+        .attach(&WORK)
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
-        .on_tick(tick_furnaces)
         .screen(|ui| {
             machine_screen(ui, |ui| {
                 ui.group("input");
-                ui.recipe_arrow_bind(|c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.progress, m.progress_max)));
+                ui.recipe_arrow_bind(|c| c.menu_component(&WORK).map_or(0.0, |m| ratio(m.progress, m.progress_max)));
                 ui.group("output");
             })
         });
@@ -192,9 +200,9 @@ fn init(r: &mut Registry) {
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
     r.liquid(&OIL).texture("oil_still").opacity(4).drag(0.4).flow_delay(15).drop_off(2).slope_find(3).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
 
-    // Healing food without touching the base game's eating code.
+    // Healing food without touching the base game's eating code: any used item that heals.
     r.set("#cooked_meat/*", &FOOD_HEAL, 2.0);
-    r.on(&EATEN, |b| {
+    r.on(&ITEM_USED, |b| {
         let w = b.world();
         for e in b.iter() {
             if let (Some(heal), Some(mut st)) = (FOOD_HEAL.on_stack(&e.stack), w.entity(e.player)) {
@@ -315,12 +323,11 @@ fn ratio(a: u32, b: u32) -> f32 {
 }
 
 /// `/gizmo testmod:energy`: stored energy above every machine, the mod-side use of gizmos.
-fn energy_gizmos(t: &EntityTick) {
-    let w = t.world();
+fn energy_gizmos(w: &World, ids: &[u64]) {
     if w.time() % 10 != 0 || !w.gizmo_on(&ENERGY_GIZMOS) {
         return;
     }
-    for &id in t.ids() {
+    for &id in ids {
         if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
             let args = [Arg::Int(e.stored as i64), Arg::Int(e.capacity as i64)];
             w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 11);
@@ -328,13 +335,12 @@ fn energy_gizmos(t: &EntityTick) {
     }
 }
 
-fn tick_generators(t: &EntityTick) {
-    energy_gizmos(t);
-    let w = t.world();
-    for &id in t.ids() {
+fn tick_generators(b: &mut SystemBatch<Burner>) {
+    let w = b.world();
+    energy_gizmos(&w, b.ids());
+    for (id, m) in b.iter_mut() {
         let Some(e) = w.energy(id) else { continue };
         let room = e.capacity - e.stored;
-        let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if m.burn == 0 && room >= PER_TICK {
             let slot = w.inventory(id).group("fuel");
             let fuel = slot.get(0);
@@ -346,7 +352,6 @@ fn tick_generators(t: &EntityTick) {
                 slot.set(0, use_one(fuel));
             }
         }
-        let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if m.burn > 0 {
             m.burn -= 1;
             if let Some(e) = w.energy_mut(id) {
@@ -362,10 +367,10 @@ fn tick_generators(t: &EntityTick) {
     }
 }
 
-fn tick_furnaces(t: &EntityTick) {
-    energy_gizmos(t);
-    let w = t.world();
-    for &id in t.ids() {
+fn tick_furnaces(b: &mut SystemBatch<Work>) {
+    let w = b.world();
+    energy_gizmos(&w, b.ids());
+    for (id, m) in b.iter_mut() {
         let Some(e) = w.energy(id) else { continue };
         let stored = e.stored;
         let inv = w.inventory(id);
@@ -373,7 +378,6 @@ fn tick_furnaces(t: &EntityTick) {
         let (input, output) = (input_slot.get(0), output_slot.get(0));
         let recipe = (!input.is_empty()).then(|| recipe_process(&SMELTING_RECIPES, input.item)).flatten();
         let fits = recipe.is_some_and(|(out, _)| output.is_empty() || (output.stacks_with(&out) && output.count + out.count <= max_stack(out.item)));
-        let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if !fits || stored < FURNACE_USE {
             m.progress = 0;
             continue;

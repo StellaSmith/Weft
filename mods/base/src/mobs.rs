@@ -5,10 +5,13 @@ use weft_sdk::*;
 
 value! {
     #[derive(Default)]
-    pub struct Brain { pub panic: u32 }
+    /// 1 while it runs about after being hurt.
+    pub struct Brain { pub panicking: u32 }
 }
 
 pub static BRAIN: Component<Brain> = Component::named("base:brain");
+/// Three seconds after being hurt an animal calms down.
+static CALM: Event<u64> = Event::named("calm");
 pub static ZOMBIE: Entity = Entity::named("zombie");
 pub static SPIDER: Entity = Entity::named("spider");
 pub static PIG: Entity = Entity::named("pig");
@@ -17,6 +20,14 @@ pub static COW: Entity = Entity::named("cow");
 
 pub fn register(r: &mut Registry) {
     r.entity_component(&BRAIN, Brain::default(), 0);
+    r.on(&CALM, |b| {
+        let w = b.world();
+        for &id in b.iter() {
+            if let Some(brain) = w.component_mut(id, &BRAIN) {
+                brain.panicking = 0;
+            }
+        }
+    });
     r.entity(&ZOMBIE)
         .sound("ambient").sound("hurt").sound("death")
         .size(0.6, 1.95)
@@ -74,9 +85,10 @@ pub fn register(r: &mut Registry) {
 }
 
 
-fn panic(e: &mut EntityEvent) {
-    if let Some(b) = e.world().component_mut(e.entity(), &BRAIN) {
-        b.panic = 60;
+fn panic(w: &World, h: &Hurt) {
+    if let Some(b) = w.component_mut(h.entity, &BRAIN) {
+        b.panicking = 1;
+        w.after(h.entity, 60, &CALM, h.entity);
     }
 }
 
@@ -97,12 +109,11 @@ fn hostile(only_dark: bool) -> ai::Goals {
 fn passive() -> ai::Goals {
     ai::Goals::new()
         .then(|w: &World, id: u64, st: &EntityState| {
-            let Some(b) = w.component_mut(id, &BRAIN) else { return false };
-            if b.panic == 0 {
+            if w.component(id, &BRAIN).is_none_or(|b| b.panicking == 0) {
                 return false;
             }
-            b.panic -= 1;
-            if b.panic % 20 == 19 || !w.navigating(id) {
+            // A new direction every second.
+            if w.time() % 20 == id % 20 || !w.navigating(id) {
                 let a = w.random_below(628) as f64 / 100.0;
                 w.navigate(id, [st.pos[0] + a.cos() * 8.0, st.pos[1], st.pos[2] + a.sin() * 8.0], 1.6);
             }

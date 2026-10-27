@@ -21,7 +21,7 @@ use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
 use crate::{Attribute, Chain, LootSource, Question, Registry, World, callback, host, qualify};
 
-pub use abi::{BlockChange, Death, Hurt, Pickup, PlayerEvent, attr_op, stage};
+pub use abi::{BlockChange, Death, Hurt, ItemUsed, Pickup, PlayerEvent, attr_op, stage};
 
 /// The engine's questions (`Registry::intercept`, `World::ask`).
 pub mod question {
@@ -39,6 +39,12 @@ pub mod question {
     pub static PICKUP_ITEM: Question = Question::named(q::PICKUP_ITEM);
     /// `entity` attacking `other` with `item`.
     pub static ATTACK: Question = Question::named(q::ATTACK);
+    /// `entity` about to be hurt by `other` for `amount` of `cause`: deny to prevent it.
+    pub static HURT: Question = Question::named(q::HURT);
+    /// A player (`other`) right clicking `entity` holding `item`.
+    pub static INTERACT_ENTITY: Question = Question::named(q::INTERACT_ENTITY);
+    /// A player (`entity`) about to use the held `item`, on block `pos` when `state` isn't 0.
+    pub static USE_ITEM: Question = Question::named(q::USE_ITEM);
 }
 
 /// The engine's value chains (`Registry::modify`, `World::compute`).
@@ -123,6 +129,11 @@ unsafe impl Value for abi::Pickup {
         "{player:u64,stack:{item:u32,count:u32,data:u32}}".into()
     }
 }
+unsafe impl Value for abi::ItemUsed {
+    fn schema() -> String {
+        "{player:u64,stack:{item:u32,count:u32,data:u32},pos:[i32;3],has_target:u32}".into()
+    }
+}
 
 /// The engine's events.
 pub static BLOCK_BROKEN: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_BROKEN);
@@ -131,6 +142,9 @@ pub static ENTITY_DIED: Event<abi::Death> = Event::named(abi::event::ENTITY_DIED
 pub static PLAYER_JOINED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_JOINED);
 pub static ITEM_PICKED_UP: Event<abi::Pickup> = Event::named(abi::event::ITEM_PICKED_UP);
 pub static ENTITY_HURT: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HURT);
+/// A player used the held item and something happened (`stack` as it was before): eating,
+/// emptying a bucket. Another mod reacts to food here, by the item's components.
+pub static ITEM_USED: Event<abi::ItemUsed> = Event::named(abi::event::ITEM_USED);
 
 /// Every value of one event queued during a tick, in the order they happened.
 pub struct EventBatch<T> {
@@ -534,6 +548,18 @@ impl Registry {
 
 
 impl World {
+    /// In `ticks` ticks `event` fires with `value` (a calm-down, a hunger pulse). The timer is
+    /// saved with `entity` and goes with it when it is removed; one per entity and event, so
+    /// setting it again moves it.
+    pub fn after<T: Value>(&self, entity: u64, ticks: u32, event: &Event<T>, value: T) {
+        let id = event.id();
+        if id == u32::MAX {
+            return;
+        }
+        let b = unsafe { std::slice::from_raw_parts(&value as *const T as *const u8, size_of::<T>()) };
+        unsafe { (host().entity_after)(self.raw(), entity, ticks, id, Slice::new(b)) }
+    }
+
     pub fn emit<T: Value>(&self, event: &Event<T>, value: T) {
         let id = event.id();
         if id == u32::MAX {

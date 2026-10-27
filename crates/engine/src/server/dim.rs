@@ -308,6 +308,33 @@ fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, 
     }
 }
 
+/// Appends a timer: fire time, event name and value, as the `TIMERS` component keeps them.
+pub fn push_timer(out: &mut Vec<u8>, until: u64, event: &str, data: &[u8]) {
+    out.extend_from_slice(&until.to_le_bytes());
+    out.extend_from_slice(&(event.len().min(u16::MAX as usize) as u16).to_le_bytes());
+    out.extend_from_slice(&event.as_bytes()[..event.len().min(u16::MAX as usize)]);
+    out.extend_from_slice(&(data.len().min(u16::MAX as usize) as u16).to_le_bytes());
+    out.extend_from_slice(&data[..data.len().min(u16::MAX as usize)]);
+}
+
+pub fn read_timers(mut b: &[u8]) -> Vec<(u64, String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let take = |b: &mut &[u8], n: usize| -> Option<Vec<u8>> {
+        let (head, tail) = (b.get(..n)?.to_vec(), b.get(n..)?);
+        *b = tail;
+        Some(head)
+    };
+    loop {
+        let Some(until) = take(&mut b, 8).map(|v| u64::from_le_bytes(v.try_into().unwrap())) else { break };
+        let Some(n) = take(&mut b, 2).map(|v| u16::from_le_bytes([v[0], v[1]]) as usize) else { break };
+        let Some(name) = take(&mut b, n).map(|v| String::from_utf8_lossy(&v).into_owned()) else { break };
+        let Some(n) = take(&mut b, 2).map(|v| u16::from_le_bytes([v[0], v[1]]) as usize) else { break };
+        let Some(data) = take(&mut b, n) else { break };
+        out.push((until, name, data));
+    }
+    out
+}
+
 /// Face connectivity through blocks that do not hide what is behind them.
 pub fn see_through(c: &Content, cube: &Cube) -> u16 {
     cube.connectivity(|s| c.states[s as usize].flags & bf::OPAQUE == 0)
@@ -728,13 +755,12 @@ impl Dim {
         if ((k.is(ef::INVULNERABLE) || e.mode.invulnerable()) && cause != damage::VOID) || e.hurt_cooldown > 0 || e.health <= 0.0 {
             return false;
         }
-        let mut amount = amount;
-        for &(owner, cb) in &k.on_hurt {
-            let a = self.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: id, other: source, amount, cause, handled: 0 });
-            amount = a.amount;
+        // One path: the `HURT` veto, the `DAMAGE` chain, then the `ENTITY_HURT` event.
+        let mut q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
+        if !self.ask(c, abi::question::HURT, &mut q) {
+            return false;
         }
-        let q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
-        amount = self.compute(c, abi::chain::DAMAGE, amount as f64, &q, crate::log::on(crate::log::Channel::Modifiers, log::Level::Debug)) as f32;
+        let amount = self.compute(c, abi::chain::DAMAGE, amount as f64, &q, crate::log::on(crate::log::Channel::Modifiers, log::Level::Debug)) as f32;
         if crate::log::on(crate::log::Channel::Modifiers, log::Level::Debug) {
             log::debug!(target: "modifiers", "{}", super::extend::explanation());
         }
@@ -760,9 +786,6 @@ impl Dim {
         }
         self.entities.hurt.push((id, health));
         if health <= 0.0 {
-            for &(owner, cb) in &k.on_death {
-                self.call(owner, cb, |w| abi::EntityEventArgs { world: w, entity: id, other: source, amount, cause, handled: 0 });
-            }
             self.emit_engine(c, abi::event::ENTITY_DIED, &abi::Death { entity: id, killer: source, kind, cause, pos: pos.to_array() });
             if !player {
                 let by_player = self.entities.get(source).is_some_and(|s| s.player);
@@ -1007,6 +1030,38 @@ impl Dim {
         }
     }
 
+    /// Timers (`Host::entity_after`) of this region's entities that are due fire their events.
+    fn fire_timers(&mut self, c: &'static Content) {
+        let comp = c.game.timers_comp;
+        let ids: Vec<u64> = self.entities.list.iter().filter(|e| !e.removed).map(|e| e.id).filter(|id| self.entities.comps.contains_key(&(*id, comp))).collect();
+        for id in ids {
+            let Some(bytes) = self.entities.comps.get(&(id, comp)) else { continue };
+            let mut due = Vec::new();
+            let mut kept = Vec::new();
+            for (until, name, data) in read_timers(bytes) {
+                if until <= self.time {
+                    due.push((name, data));
+                } else {
+                    push_timer(&mut kept, until, &name, &data);
+                }
+            }
+            if due.is_empty() {
+                continue;
+            }
+            if kept.is_empty() {
+                self.entities.comps.remove(&(id, comp));
+            } else {
+                self.entities.comps.insert((id, comp), kept.into_boxed_slice());
+            }
+            for (name, data) in due {
+                match c.game.event_names.get(&name) {
+                    Some(&e) => self.emit(c, e, &data),
+                    None => log::warn!("entity {id}: a timer for event {name}, which no mod has now"),
+                }
+            }
+        }
+    }
+
     fn tick_entities(&mut self, c: &'static Content) {
         // Mod logic: one call per kind and callback with every entity of that kind.
         let mut by_kind: FxHashMap<u32, Vec<u64>> = FxHashMap::default();
@@ -1026,6 +1081,10 @@ impl Dim {
             }
         }
         self.run_systems(c);
+        for &(owner, cb) in &c.game.world_ticks {
+            self.call(owner, cb, |w| abi::WorldTickArgs { world: w });
+        }
+        self.fire_timers(c);
         self.navigation(c);
 
         let gravity = c.dims[self.id as usize].gravity as f64;
@@ -1269,7 +1328,7 @@ impl Dim {
         self.set(c, p, AIR);
         self.block_dust(c, p, state);
         self.drop_block_loot(c, p, state, ItemStack::EMPTY, None);
-        self.call_block(c, state, |b| b.on_broken, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
+        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player: 0, pos: p.to_array(), state, item: 0 });
     }
 
     pub fn finish_tick(&mut self, c: &'static Content) {
@@ -1308,7 +1367,6 @@ impl Dim {
         if harvest && drops {
             self.drop_block_loot(c, p, state, tool, name.as_deref());
         }
-        self.call_block(c, state, |b| b.on_broken, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: player });
         self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
         true
     }
@@ -1338,7 +1396,6 @@ impl Dim {
         }
         self.set(c, p, chosen);
         self.sound(c.states[chosen as usize].sounds[1], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
-        self.call_block(c, chosen, |b| b.on_placed, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state: chosen, other: [0; 3], entity: player });
         self.emit_engine(c, abi::event::BLOCK_PLACED, &abi::BlockChange { player, pos: p.to_array(), state: chosen, item });
         self.flush_neighbors(c);
         self.finish_tick(c);

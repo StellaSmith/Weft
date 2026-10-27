@@ -27,8 +27,8 @@ r.machine(&FURNACE, &FURNACE_MENU)
     .group("fuel", Slots::single().accepts("fuel"))
     .group("output", Slots::single().output())
     .attach(&SMELTING)
-    .on_tick(tick_furnaces)
     .screen(|ui| { /* see below */ });
+r.system(&SMELTING, tick_furnaces);
 ```
 `block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. The block entity is named like the block, so `Entity::named("furnace")` finds it if your code needs to.
 
@@ -57,13 +57,12 @@ value! {
 The flags say who gets it. `SAVE` writes it with the world, `SYNC_MENU` sends it to players who have this machine's menu open (progress bars need that), `SYNC_OWNER` sends it to the player who owns the entity (HUD values) and `SYNC_WATCHERS` to everyone who can see it. Since components are named, another mod that declares `base:smelting` with the same layout can read the furnace's state, see "Components and tags" in the [cheat sheet](modding.md#components-and-tags-as-inter-mod-communication).
 
 ## The tick
-`on_tick` receives every loaded machine of the kind and walks over them:
+A machine works through its state component: `r.system(&BURNER, f)` hands `f` every loaded machine with that component, their values side by side in one slice, changed in place (and saved and synced like any change). Measured on a thousand machines, that costs a few hundredths of what asking for each machine's component costs, so it is the one way machines tick:
 ```rust
-fn tick_generators(t: &EntityTick) {
-    let w = t.world();
-    for &id in t.ids() {
+fn tick_generators(b: &mut SystemBatch<Burner>) {
+    let w = b.world();
+    for (id, m) in b.iter_mut() {
         let slot = w.inventory(id).group("fuel");
-        let Some(m) = w.component_mut(id, &MACHINE) else { continue };
         if m.burn == 0 {
             let fuel = slot.get(0);
             // `fuel` is the common component, so any mod's fuel works
@@ -78,7 +77,7 @@ fn tick_generators(t: &EntityTick) {
     }
 }
 ```
-`w.inventory(id).group("fuel")` is one group of the machine's slots, numbered from 0 (`get`, `set`, `len`); the whole inventory also has `insert`, which returns what didn't fit. `w.component_mut(id, &C)` is the machine's data, changed in place and saved and synced by itself. For stacks there are `use_one` (a lava bucket leaves its bucket), `shrink`, `grow`, `stacks_with` and `max_stack`, and the rest of the world is in `w` too (`get`, `set`, `play_sound`, `emit`).
+`w.inventory(id).group("fuel")` is one group of the machine's slots, numbered from 0 (`get`, `set`, `len`); the whole inventory also has `insert`, which returns what didn't fit. Give each kind of machine a state component of its own (the generator's `Burner`, the furnace's `Smelting`), so its system reaches only its machines. For stacks there are `use_one` (a lava bucket leaves its bucket), `shrink`, `grow`, `stacks_with` and `max_stack`, and the rest of the world is in `w` too (`get`, `set`, `play_sound`, `emit`).
 
 To show that a machine is working, give the block a property and flip it from the tick. The furnace has `.facing(..)` and `.prop("lit", ["false", "true"])`, and its tick does
 ```rust
@@ -143,11 +142,12 @@ Generators, cables and machines from different mods work together through one co
 r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
     .group("input", Slots::single())
     .group("output", Slots::single().output())
-    .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
-    .on_tick(tick_furnaces);
+    .attach(&WORK)
+    .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 });
+r.system(&WORK, tick_furnaces);
 r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor");
 ```
-`Energy` is `stored` and `capacity`, plus `max_in` and `max_out`, the most it takes from or gives to the network per tick. A generator has `max_in: 0`, a machine `max_out: 0`, and a battery has both, without feeding itself. In the tick, generators add to `stored` and machines spend it:
+`Energy` is `stored` and `capacity`, plus `max_in` and `max_out`, the most it takes from or gives to the network per tick. A generator has `max_in: 0`, a machine `max_out: 0`, and a battery has both, without feeding itself. In their systems, generators add to `stored` and machines spend it:
 ```rust
 let Some(e) = w.energy_mut(id) else { continue };
 e.stored = (e.stored + 40).min(e.capacity);      // a generator, per tick
@@ -158,10 +158,9 @@ e.stored = (e.stored + 40).min(e.capacity);      // a generator, per tick
 There are no units, conversion or losses along the way. Testmod uses 40 per tick and capacities in the tens of thousands, so if your mod should play along with others, stay in that range.
 
 ## Many machines
-`on_tick` is called once per tick with all machines of the kind, which is fine even for thousands. When the work only touches a component and no inventory, a system is cheaper, since it gets every value of that component in one slice and makes no host call per entity:
+Systems already run once per tick and region with every machine at once, so thousands cost little. Work that only changes the state and touches no inventory is the cheapest of all:
 ```rust
 r.system(&HEAT, |batch| for (_, heat) in batch.iter_mut() { *heat = heat.saturating_sub(1); });   // HEAT: Component<u32>
 ```
-Systems are covered under "Hooking into the game" in the [cheat sheet](modding.md#hooking-into-the-game).
 
 Machines have no built-in way to pass items to each other, so a pipe or a hopper is something you write: do it in a tick with `inventory(id).insert(..)`.

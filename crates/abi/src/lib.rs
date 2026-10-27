@@ -420,8 +420,6 @@ pub struct BlockDesc {
     /// `UseArgs`; return `handled = 1` to consume the click.
     pub on_use: Callback,
     /// `BlockEventArgs`.
-    pub on_placed: Callback,
-    pub on_broken: Callback,
     pub on_random_tick: Callback,
     pub on_neighbor: Callback,
     pub on_scheduled: Callback,
@@ -455,8 +453,7 @@ defaults!(BlockDesc {
     drop: Str::EMPTY,
     drop_count: 1,
     on_use: Callback::NONE,
-    on_placed: Callback::NONE,
-    on_broken: Callback::NONE,
+
     on_random_tick: Callback::NONE,
     on_neighbor: Callback::NONE,
     on_scheduled: Callback::NONE,
@@ -845,9 +842,8 @@ pub struct EntityDesc {
     pub parts: Slice<ModelPart>,
     /// `EntityTickArgs`: every entity of this kind in one call.
     pub on_tick: Callback,
-    /// `EntityEventArgs`.
-    pub on_hurt: Callback,
-    pub on_death: Callback,
+    /// `EntityEventArgs` when a player right clicks one and `question::INTERACT_ENTITY` let it;
+    /// `handled = 1` swings the player's arm.
     pub on_interact: Callback,
     /// Non-zero: replaces an entity kind of the same name from a mod this one depends on.
     pub replace: u32,
@@ -871,8 +867,6 @@ defaults!(EntityDesc {
     texture_size: [64, 32],
     parts: Slice::EMPTY,
     on_tick: Callback::NONE,
-    on_hurt: Callback::NONE,
-    on_death: Callback::NONE,
     on_interact: Callback::NONE,
     replace: 0,
     components: Slice::EMPTY,
@@ -1466,9 +1460,13 @@ pub struct Host {
     pub reg_dimension: unsafe extern "C" fn(reg: *mut Registrar, desc: *const DimensionDesc),
     pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
     pub reg_component: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ComponentDesc),
-    /// Extra callbacks on an entity kind owned by someone else (`entity_hook`): the tick gets
-    /// `EntityTickArgs` with every entity of `kind`, the others `EntityEventArgs`.
-    pub reg_entity_hook: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, hook: u32, cb: Callback),
+    /// `cb` (`WorldTickArgs`) once per tick in every region of every dimension, for logic that
+    /// isn't one entity's or block's (a dimension's loaded parts are regions run in parallel).
+    pub reg_world_tick: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
+    /// In `ticks` ticks, `event` fires with `data` (one value of its type), and the timer is
+    /// saved with `entity` until then. One per entity and event: a second call moves it. A
+    /// timer of a gone entity never fires.
+    pub entity_after: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, ticks: u32, event: u32, data: Slice<u8>),
     pub reg_recipe: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeDesc),
     pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
     /// Menu opened by the inventory key.
@@ -1961,12 +1959,6 @@ pub mod gizmo_kind {
 }
 
 /// `Host::reg_entity_hook`.
-pub mod entity_hook {
-    pub const TICK: u32 = 0;
-    pub const HURT: u32 = 1;
-    pub const DEATH: u32 = 2;
-    pub const INTERACT: u32 = 3;
-}
 
 /// Tint kinds of block faces: color from the biome. The engine has `core:grass`,
 /// `core:foliage` and `core:water`; mods add their own with `Host::reg_tint_kind` and name them
@@ -2162,6 +2154,24 @@ pub mod event {
     pub const ITEM_PICKED_UP: &str = "core:item_picked_up";
     /// `Hurt`: damage was applied (after armor and every modifier).
     pub const ENTITY_HURT: &str = "core:entity_hurt";
+    /// `ItemUsed`: a player used the held item and something happened.
+    pub const ITEM_USED: &str = "core:item_used";
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemUsed {
+    pub player: u64,
+    /// As it was before the use.
+    pub stack: ItemStack,
+    pub pos: [i32; 3],
+    /// 1 when used on the block at `pos`.
+    pub has_target: u32,
+}
+
+#[repr(C)]
+pub struct WorldTickArgs {
+    pub world: *mut WorldCtx,
 }
 
 #[repr(C)]
@@ -2229,6 +2239,12 @@ pub mod question {
     pub const PICKUP_ITEM: &str = "core:pickup_item";
     /// `entity` attacking `other` with `item`.
     pub const ATTACK: &str = "core:attack";
+    /// `entity` about to be hurt by `other` for `amount` of `cause`, before the damage chain.
+    pub const HURT: &str = "core:hurt";
+    /// A player (`other`) right clicking `entity` holding `item`.
+    pub const INTERACT_ENTITY: &str = "core:interact_entity";
+    /// A player (`entity`) using the held `item`, at block `pos` when `state` is not 0.
+    pub const USE_ITEM: &str = "core:use_item";
 }
 
 pub mod verdict {

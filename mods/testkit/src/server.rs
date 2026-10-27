@@ -9,9 +9,9 @@ use weft_sdk::*;
 
 /// How many of each event arrived since `events reset`, in `EVENT_NAMES` order.
 static COUNTS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
-const EVENT_NAMES: [&str; 8] = ["block_broken", "block_placed", "item_picked_up", "entity_died", "entity_hurt", "player_joined", "eaten", "smelted"];
+const EVENT_NAMES: [&str; 8] = ["block_broken", "block_placed", "item_picked_up", "entity_died", "entity_hurt", "player_joined", "item_used", "smelted"];
 
-use base_api::{EATEN, SMELTED};
+use base_api::SMELTED;
 static GOLD: Block = Block::named("base:gold_block");
 /// Shared with everyone who sees the entity, for the sync test.
 pub static MARK: Component<u32> = Component::named("testkit:mark");
@@ -23,6 +23,12 @@ pub static PROTECT_GOLD: Rule = Rule::named("protect_gold");
 pub static HALF_DAMAGE: Rule = Rule::named("half_damage");
 /// Mobs may not attack while it is on.
 pub static PEACE: Rule = Rule::named("peace");
+/// Players can't be hurt (`question::HURT`) or use items (`question::USE_ITEM`) while on.
+pub static NO_HURT: Rule = Rule::named("no_hurt");
+pub static NO_USE: Rule = Rule::named("no_use");
+/// Fired by `after` timers; counted.
+static RANG: Event<u64> = Event::named("rang");
+static RINGS: AtomicU32 = AtomicU32::new(0);
 pub static OP: Channel = Channel::named("op");
 pub static REPLY: Channel = Channel::named("reply");
 /// A key whose presses reach the server: the test counts them there.
@@ -55,6 +61,14 @@ pub fn register(r: &mut Registry) {
         let mob = w.entity(q.entity()).is_some_and(|e| !w.each_player().any(|p| p == q.entity()) && e.health > 0.0);
         if mob && w.rule(&PEACE) != 0 { Verdict::Deny } else { Verdict::Abstain }
     });
+    r.rule(&NO_HURT, 0);
+    r.rule(&NO_USE, 0);
+    let player = |w: &World, id: u64| w.each_player().any(|p| p == id);
+    r.intercept(&question::HURT, move |q| if player(&q.world(), q.entity()) && q.world().rule(&NO_HURT) != 0 { Verdict::Deny } else { Verdict::Abstain });
+    r.intercept(&question::USE_ITEM, |q| if q.world().rule(&NO_USE) != 0 { Verdict::Deny } else { Verdict::Abstain });
+    r.on(&RANG, |b| {
+        RINGS.fetch_add(b.len() as u32, Ordering::Relaxed);
+    });
     r.rule(&HALF_DAMAGE, 0);
     r.intercept(&question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && q.world().rule(&PROTECT_GOLD) != 0 { Verdict::Deny } else { Verdict::Abstain });
     r.modify(&chain::DAMAGE, stage::FINAL, |m| {
@@ -68,7 +82,7 @@ pub fn register(r: &mut Registry) {
     r.on(&ENTITY_DIED, |b| count(3, b.len()));
     r.on(&ENTITY_HURT, |b| count(4, b.len()));
     r.on(&PLAYER_JOINED, |b| count(5, b.len()));
-    r.on(&EATEN, |b| count(6, b.len()));
+    r.on(&ITEM_USED, |b| count(6, b.len()));
     r.on(&SMELTED, |b| count(7, b.len()));
     r.key(&PING, "F10").on_press_server(|_| {
         PINGS.fetch_add(1, Ordering::Relaxed);
@@ -365,6 +379,12 @@ fn run(w: &World, player: u64, text: &str) -> Result<String, String> {
             let p = [me.pos[0].floor() as i32, me.pos[1].floor() as i32, me.pos[2].floor() as i32];
             Ok(w.structure_near(name, p, r).map_or("none".into(), |a| format!("{} {} {}", a[0], a[1], a[2])))
         }
+        // A timer on the player: `after 60`, then `rings` counts the ones that fired.
+        "after" => {
+            w.after(player, a.num()?, &RANG, player);
+            Ok(String::new())
+        }
+        "rings" => Ok(RINGS.load(Ordering::Relaxed).to_string()),
         "heal" => {
             let mut st = w.entity(player).ok_or("no player")?;
             st.health = st.max_health;

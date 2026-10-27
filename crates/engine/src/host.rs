@@ -23,7 +23,8 @@ pub static HOST: Host = Host {
     reg_dimension,
     reg_entity,
     reg_component,
-    reg_entity_hook,
+    reg_world_tick,
+    entity_after,
     reg_recipe,
     reg_menu,
     set_player_menu,
@@ -1081,15 +1082,36 @@ unsafe extern "C" fn reg_component(r: *mut abi::Registrar, d: *const abi::Compon
     }
 }
 
-unsafe extern "C" fn reg_entity_hook(r: *mut abi::Registrar, kind: Str, hook: u32, cb: Callback) {
+unsafe extern "C" fn reg_world_tick(r: *mut abi::Registrar, cb: Callback) {
     unsafe {
         let r = reg(r);
-        if hook > abi::entity_hook::INTERACT {
-            r.errors.push(format!("entity hook {hook} on {} does not exist", kind.as_str()));
+        let owner = r.owner;
+        r.game.world_ticks.push((owner, cb));
+    }
+}
+
+unsafe extern "C" fn entity_after(w: *mut abi::WorldCtx, entity: u64, ticks: u32, event: u32, data: abi::Slice<u8>) {
+    unsafe {
+        let c = content();
+        let Some(def) = c.game.events.get(event as usize) else {
+            misuse("after", || format!("no event {event}"));
+            return;
+        };
+        let d = dim(w);
+        if d.entities.get(entity).is_none() {
             return;
         }
-        let owner = r.owner;
-        r.game.hooks.push((owner, kind.as_str().to_string(), hook, cb));
+        let until = d.time + ticks.max(1) as u64;
+        let list = d.entities.comps.entry((entity, c.game.timers_comp)).or_insert_with(|| Box::new([]));
+        // One timer per entity and event: setting it again moves it.
+        let mut v = Vec::new();
+        for (t, name, value) in crate::server::dim::read_timers(list) {
+            if name != def.name {
+                crate::server::dim::push_timer(&mut v, t, &name, &value);
+            }
+        }
+        crate::server::dim::push_timer(&mut v, until, &def.name, data.as_slice());
+        *list = v.into_boxed_slice();
     }
 }
 

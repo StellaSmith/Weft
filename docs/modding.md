@@ -189,14 +189,14 @@ You can change them through `w.component_mut(id, &COMP)` and the engine will fig
 
 ### Sharing types with other mods
 Events and components carry values, and two mods have to agree on their layout. Copying a struct into every mod works, but the mistake shows up only when the game loads.
-So a mod can publish a small crate with just its types and handles, the way the base game does with `base_api` (`mods/base/api`): the `value!` structs of its events and components, and `Event`, `Component`, `Chain`, `RecipeKind`, `EquipmentSlot`, `Dimension` and tab handles with full names (`base:eaten`, since the statics compile into whoever uses them).
+So a mod can publish a small crate with just its types and handles, the way the base game does with `base_api` (`mods/base/api`): the `value!` structs of its events and components, and `Event`, `Component`, `Chain`, `RecipeKind`, `EquipmentSlot`, `Dimension` and tab handles with full names (`base:smelted`, since the statics compile into whoever uses them).
 ```toml
 [dependencies]
 weft_sdk = { path = "../../crates/sdk" }
 base_api = { path = "../../mods/base/api" }
 ```
 ```rust
-r.on(&base_api::EATEN, |b| for e in b.iter() { /* e.player, e.stack, e.hunger */ });
+r.on(&base_api::SMELTED, |b| for s in b.iter() { /* s.furnace, s.input, s.output */ });
 ```
 The mod itself uses the same crate, so there's one declaration of everything, and other mods depend on types only, never on the mod's code. The engine still compares the layouts at load.
 
@@ -217,7 +217,8 @@ is dropped.
 - `needs_below("#soil")`
 - `growth(seconds, min_light)` + `on_grow(..)` for plants
 - `on_random_tick(..)`
-- `on_use`, `on_placed`, `on_broken`, `on_neighbor`, `on_scheduled`
+- `on_use`, `on_neighbor`, `on_scheduled`
+- `on_placed(|w, change| ..)`, `on_broken(..)`: the `BLOCK_PLACED` and `BLOCK_BROKEN` events for this block only, at the end of the tick
 - `prop("lit", ["false", "true"])`, `prop("age", 0..=7)` and `facing(Facings::HORIZONTAL, Toward::Player)` for states, like blockstates in modern Minecraft: every combination of values is a state
 - `states(|p, s| ..)` to make each state look different (`p.facing()`, `p.is("lit", "true")`), `placement(|place, p| p.set(..))` to pick values when placed
 
@@ -233,7 +234,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `attack_damage`
 - `placed_block(&BLOCK)`
 - `wearable(&HEAD, inflate, texture)` for armor and anything else worn in an equipment slot
-- `on_use`
+- `on_use`: what using it does. Before it runs anyone can say no to `question::USE_ITEM`, and after it the `ITEM_USED` event tells every mod (testmod heals with base's food through it)
 
 ### Entities
 `r.entity(&ENTITY)` and then:
@@ -244,7 +245,9 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `sound("hurt")`, `sound("death")`, `sound("ambient")`: files from `sounds/entity/<name>/`
 - `animations(..)`
 - `goals(..)` for AI (see `weft_sdk::ai`); `ai::melee(reach)` with `.attack_damage(3.0)` makes it hit like a player does, so `question::ATTACK` and `chain::ATTACK_DAMAGE` (a strength effect, a peaceful zone) work on mobs too
-- `on_tick`, `on_hurt`, `on_death`, `on_interact`
+- `on_tick`: every entity of the kind at once, once per tick
+- `on_hurt(|w, hurt| ..)`, `on_death(|w, death| ..)`: the `ENTITY_HURT` and `ENTITY_DIED` events for this kind. The damage itself is the `chain::DAMAGE` chain and `question::HURT` can stop it, for any kind, yours or not
+- `on_interact`: a player right clicked one (after `question::INTERACT_ENTITY`)
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
 `blocks(&[("base:oak_planks", from, to)])` makes a flying structure players can build on; its box is what the blocks fill, no `size` needed.`EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos[1] + st.size[2]` is where its eyes are.
@@ -294,8 +297,8 @@ There are four mechanisms, try them in this order:
 
 ```rust
 // Events which are batched, delivered once per tick and nobody can cancel them.
-static EATEN: Event<Eaten> = Event::named("eaten");
-r.on(&EATEN, |b| for e in b.iter() { /* do something */ });
+static LEVEL_UP: Event<LevelUp> = Event::named("level_up");
+r.on(&LEVEL_UP, |b| for e in b.iter() { /* do something */ });
 w.emit(&MY_EVENT, value);
 
 // Questions, anyone may say no, any deny wins.
@@ -310,13 +313,15 @@ static MANA: Attribute = Attribute::named("mana");
 r.attribute(&MANA, 100.0, 0.0, 1000.0);
 ```
 
+Two helpers go with them. `w.after(entity, ticks, &EVENT, value)` fires an event later, saved with the entity (base's animals calm down 3 seconds after being hurt, players' hunger pulses every 4); one per entity and event, so setting it again moves it, instead of counters in components. `r.world_tick(|w| ..)` runs once per tick in every region for logic that is nobody's own, `w.players()` being the players there.
+
 ### Built-in events
-`BLOCK_BROKEN`, `BLOCK_PLACED`, `ITEM_PICKED_UP`, `ENTITY_HURT`, `ENTITY_DIED`, `PLAYER_JOINED`\
-base adds `base:eaten` and `base:smelted`.
+`BLOCK_BROKEN`, `BLOCK_PLACED`, `ITEM_PICKED_UP`, `ITEM_USED`, `ENTITY_HURT`, `ENTITY_DIED`, `PLAYER_JOINED`, and the questions `BREAK_BLOCK`, `PLACE_BLOCK`, `USE_BLOCK`, `USE_ITEM`, `INTERACT_ENTITY`, `ATTACK`, `HURT`, `PICKUP_ITEM`, `ENTER_DIMENSION`\
+base adds `base:smelted`.
 
 ### Systems and energy
-Systems run over every entity with a component all at once, which is what you want for
-thousands of machines: `r.system(&MACHINE, |batch| for (id, m) in batch.iter_mut() { .. })`.
+Systems run over every entity with a component all at once, and that is how machines tick:
+`r.system(&BURNER, |batch| for (id, m) in batch.iter_mut() { .. })`.
 
 Energy is a built-in engine contract, you can give a block entity the `core:energy` component, tag
 cables with `conductor`, and every mod's generators and machines will work together.\

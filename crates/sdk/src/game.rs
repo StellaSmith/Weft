@@ -349,13 +349,6 @@ fn event_cb(f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) -> abi::Callba
     callback(move |a: &mut abi::EntityEventArgs| f(unsafe { &mut *(a as *mut abi::EntityEventArgs as *mut EntityEvent) }))
 }
 
-/// Events on entities of another mod's kind; ticks go through `Registry::hook_tick`.
-pub enum Hook {
-    Hurt,
-    Death,
-    Interact,
-}
-
 /// A model part (a bone): pivot, animation role, boxes, free-form triangles, and the part it
 /// hangs from.
 pub struct Part {
@@ -513,8 +506,6 @@ pub struct EntityBuilder<'a> {
     texture_size: [u32; 2],
     parts: Vec<Part>,
     on_tick: abi::Callback,
-    on_hurt: abi::Callback,
-    on_death: abi::Callback,
     on_interact: abi::Callback,
     replace: bool,
     carry_height: f32,
@@ -700,14 +691,32 @@ impl EntityBuilder<'_> {
     pub fn goals(self, goals: crate::ai::Goals) -> Self {
         self.on_tick(move |t| goals.tick(t))
     }
-    pub fn on_hurt(mut self, f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) -> Self {
-        self.on_hurt = event_cb(f);
+    /// One of these was hurt: `ENTITY_HURT` for this kind, after the damage, with the other
+    /// events at the end of the tick. Changing the damage is `r.modify(&chain::DAMAGE, ..)`,
+    /// preventing it `r.intercept(&question::HURT, ..)`.
+    pub fn on_hurt(self, f: impl Fn(&World, &crate::Hurt) + Send + Sync + 'static) -> Self {
+        let Some(kind) = self.handle else { return self };
+        self.reg.on(&crate::ENTITY_HURT, move |b| {
+            let w = b.world();
+            for h in b.iter().filter(|h| w.entity(h.entity).is_some_and(|s| s.kind == kind.id())) {
+                f(&w, h);
+            }
+        });
         self
     }
-    pub fn on_death(mut self, f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) -> Self {
-        self.on_death = event_cb(f);
+    /// One of these died: `ENTITY_DIED` for this kind.
+    pub fn on_death(self, f: impl Fn(&World, &crate::Death) + Send + Sync + 'static) -> Self {
+        let Some(kind) = self.handle else { return self };
+        self.reg.on(&crate::ENTITY_DIED, move |b| {
+            let w = b.world();
+            for d in b.iter().filter(|d| d.kind == kind.id()) {
+                f(&w, d);
+            }
+        });
         self
     }
+    /// A player right clicked one, and `question::INTERACT_ENTITY` let it; `e.handled()` swings
+    /// the player's arm.
     pub fn on_interact(mut self, f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) -> Self {
         self.on_interact = event_cb(f);
         self
@@ -738,8 +747,6 @@ impl Drop for EntityBuilder<'_> {
             texture_size: self.texture_size,
             parts: Slice::new(&parts),
             on_tick: self.on_tick,
-            on_hurt: self.on_hurt,
-            on_death: self.on_death,
             on_interact: self.on_interact,
             replace: self.replace as u32,
             components: Slice::new(&values),
@@ -1060,8 +1067,6 @@ impl Registry {
             texture_size: d.texture_size,
             parts: Vec::new(),
             on_tick: abi::Callback::NONE,
-            on_hurt: abi::Callback::NONE,
-            on_death: abi::Callback::NONE,
             on_interact: abi::Callback::NONE,
             replace: false,
             carry_height: 0.0,
@@ -1087,18 +1092,12 @@ impl Registry {
         unsafe { (host().reg_component)(self.raw, &desc) }
     }
 
-    /// Adds behavior to an entity kind registered elsewhere (the engine's player, another mod's mob).
-    pub fn hook_tick(&mut self, kind: &Entity, f: impl Fn(&EntityTick) + Send + Sync + 'static) {
-        unsafe { (host().reg_entity_hook)(self.raw, Str::new(kind.name()), abi::entity_hook::TICK, tick_cb(f)) }
-    }
-
-    pub fn hook(&mut self, kind: &Entity, hook: Hook, f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) {
-        let h = match hook {
-            Hook::Hurt => abi::entity_hook::HURT,
-            Hook::Death => abi::entity_hook::DEATH,
-            Hook::Interact => abi::entity_hook::INTERACT,
-        };
-        unsafe { (host().reg_entity_hook)(self.raw, Str::new(kind.name()), h, event_cb(f)) }
+    /// Logic that is nobody's own (players' hunger, a mod's weather): once per tick in every
+    /// region of every dimension, where `w.players()` are the players in that region. Another
+    /// mod's entities are reached through events (`r.on(&ENTITY_HURT, ..)`) and questions.
+    pub fn world_tick(&mut self, f: impl Fn(&World) + Send + Sync + 'static) {
+        let cb = crate::callback(move |a: &mut abi::WorldTickArgs| f(&World::from_raw(a.world)));
+        unsafe { (host().reg_world_tick)(self.raw, cb) }
     }
 
     pub fn menu<'a>(&'a mut self, menu: &'static Menu) -> MenuBuilder<'a> {
@@ -1504,15 +1503,14 @@ type BlockLook = Box<dyn for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::Block
 ///     .group("fuel", Slots::single().accepts("fuel"))
 ///     .group("output", Slots::single().output().large())
 ///     .attach(&SMELTING)
-///     .on_tick(tick_furnaces)
 ///     .screen(|ui| ..);
+/// r.system(&SMELTING, tick_furnaces);   // the work: every furnace's state at once
 /// ```
 pub struct MachineBuilder<'a> {
     reg: &'a mut Registry,
     block_handle: &'static Block,
     menu: &'static Menu,
     block: Option<BlockLook>,
-    tick: abi::Callback,
     groups: Vec<(String, Slots)>,
     recipes: Vec<String>,
     with: Vec<Box<dyn FnOnce(&mut Registry, &Entity)>>,
@@ -1522,7 +1520,7 @@ pub struct MachineBuilder<'a> {
 impl Registry {
     /// The machine's entity kind is named like its block: `Entity::named("furnace")`.
     pub fn machine<'a>(&'a mut self, block: &'static Block, menu: &'static Menu) -> MachineBuilder<'a> {
-        MachineBuilder { block_handle: block, reg: self, menu, block: None, tick: abi::Callback::NONE, groups: Vec::new(), recipes: Vec::new(), with: Vec::new(), screen: None }
+        MachineBuilder { block_handle: block, reg: self, menu, block: None, groups: Vec::new(), recipes: Vec::new(), with: Vec::new(), screen: None }
     }
 }
 
@@ -1554,10 +1552,6 @@ impl MachineBuilder<'_> {
         self.with.push(Box::new(move |r, kind| r.attach_with(kind, component, value)));
         self
     }
-    pub fn on_tick(mut self, f: impl Fn(&EntityTick) + Send + Sync + 'static) -> Self {
-        self.tick = tick_cb(f);
-        self
-    }
     /// The menu screen: the machine's groups by name (`ui.group`), the player's inventory with
     /// `ui.player_inventory(..)`.
     pub fn screen(mut self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
@@ -1576,9 +1570,7 @@ impl Drop for MachineBuilder<'_> {
         let kind = Entity::generated(full.clone());
         let look = self.block.take().unwrap_or_else(|| Box::new(|b| b));
         look(reg.block(block)).opens(menu);
-        let mut e = reg.entity(kind).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE);
-        e.on_tick = self.tick;
-        drop(e);
+        drop(reg.entity(kind).flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE));
         for f in self.with.drain(..) {
             f(reg, kind);
         }

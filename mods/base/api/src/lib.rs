@@ -8,12 +8,6 @@
 use weft_sdk::*;
 
 value! {
-    /// Fired after a player ate: other mods add effects without touching eating.
-    pub struct Eaten { pub player: u64, pub stack: ItemStack, pub hunger: u32, pub saturation: f32 }
-}
-pub static EATEN: Event<Eaten> = Event::named("base:eaten");
-
-value! {
     /// Fired when a furnace finishes one item.
     pub struct Smelted { pub furnace: u64, pub input: u32, pub output: ItemStack }
 }
@@ -27,7 +21,7 @@ pub static SMELTING_STATE: Component<Smelting> = Component::named("base:smelting
 
 value! {
     /// A player's hunger and air.
-    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32, pub timer: u32 }
+    pub struct Hunger { pub food: f32, pub saturation: f32, pub exhaustion: f32, pub air: f32 }
 }
 pub static HUNGER: Component<Hunger> = Component::named("base:hunger");
 

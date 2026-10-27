@@ -243,6 +243,9 @@ pub async fn persistence(t: T) -> R {
     t.check_eq(value(&t.op("attr me core:max_health").await?), 30.0, "max health +10");
     t.secs(2.5).await?;
     t.check_eq(value(&t.op("attr me core:movement_speed").await?), 1.0, "the 40 tick modifier ran out");
+    // A timer due after the reload is saved with the player and fires there.
+    let rings: u32 = t.op("rings").await?.parse().unwrap_or(0);
+    t.op("after 120").await?;
 
     let name = format!("test-{}", t.name());
     t.c().leave_world();
@@ -257,6 +260,15 @@ pub async fn persistence(t: T) -> R {
     t.check_eq(t.op(&format!("inv {} {} {}", chest[0], chest[1], chest[2])).await?, "0:base:coal:5".to_string(), "the chest kept its coal");
     t.check_eq(t.op("secret me 0").await?, "none".into(), "the secret was not");
     t.check_eq(value(&t.op("attr me core:max_health").await?), 30.0, "max health modifier after reload");
+    let mut now = rings;
+    for _ in 0..40 {
+        now = t.op("rings").await?.parse().unwrap_or(0);
+        if now > rings {
+            break;
+        }
+        t.secs(0.25).await?;
+    }
+    t.check_eq(now, rings + 1, "the timer saved with the player fired after the reload");
     // One maximum everywhere: /heal fills to it and the client hears the same.
     t.cmd("/heal").await?;
     t.check_eq(t.op("health").await?, "30".to_string(), "healed to the modified maximum");

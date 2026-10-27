@@ -62,6 +62,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::drop_and_pickup,
         gameplay::sounds,
         extend::events_batched,
+        extend::vetoes_and_timers,
         extend::names,
         extend::key_to_server,
         extend::facing_placement,

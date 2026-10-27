@@ -74,8 +74,6 @@ impl StateInfo {
 #[derive(Clone, Copy, Default)]
 pub struct BlockCallbacks {
     pub on_use: Option<Callback>,
-    pub on_placed: Option<Callback>,
-    pub on_broken: Option<Callback>,
     pub on_random_tick: Option<Callback>,
     pub on_neighbor: Option<Callback>,
     pub on_scheduled: Option<Callback>,
@@ -694,7 +692,7 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
         })
         .collect();
     let (n, o) = (&mut b.cb, &old.cb);
-    for (mine, theirs) in [(&mut n.on_use, o.on_use), (&mut n.on_placed, o.on_placed), (&mut n.on_broken, o.on_broken), (&mut n.on_random_tick, o.on_random_tick), (&mut n.on_neighbor, o.on_neighbor), (&mut n.on_scheduled, o.on_scheduled), (&mut n.placement, o.placement), (&mut n.on_grow, o.on_grow)] {
+    for (mine, theirs) in [(&mut n.on_use, o.on_use), (&mut n.on_random_tick, o.on_random_tick), (&mut n.on_neighbor, o.on_neighbor), (&mut n.on_scheduled, o.on_scheduled), (&mut n.placement, o.placement), (&mut n.on_grow, o.on_grow)] {
         if mine.is_none() {
             *mine = theirs;
         }
@@ -743,8 +741,6 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
             drop_count: d.drop_count,
             cb: BlockCallbacks {
                 on_use: cb(d.on_use),
-                on_placed: cb(d.on_placed),
-                on_broken: cb(d.on_broken),
                 on_random_tick: cb(d.on_random_tick),
                 on_neighbor: cb(d.on_neighbor),
                 on_scheduled: cb(d.on_scheduled),
@@ -1388,6 +1384,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), &mut errors);
+    cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), &mut errors);
     cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), &mut errors);
     for g in &games {
         for (name, schema, _) in &g.stack_components {

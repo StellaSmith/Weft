@@ -11,6 +11,7 @@ pub static CHEST_MENU: Menu = Menu::named("chest");
 
 pub fn register(r: &mut Registry) {
     r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
+    r.system(&SMELTING, tick_furnaces);
     // The furnace's state syncs to whoever has it open: the screen binds to it directly.
     r.machine(&FURNACE, &FURNACE_MENU)
         .block(|b| {
@@ -36,7 +37,6 @@ pub fn register(r: &mut Registry) {
         .group("output", Slots::single().output())
         .recipes(&crate::recipes::SMELTING)
         .attach(&SMELTING)
-        .on_tick(tick_furnaces)
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
                 ui.title();
@@ -85,15 +85,15 @@ fn ratio(a: u32, b: u32) -> f32 {
     if b == 0 { 0.0 } else { a as f32 / b as f32 }
 }
 
-fn tick_furnaces(t: &EntityTick) {
-    let w = t.world();
-    for &id in t.ids() {
+/// Every furnace of a region at once, through its state (a system: no host call to reach it).
+fn tick_furnaces(b: &mut SystemBatch<Smelting>) {
+    let w = b.world();
+    for (id, s) in b.iter_mut() {
         let Some(st) = w.entity(id) else { continue };
         let pos = [st.pos[0].floor() as i32, st.pos[1].floor() as i32, st.pos[2].floor() as i32];
         let inv = w.inventory(id);
         let (input_slot, fuel_slot, output_slot) = (inv.group("input"), inv.group("fuel"), inv.group("output"));
         let (input, fuel, output) = (input_slot.get(0), fuel_slot.get(0), output_slot.get(0));
-        let Some(s) = w.component_mut(id, &SMELTING) else { continue };
         let was_lit = s.burn > 0;
         if s.burn > 0 {
             s.burn -= 1;
@@ -112,9 +112,7 @@ fn tick_furnaces(t: &EntityTick) {
         if s.burn > 0 && fits {
             let (out, time) = recipe.unwrap();
             let q = abi::Query { entity: id, item: input.item, ..query() };
-            let time = w.compute(&SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
-            let Some(s) = w.component_mut(id, &SMELTING) else { continue };
-            s.cook_max = time;
+            s.cook_max = w.compute(&SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
             s.cook += 1;
             if s.cook >= s.cook_max {
                 s.cook = 0;
@@ -123,15 +121,12 @@ fn tick_furnaces(t: &EntityTick) {
                 output_slot.set(0, merged);
                 w.emit(&SMELTED, Smelted { furnace: id, input: input.item, output: out });
             }
-        } else if let Some(s) = w.component_mut(id, &SMELTING).filter(|s| s.cook > 0) {
+        } else if s.cook > 0 {
             s.cook = s.cook.saturating_sub(2);
         }
-        let Some(s) = w.component(id, &SMELTING) else { continue };
         let lit = s.burn > 0;
-        if lit != was_lit {
-            if FURNACE.is(w.get(pos)) {
-                w.set_prop(pos, "lit", if lit { "true" } else { "false" });
-            }
+        if lit != was_lit && FURNACE.is(w.get(pos)) {
+            w.set_prop(pos, "lit", if lit { "true" } else { "false" });
         }
     }
 }

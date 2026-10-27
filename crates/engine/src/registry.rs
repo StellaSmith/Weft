@@ -98,10 +98,8 @@ pub struct EntityKind {
     pub texture: String,
     pub texture_size: [u32; 2],
     pub parts: Vec<Part>,
-    /// (owner, callback) lists: the kind's own callback first, then hooks from other mods.
+    /// The kind's own callbacks (empty or one).
     pub on_tick: Vec<(ModId, Callback)>,
-    pub on_hurt: Vec<(ModId, Callback)>,
-    pub on_death: Vec<(ModId, Callback)>,
     pub on_interact: Vec<(ModId, Callback)>,
     /// Components attached at spawn.
     pub components: Vec<u32>,
@@ -335,6 +333,10 @@ pub struct Game {
     pub attr_names: FxHashMap<String, u32>,
     /// The engine component holding entities' attribute modifiers.
     pub modifiers_comp: u32,
+    /// `TIMERS` as an entity component.
+    pub timers_comp: u32,
+    /// (owner, callback) run once per tick in every region, in mod order.
+    pub world_ticks: Vec<(ModId, Callback)>,
     /// `abi::comp::NAME` as an entity component.
     pub name_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
@@ -454,7 +456,8 @@ pub struct RawGame {
     pub entities: Vec<RawEntity>,
     pub components: Vec<RawComponent>,
     /// (owner, kind, hook, callback); hook 0 is the tick.
-    pub hooks: Vec<(ModId, String, u32, Callback)>,
+    /// (owner, callback) run once per tick in every region (`Host::reg_world_tick`).
+    pub world_ticks: Vec<(ModId, Callback)>,
     pub recipes: Vec<RawRecipe>,
     pub recipe_kinds: Vec<RawRecipeKind>,
     pub categories: Vec<CategoryDef>,
@@ -705,6 +708,7 @@ pub const ENGINE_EVENTS: &[(&str, &str, u32)] = &[
     (abi::event::PLAYER_JOINED, "{player:u64}", size_of::<abi::PlayerEvent>() as u32),
     (abi::event::ITEM_PICKED_UP, "{player:u64,stack:{item:u32,count:u32,data:u32}}", size_of::<abi::Pickup>() as u32),
     (abi::event::ENTITY_HURT, "{entity:u64,source:u64,amount:f32,cause:u32}", size_of::<abi::Hurt>() as u32),
+    (abi::event::ITEM_USED, "{player:u64,stack:{item:u32,count:u32,data:u32},pos:[i32;3],has_target:u32}", size_of::<abi::ItemUsed>() as u32),
 ];
 
 /// FNV-1a, for names stored in saves.
@@ -780,8 +784,6 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 texture_size: d.texture_size,
                 parts,
                 on_tick: one(d.on_tick),
-                on_hurt: one(d.on_hurt),
-                on_death: one(d.on_death),
                 on_interact: one(d.on_interact),
                 components: Vec::new(),
                 values: Vec::new(),
@@ -887,8 +889,6 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         texture_size: [64, 32],
         parts: Vec::new(),
         on_tick: Vec::new(),
-        on_hurt: Vec::new(),
-        on_death: Vec::new(),
         on_interact: Vec::new(),
         components: Vec::new(),
         values: Vec::new(),
@@ -922,6 +922,8 @@ fn player_parts() -> Vec<Part> {
 
 /// Entity component with attribute modifiers.
 pub const MODIFIERS: &str = "core:modifiers";
+/// Timers set with `Host::entity_after`, saved with their entity.
+pub const TIMERS: &str = "core:timers";
 
 /// Entity kinds, frozen before components (which attach to them).
 pub struct Entities {
@@ -987,7 +989,7 @@ pub fn freeze(
 ) -> Game {
     let mut g = Game::default();
     let mut components: Vec<RawComponent> = Vec::new();
-    let mut hooks = Vec::new();
+    let mut world_ticks = Vec::new();
     let mut recipes = Vec::new();
     let mut menus = Vec::new();
     let mut player_menu = None;
@@ -1034,7 +1036,7 @@ pub fn freeze(
         modifiers.extend(r.modifiers);
         attributes.extend(r.attributes);
         components.extend(r.components);
-        hooks.extend(r.hooks);
+        world_ticks.extend(r.world_ticks);
         recipes.extend(r.recipes);
         for k in r.recipe_kinds {
             g.recipe_kinds.insert(k.name.clone());
@@ -1217,6 +1219,11 @@ pub fn freeze(
         def: ComponentDef { name: MODIFIERS.into(), size: 0, flags: weft_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
         schema: String::new(),
     });
+    components.push(RawComponent {
+        owner: ENGINE,
+        def: ComponentDef { name: TIMERS.into(), size: 0, flags: weft_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
+        schema: String::new(),
+    });
     // A block entity's own name (a renamed chest).
     components.push(RawComponent {
         owner: ENGINE,
@@ -1230,6 +1237,7 @@ pub fn freeze(
     g.component_names = g.components.iter().enumerate().filter(|(_, d)| d.runtime).map(|(i, d)| (d.name.clone(), i as u32)).collect();
     g.energy = g.component_names[abi::comp::ENERGY];
     g.modifiers_comp = g.component_names[MODIFIERS];
+    g.timers_comp = g.component_names[TIMERS];
     g.name_comp = g.component_names[abi::comp::NAME];
     let with_flag = |f: u32| g.components.iter().enumerate().filter(|(_, d)| d.runtime && d.flags & f != 0).map(|(i, _)| i as u32).collect::<Vec<u32>>();
     g.watched_comps = with_flag(abi::component_flags::SYNC_WATCHERS);
@@ -1259,21 +1267,8 @@ pub fn freeze(
         }
     }
 
-    // Hooks run after the kind's own callback, in mod order.
-    hooks.sort_by_key(|h: &(ModId, String, u32, Callback)| order(h.0));
-    for (owner, kind, hook, cb) in hooks {
-        let Some(&e) = g.entity_names.get(&kind) else {
-            errors.push(format!("hook on unknown entity {kind}"));
-            continue;
-        };
-        let k = &mut g.entities[e as usize];
-        match hook {
-            abi::entity_hook::TICK => k.on_tick.push((owner, cb)),
-            abi::entity_hook::HURT => k.on_hurt.push((owner, cb)),
-            abi::entity_hook::DEATH => k.on_death.push((owner, cb)),
-            _ => k.on_interact.push((owner, cb)),
-        }
-    }
+    world_ticks.sort_by_key(|h: &(ModId, Callback)| order(h.0));
+    g.world_ticks = world_ticks;
 
     menus.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     for (i, (cell, m)) in menus.into_iter().enumerate() {

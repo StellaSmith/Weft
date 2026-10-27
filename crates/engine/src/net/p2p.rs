@@ -16,7 +16,7 @@ use super::{ClientConn, Conn, ServerConn, ToClient, ToServer};
 use crate::settings::Settings;
 
 const ALPN: &[u8] = b"weft/1";
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
 const MAX_FRAME: usize = 64 << 20;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -205,8 +205,7 @@ async fn accept(incoming: iroh::endpoint::Incoming, connect: crossbeam_channel::
     let peer = conn.remote_id();
     let (mut send, mut recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
     let hello = read_frame(&mut recv).await?;
-    let mut r = codec::R(&hello);
-    let (proto, hash) = (read_u32(&mut r)?, read_u64(&mut r)?);
+    let (proto, hash) = <(u32, u64) as codec::Wire>::get(&mut codec::R(&hello)).ok_or("bad hello")?;
     let reply = if proto != PROTOCOL {
         format!("protocol mismatch: server {PROTOCOL}, client {proto}")
     } else if hash != content_hash() {
@@ -240,20 +239,6 @@ async fn accept(incoming: iroh::endpoint::Incoming, connect: crossbeam_channel::
     reader.abort();
     conn.close(0u32.into(), b"bye");
     Ok(())
-}
-
-fn read_u32(r: &mut codec::R) -> Result<u32, String> {
-    let b = r.0.get(..4).ok_or("bad hello")?;
-    let v = u32::from_le_bytes(b.try_into().unwrap());
-    r.0 = &r.0[4..];
-    Ok(v)
-}
-
-fn read_u64(r: &mut codec::R) -> Result<u64, String> {
-    let b = r.0.get(..8).ok_or("bad hello")?;
-    let v = u64::from_le_bytes(b.try_into().unwrap());
-    r.0 = &r.0[8..];
-    Ok(v)
 }
 
 /// Forwards a crossbeam channel into a stream. The channel is read on a blocking thread because
@@ -292,10 +277,9 @@ pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
                 .map_err(|_| "timed out".to_string())?
                 .map_err(|e| e.to_string())?;
             let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
-            let mut hello = Vec::new();
-            hello.extend_from_slice(&PROTOCOL.to_le_bytes());
-            hello.extend_from_slice(&content_hash().to_le_bytes());
-            write_frame(&mut send, &hello).await?;
+            let mut hello = codec::W::default();
+            codec::Wire::put(&(PROTOCOL, content_hash()), &mut hello);
+            write_frame(&mut send, &hello.0).await?;
             let reply = read_frame(&mut recv).await?;
             if !reply.is_empty() {
                 return Err(String::from_utf8_lossy(&reply).into_owned());

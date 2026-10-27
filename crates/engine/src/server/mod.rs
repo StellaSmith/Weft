@@ -1658,7 +1658,7 @@ impl Server {
             }
             let moves: Vec<crate::net::Move> = moved[p.dim as usize].iter().filter(|m| p.known.contains(&m.0) && visible.contains(&m.0)).copied().collect();
             if !moves.is_empty() {
-                p.conn.send(ToClient::Moves(server_tick, moves));
+                p.conn.send(ToClient::Moves { tick: server_tick, moves });
             }
             p.known = visible;
 

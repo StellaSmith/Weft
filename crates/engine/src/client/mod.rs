@@ -540,7 +540,7 @@ impl Client {
                         );
                     }
                 }
-                ToClient::Moves(tick, list) => {
+                ToClient::Moves { tick, moves: list } => {
                     // A long stall (or the first move) starts the timeline over.
                     let sample = self.body_clock - STEP + self.accum - tick as f64 * STEP;
                     match self.tick_offset {

@@ -464,13 +464,13 @@ pub async fn client_hooks(t: T) -> R {
     t.c().look(0.0, -10.0);
     for _ in 0..3 {
         t.c().draw_box(b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
-        t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "drawn by testkit", 0xFFFF80FF);
-        t.c().screen_text(0.5, 0.3, "screen text from a frame hook", 0x80FFFFFF);
+        t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
+        t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF);
         t.frames(1).await?;
     }
     t.c().draw_box(b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
-    t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "drawn by testkit", 0xFFFF80FF);
-    t.c().screen_text(0.5, 0.3, "screen text from a frame hook", 0x80FFFFFF);
+    t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
+    t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF);
     let shot = t.shot("drawn").await?;
     let red = shot.share(0.0, 0.0, 1.0, 0.9, probe::red);
     t.probe("the box drawn in the world", red, red > 0.001);

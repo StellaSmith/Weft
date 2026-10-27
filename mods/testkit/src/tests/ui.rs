@@ -190,6 +190,23 @@ pub async fn chat(t: T) -> R {
     t.check(t.c().ui_rect("text:{#ff0000}stay").is_some(), "a player's braces show literally in chat");
     t.c().key("Escape", 0.0);
     t.no_screen().await?;
+
+    // Replies travel as a key and arguments: the client words them, and again after a language
+    // change. The engine's, a mod's and a parse error alike.
+    let replies = [("/time query", "time is", "время"), ("/feed 5", "food set to 5", "сытость теперь 5"), ("/give @p base:nothing", "usage: /give", "использование: /give")];
+    for (line, _, _) in replies {
+        t.cmd(line).await?;
+    }
+    let lines = |t: &T| (0..3).rev().map(|i| t.c().chat_line(i)).collect::<Vec<_>>();
+    let en = lines(&t);
+    t.c().setting("language", "ru_ru");
+    t.frames(3).await?;
+    let ru = lines(&t);
+    t.c().setting("language", "en_us");
+    for (i, (line, want_en, want_ru)) in replies.into_iter().enumerate() {
+        t.check(en[i].contains(want_en), format!("{line} in English: '{}'", en[i]));
+        t.check(ru[i].contains(want_ru), format!("{line} in Russian: '{}'", ru[i]));
+    }
     Ok(())
 }
 

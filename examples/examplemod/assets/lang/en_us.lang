@@ -3,3 +3,4 @@ item.examplemod.example_item.tooltip = Given to everyone who joins, replace me w
 config.examplemod.gift_on_join = Gift on join
 config.examplemod.gift_on_join.tooltip = Players joining the world get an example item
 mod.examplemod.name = Example Mod
+examplemod.hello = hello {0} times

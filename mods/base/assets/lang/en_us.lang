@@ -1,5 +1,8 @@
 language.name = English
 menu.base.inventory = Crafting
+menu.base.chest = Chest
+menu.base.furnace = Furnace
+menu.base.crafting_table = Crafting
 block.base.stone = Stone
 block.base.cobblestone = Cobblestone
 block.base.mossy_cobblestone = Mossy Cobblestone
@@ -145,3 +148,4 @@ mod.base.authors = vortex_so
 menu.news = {align:center}{img:base:icon_settings 16x16}{/align}
     {align:center}Weft is in development.{/align}
     Everything here, the game included, is a mod: see the Mods button.
+command.base.feed = food set to {0}

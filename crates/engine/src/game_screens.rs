@@ -218,7 +218,7 @@ impl Screen for Chat {
             if let Some(client) = cx.client {
                 ui.container(Style::default().gap(1.0).pad(2.0).self_align(crate::ui::Align::Start), |ui| {
                     for (line, _) in client.chat.iter().rev().take(20).rev() {
-                        ui.text(text::rich(line, cx.lang, Some(cx.input)), "chat");
+                        ui.text(line.spans(cx.lang, Some(cx.input)), "chat");
                     }
                 });
             }

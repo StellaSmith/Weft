@@ -187,7 +187,7 @@ impl World {
 
     /// A filled box for players showing `group` (`/gizmo <group>`), see-through by `color`'s alpha.
     pub fn draw_fill(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
-        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), 3, &min, &max, color, ticks, Str::EMPTY) }
+        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), 3, &min, &max, color, ticks, Str::EMPTY, abi::Slice::EMPTY) }
     }
 }
 
@@ -205,7 +205,7 @@ impl Client {
 
     /// A filled box drawn this frame, see-through by `color`'s alpha (range previews, blueprints).
     pub fn draw_fill(&self, min: [f64; 3], max: [f64; 3], color: u32) {
-        unsafe { (host().client_draw)(self.raw(), 4, &min, &max, color, Str::EMPTY) }
+        unsafe { (host().client_draw)(self.raw(), 4, &min, &max, color, Str::EMPTY, abi::Slice::EMPTY) }
     }
 }
 

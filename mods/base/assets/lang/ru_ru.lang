@@ -1,5 +1,8 @@
 language.name = Русский
 menu.base.inventory = Создание
+menu.base.chest = Сундук
+menu.base.furnace = Печь
+menu.base.crafting_table = Создание
 block.base.stone = Камень
 block.base.cobblestone = Булыжник
 block.base.mossy_cobblestone = Замшелый булыжник
@@ -138,3 +141,4 @@ tab.base.food = Еда и напитки
 tab.base.ingredients = Ингредиенты
 recipe.base.crafting = Крафт
 recipe.base.smelting = Плавка
+command.base.feed = сытость теперь {0}

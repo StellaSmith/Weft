@@ -279,26 +279,28 @@ impl Client {
         true
     }
 
-    fn draw(&self, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, text: &str) {
-        unsafe { (host().client_draw)(self.raw, kind, &a, &b, color, s(text)) }
+    fn draw(&self, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, key: &str, args: &[crate::Arg]) {
+        let raw = crate::ui::raw_args(args);
+        unsafe { (host().client_draw)(self.raw, kind, &a, &b, color, s(key), crate::abi::Slice::new(&raw)) }
     }
 
     /// Lines, boxes and labels for this frame only; colors are 0xRRGGBBAA.
     pub fn draw_line(&self, a: [f64; 3], b: [f64; 3], color: u32) {
-        self.draw(0, a, b, color, "");
+        self.draw(0, a, b, color, "", &[]);
     }
 
     pub fn draw_box(&self, min: [f64; 3], max: [f64; 3], color: u32) {
-        self.draw(1, min, max, color, "");
+        self.draw(1, min, max, color, "", &[]);
     }
 
-    pub fn draw_text(&self, pos: [f64; 3], text: &str, color: u32) {
-        self.draw(2, pos, pos, color, text);
+    /// The translation `key` with `args` at a world position.
+    pub fn draw_text(&self, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32) {
+        self.draw(2, pos, pos, color, key, args);
     }
 
-    /// Text centered at fractions of the window.
-    pub fn screen_text(&self, x: f32, y: f32, text: &str, color: u32) {
-        self.draw(3, [x as f64, y as f64, 0.0], [0.0; 3], color, text);
+    /// The translation `key` with `args`, centered at fractions of the window.
+    pub fn screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32) {
+        self.draw(3, [x as f64, y as f64, 0.0], [0.0; 3], color, key, args);
     }
 
     /// Sends `data` on `channel` to the server.

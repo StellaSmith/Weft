@@ -10,20 +10,13 @@ use super::Client;
 use crate::content::content;
 use crate::net::GizmoShape;
 
-pub const BUILTIN: &[(&str, &str)] = &[
-    ("cubes", "borders of the cube you are in and its neighbors"),
-    ("hitboxes", "entity boxes"),
-    ("collision", "collision boxes of blocks nearby"),
-    ("light", "block light on blocks nearby: red spawnable, yellow spawnable at night"),
-    ("regions", "server regions, the parts of the world simulated in parallel"),
-    ("visibility", "cubes the server considers visible (green loaded, orange waiting)"),
-];
+pub const BUILTIN: &[&str] = &["cubes", "hitboxes", "collision", "light", "regions", "visibility"];
 
 /// A line between two points, in the color `0xRRGGBBAA`.
 pub type Line = (DVec3, DVec3, u32);
 /// A filled box between two corners; its alpha makes it see-through.
 pub type Fill = (DVec3, DVec3, u32);
-pub type Label = (DVec3, String, u32);
+pub type Label = (DVec3, crate::ui::text::Msg, u32);
 
 #[derive(Default)]
 pub struct Gizmos {
@@ -152,7 +145,7 @@ impl Gizmos {
                         } else {
                             0x60FF60FF
                         };
-                        labels.push((p.as_dvec3() + DVec3::new(0.5, 0.05, 0.5), block.to_string(), color));
+                        labels.push((p.as_dvec3() + DVec3::new(0.5, 0.05, 0.5), crate::ui::text::Msg::new("gizmo.value", vec![crate::ui::text::Arg::Int(block as i64)]), color));
                     }
                 }
             }

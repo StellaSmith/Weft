@@ -1,6 +1,7 @@
 //! Binary encoding of messages for network transports. The in-process transport never uses it.
 //! Runtime ids are sent as is: peers verify they run the same content before playing.
 
+use crate::ui::text::{Arg, Msg};
 use std::sync::Arc;
 
 use glam::{DVec3, IVec3};
@@ -56,6 +57,43 @@ impl W {
         for (name, bytes) in &data {
             self.str(name);
             self.bytes(bytes);
+        }
+    }
+    fn msg(&mut self, m: &Msg) {
+        self.str(&m.key);
+        self.len(m.args.len());
+        for a in &m.args {
+            match a {
+                Arg::Text(t) => {
+                    self.u8(0);
+                    self.str(t);
+                }
+                Arg::Key(k) => {
+                    self.u8(1);
+                    self.str(k);
+                }
+                Arg::Int(v) => {
+                    self.u8(2);
+                    self.u64(*v as u64);
+                }
+                Arg::Float(v, p) => {
+                    self.u8(3);
+                    self.f64(*v);
+                    self.u8(*p);
+                }
+                Arg::Item(i) => {
+                    self.u8(4);
+                    self.u32(*i);
+                }
+                Arg::Name(n) => {
+                    self.u8(5);
+                    self.str(&n.spec());
+                }
+                Arg::Msg(m) => {
+                    self.u8(6);
+                    self.msg(m);
+                }
+            }
         }
     }
     fn len(&mut self, n: usize) {
@@ -118,6 +156,27 @@ impl R<'_> {
             data.push((self.str()?, self.bytes()?));
         }
         Some(ItemStack { item, count, data: crate::stack::from_names(data) })
+    }
+    fn msg(&mut self) -> Res<Msg> {
+        let key = self.str()?;
+        let n = self.len()?;
+        let mut args = Vec::with_capacity(n.min(64));
+        for _ in 0..n {
+            args.push(match self.u8()? {
+                0 => Arg::Text(self.str()?),
+                1 => Arg::Key(self.str()?),
+                2 => Arg::Int(self.u64()? as i64),
+                3 => Arg::Float(self.f64()?, self.u8()?),
+                4 => Arg::Item(self.u32()?),
+                5 => {
+                    let spec = self.str()?;
+                    crate::ui::text::Name::parse(&spec).map_or(Arg::Text(spec), Arg::Name)
+                }
+                6 => Arg::Msg(self.msg()?),
+                _ => return None,
+            });
+        }
+        Some(Msg { key, args })
     }
     fn len(&mut self) -> Res<usize> {
         let n = self.u32()? as usize;
@@ -328,9 +387,7 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.f32(*x);
             w.f32(*z);
         }
-        ToClient::Chat(t) => {
-            w.str(t);
-        }
+        ToClient::Chat(m) => w.msg(m),
         ToClient::Disconnect(t) => {
             w.str(t);
         }
@@ -352,7 +409,7 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.dvec(g.b);
                 w.u32(g.color);
                 w.u32(g.ticks);
-                w.str(&g.text);
+                w.msg(&g.text);
             }
         }
         ToClient::Packet { channel, data } => {
@@ -547,7 +604,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
         ClientTag::CloseMenu => ToClient::CloseMenu,
         ClientTag::Died => ToClient::Died,
         ClientTag::Swing => ToClient::Swing,
-        ClientTag::Chat => ToClient::Chat(r.str()?),
+        ClientTag::Chat => ToClient::Chat(r.msg()?),
         ClientTag::Disconnect => ToClient::Disconnect(r.str()?),
         ClientTag::Worn => {
             let n = r.len()?;
@@ -584,7 +641,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n.min(4096));
             for _ in 0..n {
-                list.push(crate::net::GizmoShape { group: r.str()?, kind: r.u8()?, a: r.dvec()?, b: r.dvec()?, color: r.u32()?, ticks: r.u32()?, text: r.str()? });
+                list.push(crate::net::GizmoShape { group: r.str()?, kind: r.u8()?, a: r.dvec()?, b: r.dvec()?, color: r.u32()?, ticks: r.u32()?, text: r.msg()? });
             }
             ToClient::Gizmos(list)
         }
@@ -759,7 +816,7 @@ mod tests {
 
     #[test]
     fn tags_follow_the_message_table() {
-        for m in [ToClient::Died, ToClient::Chat("hi".into()), ToClient::Burning(vec![4]), ToClient::Animate(Vec::new())] {
+        for m in [ToClient::Died, ToClient::Chat(Msg::new("chat.message", vec![Arg::Text("me".into()), Arg::Int(-3), Arg::Msg(Msg::new("k", vec![Arg::Float(1.5, 2)]))])), ToClient::Burning(vec![4]), ToClient::Animate(Vec::new())] {
             let bytes = encode_client(&m);
             assert_eq!(bytes[0] as usize, m.kind());
             assert_eq!(decode_client(&bytes).map(|b| b.kind()), Some(m.kind()));
@@ -769,7 +826,7 @@ mod tests {
 
     #[test]
     fn gizmos_roundtrip() {
-        let g = crate::net::GizmoShape { group: "regions".into(), kind: 1, a: DVec3::new(1.0, 2.0, 3.0), b: DVec3::splat(-4.5), color: 0xFF8000FF, ticks: 21, text: "r0".into() };
+        let g = crate::net::GizmoShape { group: "regions".into(), kind: 1, a: DVec3::new(1.0, 2.0, 3.0), b: DVec3::splat(-4.5), color: 0xFF8000FF, ticks: 21, text: Msg::new("gizmo.value", vec![Arg::Text("r0".into())]) };
         let Some(ToClient::Gizmos(back)) = decode_client(&encode_client(&ToClient::Gizmos(vec![g.clone()]))) else { panic!("not decoded") };
         assert_eq!(back, vec![g]);
     }

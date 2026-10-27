@@ -396,9 +396,10 @@ pub unsafe extern "C" fn client_text(c: *mut abi::ClientCtx, which: u32, index: 
                 Some(r) => text_out(&r.settings.run_dir.to_string_lossy()),
                 None => Str::EMPTY,
             },
-            ct::CHAT => match client(c) {
-                Some(cl) => cl.chat.iter().rev().nth(index as usize).map_or(Str::EMPTY, |(t, _)| text_out(t)),
-                None => Str::EMPTY,
+            // In the client's language, as the player reads it.
+            ct::CHAT => match (client(c), run(c)) {
+                (Some(cl), Some(r)) => cl.chat.iter().rev().nth(index as usize).map_or(Str::EMPTY, |(m, _)| text_out(&m.text(&r.lang))),
+                _ => Str::EMPTY,
             },
             ct::BENCH => match run(c) {
                 Some(r) => text_out(&r.bench_line),
@@ -502,10 +503,10 @@ pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out:
     }
 }
 
-pub unsafe extern "C" fn client_draw(c: *mut abi::ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, text: Str) {
+pub unsafe extern "C" fn client_draw(c: *mut abi::ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, key: Str, args: Slice<abi::UiArg>) {
     unsafe {
         let Some(r) = run(c) else { return };
-        let (a, b, text) = (DVec3::from_array(*a), DVec3::from_array(*b), text.as_str().to_string());
+        let (a, b, text) = (DVec3::from_array(*a), DVec3::from_array(*b), crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)));
         match kind {
             0 => r.mod_lines.push((a, b, color)),
             1 => {

@@ -27,13 +27,13 @@ fn init(r: &mut Registry) {
     // A branch of an engine command, handled by this mod (on the client, like /gizmo).
     r.command_branch("gizmo", "probe <n:int>", |cmd| {
         let n = cmd.int("n").unwrap_or(0);
-        cmd.reply(&format!("gizmo probe {n} from testkit"));
+        cmd.reply("command.testkit.gizmo_probe", &[Arg::Int(n as i64)]);
     });
     // A command that never reaches the server: answers from the client it runs on.
     r.client_command("probe", "<what:word(alpha,beta)>", |cmd| {
-        let side = if cmd.client().is_some() { "client" } else { "server" };
+        let side = if cmd.client().is_some() { "command.testkit.client" } else { "command.testkit.server" };
         let what = cmd.text("what").unwrap_or("").to_string();
-        cmd.reply(&format!("probe {what} on the {side}"));
+        cmd.reply("command.testkit.probe", &[Arg::Text(&what), Arg::Key(side)]);
     });
     let (test, script) = (launch_option("test"), launch_option("script"));
     if test.is_none() && script.is_none() {

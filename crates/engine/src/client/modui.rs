@@ -94,7 +94,8 @@ pub fn build_recipe(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input
     }
 }
 
-fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
+/// Arguments a mod passed, as the text formatter takes them.
+pub fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
     let mut out = Vec::new();
     unsafe {
         list.as_slice().iter().copied().for_each(|a| {

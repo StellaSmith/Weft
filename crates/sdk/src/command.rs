@@ -69,8 +69,11 @@ impl Command<'_> {
         self.value(name).is_some()
     }
 
-    pub fn reply(&mut self, text: &str) {
-        unsafe { (host().command_reply)(self.args, Str::new(text)) }
+    /// A line for whoever ran the command: the translation `key` with `args`, formatted by
+    /// their client in its own language. Call again for more lines.
+    pub fn reply(&mut self, key: &str, args: &[crate::Arg]) {
+        let raw = crate::ui::raw_args(args);
+        unsafe { (host().command_reply)(self.args, Str::new(key), crate::abi::Slice::new(&raw)) }
     }
 }
 

@@ -117,7 +117,7 @@ impl Hud {
                 let now = std::time::Instant::now();
                 for (line, at) in client.chat.iter().rev().take(10).rev() {
                     if chat_visible > 0 && now.duration_since(*at).as_secs() < 10 {
-                        ui.text(text::rich(line, lang, Some(input)), "chat");
+                        ui.text(line.spans(lang, Some(input)), "chat");
                     }
                 }
             });

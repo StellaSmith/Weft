@@ -1,1 +1,7 @@
 key.testkit.probe = Тестовая клавиша
+command.testkit.gizmo_probe = проба gizmo {0} от testkit
+command.testkit.probe = проба {0} на {1}
+command.testkit.client = клиенте
+command.testkit.server = сервере
+testkit.drawn = нарисовано testkit
+testkit.screen_text = текст на экране из покадрового хука

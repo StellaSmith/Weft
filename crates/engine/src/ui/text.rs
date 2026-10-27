@@ -37,6 +37,33 @@ pub enum Arg {
     Item(u32),
     /// The display name of something, as rich as its translation.
     Name(Name),
+    /// Another translation with arguments of its own.
+    Msg(Msg),
+}
+
+/// A translation key and its arguments: what the server and mods send for the client to format
+/// in its own language (chat, command replies, labels).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Msg {
+    pub key: String,
+    pub args: Vec<Arg>,
+}
+
+impl Msg {
+    pub fn new(key: &str, args: Vec<Arg>) -> Msg {
+        Msg { key: key.to_string(), args }
+    }
+
+    pub fn spans(&self, lang: &Lang, input: Option<&Input>) -> Vec<Span> {
+        let mut out = Vec::new();
+        format(lang.get(&self.key), &self.args, &Ctx::new(lang, input), &mut out);
+        out
+    }
+
+    /// As plain text, without icons or formatting.
+    pub fn text(&self, lang: &Lang) -> String {
+        plain_text(&self.spans(lang, None))
+    }
 }
 
 /// Something with a display name. Each kind looks for its translations in order and shows its
@@ -81,6 +108,21 @@ impl Name {
             "key" => Name::Key(id.to_string()),
             _ => return None,
         })
+    }
+
+    /// The `{name:..}` form, which `parse` reads back.
+    pub fn spec(&self) -> String {
+        let c = crate::content::try_content();
+        match self {
+            Name::Item(i) => format!("item:{}", c.and_then(|c| c.items.get(*i as usize)).map_or("", |d| d.name.as_str())),
+            Name::Block(s) => format!("block:{}", c.filter(|c| (*s as usize) < c.states.len()).map_or(String::new(), |c| c.state_name(*s))),
+            Name::Liquid(n) => format!("liquid:{n}"),
+            Name::Tab(n) => format!("tab:{n}"),
+            Name::Mod(n) => format!("mod:{n}"),
+            Name::Recipe(n) => format!("recipe:{n}"),
+            Name::Config(n) => format!("config:{n}"),
+            Name::Key(n) => format!("key:{n}"),
+        }
     }
 
     /// Translation keys to try, in order, and the text shown when none is there.
@@ -407,6 +449,11 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
                 Some(Arg::Float(v, p)) => push_text(out, &format!("{v:.*}", *p as usize), st),
                 Some(Arg::Item(id)) => out.push(st.span(Piece::Icon(*id), None)),
                 Some(Arg::Name(n)) => push_name(n, cx, out, st, depth),
+                Some(Arg::Msg(m)) if depth < 4 => {
+                    let color = st.color;
+                    format_depth(cx.lang.get(&m.key), &m.args, cx, out, st, color, depth + 1);
+                    st.color = color;
+                }
                 Some(Arg::Key(k)) if depth < 4 => {
                     let color = st.color;
                     format_depth(cx.lang.get(k), &[], cx, out, st, color, depth + 1);

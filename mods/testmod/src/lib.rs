@@ -230,12 +230,12 @@ fn morph(r: &mut Registry) {
                 let (width, height) = (cmd.float("width").unwrap_or(0.9) as f32, cmd.float("height").unwrap_or(0.9) as f32);
                 w.set_look(me, Some(&kind));
                 w.set_size(me, Some([width, height, height * 0.85]));
-                cmd.reply(&format!("now a {kind}, {width} x {height}"));
+                cmd.reply("command.testmod.morph", &[Arg::Text(&kind), Arg::Float(width as f64), Arg::Float(height as f64)]);
             }
             None => {
                 w.set_look(me, None);
                 w.set_size(me, None);
-                cmd.reply("yourself again");
+                cmd.reply("command.testmod.unmorph", &[]);
             }
         }
     });
@@ -308,8 +308,8 @@ fn energy_gizmos(t: &EntityTick) {
     }
     for &id in t.ids() {
         if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
-            let text = format!("{} / {} EU", e.stored, e.capacity);
-            w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], &text, 0x60FF60FF, 11);
+            let args = [Arg::Int(e.stored as i64), Arg::Int(e.capacity as i64)];
+            w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 11);
         }
     }
 }
@@ -482,5 +482,5 @@ fn tag_bench(cmd: &mut Command) {
     let tag = time(&|s| PLANT_SOIL.on_block(s) as u32);
     let host_call = time(&|s| state_flags(s));
     let by_name = time(&|s| block_has_tag(s, "plant_soil") as u32);
-    cmd.reply(&format!("ns per lookup: field {field:.2}, tag {tag:.2}, host call {host_call:.2}, tag by name {by_name:.2}"));
+    cmd.reply("command.testmod.tagbench", &[Arg::Float(field), Arg::Float(tag), Arg::Float(host_call), Arg::Float(by_name)]);
 }

@@ -152,7 +152,7 @@ fn events(r: &mut Registry) {
 fn commands(_r: &mut Registry) {
     // r.command("example", "[times:int]", |cmd| {
     //     let n = cmd.int("times").unwrap_or(1);
-    //     cmd.reply(&format!("hello {n} times"));
+    //     cmd.reply("examplemod.hello", &[Arg::Int(n)]);    // `examplemod.hello = hello {0} times` in lang
     // });
 }
 

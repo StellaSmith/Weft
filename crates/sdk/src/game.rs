@@ -187,16 +187,19 @@ impl World {
     }
     /// A line seen by players showing `group`, color `0xRRGGBBAA`, for `ticks`.
     pub fn draw_line(&self, group: &GizmoGroup, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32) {
-        self.gizmo(group, abi::gizmo_kind::LINE, a, b, color, ticks, "");
+        self.gizmo(group, abi::gizmo_kind::LINE, a, b, color, ticks, "", &[]);
     }
     pub fn draw_box(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
-        self.gizmo(group, abi::gizmo_kind::BOX, min, max, color, ticks, "");
+        self.gizmo(group, abi::gizmo_kind::BOX, min, max, color, ticks, "", &[]);
     }
-    pub fn draw_text(&self, group: &GizmoGroup, pos: [f64; 3], text: &str, color: u32, ticks: u32) {
-        self.gizmo(group, abi::gizmo_kind::LABEL, pos, pos, color, ticks, text);
+    /// The translation `key` with `args` at `pos`, in each viewer's language.
+    pub fn draw_text(&self, group: &GizmoGroup, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, ticks: u32) {
+        self.gizmo(group, abi::gizmo_kind::LABEL, pos, pos, color, ticks, key, args);
     }
-    fn gizmo(&self, group: &GizmoGroup, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32, text: &str) {
-        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), kind, &a, &b, color, ticks, Str::new(text)) }
+    #[allow(clippy::too_many_arguments)]
+    fn gizmo(&self, group: &GizmoGroup, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32, key: &str, args: &[crate::Arg]) {
+        let raw = crate::ui::raw_args(args);
+        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), kind, &a, &b, color, ticks, Str::new(key), abi::Slice::new(&raw)) }
     }
 }
 

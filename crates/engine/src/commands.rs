@@ -11,6 +11,7 @@
 //! `@p` nearest player, `@a` all players, `@e` entities, `@s` yourself, `@r` a random player, with
 //! filters like `@e[type=zombie,distance=..10,limit=3,sort=nearest]`).
 
+use crate::ui::text::{Arg, Msg};
 use glam::DVec3;
 use weft_abi::{Callback, ModId};
 
@@ -125,41 +126,41 @@ pub struct Origin {
     pub pitch: f32,
 }
 
-fn parse_selector(c: &Content, tok: &str, players: &[String]) -> Result<Selector, String> {
+fn parse_selector(c: &Content, tok: &str, players: &[String]) -> Result<Selector, Msg> {
     let mut s = Selector { base: 'n', name: None, kind: None, distance: None, limit: None, sort: None };
     let Some(rest) = tok.strip_prefix('@') else {
         if !players.iter().any(|n| n == tok) {
-            return Err(format!("no player {tok}"));
+            return Err(err("no_player", tok));
         }
         s.name = Some(tok.to_string());
         return Ok(s);
     };
     let mut chars = rest.chars();
-    s.base = chars.next().filter(|b| "paesr".contains(*b)).ok_or_else(|| format!("unknown selector {tok}"))?;
+    s.base = chars.next().filter(|b| "paesr".contains(*b)).ok_or_else(|| err("unknown_selector", tok))?;
     let filters = chars.as_str();
     if filters.is_empty() {
         return Ok(s);
     }
-    let inner = filters.strip_prefix('[').and_then(|f| f.strip_suffix(']')).ok_or_else(|| format!("bad selector {tok}"))?;
+    let inner = filters.strip_prefix('[').and_then(|f| f.strip_suffix(']')).ok_or_else(|| err("bad_selector", tok))?;
     for f in inner.split(',').filter(|f| !f.is_empty()) {
-        let (k, v) = f.split_once('=').ok_or_else(|| format!("bad filter {f}"))?;
+        let (k, v) = f.split_once('=').ok_or_else(|| err("bad_filter", f))?;
         match k.trim() {
             "type" => {
                 let (neg, name) = v.strip_prefix('!').map_or((false, v), |n| (true, n));
-                let full = resolve(c.game.entity_names.keys(), name).ok_or_else(|| format!("unknown entity {name}"))?;
+                let full = resolve(c.game.entity_names.keys(), name).ok_or_else(|| err("unknown_entity", name))?;
                 s.kind = Some((c.game.entity_names[&full], neg));
             }
             "distance" => {
-                let num = |t: &str, d: f64| if t.is_empty() { Ok(d) } else { t.parse::<f64>().map_err(|_| format!("bad distance {v}")) };
+                let num = |t: &str, d: f64| if t.is_empty() { Ok(d) } else { t.parse::<f64>().map_err(|_| err("bad_distance", v)) };
                 s.distance = Some(match v.split_once("..") {
                     Some((a, b)) => (num(a, 0.0)?, num(b, f64::INFINITY)?),
                     None => (num(v, 0.0)?, num(v, 0.0)?),
                 });
             }
-            "limit" => s.limit = Some(v.parse().map_err(|_| format!("bad limit {v}"))?),
+            "limit" => s.limit = Some(v.parse().map_err(|_| err("bad_limit", v))?),
             "sort" if ["nearest", "furthest", "random", "arbitrary"].contains(&v) => s.sort = Some(v.to_string()),
             "name" => s.name = Some(v.to_string()),
-            _ => return Err(format!("unknown filter {f}")),
+            _ => return Err(err("unknown_filter", f)),
         }
     }
     Ok(s)
@@ -243,7 +244,7 @@ fn position(t: &[&str], o: Origin) -> Option<DVec3> {
     Some(DVec3::new(coordinate(t[0], o.pos.x)?, coordinate(t[1], o.pos.y)?, coordinate(t[2], o.pos.z)?))
 }
 
-fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[String], slots: &[String]) -> Result<Args, String> {
+fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[String], slots: &[String]) -> Result<Args, Msg> {
     let mut values: Vec<Option<Value>> = vec![None; slots.len()];
     let mut i = 0;
     for p in alt {
@@ -251,7 +252,7 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
             if p.optional {
                 continue;
             }
-            return Err(format!("missing {}", p.name));
+            return Err(err("missing", &p.name));
         }
         let slot = slots.iter().position(|n| n == &p.name);
         let tok = tokens[i];
@@ -260,12 +261,12 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
             // as `add <x> | remove <x>` can be told apart.
             Kind::Literal(l) => {
                 if tok != l {
-                    return Err(format!("expected {l}"));
+                    return Err(err("expected", l));
                 }
                 Value::Text(l.clone())
             }
-            Kind::Int => Value::Int(tok.parse().map_err(|_| format!("{} must be a whole number", p.name))?),
-            Kind::Float => Value::Float(tok.parse().map_err(|_| format!("{} must be a number", p.name))?),
+            Kind::Int => Value::Int(tok.parse().map_err(|_| err("whole_number", &p.name))?),
+            Kind::Float => Value::Float(tok.parse().map_err(|_| err("number", &p.name))?),
             Kind::Word(_) => Value::Text(tok.to_string()),
             Kind::Text => {
                 let v = Value::Text(tokens[i..].join(" "));
@@ -276,27 +277,27 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
                 continue;
             }
             Kind::Item => {
-                let n = resolve(c.item_names.keys(), tok).ok_or_else(|| format!("unknown item {tok}"))?;
+                let n = resolve(c.item_names.keys(), tok).ok_or_else(|| err("unknown_item", tok))?;
                 Value::Id(c.item_names[&n], n)
             }
             Kind::Block => {
                 // `base:furnace[lit=true,facing=east]`: the name completes, the properties are checked.
                 let (name, props) = tok.split_once('[').map_or((tok, ""), |(n, p)| (n, p));
-                let n = resolve(c.block_names.keys(), name).ok_or_else(|| format!("unknown block {name}"))?;
+                let n = resolve(c.block_names.keys(), name).ok_or_else(|| err("unknown_block", name))?;
                 let full = if props.is_empty() { n.clone() } else { format!("{n}[{props}") };
-                Value::Id(c.parse_state(&full)?, full)
+                Value::Id(c.parse_state(&full).map_err(|_| err("bad_state", &full))?, full)
             }
             Kind::Entity => {
-                let n = resolve(c.game.entity_names.keys(), tok).ok_or_else(|| format!("unknown entity {tok}"))?;
+                let n = resolve(c.game.entity_names.keys(), tok).ok_or_else(|| err("unknown_entity", tok))?;
                 Value::Id(c.game.entity_names[&n], n)
             }
             Kind::Dim => {
-                let n = resolve(c.dim_names.keys(), tok).ok_or_else(|| format!("unknown dimension {tok}"))?;
+                let n = resolve(c.dim_names.keys(), tok).ok_or_else(|| err("unknown_dimension", tok))?;
                 Value::Id(c.dim_names[&n], n)
             }
             Kind::Player => {
                 if !players.iter().any(|n| n == tok) {
-                    return Err(format!("no player {tok}"));
+                    return Err(err("no_player", tok));
                 }
                 Value::Text(tok.to_string())
             }
@@ -308,7 +309,7 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
             },
             Kind::Time => match TIMES.iter().find(|t| t.0 == tok) {
                 Some(t) => Value::Int(t.1),
-                None => Value::Int(tok.parse().map_err(|_| format!("{} must be day, noon, night, midnight or ticks", p.name))?),
+                None => Value::Int(tok.parse().map_err(|_| err("time", &p.name))?),
             },
             Kind::Pos => {
                 let parsed = tokens.get(i..i + 3).and_then(|t| position(t, here));
@@ -318,8 +319,8 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
                         Value::Pos(v)
                     }
                     None if p.optional => continue,
-                    None if i + 3 > tokens.len() => return Err(format!("{} needs x y z", p.name)),
-                    None => return Err(format!("bad position {}", tokens[i..i + 3].join(" "))),
+                    None if i + 3 > tokens.len() => return Err(err("needs_xyz", &p.name)),
+                    None => return Err(err("bad_position", &tokens[i..i + 3].join(" "))),
                 }
             }
         };
@@ -329,7 +330,7 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
         i += 1;
     }
     if i < tokens.len() {
-        return Err(format!("unexpected {}", tokens[i]));
+        return Err(err("unexpected", tokens[i]));
     }
     Ok(Args { names: slots.to_vec(), values })
 }
@@ -357,7 +358,7 @@ impl CommandDef {
     /// Parses `tokens` and says who handles them: the command's own handler (`None` for the
     /// engine's) or the mod whose branch matched. Values are laid out by that owner's own
     /// alternatives, as its usage string declares them.
-    pub fn parse(&self, c: &Content, tokens: &[&str], here: Origin, players: &[String]) -> Result<(Args, Option<(ModId, Callback)>), String> {
+    pub fn parse(&self, c: &Content, tokens: &[&str], here: Origin, players: &[String]) -> Result<(Args, Option<(ModId, Callback)>), Msg> {
         let mut first_err = None;
         for (i, alt) in self.alts.iter().enumerate() {
             let owner = self.owners[i];
@@ -369,7 +370,7 @@ impl CommandDef {
                 }
             }
         }
-        Err(first_err.unwrap_or_else(|| "bad arguments".into()))
+        Err(first_err.unwrap_or_else(|| Msg::new("command.error.bad_arguments", Vec::new())))
     }
 
     /// Another mod's alternatives with its own handler.
@@ -446,17 +447,24 @@ pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<weft_abi::Com
 }
 
 /// `/log`: shows or changes the log filters of this process (see `crate::log`).
-pub fn log_command(spec: &str) -> String {
+pub fn log_command(spec: &str) -> Vec<Msg> {
     if spec.is_empty() {
         let channels: Vec<&str> = crate::log::CHANNELS.iter().map(|c| c.0).collect();
-        return format!("log filters: {}
-channels: {}
-example: /log load=debug,server=debug (reset to undo)", crate::log::describe(), channels.join(", "));
+        return vec![
+            Msg::new("command.log.filters", vec![Arg::Text(crate::log::describe())]),
+            Msg::new("command.log.channels", vec![Arg::Text(channels.join(", "))]),
+            Msg::new("command.log.example", Vec::new()),
+        ];
     }
-    match crate::log::set(spec) {
-        Ok(now) => format!("log filters: {now}"),
-        Err(e) => e,
-    }
+    vec![match crate::log::set(spec) {
+        Ok(now) => Msg::new("command.log.filters", vec![Arg::Text(now)]),
+        Err(e) => Msg::new("command.log.bad", vec![Arg::Text(e)]),
+    }]
+}
+
+/// A parse error: `command.error.<key>` about `what` (a word typed, or a parameter's name).
+fn err(key: &str, what: &str) -> Msg {
+    Msg::new(&format!("command.error.{key}"), vec![Arg::Text(what.to_string())])
 }
 
 /// What the chat input can complete to: suggestions for the word being typed, the byte offset

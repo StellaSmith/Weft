@@ -80,7 +80,7 @@ pub enum Arg<'a> {
     Name(&'a str),
 }
 
-fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
+pub(crate) fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
     args.iter()
         .map(|a| match a {
             Arg::Text(s) => abi::UiArg { kind: abi::ui_arg::TEXT, text: Str::new(s), ..abi::UiArg::DEFAULT },

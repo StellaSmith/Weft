@@ -32,6 +32,7 @@ use weft_abi::{self as abi, ItemStack, component_flags as cf, damage};
 pub use dim::{Dim, DimEvent, break_time};
 
 use crate::content::{Content, DimensionDef, content};
+use crate::ui::text::{Arg, Msg};
 use crate::net::{EntityView, ServerConn, ToClient, ToServer};
 use crate::saves::Storage;
 use crate::commands::{Origin, Selector};
@@ -463,7 +464,7 @@ impl Server {
         if let Some((left, all, start)) = &mut self.sprint {
             *left -= 1;
             if *left == 0 {
-                let note = format!("sprinted {all} ticks in {} ms", start.elapsed().as_millis());
+                let note = Msg::new("command.tick.sprinted", vec![Arg::Int(*all as i64), Arg::Int(start.elapsed().as_millis() as i64)]);
                 for p in &mut self.players {
                     p.conn.send(ToClient::Chat(note.clone()));
                 }
@@ -1044,12 +1045,14 @@ impl Server {
             ToServer::Chat(text) => {
                 let name = self.players[pi].name.clone();
                 if let Some(cmd) = text.strip_prefix('/') {
-                    let reply = self.command(c, pi, cmd);
-                    self.players[pi].conn.send(ToClient::Chat(reply));
+                    for line in self.command(c, pi, cmd) {
+                        self.players[pi].conn.send(ToClient::Chat(line));
+                    }
                 } else {
                     log::info!("<{name}> {text}");
+                    let line = Msg::new("chat.message", vec![Arg::Text(name), Arg::Text(text)]);
                     for p in &mut self.players {
-                        p.conn.send(ToClient::Chat(format!("<{}> {}", crate::ui::text::escape(&name), crate::ui::text::escape(&text))));
+                        p.conn.send(ToClient::Chat(line.clone()));
                     }
                 }
             }
@@ -1233,12 +1236,12 @@ impl Server {
         }
     }
 
-    fn command(&mut self, c: &'static Content, pi: usize, line: &str) -> String {
+    fn command(&mut self, c: &'static Content, pi: usize, line: &str) -> Vec<Msg> {
         let tokens: Vec<&str> = line.split_whitespace().collect();
-        let Some(&name) = tokens.first() else { return String::new() };
-        let Some(def) = c.commands.iter().find(|d| d.name == name) else { return format!("unknown command /{name}, try /help") };
+        let Some(&name) = tokens.first() else { return Vec::new() };
+        let Some(def) = c.commands.iter().find(|d| d.name == name) else { return vec![Msg::new("command.unknown", vec![Arg::Text(name.to_string())])] };
         if def.client {
-            return format!("/{name} runs on the client that types it");
+            return vec![Msg::new("command.client_only", vec![Arg::Text(name.to_string())])];
         }
         let (dim, entity) = (self.players[pi].dim, self.players[pi].entity);
         let here = self.dims[dim as usize]
@@ -1248,7 +1251,7 @@ impl Server {
         let players: Vec<String> = self.players.iter().filter(|p| p.joined).map(|p| p.name.clone()).collect();
         let (args, handler) = match def.parse(c, &tokens[1..], here, &players) {
             Ok(a) => a,
-            Err(e) => return format!("{e}. usage: /{} {}", def.name, def.usage),
+            Err(e) => return vec![Msg::new("command.error_usage", vec![Arg::Msg(e), Arg::Text(def.name.clone()), Arg::Text(def.usage.clone())])],
         };
         // Selectors become entity ids before mods see them.
         let selected: Vec<Option<String>> = args
@@ -1262,10 +1265,10 @@ impl Server {
         match handler {
             None => self.builtin(c, pi, name, &args, here.pos),
             Some((owner, cb)) => {
-                let Some((r, player)) = self.region(pi) else { return String::new() };
+                let Some((r, player)) = self.region(pi) else { return Vec::new() };
                 let values = crate::commands::abi_values(&args, &selected);
-                let mut reply = String::new();
-                let reply_ptr = &mut reply as *mut String as *mut core::ffi::c_void;
+                let mut reply: Vec<Msg> = Vec::new();
+                let reply_ptr = &mut reply as *mut Vec<Msg> as *mut core::ffi::c_void;
                 r.call(owner, cb, |w| abi::CommandArgs { world: w, player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr, client: std::ptr::null_mut() });
                 r.flush_neighbors(c);
                 r.finish_tick(c);
@@ -1361,11 +1364,11 @@ impl Server {
         self.dims[dim as usize].entity_region_ref(id).and_then(|r| r.entities.get(id)).map(|e| e.pos)
     }
 
-    fn builtin(&mut self, c: &'static Content, pi: usize, name: &str, a: &crate::commands::Args, here: DVec3) -> String {
+    fn builtin(&mut self, c: &'static Content, pi: usize, name: &str, a: &crate::commands::Args, here: DVec3) -> Vec<Msg> {
         let me = (self.players[pi].dim, self.players[pi].entity);
         match builtin::COMMANDS.iter().find(|b| b.0 == name) {
             Some(b) => (b.2)(self, &builtin::Ctx { c, pi, a, here, me }),
-            None => format!("unknown command /{name}"),
+            None => vec![Msg::new("command.unknown", vec![Arg::Text(name.to_string())])],
         }
     }
 
@@ -1945,13 +1948,13 @@ fn gizmos_for(p: &Player, dim: &DimSet, tick: u64, me: DVec3) -> Vec<crate::net:
         return out;
     }
     let on = |g: &str| p.gizmos.iter().any(|x| x == g);
-    let shape = |group: &str, kind: u8, a: DVec3, b: DVec3, color: u32, text: String| GizmoShape { group: group.into(), kind, a, b, color, ticks: TPS + 2, text };
+    let shape = |group: &str, kind: u8, a: DVec3, b: DVec3, color: u32| GizmoShape { group: group.into(), kind, a, b, color, ticks: TPS + 2, text: Msg::default() };
     if on("regions") {
         const COLORS: [u32; 6] = [0xFF4040FF, 0x40FF40FF, 0x4080FFFF, 0xFFFF40FF, 0xFF40FFFF, 0x40FFFFFF];
         for (i, r) in dim.regions.iter().enumerate() {
             let (Some(lo), Some(hi)) = (r.cubes.keys().copied().reduce(IVec3::min), r.cubes.keys().copied().reduce(IVec3::max)) else { continue };
             let (a, b) = ((lo * 16).as_dvec3() + 0.05, ((hi + 1) * 16).as_dvec3() - 0.05);
-            out.push(shape("regions", 1, a, b, COLORS[i % COLORS.len()], String::new()));
+            out.push(shape("regions", 1, a, b, COLORS[i % COLORS.len()]));
         }
     }
     if let Some(v) = p.vis.as_ref().filter(|_| on("visibility")) {
@@ -1964,7 +1967,7 @@ fn gizmos_for(p: &Player, dim: &DimSet, tick: u64, me: DVec3) -> Vec<crate::net:
             let color = if dim.has(c) { 0x40FF60FF } else { 0xFFA030FF };
             let m = (c * 16).as_dvec3() + 8.0;
             for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
-                out.push(shape("visibility", 0, m - axis, m + axis, color, String::new()));
+                out.push(shape("visibility", 0, m - axis, m + axis, color));
             }
         }
     }
@@ -2064,12 +2067,8 @@ fn saved_mode(s: &Storage, key: &str) -> GameMode {
 }
 
 /// Said to a player arriving in the engine's void.
-fn void_note(c: &Content) -> String {
-    if c.spawn_dim == c.void_dim {
-        "No dimension was found (no mods?), so you are in the void, where nothing can be changed".into()
-    } else {
-        "This is the void: nothing here can be changed".into()
-    }
+fn void_note(c: &Content) -> Msg {
+    Msg::new(if c.spawn_dim == c.void_dim { "void.no_dimension" } else { "void.here" }, Vec::new())
 }
 
 /// Dimension (`None`: unknown now), position, health, inventory, components.

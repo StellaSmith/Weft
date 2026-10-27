@@ -27,7 +27,7 @@ use crate::server::{self, ServerConfig, ServerHandle};
 use crate::settings::Settings;
 use crate::ui::lang::Lang;
 use crate::ui::render::UiRenderer;
-use crate::ui::text::{self, Arg};
+use crate::ui::text::{self, Arg, Msg};
 use crate::ui::theme::Theme;
 use crate::ui::{Kind, Ui};
 
@@ -122,17 +122,17 @@ pub struct Game {
 
 /// Commands the engine runs on the client that types them: name, usage, handler. One table for
 /// completion, `/help` and running them.
-pub(crate) const CLIENT_COMMANDS: &[(&str, &str, fn(&mut Running, &crate::commands::Args) -> String)] = &[
+pub(crate) const CLIENT_COMMANDS: &[(&str, &str, fn(&mut Running, &crate::commands::Args) -> Vec<Msg>)] = &[
     // Logging is per process.
     ("log", "[filters:text]", |_, a| crate::commands::log_command(a.text("filters").unwrap_or(""))),
     // The shown gizmo groups belong to this client.
-    ("gizmo", "[group:word(#core:gizmos)]", |r, a| r.game.as_mut().map_or(String::new(), |g| g.client.gizmo_command(a.text("group").unwrap_or("")))),
+    ("gizmo", "[group:word(#core:gizmos)]", |r, a| r.game.as_mut().map_or(Vec::new(), |g| g.client.gizmo_command(a.text("group").unwrap_or("")))),
     ("music", "", |r, _| match &mut r.audio {
         Some(a) => {
             a.skip_music();
-            "next track".into()
+            vec![Msg::new("command.music.next", Vec::new())]
         }
-        None => "no sound device".into(),
+        None => vec![Msg::new("command.music.no_device", Vec::new())],
     }),
 ];
 
@@ -194,7 +194,7 @@ pub(crate) struct Running {
     /// Sounds of the UI and of mods' client code, played after this frame's world sounds.
     ui_sounds: Vec<crate::audio::Play>,
     mod_labels: Vec<crate::client::gizmo::Label>,
-    mod_screen_text: Vec<(f32, f32, String, u32)>,
+    mod_screen_text: Vec<(f32, f32, Msg, u32)>,
     frame_no: u64,
     frame_dt: f32,
     /// The top screen as of the last frame (stack depth, name) and frames since it changed.
@@ -956,16 +956,16 @@ impl Running {
         let here = crate::commands::Origin { pos: p.pos, yaw: p.yaw, pitch: p.pitch };
         let players = g.client.players.clone();
         let reply = match def.parse(content(), &tokens[1..], here, &players) {
-            Err(e) => format!("{e}. usage: /{} {}", def.name, def.usage),
+            Err(e) => vec![Msg::new("command.error_usage", vec![Arg::Msg(e), Arg::Text(def.name.clone()), Arg::Text(def.usage.clone())])],
             Ok((args, handler)) => match handler {
                 None => match CLIENT_COMMANDS.iter().find(|c| c.0 == def.name) {
                     Some(c) => (c.2)(self, &args),
-                    None => String::new(),
+                    None => Vec::new(),
                 },
                 Some((owner, cb)) => {
                     let values = crate::commands::abi_values(&args, &[]);
-                    let mut reply = String::new();
-                    let reply_ptr = &mut reply as *mut String as *mut core::ffi::c_void;
+                    let mut reply: Vec<Msg> = Vec::new();
+                    let reply_ptr = &mut reply as *mut Vec<Msg> as *mut core::ffi::c_void;
                     let player = self.game.as_ref().map_or(0, |g| g.client.player_id);
                     let mut v = self.frame_view();
                     let mut a = abi::CommandArgs { world: std::ptr::null_mut(), player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr, client: v.raw() };
@@ -975,7 +975,9 @@ impl Running {
             },
         };
         if let Some(g) = &mut self.game {
-            g.client.chat_line(reply);
+            for line in reply {
+                g.client.chat_line(line);
+            }
         }
         true
     }
@@ -1575,13 +1577,13 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 continue;
             }
             let (x, y) = ((clip.x / clip.w * 0.5 + 0.5) * info.width as f32, (0.5 - clip.y / clip.w * 0.5) * info.height as f32);
-            r.ui.label_colored(&crate::ui::text::rich(text, &r.lang, Some(&r.input)), x, y - 4.0 * scale, scale, *color);
+            r.ui.label_colored(&text.spans(&r.lang, Some(&r.input)), x, y - 4.0 * scale, scale, *color);
         }
     }
     {
         let (w, h) = r.gpu.surface_size();
         for (x, y, text, color) in &r.mod_screen_text {
-            r.ui.label_colored(&crate::ui::text::rich(text, &r.lang, Some(&r.input)), x * w as f32, y * h as f32, scale, *color);
+            r.ui.label_colored(&text.spans(&r.lang, Some(&r.input)), x * w as f32, y * h as f32, scale, *color);
         }
     }
     if let Some((_, ui)) = r.screens.last() {

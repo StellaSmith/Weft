@@ -41,3 +41,7 @@ block.testmod.glow_leaves = Светящаяся берёзовая листва
 block.testmod.glow_flower = Светящийся цветок
 testmod.about.title = {#55ffff}Тестовый мод
 testmod.about.text = Собственный экран мода, открывается по имени.
+command.testmod.morph = теперь вы {0}, {1} x {2}
+command.testmod.unmorph = снова вы
+command.testmod.tagbench = нс на запрос: поле {0}, тег {1}, вызов хоста {2}, тег по имени {3}
+testmod.energy_label = {0} / {1} EU

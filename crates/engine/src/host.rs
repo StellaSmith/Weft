@@ -706,7 +706,7 @@ unsafe extern "C" fn gizmo_on(w: *mut abi::WorldCtx, group: Str) -> u32 {
     unsafe { dim(w).gizmo_groups.iter().any(|g| g == group.as_str()) as u32 }
 }
 
-unsafe extern "C" fn gizmo(w: *mut abi::WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, text: Str) {
+unsafe extern "C" fn gizmo(w: *mut abi::WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, key: Str, args: abi::Slice<abi::UiArg>) {
     unsafe {
         let d = dim(w);
         let group = group.as_str();
@@ -720,7 +720,7 @@ unsafe extern "C" fn gizmo(w: *mut abi::WorldCtx, group: Str, kind: u32, a: *con
             b: DVec3::from_array(*b),
             color,
             ticks: ticks.max(1),
-            text: text.as_str().to_string(),
+            text: crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)),
         });
     }
 }
@@ -1209,13 +1209,10 @@ unsafe extern "C" fn reg_command(r: *mut abi::Registrar, name: Str, usage: Str, 
     }
 }
 
-unsafe extern "C" fn command_reply(args: *mut abi::CommandArgs, text: Str) {
+unsafe extern "C" fn command_reply(args: *mut abi::CommandArgs, key: Str, list: abi::Slice<abi::UiArg>) {
     unsafe {
-        let reply = &mut *((*args).reply as *mut String);
-        if !reply.is_empty() {
-            reply.push('\n');
-        }
-        reply.push_str(text.as_str());
+        let reply = &mut *((*args).reply as *mut Vec<crate::ui::text::Msg>);
+        reply.push(crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(list)));
     }
 }
 

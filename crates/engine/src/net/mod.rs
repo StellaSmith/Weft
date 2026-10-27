@@ -55,7 +55,7 @@ pub struct GizmoShape {
     pub b: DVec3,
     pub color: u32,
     pub ticks: u32,
-    pub text: String,
+    pub text: crate::ui::text::Msg,
 }
 
 /// An entity's move: id, position, yaw, pitch, crouching, and its frame: the solid body it
@@ -109,7 +109,8 @@ pub enum ToClient {
     Cursor(ItemStack),
     CloseMenu,
     Died,
-    Chat(String),
+    /// Formatted by the client in its own language.
+    Chat(crate::ui::text::Msg),
     Disconnect(String),
     Gizmos(Vec<GizmoShape>),
     /// Mod channel message (`Host::reg_packet`).

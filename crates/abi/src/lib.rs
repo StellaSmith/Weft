@@ -1513,13 +1513,15 @@ pub struct Host {
     /// is non-zero) accepted / taken, respecting capacity and rate limits.
     pub energy_insert: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
     pub energy_extract: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: i64, simulate: u32) -> i64,
-    /// Text shown to the player who ran the command.
-    pub command_reply: unsafe extern "C" fn(args: *mut CommandArgs, text: Str),
+    /// A line for the player who ran the command: translation `key` with `list`, formatted by
+    /// their client in its language. Call again for more lines.
+    pub command_reply: unsafe extern "C" fn(args: *mut CommandArgs, key: Str, list: Slice<UiArg>),
     /// Non-zero when a player in this world shows gizmo group `group` (`/gizmo <group>`).
     pub gizmo_on: unsafe extern "C" fn(world: *mut WorldCtx, group: Str) -> u32,
     /// Debug shape for players showing `group`: `kind` 0 line from `a` to `b`, 1 box between
-    /// corners `a` and `b`, 2 `text` at `a`, 3 filled box; `color` is 0xRRGGBBAA, kept for `ticks`.
-    pub gizmo: unsafe extern "C" fn(world: *mut WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, text: Str),
+    /// corners `a` and `b`, 2 the translation `key` with `args` at `a`, 3 filled box; `color` is
+    /// 0xRRGGBBAA, kept for `ticks`.
+    pub gizmo: unsafe extern "C" fn(world: *mut WorldCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, ticks: u32, key: Str, args: Slice<UiArg>),
 
     // ------------------------------------------------ client side and mod channels
     /// Client callback, see `client_hook`.
@@ -1580,10 +1582,11 @@ pub struct Host {
     /// `slot:N` a menu slot, `item:N` a creative inventory entry of item id N, `id:name` a node
     /// id, `text:words` the first text containing them (case-insensitive).
     pub client_ui_rect: unsafe extern "C" fn(client: *mut ClientCtx, query: Str, out: *mut [f32; 4]) -> u32,
-    /// Client: draws for this frame only. `kind` 0 line, 1 box outline, 2 text at a world position,
-    /// 3 text on screen at `a[0], a[1]` (fractions of the window), 4 filled box (see-through by
-    /// its alpha: range previews, blueprints); color 0xRRGGBBAA.
-    pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, text: Str),
+    /// Client: draws for this frame only. `kind` 0 line, 1 box outline, 2 the translation `key`
+    /// with `args` at a world position, 3 the same on screen at `a[0], a[1]` (fractions of the
+    /// window), 4 filled box (see-through by its alpha: range previews, blueprints); color
+    /// 0xRRGGBBAA.
+    pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, key: Str, args: Slice<UiArg>),
     /// Client: sends `data` on channel `name` to the server.
     pub client_send_packet: unsafe extern "C" fn(client: *mut ClientCtx, name: Str, data: Slice<u8>),
 

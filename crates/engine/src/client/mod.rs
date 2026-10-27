@@ -21,6 +21,7 @@ use crate::input::Input;
 use crate::net::{ClientConn, ToClient, ToServer};
 use crate::physics::{self, Hit};
 use crate::world::GameMode;
+use crate::ui::text::{Arg, Msg};
 use entity_render::EntityRenderer;
 use textures::GameTextures;
 use world::ClientWorld;
@@ -308,7 +309,8 @@ pub struct Client {
     pub packets: Vec<(u32, Vec<u8>)>,
     /// Components of other entities the server shares.
     pub entity_components: FxHashMap<(u64, u32), Vec<u8>>,
-    pub chat: Vec<(String, Instant)>,
+    /// Formatted when drawn, in the language shown then.
+    pub chat: Vec<(Msg, Instant)>,
     pub gizmos: gizmo::Gizmos,
     /// This frame's gizmo shapes, from `collect_gizmos`.
     pub gizmo_lines: Vec<gizmo::Line>,
@@ -328,17 +330,19 @@ impl Client {
     }
 
     /// `/gizmo [group]`: lists groups or switches one; mods' groups are `modid:name`.
-    pub fn gizmo_command(&mut self, group: &str) -> String {
+    pub fn gizmo_command(&mut self, group: &str) -> Vec<Msg> {
+        let text = |s: &str| Arg::Text(s.to_string());
         if group.is_empty() {
-            let list: Vec<String> = gizmo::BUILTIN.iter().map(|(g, what)| format!("{g}: {what}")).collect();
-            let on = if self.gizmos.enabled.is_empty() { "none".to_string() } else { self.gizmos.enabled.join(", ") };
-            return format!("gizmo groups (mods add modid:name ones):
-{}
-on: {on}", list.join("
-"));
+            let mut out = vec![Msg::new("command.gizmo.groups", Vec::new())];
+            out.extend(gizmo::BUILTIN.iter().map(|g| Msg::new("command.gizmo.group", vec![text(g), Arg::Key(format!("gizmo.{g}"))])));
+            out.push(match self.gizmos.enabled.is_empty() {
+                true => Msg::new("command.gizmo.none_on", Vec::new()),
+                false => Msg::new("command.gizmo.on_list", vec![text(&self.gizmos.enabled.join(", "))]),
+            });
+            return out;
         }
         let on = self.toggle_gizmo(group);
-        format!("gizmo {group} {}", if on { "on" } else { "off" })
+        vec![Msg::new(if on { "command.gizmo.on" } else { "command.gizmo.off" }, vec![text(group)])]
     }
 
     /// Builds the gizmo lines and labels for this frame; labels behind opaque blocks are left out.
@@ -357,11 +361,9 @@ on: {on}", list.join("
         (self.gizmo_lines, self.gizmo_fills, self.gizmo_labels) = (lines, fills, labels);
     }
 
-    /// Shows text in the chat as if the server had sent it.
-    pub fn chat_line(&mut self, text: String) {
-        for line in text.lines() {
-            self.chat.push((line.to_string(), Instant::now()));
-        }
+    /// Shows a line in the chat as if the server had sent it.
+    pub fn chat_line(&mut self, line: Msg) {
+        self.chat.push((line, Instant::now()));
         let extra = self.chat.len().saturating_sub(50);
         self.chat.drain(..extra);
     }
@@ -739,9 +741,9 @@ on: {on}", list.join("
                     self.dead = true;
                     self.events.push(ClientEvent::Died);
                 }
-                ToClient::Chat(text) => {
-                    log::info!("[chat] {text}");
-                    self.chat_line(text);
+                ToClient::Chat(line) => {
+                    log::info!("[chat] {} {:?}", line.key, line.args);
+                    self.chat_line(line);
                 }
                 ToClient::Disconnect(reason) => self.disconnected = Some(reason),
                 ToClient::Gizmos(shapes) => self.gizmos.receive(shapes),

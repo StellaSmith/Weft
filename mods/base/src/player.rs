@@ -77,7 +77,7 @@ pub fn register(r: &mut Registry) {
             h.food = food;
             h.saturation = h.saturation.min(food);
         }
-        cmd.reply(&format!("food set to {food}"));
+        cmd.reply("command.base.feed", &[Arg::Int(food as i64)]);
     });
 
     // Survival bars; a negative value hides them (creative).

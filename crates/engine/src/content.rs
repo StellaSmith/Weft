@@ -1694,7 +1694,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     // Word sets for `word(#set)` parameters: the engine's, then what mods add in load order.
     let mut word_sets: FxHashMap<String, Vec<String>> = FxHashMap::default();
-    word_sets.insert("core:gizmos".into(), crate::client::gizmo::BUILTIN.iter().map(|g| g.0.to_string()).collect());
+    word_sets.insert("core:gizmos".into(), crate::client::gizmo::BUILTIN.iter().map(|g| g.to_string()).collect());
     let mut added: Vec<(u32, (String, Vec<String>))> = games.iter_mut().zip(0u32..).flat_map(|(g, i)| std::mem::take(&mut g.words).into_iter().map(move |w| (i, w))).collect();
     added.sort_by_key(|w| w.0);
     for (_, (set, words)) in added {

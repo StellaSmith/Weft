@@ -82,7 +82,6 @@ world.old_format = он сохранён более старой версией 
 {0}
 death.title = Вы погибли!
 death.respawn = Возродиться
-core.raw = {0}
 hud.debug.group.performance = {#ffff55}Производительность
 hud.debug.group.position = {#ffff55}Позиция
 hud.debug.group.world = {#ffff55}Мир

@@ -230,7 +230,7 @@ fn morph(r: &mut Registry) {
                 let (width, height) = (cmd.float("width").unwrap_or(0.9) as f32, cmd.float("height").unwrap_or(0.9) as f32);
                 w.set_look(me, Some(&kind));
                 w.set_size(me, Some([width, height, height * 0.85]));
-                cmd.reply("command.testmod.morph", &[Arg::Text(&kind), Arg::Float(width as f64), Arg::Float(height as f64)]);
+                cmd.reply("command.testmod.morph", &[Arg::Text(&kind), Arg::Float(width as f64, 2), Arg::Float(height as f64, 2)]);
             }
             None => {
                 w.set_look(me, None);
@@ -246,13 +246,27 @@ static DEBUG_PANEL: HudElement = HudElement::named("debug");
 
 /// A screen of the mod's own (`/about` here, `--screen testmod:about`).
 fn about_screen(r: &mut Registry) {
+    // Everything the engine's own screens use: a large title, a text field, a slider, an item,
+    // a tooltip with arguments, and pausing like the engine's pause menu.
+    static NAME: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    static VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     r.screen(&ABOUT, |ui| {
-        ui.panel("testmod_panel", S::col().pad(8.0).gap(4.0), |ui| {
-            ui.text("testmod.about.title");
+        ui.panel("testmod_panel", S::col().pad(8.0).gap(4.0).min_w(220.0), |ui| {
+            ui.text_styled(S::col().class("title").scale(2.0).no_wrap(), "testmod.about.title", &[]);
             ui.text("testmod.about.text");
-            ui.panel("well", S::col().pad(4.0).tooltip("testmod.about.tip"), |ui| ui.text("testmod.about.hover"));
+            ui.panel("well", S::col().pad(4.0).tooltip_args("testmod.about.tip", &[Arg::Int(3)]), |ui| ui.text("testmod.about.hover"));
+            ui.input("", 16, S::col().class("about_name").w(200.0), |_, text| *NAME.lock().unwrap() = text.to_string());
+            ui.text_bind(|_, out| out.set("testmod.about.name", &[Arg::Text(&NAME.lock().unwrap())]));
+            ui.slider(S::col().w(200.0).h(20.0), |_| VOLUME.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0, |_, v| VOLUME.store((v * 100.0).round() as u32, std::sync::atomic::Ordering::Relaxed));
+            ui.text_bind(|v, out| out.set("testmod.about.fov", &[Arg::Text(&v.setting("fov"))]));
+            ui.text_bind_styled(S::col().mono(), |_, out| out.set("testmod.about.volume", &[Arg::Int(VOLUME.load(std::sync::atomic::Ordering::Relaxed) as i64)]));
+            ui.row(S::row().gap(4.0), |ui| {
+                ui.item(Item::lookup("base:coal").unwrap_or(0), 3, S::default());
+                ui.button("testmod.about.closed", S::col().disabled(true), |_| {});
+            });
         });
-    });
+    })
+    .pauses();
     // A button of its own in the main menu, next to the engine's and other mods'.
     r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
         ui.button("testmod.about.button", S::default(), |c| {
@@ -272,7 +286,7 @@ fn debug_panel(r: &mut Registry) {
         ui.text_bind(|c, out| {
             let Some(me) = c.me() else { return };
             let speed = (me.vel[0] * me.vel[0] + me.vel[2] * me.vel[2]).sqrt() * 20.0;
-            out.set("testmod.debug.speed", &[Arg::Float(speed), Arg::Float(me.fall as f64)]);
+            out.set("testmod.debug.speed", &[Arg::Float(speed, 2), Arg::Float(me.fall as f64, 1)]);
         });
     });
 }
@@ -482,5 +496,5 @@ fn tag_bench(cmd: &mut Command) {
     let tag = time(&|s| PLANT_SOIL.on_block(s) as u32);
     let host_call = time(&|s| state_flags(s));
     let by_name = time(&|s| block_has_tag(s, "plant_soil") as u32);
-    cmd.reply("command.testmod.tagbench", &[Arg::Float(field), Arg::Float(tag), Arg::Float(host_call), Arg::Float(by_name)]);
+    cmd.reply("command.testmod.tagbench", &[Arg::Float(field, 2), Arg::Float(tag, 2), Arg::Float(host_call, 2), Arg::Float(by_name, 2)]);
 }

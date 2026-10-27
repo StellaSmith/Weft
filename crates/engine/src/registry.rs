@@ -580,6 +580,9 @@ pub struct ScreenDef {
     pub name: String,
     pub owner: ModId,
     pub cb: Callback,
+    /// `abi::screen_flags`.
+    pub flags: u32,
+    pub on_key: Callback,
 }
 
 /// Slots of every player's inventory, laid out by the engine from the groups and equipment

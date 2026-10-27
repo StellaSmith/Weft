@@ -20,7 +20,7 @@ pub const EQUIPMENT: [&EquipmentSlot; 4] = [&HEAD, &base_api::CHEST, &LEGS, &FEE
 
 /// Armor points of what `entity` wears.
 fn armor_points(w: &World, entity: u64) -> u32 {
-    let worn = w.inventory(entity).group(EQUIPMENT_GROUP);
+    let Some(worn) = w.inventory(entity).find_group(EQUIPMENT_GROUP) else { return 0 };
     (0..worn.len()).filter_map(|i| ARMOR.on_item(worn.get(i).item)).map(|a| a.points).sum()
 }
 
@@ -48,7 +48,7 @@ pub fn register(r: &mut Registry) {
     r.on(&ENTITY_HURT, |b| {
         let w = b.world();
         for h in b.iter().filter(|h| armor_applies(h.cause)) {
-            let worn = w.inventory(h.entity).group(EQUIPMENT_GROUP);
+            let Some(worn) = w.inventory(h.entity).find_group(EQUIPMENT_GROUP) else { continue };
             let wear = ((h.amount / 4.0) as u32).max(1);
             for slot in 0..worn.len() {
                 let s = worn.get(slot);

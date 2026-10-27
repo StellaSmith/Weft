@@ -82,7 +82,6 @@ world.old_format = it was saved by an older version of the game, which this one 
 {0}
 death.title = You Died!
 death.respawn = Respawn
-core.raw = {0}
 hud.debug.group.performance = {#ffff55}Performance
 hud.debug.group.position = {#ffff55}Position
 hud.debug.group.world = {#ffff55}World

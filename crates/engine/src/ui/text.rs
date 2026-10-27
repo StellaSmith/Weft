@@ -56,8 +56,13 @@ impl Msg {
 
     pub fn spans(&self, lang: &Lang, input: Option<&Input>) -> Vec<Span> {
         let mut out = Vec::new();
-        format(lang.get(&self.key), &self.args, &Ctx::new(lang, input), &mut out);
+        message(&self.key, &self.args, &Ctx::new(lang, input), &mut out);
         out
+    }
+
+    /// Ready text shown as it is, no translation.
+    pub fn plain(text: impl Into<String>) -> Msg {
+        Msg { key: String::new(), args: vec![Arg::Text(text.into())] }
     }
 
     /// As plain text, without icons or formatting.
@@ -208,6 +213,9 @@ pub struct Span {
     pub hidden: bool,
     /// `align::LEFT`, `CENTER` or `RIGHT` for the lines this span starts.
     pub align: u8,
+    /// Every glyph in a cell as wide as a digit (`{mono}`), so changing numbers don't move what
+    /// follows.
+    pub mono: bool,
 }
 
 pub mod align {
@@ -225,7 +233,7 @@ pub const FONT_PER_GUI: f32 = 2.0;
 /// `hidden` is derived state: spans with the same content are equal whatever it says.
 impl PartialEq for Span {
     fn eq(&self, o: &Span) -> bool {
-        self.piece == o.piece && self.color == o.color && self.fx == o.fx && self.when == o.when && self.align == o.align
+        self.piece == o.piece && self.color == o.color && self.fx == o.fx && self.when == o.when && self.align == o.align && self.mono == o.mono
     }
 }
 
@@ -286,8 +294,18 @@ impl<'a> Ctx<'a> {
 }
 
 pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
-    let mut st = State { color: None, fx: 0, when: Vec::new(), align: align::LEFT };
+    let mut st = State { color: None, fx: 0, when: Vec::new(), align: align::LEFT, mono: false };
     format_depth(template, args, cx, out, &mut st, None, 0)
+}
+
+/// A translation `key` with `args`; an empty key shows its one argument as it is (ready text
+/// from code, like a ticket or a profile line).
+pub fn message(key: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
+    if key.is_empty() {
+        format("{0}", args, cx, out);
+    } else {
+        format(cx.lang.get(key), args, cx, out);
+    }
 }
 
 /// A template without arguments: a translation, a chat line, a pack's description, text a mod
@@ -309,11 +327,12 @@ struct State {
     fx: u16,
     when: Vec<Cond>,
     align: u8,
+    mono: bool,
 }
 
 impl State {
     fn span(&self, piece: Piece, color: Option<u32>) -> Span {
-        Span { piece, color, fx: self.fx, when: self.when.clone(), hidden: false, align: self.align }
+        Span { piece, color, fx: self.fx, when: self.when.clone(), hidden: false, align: self.align, mono: self.mono }
     }
 }
 
@@ -341,7 +360,7 @@ fn push_text(out: &mut Vec<Span>, s: &str, st: &State) {
         return;
     }
     if let Some(last) = out.last_mut() {
-        if last.color == st.color && last.fx == st.fx && last.when == st.when && last.align == st.align {
+        if last.color == st.color && last.fx == st.fx && last.when == st.when && last.align == st.align && last.mono == st.mono {
             if let Piece::Text(t) = &mut last.piece {
                 t.push_str(s);
                 return;
@@ -442,6 +461,10 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
             st.fx = fx_id(name);
         } else if tag == "/fx" {
             st.fx = 0;
+        } else if tag == "mono" {
+            st.mono = true;
+        } else if tag == "/mono" {
+            st.mono = false;
         } else if let Ok(n) = tag.parse::<usize>() {
             match args.get(n) {
                 Some(Arg::Text(s)) => push_text(out, s, st),
@@ -606,7 +629,7 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
                         }
                         last_break = Some((out.items.len(), x));
                     }
-                    if mono {
+                    if mono || span.mono {
                         let cell = if adv > font.mono + 1.0 { font.mono * 2.0 } else { font.mono };
                         out.items.push(Placed::Glyph { x: x + ((cell - adv) / (2.0 * font.pixel)).floor() * font.pixel, y, ch, color: span.color, fx: span.fx });
                         x += cell;

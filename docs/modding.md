@@ -343,7 +343,7 @@ Inside any callback you get a `World` (`w`):
 
 ## Client side
 
-- UI is built in code: `r.screen(&ABOUT, |ui| ui.panel(..))`, the engine's screens are in `screens::*`
+- UI is built in code: `r.screen(&ABOUT, |ui| ui.panel(..)).pauses()`, the engine's screens are in `screens::*` and its pause, death and settings screens use the same parts (inputs, sliders, items, `S::mono()`, `.scroll()`...)
 - HUD elements are built with `r.hud_element(&MANA_BAR, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`
 - F3 panels are at `hud_anchor::DEBUG_LEFT`
 - Looks come from themes and 9-slice sprites in `assets/ui`, so a resource pack can reskin screens

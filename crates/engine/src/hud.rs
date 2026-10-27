@@ -251,7 +251,7 @@ const WORLD: &[DebugLine] = &[
     ("hud.debug.load", |c| vec![Arg::Int(c.stats.load.0 as i64), Arg::Int(c.stats.load.1 as i64)]),
 ];
 
-const MODS: &[DebugLine] = &[("core.raw", |_| vec![Arg::Text(mod_profile())])];
+const MODS: &[DebugLine] = &[("", |_| vec![Arg::Text(mod_profile())])];
 
 const SYSTEM: &[DebugLine] = &[
     ("hud.debug.gpu_name", |c| vec![Arg::Text(c.stats.gpu_name.clone())]),
@@ -492,10 +492,11 @@ fn debug_groups(ui: &mut Ui, groups: u32, right: bool, mods: &[(&'static str, bo
             panel_title(ui, name.to_string());
             let first = ui.nodes.len();
             draw(ui, *part);
-            // Lines as wide as they need, like the engine's panels.
+            // The engine's panel style for every line: as wide as it needs, digits in cells.
             for n in &mut ui.nodes[first..] {
                 if let Kind::Text(t) = &mut n.kind {
                     t.wrap = false;
+                    t.mono = true;
                 }
             }
         });

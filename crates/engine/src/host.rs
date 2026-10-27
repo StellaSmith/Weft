@@ -113,6 +113,7 @@ pub static HOST: Host = Host {
     client_set_player: crate::app::api::client_set_player,
     client_command: crate::app::api::client_command,
     client_text: crate::app::api::client_text,
+    client_setting: crate::app::api::client_setting,
     client_block: crate::app::api::client_block,
     client_slot: crate::app::api::client_slot,
     client_menu: crate::app::api::client_menu,
@@ -801,10 +802,10 @@ unsafe extern "C" fn reg_equipment_slot(r: *mut abi::Registrar, name: Str, parts
     }
 }
 
-unsafe extern "C" fn reg_screen(r: *mut abi::Registrar, name: Str, cb: Callback) {
+unsafe extern "C" fn reg_screen(r: *mut abi::Registrar, d: *const abi::ScreenDesc) {
     unsafe {
-        let r = reg(r);
-        r.game.screens.push(registry::ScreenDef { name: name.as_str().to_string(), owner: r.owner, cb });
+        let (r, d) = (reg(r), &*d);
+        r.game.screens.push(registry::ScreenDef { name: d.name.as_str().to_string(), owner: r.owner, cb: d.build, flags: d.flags, on_key: d.on_key });
     }
 }
 

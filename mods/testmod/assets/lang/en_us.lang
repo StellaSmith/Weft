@@ -50,7 +50,7 @@ testmod.about.title = {#55ffff}Test Mod
 testmod.about.text = A screen of the mod's own, opened by name.
 testmod.about.hover = Hover me
 testmod.about.button = About Test Mod
-testmod.about.tip = {#ff6060}A tooltip of the mod's own screen
+testmod.about.tip = {#ff6060}A tooltip of the mod's own screen, {0} words long
 mod.testmod.name = Test Mod
 mod.testmod.description = Proves that a mod needs no engine changes.
     {align:center}{img:testmod:icon 32x32}{/align}
@@ -61,3 +61,7 @@ command.testmod.morph = now a {0}, {1} x {2}
 command.testmod.unmorph = yourself again
 command.testmod.tagbench = ns per lookup: field {0}, tag {1}, host call {2}, tag by name {3}
 testmod.energy_label = {0} / {1} EU
+testmod.about.name = Hello, {0}
+testmod.about.volume = Volume: {0}
+testmod.about.closed = Closed
+testmod.about.fov = Field of view here: {0}

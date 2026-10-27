@@ -92,6 +92,24 @@ impl Settings {
         true
     }
 
+    /// The value `set` takes for `k`, as text.
+    pub fn get(&self, k: &str) -> Option<String> {
+        Some(match k {
+            "language" => self.language.clone(),
+            "gui_scale" => self.gui_scale.to_string(),
+            "view_distance" => self.view_distance.to_string(),
+            "vsync" => self.vsync.to_string(),
+            "fov" => self.fov.to_string(),
+            "sensitivity" => self.sensitivity.to_string(),
+            "brightness" => self.brightness.to_string(),
+            "debug_groups" => self.debug_groups.to_string(),
+            "name" => self.name.clone(),
+            "resource_packs" => self.resource_packs.join(","),
+            "shader_pack" => self.shader_pack.clone().unwrap_or_default(),
+            _ => return None,
+        })
+    }
+
     pub fn saves_dir(&self) -> PathBuf {
         self.run_dir.join("saves")
     }

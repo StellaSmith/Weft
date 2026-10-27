@@ -43,8 +43,24 @@ pub async fn screens(t: T) -> R {
     let shot = t.shot("about_tooltip").await?;
     let red = shot.share(x + w / 2.0, y - 0.02, (x + 0.3).min(1.0), y + 0.06, super::probe::red);
     t.probe("the tooltip's red text", red, red > 0.005);
+    // What the engine's screens have, a mod's has too: it pauses, takes text, slides, shows items.
+    t.check(t.flag(client::client_flags::PAUSED), "a mod's screen declared to pause pauses single player");
+    t.check(t.click_ui("id:about_name", 0), "the mod screen's text field");
+    t.frames(2).await?;
+    t.c().type_text("Steve");
+    t.until("the typed name", Duration::from_secs(3), |t| t.c().ui_rect("text:Hello, Steve").is_some()).await?;
+    let [x, y, w, h] = t.c().ui_rect("slider").ok_or("no slider")?;
+    t.c().cursor(x + w * 0.75, y + h / 2.0);
+    t.c().click(0, 0.1);
+    t.until("the slider moved", Duration::from_secs(3), |t| (70..=80).any(|v| t.c().ui_rect(&format!("text:Volume: {v}")).is_some())).await?;
+    t.check(t.c().ui_rect("text:Field of view here: 70").is_some(), "a mod's screen reads the settings");
+    let coal = Item::lookup("base:coal").ok_or("no coal")?;
+    t.check(t.c().ui_rect(&format!("icon:{coal}")).is_some(), "the item on the mod's screen");
+    t.shot("about_parts").await?;
     t.c().close_screen();
-    t.no_screen().await
+    t.no_screen().await?;
+    t.check(!t.flag(client::client_flags::PAUSED), "running again when it closed");
+    Ok(())
 }
 
 /// F3 shows its panels inside the window, also in the widest case (Russian at GUI scale 3), the

@@ -46,11 +46,18 @@ struct TextSink {
 pub struct ClientView {
     pub client: *const Client,
     pub run: *mut std::ffi::c_void,
+    /// For bindings, which may read settings but not drive the client.
+    pub settings: *const crate::settings::Settings,
 }
 
 impl ClientView {
     pub fn new(client: Option<&Client>) -> ClientView {
-        ClientView { client: client.map_or(std::ptr::null(), |c| c as *const Client), run: std::ptr::null_mut() }
+        ClientView { client: client.map_or(std::ptr::null(), |c| c as *const Client), run: std::ptr::null_mut(), settings: std::ptr::null() }
+    }
+
+    /// For a binding run with `ctx`.
+    pub fn bound(ctx: &Ctx) -> ClientView {
+        ClientView { settings: &*ctx.settings as *const crate::settings::Settings, ..ClientView::new(ctx.client.as_deref()) }
     }
 
     pub fn raw(&mut self) -> *mut abi::ClientCtx {
@@ -94,6 +101,14 @@ pub fn build_recipe(ui: &mut Ui, lang: &Lang, input: Option<&crate::input::Input
     }
 }
 
+/// Keeps `b` alive with the UI being built (until its next rebuild but one).
+///
+/// # Safety
+/// `u` must be the context of a UI build (`ui_open`'s).
+pub unsafe fn keep(u: *mut abi::UiCtx, b: Box<dyn std::any::Any>) {
+    unsafe { (*(u as *mut UiBuild)).ui.owned.push(b) }
+}
+
 /// Arguments a mod passed, as the text formatter takes them.
 pub fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
     let mut out = Vec::new();
@@ -103,7 +118,7 @@ pub fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
                 abi::ui_arg::TEXT => Arg::Text(a.text.as_str().to_string()),
                 abi::ui_arg::KEY => Arg::Key(a.text.as_str().to_string()),
                 abi::ui_arg::INT => Arg::Int(a.num as i64),
-                abi::ui_arg::FLOAT => Arg::Float(a.num, 1),
+                abi::ui_arg::FLOAT => Arg::Float(a.num, a.digits.min(9) as u8),
                 abi::ui_arg::ITEM => Arg::Item(a.num as u32),
                 abi::ui_arg::NAME => match text::Name::parse(a.text.as_str()) {
                     Some(n) => Arg::Name(n),
@@ -121,7 +136,7 @@ pub fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
 
 fn float_bind(owner: ModId, cb: Callback) -> Box<dyn Fn(&Ctx) -> f32> {
     Box::new(move |ctx: &Ctx| {
-        let mut v = ClientView::new(ctx.client.as_deref());
+        let mut v = ClientView::bound(ctx);
         let mut sink = TextSink { tag: 2, out: None };
         let mut a = abi::UiBindArgs { client: v.raw(), value: 0.0, text: &mut sink as *mut TextSink as *mut abi::UiCtx };
         host::invoke(owner, cb, &mut a);
@@ -139,37 +154,48 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
         let n = &*node;
         let owner = b.owner;
         let class = n.class.as_str().to_string();
-        let len = |v: f32| if v.is_nan() { Len::Auto } else { Len::Px(v) };
+        let len = |px: f32, pct: f32| if !pct.is_nan() { Len::Pct(pct) } else if px.is_nan() { Len::Auto } else { Len::Px(px) };
+        let align = |a: u32| match a {
+            abi::ui_align::CENTER => Align::Center,
+            abi::ui_align::END => Align::End,
+            abi::ui_align::STRETCH => Align::Stretch,
+            _ => Align::Start,
+        };
+        let flag = |f: u32| n.flags & f != 0;
         let style = Style {
             row: n.row != 0,
             pad: n.pad,
             gap: n.gap,
-            w: len(n.width),
-            h: len(n.height),
+            w: len(n.width, n.width_pct),
+            h: len(n.height, n.height_pct),
+            min: n.min,
+            max_w: n.max_width,
             grow: n.grow,
-            align: match n.align {
-                abi::ui_align::CENTER => Align::Center,
-                abi::ui_align::END => Align::End,
-                abi::ui_align::STRETCH => Align::Stretch,
-                _ => Align::Start,
-            },
+            align: align(n.align),
             justify: match n.justify {
                 abi::ui_justify::CENTER => Justify::Center,
                 abi::ui_justify::END => Justify::End,
                 abi::ui_justify::BETWEEN => Justify::Between,
                 _ => Justify::Start,
             },
-            ..Style::default()
+            self_align: (n.self_align != u32::MAX).then(|| align(n.self_align)),
+            scroll: flag(abi::ui_flags::SCROLL),
         };
         let (lang, input) = (b.lang, b.input);
         let spans = |key: Str, a: abi::Slice<abi::UiArg>| {
             let mut out = Vec::new();
-            if key.len == 0 {
+            if key.len == 0 && a.len == 0 {
                 return out;
             }
-            let cx = text::Ctx::new(lang, input);
-            text::format(lang.get(key.as_str()), &args(a), &cx, &mut out);
+            text::message(key.as_str(), &args(a), &text::Ctx::new(lang, input), &mut out);
             out
+        };
+        // Edits of inputs and sliders reach the mod after the input, with the whole client API.
+        let change = n.on_change;
+        let on_change = move |ctx: &mut Ctx, text: String, value: f32| {
+            if change.is_some() {
+                ctx.requests.push(crate::app::Request::ModChange(owner, change, text, value));
+            }
         };
         let id = match n.kind {
             uk::TEXT => {
@@ -179,7 +205,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                     let cb = n.bind;
                     if let Kind::Text(t) = &mut b.ui.nodes[node].kind {
                         t.bind = Some(Box::new(move |ctx: &Ctx| {
-                            let mut v = ClientView::new(ctx.client.as_deref());
+                            let mut v = ClientView::bound(ctx);
                             let mut sink = TextSink { tag: 2, out: None };
                             let mut a = abi::UiBindArgs { client: v.raw(), value: 0.0, text: &mut sink as *mut TextSink as *mut abi::UiCtx };
                             host::invoke(owner, cb, &mut a);
@@ -187,16 +213,43 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                         }));
                     }
                 }
+                if let Kind::Text(t) = &mut b.ui.nodes[node].kind {
+                    t.wrap = !flag(abi::ui_flags::NO_WRAP);
+                    t.mono = flag(abi::ui_flags::MONO);
+                    t.scale = if n.scale > 0.0 { n.scale } else { 1.0 };
+                }
                 b.ui.nodes[node].style = Style { ..style };
                 b.ui.open_existing(node);
                 node
+            }
+            uk::INPUT => {
+                let value = n.text.as_str().to_string();
+                let max = if n.count == 0 { usize::MAX } else { n.count as usize };
+                let on_change: Rc<dyn Fn(&mut Ctx, &str)> = Rc::new(move |ctx: &mut Ctx, t: &str| on_change(ctx, t.to_string(), 0.0));
+                let id = b.ui.open(Kind::Input { caret: value.chars().count(), value, max, on_change: Some(on_change) }, style);
+                // Its class names it, for the chat line of a screen that shows the chat.
+                if !class.is_empty() {
+                    b.ui.nodes[id].id = Some(class);
+                }
+                id
+            }
+            uk::SLIDER => {
+                let bind = if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
+                let on_change: Rc<dyn Fn(&mut Ctx, f32)> = Rc::new(move |ctx: &mut Ctx, v: f32| on_change(ctx, String::new(), v));
+                b.ui.open(Kind::Slider { value: 0.0, bind, on_change }, style)
+            }
+            uk::ITEM => {
+                let (item, count) = (n.data, n.count);
+                b.ui.open(Kind::Item { bind: Box::new(move |_: &Ctx| (item, count)), last: (item, count) }, style)
             }
             uk::BUTTON => {
                 let cb = n.on_click;
                 // Run after the input with the whole client API: a mod's menu can open screens,
                 // worlds or quit like the engine's.
                 let action: crate::ui::Action = Rc::new(move |ctx: &mut Ctx| ctx.requests.push(crate::app::Request::ModCall(owner, cb)));
-                b.ui.open(Kind::Button { class: if class.is_empty() { "button".into() } else { class }, action: Some(action), enabled: true, selected: false }, style)
+                let (enabled, selected) = (!flag(abi::ui_flags::DISABLED), flag(abi::ui_flags::SELECTED));
+                // Labels sit in the middle, like on the engine's buttons.
+                b.ui.open(Kind::Button { class: if class.is_empty() { "button".into() } else { class }, action: Some(action), enabled, selected }, style.center())
             }
             uk::TITLE => {
                 let c = crate::content::content();
@@ -310,7 +363,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             _ => b.ui.open(Kind::Container { class: (!class.is_empty()).then_some(class) }, style),
         };
         if n.tooltip.len > 0 {
-            b.ui.nodes[id].tooltip = Some(spans(n.tooltip, abi::Slice::EMPTY));
+            b.ui.nodes[id].tooltip = Some(spans(n.tooltip, n.tooltip_args));
         }
         b.depth += 1;
     }

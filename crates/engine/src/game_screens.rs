@@ -144,16 +144,17 @@ impl Screen for Death {
         true
     }
 
+    /// Built from node descriptors like a mod's screen, so a replacement can match it.
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
-        ui.root_style(Style::default().stretch());
-        ui.panel("death", Style::default().grow().center().gap(12.0), |ui| {
-            let t = label(ui, cx, "death.title", &[], "title");
-            if let Some(t) = ui.text_mut(t) {
-                t.scale = 2.0;
-                t.wrap = false;
-            }
-            button(ui, cx, "death.respawn", &[], 200.0, |c| c.requests.push(Request::Respawn));
-            button(ui, cx, "menu.save_quit", &[], 200.0, |c| c.requests.push(Request::LeaveWorld));
+        use crate::ui::desc;
+        use weft_abi as abi;
+        desc::build(ui, cx, |d| {
+            let panel = abi::UiNode { class: abi::Str::new("death"), grow: 1.0, align: abi::ui_align::CENTER, justify: abi::ui_justify::CENTER, gap: 12.0, ..desc::node(abi::ui_kind::PANEL) };
+            d.open(&panel, |d| {
+                d.title("death.title");
+                d.button("death.respawn", &[], 200.0, false, |r| r.handle(vec![Request::Respawn]));
+                d.button("menu.save_quit", &[], 200.0, false, |r| r.handle(vec![Request::LeaveWorld]));
+            });
         });
     }
 }

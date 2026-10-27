@@ -1,5 +1,6 @@
-//! Built-in screens. They use the same UI building blocks mods get; a mod replaces one by
-//! registering a screen with its name (`named`).
+//! Built-in screens; a mod replaces one by registering a screen with its name (`named`). The
+//! pause, death and settings screens are built from the node descriptors mods send
+//! (`ui::desc`), so a replacement can do all they do.
 
 use std::rc::Rc;
 
@@ -8,7 +9,9 @@ use crate::input::{Input, Key};
 use crate::settings::Settings;
 use crate::ui::lang::Lang;
 use crate::ui::text::{self, Arg, Span};
-use crate::ui::{Justify, Kind, NodeId, Style, Ui};
+use crate::ui::{Justify, Kind, NodeId, Style, Ui, desc};
+use crate::app::Running;
+use weft_abi as abi;
 
 pub struct BuildCx<'a> {
     pub lang: &'a Lang,
@@ -272,6 +275,33 @@ impl Screen for ModScreen {
         &self.0.name
     }
 
+    fn pauses(&self) -> bool {
+        self.0.flags & weft_abi::screen_flags::PAUSES != 0
+    }
+
+    fn escape_closes(&self) -> bool {
+        self.0.flags & weft_abi::screen_flags::KEEP_ON_ESCAPE == 0
+    }
+
+    fn closes_on_respawn(&self) -> bool {
+        self.0.flags & weft_abi::screen_flags::CLOSES_ON_RESPAWN != 0
+    }
+
+    fn shows_chat(&self) -> bool {
+        self.0.flags & weft_abi::screen_flags::SHOWS_CHAT != 0
+    }
+
+    fn keys_first(&self) -> bool {
+        self.0.flags & weft_abi::screen_flags::KEYS_FIRST != 0 || self.0.on_key.is_some()
+    }
+
+    fn key(&mut self, key: Key, ctx: &mut Ctx) -> bool {
+        if self.0.on_key.is_some() {
+            ctx.requests.push(Request::ModKey(self.0.owner, self.0.on_key, crate::input::key_name(key)));
+        }
+        false
+    }
+
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let bg = if cx.in_game { "overlay" } else { "background" };
         ui.root_style(Style::default().stretch());
@@ -369,13 +399,16 @@ impl Screen for Pause {
         true
     }
 
+    /// Built from node descriptors like a mod's screen, so a replacement can match it.
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
-        frame(ui, cx, "menu.paused", |ui| {
-            button(ui, cx, "menu.resume", &[], 200.0, |c| c.requests.push(Request::Close));
-            button(ui, cx, "menu.multiplayer", &[], 200.0, |c| open(c, "core:multiplayer"));
-            button(ui, cx, "menu.settings", &[], 200.0, |c| open(c, "core:settings"));
-            parts(ui, cx, "core:pause", "buttons");
-            button(ui, cx, "menu.save_quit", &[], 200.0, |c| c.requests.push(Request::LeaveWorld));
+        desc::build(ui, cx, |d| {
+            desc::frame(d, cx.in_game, "menu.paused", |d| {
+                d.button("menu.resume", &[], 200.0, false, |r| r.handle(vec![Request::Close]));
+                d.button("menu.multiplayer", &[], 200.0, false, |r| r.handle(vec![Request::Screen("core:multiplayer".into())]));
+                d.button("menu.settings", &[], 200.0, false, |r| r.handle(vec![Request::Screen("core:settings".into())]));
+                d.parts("core:pause", "buttons");
+                d.button("menu.save_quit", &[], 200.0, false, |r| r.handle(vec![Request::LeaveWorld]));
+            });
         });
     }
 }
@@ -397,54 +430,51 @@ impl Screen for SettingsScreen {
         true
     }
 
+    /// Built from node descriptors like a mod's screen, so a replacement can match it.
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let s = cx.settings;
-        frame(ui, cx, "settings.title", |ui| {
-            ui.panel("panel", Style::default().pad(8.0).gap(6.0).stretch().w(320.0), |ui| {
-                slider(ui, "settings.view_distance", 4.0, 64.0, 1.0, |s| s.view_distance as f32, |c, v| {
-                    if c.settings.view_distance != v as i32 {
-                        c.settings.view_distance = v as i32;
-                        c.requests.push(Request::ApplySettings);
+        let screen = |name: &'static str| move |r: &mut Running| r.handle(vec![Request::Screen(name.into())]);
+        desc::build(ui, cx, |d| {
+            desc::frame(d, cx.in_game, "settings.title", |d| {
+                let panel = abi::UiNode { class: abi::Str::new("panel"), pad: [8.0; 4], gap: 6.0, align: abi::ui_align::STRETCH, width: 320.0, ..desc::node(abi::ui_kind::PANEL) };
+                d.open(&panel, |d| {
+                    d.slider("settings.view_distance", 4.0, 64.0, 1.0, |s| s.view_distance as f32, |r, v| {
+                        if r.settings.view_distance != v as i32 {
+                            r.settings.view_distance = v as i32;
+                            r.handle(vec![Request::ApplySettings]);
+                        }
+                    });
+                    d.slider("settings.fov", 50.0, 110.0, 1.0, |s| s.fov, |r, v| r.settings.fov = v);
+                    d.slider("settings.sensitivity", 20.0, 300.0, 5.0, |s| s.sensitivity * 100.0, |r, v| r.settings.sensitivity = v / 100.0);
+                    d.slider("settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness * 100.0, |r, v| r.settings.brightness = v / 100.0);
+                    let scale = if s.gui_scale == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale as i64) };
+                    d.button("settings.gui_scale", &[scale], 300.0, false, |r| {
+                        // Auto, then every scale the window can actually show.
+                        let max = crate::settings::max_gui_scale(r.stats.window);
+                        r.settings.gui_scale = if r.settings.gui_scale >= max { 0 } else { r.settings.gui_scale + 1 };
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    d.button("settings.vsync", &[on_off(s.vsync)], 300.0, false, |r| {
+                        r.settings.vsync = !r.settings.vsync;
+                        r.handle(vec![Request::ApplySettings, Request::Rebuild]);
+                    });
+                    let row = abi::UiNode { row: 1, gap: 6.0, justify: abi::ui_justify::CENTER, align: abi::ui_align::CENTER, self_align: abi::ui_align::STRETCH, ..desc::node(abi::ui_kind::CONTAINER) };
+                    for [(a, sa), (b, sb)] in [
+                        [("settings.language", "core:language"), ("settings.controls", "core:controls")],
+                        [("settings.sound", "core:sound"), ("settings.mods", "core:mod_settings")],
+                        [("settings.resource_packs", "core:resource_packs"), ("settings.shader_packs", "core:shader_packs")],
+                    ] {
+                        d.open(&row, |d| {
+                            d.button(a, &[], 147.0, true, screen(sa));
+                            d.button(b, &[], 147.0, true, screen(sb));
+                        });
                     }
+                    d.parts("core:settings", "buttons");
                 });
-                slider(ui, "settings.fov", 50.0, 110.0, 1.0, |s| s.fov, |c, v| c.settings.fov = v);
-                slider(ui, "settings.sensitivity", 20.0, 300.0, 5.0, |s| s.sensitivity * 100.0, |c, v| c.settings.sensitivity = v / 100.0);
-                slider(ui, "settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness * 100.0, |c, v| c.settings.brightness = v / 100.0);
-                let scale = if s.gui_scale == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale as i64) };
-                button(ui, cx, "settings.gui_scale", &[scale], 300.0, |c| {
-                    // Auto, then every scale the window can actually show.
-                    let max = crate::settings::max_gui_scale(c.stats.window);
-                    c.settings.gui_scale = if c.settings.gui_scale >= max { 0 } else { c.settings.gui_scale + 1 };
-                    c.requests.push(Request::Rebuild);
+                d.button("menu.done", &[], 200.0, false, |r| {
+                    r.settings.save();
+                    r.handle(vec![Request::Close]);
                 });
-                button(ui, cx, "settings.vsync", &[on_off(s.vsync)], 300.0, |c| {
-                    c.settings.vsync = !c.settings.vsync;
-                    c.requests.push(Request::ApplySettings);
-                    c.requests.push(Request::Rebuild);
-                });
-                ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
-                    let b = button(ui, cx, "settings.language", &[], 147.0, |c| open(c, "core:language"));
-                    ui.nodes[b].style.grow = 1.0;
-                    let b = button(ui, cx, "settings.controls", &[], 147.0, |c| open(c, "core:controls"));
-                    ui.nodes[b].style.grow = 1.0;
-                });
-                ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
-                    let b = button(ui, cx, "settings.sound", &[], 147.0, |c| open(c, "core:sound"));
-                    ui.nodes[b].style.grow = 1.0;
-                    let b = button(ui, cx, "settings.mods", &[], 147.0, |c| open(c, "core:mod_settings"));
-                    ui.nodes[b].style.grow = 1.0;
-                });
-                ui.container(Style::row().gap(6.0).justify(Justify::Center).stretch(), |ui| {
-                    let b = button(ui, cx, "settings.resource_packs", &[], 147.0, |c| open(c, "core:resource_packs"));
-                    ui.nodes[b].style.grow = 1.0;
-                    let b = button(ui, cx, "settings.shader_packs", &[], 147.0, |c| open(c, "core:shader_packs"));
-                    ui.nodes[b].style.grow = 1.0;
-                });
-                parts(ui, cx, "core:settings", "buttons");
-            });
-            button(ui, cx, "menu.done", &[], 200.0, |c| {
-                c.settings.save();
-                c.requests.push(Request::Close);
             });
         });
     }
@@ -580,25 +610,6 @@ impl Screen for ConfigScreen {
             button(ui, cx, "menu.done", &[], 200.0, |c| c.requests.push(Request::Close));
         });
     }
-}
-
-fn slider(ui: &mut Ui, key: &str, min: f32, max: f32, step: f32, get: fn(&Settings) -> f32, set: impl Fn(&mut Ctx, f32) + 'static) {
-    let key = key.to_string();
-    let range = max - min;
-    ui.container(Style::default().gap(2.0).stretch(), |ui| {
-        ui.text_bound("default", Box::new(move |c: &Ctx| (key.clone(), vec![Arg::Int(get(c.settings).round() as i64)])));
-        ui.add(
-            Kind::Slider {
-                value: 0.0,
-                bind: Box::new(move |c: &Ctx| (get(c.settings) - min) / range),
-                on_change: Rc::new(move |c: &mut Ctx, f: f32| {
-                    let v = ((min + f * range) / step).round() * step;
-                    set(c, v.clamp(min, max));
-                }),
-            },
-            Style::default().h(20.0).stretch(),
-        );
-    });
 }
 
 // ---------------------------------------------------------------- language

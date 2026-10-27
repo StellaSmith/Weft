@@ -1261,6 +1261,13 @@ pub mod ui_kind {
     /// The open menu's title: the own name of what it belongs to (a renamed chest), else the
     /// name of the block it was opened on, else the translation `menu.<ns>.<name>`.
     pub const TITLE: u32 = 14;
+    /// A one-line text field showing `text` (a ready value, not a key), at most `count`
+    /// characters (0: any); `on_change` gets each edit.
+    pub const INPUT: u32 = 15;
+    /// A slider at `bind` (0..1); `on_change` gets the value the player drags it to.
+    pub const SLIDER: u32 = 16;
+    /// Item `data` as its icon, with `count` under it when above 1.
+    pub const ITEM: u32 = 17;
     /// A progress bar (`bind`, class `arrow` unless given) that opens the open menu's recipe
     /// kinds when clicked, with "Recipes" over it.
     pub const RECIPE_ARROW: u32 = 12;
@@ -1277,24 +1284,40 @@ pub mod ui_dir {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct UiArg {
-    /// 0 text, 1 translation key, 2 integer, 3 float, 4 item id.
+    /// `ui_arg`.
     pub kind: u32,
     pub text: Str,
     pub num: f64,
+    /// Decimals of a float.
+    pub digits: u32,
 }
-defaults!(UiArg { kind: 0, text: Str::EMPTY, num: 0.0 });
+defaults!(UiArg { kind: 0, text: Str::EMPTY, num: 0.0, digits: 1 });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct UiNode {
     pub kind: u32,
     pub class: Str,
-    /// Translation key (or texture for IMAGE).
+    /// Translation key (or texture for IMAGE). Empty with one argument: that argument as it is.
     pub text: Str,
     pub args: Slice<UiArg>,
     /// NaN = automatic.
     pub width: f32,
     pub height: f32,
+    /// Percent of the parent instead, NaN = not.
+    pub width_pct: f32,
+    pub height_pct: f32,
+    pub min: [f32; 2],
+    pub max_width: f32,
+    /// `ui_align` of this node in its parent, `u32::MAX` = the parent's.
+    pub self_align: u32,
+    /// `ui_flags`.
+    pub flags: u32,
+    /// Text size, 1 = normal.
+    pub scale: f32,
+    pub tooltip_args: Slice<UiArg>,
+    /// INPUT and SLIDER: `UiChangeArgs` when the player changes the value.
+    pub on_change: Callback,
     pub grow: f32,
     pub gap: f32,
     pub pad: [f32; 4],
@@ -1320,6 +1343,15 @@ defaults!(UiNode {
     args: Slice::EMPTY,
     width: f32::NAN,
     height: f32::NAN,
+    width_pct: f32::NAN,
+    height_pct: f32::NAN,
+    min: [0.0; 2],
+    max_width: f32::INFINITY,
+    self_align: u32::MAX,
+    flags: 0,
+    scale: 1.0,
+    tooltip_args: Slice::EMPTY,
+    on_change: Callback::NONE,
     grow: 0.0,
     gap: 0.0,
     pad: [0.0; 4],
@@ -1348,6 +1380,64 @@ pub struct UiBindArgs {
     pub value: f32,
     /// Pass to `Host::ui_text` to set text.
     pub text: *mut UiCtx,
+}
+
+/// A player changed an INPUT (`text`) or SLIDER (`value`, 0..1).
+#[repr(C)]
+pub struct UiChangeArgs {
+    pub client: *mut ClientCtx,
+    pub text: Str,
+    pub value: f32,
+}
+
+/// `UiNode::flags`.
+pub mod ui_flags {
+    /// Children scroll inside the node (mouse wheel) and are clipped to it.
+    pub const SCROLL: u32 = 1;
+    /// Text stays on one line.
+    pub const NO_WRAP: u32 = 2;
+    /// Text with digit-wide cells, so changing numbers don't move what follows.
+    pub const MONO: u32 = 4;
+    /// A button that can't be pressed.
+    pub const DISABLED: u32 = 8;
+    /// A button shown as chosen (the open tab).
+    pub const SELECTED: u32 = 16;
+}
+
+/// A screen (`Host::reg_screen`): how it is built and how it behaves, the same properties the
+/// engine's screens have, so a mod's `core:pause` still pauses.
+#[repr(C)]
+pub struct ScreenDesc {
+    pub name: Str,
+    /// `UiArgs`.
+    pub build: Callback,
+    /// `screen_flags`.
+    pub flags: u32,
+    /// `ScreenKeyArgs` for every key pressed while it is on top, before Escape and the other
+    /// global keys.
+    pub on_key: Callback,
+}
+defaults!(ScreenDesc { name: Str::EMPTY, build: Callback::NONE, flags: 0, on_key: Callback::NONE });
+
+pub mod screen_flags {
+    /// Single player stops while it is open.
+    pub const PAUSES: u32 = 1;
+    /// Escape doesn't close it (the death screen).
+    pub const KEEP_ON_ESCAPE: u32 = 2;
+    /// Closes when the player respawns.
+    pub const CLOSES_ON_RESPAWN: u32 = 4;
+    /// Gets keys before Escape and the other global keys.
+    pub const KEYS_FIRST: u32 = 8;
+    /// Like the chat screen: the HUD leaves the messages to it, and Enter sends the text of its
+    /// INPUT of class `chat`.
+    pub const SHOWS_CHAT: u32 = 16;
+}
+
+#[repr(C)]
+pub struct ScreenKeyArgs {
+    pub client: *mut ClientCtx,
+    /// The key's settings name (`Enter`, `KeyE`).
+    pub key: Str,
 }
 
 // ---------------------------------------------------------------- host
@@ -1500,7 +1590,8 @@ pub struct Host {
 
     pub ui_open: unsafe extern "C" fn(ui: *mut UiCtx, node: *const UiNode),
     pub ui_close: unsafe extern "C" fn(ui: *mut UiCtx),
-    /// From a text binding: set the translation key and args shown.
+    /// From a text binding: set the translation key and args shown (an empty key with one
+    /// argument shows that argument as it is).
     pub ui_text: unsafe extern "C" fn(ui: *mut UiCtx, key: Str, args: Slice<UiArg>),
     pub client_player: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
     /// Synced component of an entity the client knows (own player always), null if unknown.
@@ -1567,6 +1658,9 @@ pub struct Host {
     pub client_command: unsafe extern "C" fn(client: *mut ClientCtx, op: u32, text: Str, num: f64) -> u64,
     /// Texts the client knows, see `client_text`. Valid until the next call.
     pub client_text: unsafe extern "C" fn(client: *mut ClientCtx, which: u32, index: u32) -> Str,
+    /// A settings.txt value (`view_distance`, `language`...), empty for an unknown key. Works in
+    /// UI bindings too. Valid until the next call.
+    pub client_setting: unsafe extern "C" fn(client: *mut ClientCtx, key: Str) -> Str,
     /// Block the client has at `pos`, `u32::MAX` if that cube is not loaded there.
     pub client_block: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
     /// Group `name` of the player inventory (`reg_player_inventory`, equipment slots,
@@ -1744,9 +1838,9 @@ pub struct Host {
     /// covers, `background` the GUI texture of the empty slot. It takes items tagged
     /// `worn/<name>`, is never filled by pickups and shows on the model.
     pub reg_equipment_slot: unsafe extern "C" fn(reg: *mut Registrar, name: Str, parts: u32, background: Str),
-    /// A screen built by `cb` (a UI callback), opened by name (`client_op::OPEN_SCREEN`,
-    /// `--screen`); one named like an engine screen (`core:pause`) replaces it.
-    pub reg_screen: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cb: Callback),
+    /// A screen, opened by name (`client_op::OPEN_SCREEN`, `--screen`); one named like an engine
+    /// screen (`core:pause`) replaces it.
+    pub reg_screen: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ScreenDesc),
     /// Adds comma separated words to a word set: command parameters `word(#set)` complete from
     /// it (`core:rules`, `core:gizmos`, or any mod's).
     pub reg_words: unsafe extern "C" fn(reg: *mut Registrar, set: Str, words: Str),
@@ -2403,6 +2497,8 @@ pub mod client_flags {
     pub const DEBUG: u32 = 1024;
     /// Background music is playing.
     pub const MUSIC: u32 = 2048;
+    /// Single player stands still: an open screen pauses it.
+    pub const PAUSED: u32 = 4096;
 }
 
 /// What a client callback can see of the local client, filled by `Host::client_state`.
@@ -2580,6 +2676,8 @@ pub mod client_op {
     /// Post-processing effect `text` (`shaders/post/<name>.wgsl`) at strength `num`, 0 turns it
     /// off. Effects stay on until changed and run in the order they were turned on.
     pub const POST_EFFECT: u32 = 14;
+    /// Writes the settings as they are now to settings.txt.
+    pub const SAVE_SETTINGS: u32 = 15;
 }
 
 /// `Host::client_text` sources.

@@ -59,6 +59,10 @@ pub enum Request {
     /// A mod's button was clicked: its callback (`UiArgs`) runs with the whole client API, like
     /// a frame hook, after the input is handled.
     ModCall(weft_abi::ModId, weft_abi::Callback),
+    /// A mod's input or slider changed: its `on_change` with the text or value.
+    ModChange(weft_abi::ModId, weft_abi::Callback, String, f32),
+    /// A key for a mod's screen (`on_key`), by its settings name.
+    ModKey(weft_abi::ModId, weft_abi::Callback, String),
     Close,
     Quit,
     Rebuild,
@@ -142,7 +146,7 @@ pub(crate) struct Running {
     depth: (TextureId, u32, u32),
     list: CommandList,
     input: Input,
-    settings: Settings,
+    pub(crate) settings: Settings,
     lang: Lang,
     languages: Vec<(String, String)>,
     theme: Theme,
@@ -168,7 +172,7 @@ pub(crate) struct Running {
     client_hash: u64,
     /// Texture generation the UI quads were built with (icons drawn blank until loaded).
     ui_textures: u64,
-    stats: Stats,
+    pub(crate) stats: Stats,
     /// F3 held and used for a combination since it went down (then releasing it does not toggle).
     f3_combo: Option<bool>,
     reload_requested: bool,
@@ -536,7 +540,7 @@ impl Running {
         self.set_capture(false);
     }
 
-    fn handle(&mut self, reqs: Vec<Request>) {
+    pub(crate) fn handle(&mut self, reqs: Vec<Request>) {
         for r in reqs {
             match r {
                 Request::Open(s) => self.open(s),
@@ -554,6 +558,16 @@ impl Running {
                 Request::ModCall(owner, cb) => {
                     let mut v = self.frame_view();
                     let mut a = weft_abi::UiArgs { ui: std::ptr::null_mut(), client: v.raw() };
+                    crate::host::invoke(owner, cb, &mut a);
+                }
+                Request::ModChange(owner, cb, text, value) => {
+                    let mut v = self.frame_view();
+                    let mut a = weft_abi::UiChangeArgs { client: v.raw(), text: weft_abi::Str::new(&text), value };
+                    crate::host::invoke(owner, cb, &mut a);
+                }
+                Request::ModKey(owner, cb, key) => {
+                    let mut v = self.frame_view();
+                    let mut a = weft_abi::ScreenKeyArgs { client: v.raw(), key: weft_abi::Str::new(&key) };
                     crate::host::invoke(owner, cb, &mut a);
                 }
                 Request::Screen(name) => match screens::named(&name, &self.settings) {
@@ -1045,7 +1059,7 @@ impl Running {
                             let v = b(&ctx);
                             if t.last.as_ref() != Some(&v) {
                                 t.spans.clear();
-                                text::format(tcx.lang.get(&v.0), &v.1, &tcx, &mut t.spans);
+                                text::message(&v.0, &v.1, &tcx, &mut t.spans);
                                 t.last = Some(v);
                                 relayout = true;
                             }

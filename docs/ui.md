@@ -30,8 +30,11 @@ ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
 |---|---|
 | `column(s, ..)`, `row(s, ..)` | children one under another, or side by side |
 | `panel(class, s, ..)` | a column with a themed background, `"panel"` is the usual window |
-| `text(key)` | a translation. `text_args(key, &[Arg::Int(5)])` fills `{0}` and the rest |
-| `button(key, s, on_click)` | a button with a translated label; the closure runs on click and can drive the game through `c.client()` (open screens and worlds, quit), even in the main menu |
+| `text(key)` | a translation. `text_args(key, &[Arg::Int(5)])` fills `{0}` and the rest, `text_styled(s, key, args)` takes a style too (class, size, one line, `mono`) |
+| `button(key, s, on_click)` | a button with a translated label (`button_args` with arguments); the closure runs on click and can drive the game through `c.client()` (open screens and worlds, quit, change settings), even in the main menu |
+| `input(value, max, s, on_change)` | a one-line text field; the closure gets the text after every edit |
+| `slider(s, value, on_change)` | a slider at `value` (0..1, read every frame); the closure gets where it is dragged |
+| `item(id, count, s)` | an item's icon with its count |
 | `image(texture, w, h)` | a GUI texture such as `base:gui/arrow_bg` |
 | `spacer()` | an empty part that grows, to push others apart or center them |
 | `group(name)`, `group_slot(name, i)` | a menu's slots, see [menus](#menus) |
@@ -39,7 +42,9 @@ ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
 | `player_inventory(title)` | the player's inventory and hotbar in a menu |
 | `progress_bind`, `icons` | bars and icon rows driven by live values |
 
-Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](tooltips.md), pictures included. Any part with a style can have a tooltip too: `S::col().tooltip("examplemod.what_this_does")`.
+Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](tooltips.md), pictures included. Text that isn't words of yours (a number, a player's name) goes in as an argument, `Arg::Text(..)` shows exactly what it holds; `Arg::Float(v, 2)` has two decimals. Any part with a style can have a tooltip too: `S::col().tooltip("examplemod.what_this_does")`, or `tooltip_args(key, &[..])` with arguments.
+
+The engine's own pause, death and settings screens are built from exactly these parts, so a screen that replaces one can look and work the same.
 
 ## Layout
 Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in the settings makes them bigger or smaller. `S` describes one part, starting from `S::col()` or `S::row()` (rows center their children vertically, columns start at the top left):
@@ -48,6 +53,11 @@ Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in 
 - `grow()` takes whatever space is left in the parent
 - `center()` and `end()` position the children along the main axis
 - `stretch()` makes children fill the other axis, so rows get as wide as their column and a `spacer()` can center things
+- `w_pct(p)`, `h_pct(p)` size a part in percent of its parent; `min_w`, `min_h`, `max_w` limit it
+- `self_align(abi::ui_align::END)` places one part differently from its siblings
+- `scroll()` lets the children scroll with the wheel, with a bar when they don't fit
+- for text: `class("title")` (the theme's look, also `dim`, `button`, `chat`), `scale(2.0)`, `no_wrap()` and `mono()`, which puts every glyph in a digit-wide cell so numbers don't jump (`{mono}..{/mono}` does it for part of a text)
+- for buttons: `disabled(true)` and `selected(true)` (the open tab)
 
 ## Live values
 Text and bars can change while a screen is open. A binding's closure runs every frame, and the part is redrawn when the value changed.
@@ -67,7 +77,13 @@ r.hud_element(&HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
 The `class` ("hearts", "arrow", "flame") is a theme class, which is where the textures come from.
 
 ## Screens
-`r.screen(&SCREEN, |ui| ..)` registers a screen of your own:
+`r.screen(&SCREEN, |ui| ..)` registers a screen of your own, and what it does besides showing parts is declared on it, the same properties the engine's screens have:
+- `.pauses()`: single player stops while it is open
+- `.keep_on_escape()`: Escape doesn't close it (the death screen)
+- `.closes_on_respawn()`
+- `.on_key(|view, key| ..)`: keys pressed while it is on top (`Enter`, `KeyE`), before Escape
+- `.shows_chat()`: like the chat screen, the HUD leaves the messages to it and Enter sends the text of its input of class `chat`
+
 ```rust
 static ABOUT: Screen = Screen::named("about");
 r.screen(&ABOUT, |ui| {
@@ -79,7 +95,7 @@ r.client_command("about", "", |c| { if let Some(cl) = c.client() { cl.open_scree
 ```
 `open_screen(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
 
-Registering an engine screen's handle replaces that screen, so `r.screen(&screens::PAUSE, ..)` is your own pause screen. The engine's are in `screens::*`: `TITLE`, `PAUSE`, `SETTINGS`, `LANGUAGE`, `CONTROLS`, `SOUND`, `MOD_SETTINGS`, `MODS`, `PROFILE`, `WORLDS`, `CREATE_WORLD`, `MULTIPLAYER`, `RESOURCE_PACKS`, `SHADER_PACKS`, `CHAT` and `DEATH`. The engine's own screens open each other through the same names, so a replaced settings screen is the one the main menu's button opens.
+Registering an engine screen's handle replaces that screen, so `r.screen(&screens::PAUSE, ..).pauses()` is your own pause screen. The engine's are in `screens::*`: `TITLE`, `PAUSE`, `SETTINGS`, `LANGUAGE`, `CONTROLS`, `SOUND`, `MOD_SETTINGS`, `MODS`, `PROFILE`, `WORLDS`, `CREATE_WORLD`, `MULTIPLAYER`, `RESOURCE_PACKS`, `SHADER_PACKS`, `CHAT` and `DEATH`. The engine's own screens open each other through the same names, so a replaced settings screen is the one the main menu's button opens.
 
 Most of the time a whole new screen is more than you need. A screen part adds to a place of a screen and leaves the rest alone, so several mods can add their buttons to the main menu side by side:
 ```rust

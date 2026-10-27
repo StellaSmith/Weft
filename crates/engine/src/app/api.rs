@@ -105,8 +105,22 @@ unsafe fn client<'a>(c: *mut abi::ClientCtx) -> Option<&'a Client> {
     unsafe { view(c).and_then(|v| v.client.as_ref()) }
 }
 
-unsafe fn run<'a>(c: *mut abi::ClientCtx) -> Option<&'a mut Running> {
+pub(crate) unsafe fn run<'a>(c: *mut abi::ClientCtx) -> Option<&'a mut Running> {
     unsafe { view(c).and_then(|v| (v.run as *mut Running).as_mut()) }
+}
+
+/// The settings, from a callback that drives the client or from a UI binding.
+pub(crate) unsafe fn settings<'a>(c: *mut abi::ClientCtx) -> Option<&'a crate::settings::Settings> {
+    unsafe {
+        match run(c) {
+            Some(r) => Some(&r.settings),
+            None => view(c).and_then(|v| v.settings.as_ref()),
+        }
+    }
+}
+
+pub unsafe extern "C" fn client_setting(c: *mut abi::ClientCtx, key: Str) -> Str {
+    unsafe { text_out(&settings(c).and_then(|s| s.get(key.as_str())).unwrap_or_default()) }
 }
 
 thread_local! {
@@ -179,6 +193,10 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             }
             if r.audio.as_ref().is_some_and(|a| a.music_playing()) {
                 flags |= cf::MUSIC;
+            }
+            let single = r.game.as_ref().and_then(|g| g.server.as_ref()).is_some_and(|s| !s.is_hosting());
+            if single && r.screens.iter().any(|(s, _)| s.pauses()) {
+                flags |= cf::PAUSED;
             }
             s.sounds = r.audio.as_ref().map_or(0, |a| a.played);
             s.flags = flags;
@@ -381,6 +399,7 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
                     _ => r.handle(vec![Request::ApplySettings]),
                 }
             }
+            op_::SAVE_SETTINGS => r.settings.save(),
             _ => return 0,
         }
         1
@@ -471,7 +490,13 @@ pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out:
         } else if let Some(n) = q.strip_prefix("item:").and_then(|n| n.parse::<u64>().ok()) {
             ui.nodes.iter().position(|node| matches!(node.kind, Kind::Custom { tag: crate::client::modui::TAG_CREATIVE, data } if data == n))
         } else if let Some(n) = q.strip_prefix("icon:").and_then(|n| n.parse::<u64>().ok()) {
-            ui.nodes.iter().position(|node| matches!(node.kind, Kind::Custom { tag: crate::client::modui::TAG_ICON, data } if data == n))
+            ui.nodes.iter().position(|node| match node.kind {
+                Kind::Custom { tag: crate::client::modui::TAG_ICON, data } => data == n,
+                Kind::Item { last, .. } => last.0 as u64 == n,
+                _ => false,
+            })
+        } else if q == "slider" {
+            ui.nodes.iter().position(|node| matches!(node.kind, Kind::Slider { .. }))
         } else if q == "entity" {
             ui.nodes.iter().position(|node| matches!(node.kind, Kind::Custom { tag: crate::client::modui::TAG_ENTITY, .. }))
         } else if let Some(id) = q.strip_prefix("id:") {

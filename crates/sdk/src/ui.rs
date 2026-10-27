@@ -23,6 +23,11 @@ impl ClientView {
     pub fn player(&self) -> u64 {
         unsafe { (host().client_player)(self.raw) }
     }
+    /// A settings.txt value (`view_distance`, `language`, `fov`...), empty for an unknown key;
+    /// `client().setting(key, value)` changes it.
+    pub fn setting(&self, key: &str) -> String {
+        unsafe { (host().client_setting)(self.raw, Str::new(key)).as_str().to_string() }
+    }
     /// Own player's synced component.
     pub fn component<T: Value>(&self, c: &Component<T>) -> Option<T> {
         let p = unsafe { (host().client_component)(self.raw, 0, c.id()) };
@@ -70,10 +75,12 @@ impl ClientView {
 
 /// Text argument for translation templates.
 pub enum Arg<'a> {
+    /// Shown as it is: never read as a translation or formatting.
     Text(&'a str),
     Key(&'a str),
     Int(i64),
-    Float(f64),
+    /// A number with this many decimals.
+    Float(f64, u32),
     Item(u32),
     /// A display name, as `{name:..}` writes it: `"item:base:coal"`, `"mod:base"`,
     /// `"block:base:furnace"`, `"key:core:jump"`, `"recipe:base:smelting"`.
@@ -86,31 +93,72 @@ pub(crate) fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
             Arg::Text(s) => abi::UiArg { kind: abi::ui_arg::TEXT, text: Str::new(s), ..abi::UiArg::DEFAULT },
             Arg::Key(s) => abi::UiArg { kind: abi::ui_arg::KEY, text: Str::new(s), ..abi::UiArg::DEFAULT },
             Arg::Int(v) => abi::UiArg { kind: abi::ui_arg::INT, num: *v as f64, ..abi::UiArg::DEFAULT },
-            Arg::Float(v) => abi::UiArg { kind: abi::ui_arg::FLOAT, num: *v, ..abi::UiArg::DEFAULT },
+            Arg::Float(v, digits) => abi::UiArg { kind: abi::ui_arg::FLOAT, num: *v, digits: *digits, ..abi::UiArg::DEFAULT },
             Arg::Item(v) => abi::UiArg { kind: abi::ui_arg::ITEM, num: *v as f64, ..abi::UiArg::DEFAULT },
             Arg::Name(s) => abi::UiArg { kind: abi::ui_arg::NAME, text: Str::new(s), ..abi::UiArg::DEFAULT },
         })
         .collect()
 }
 
-/// Layout of a node. Sizes are GUI pixels; `None` = fit content.
-#[derive(Clone, Copy)]
+/// How a part is laid out and shown: the same properties the engine's own screens use. Sizes are
+/// GUI pixels; `None` = fit content.
+#[derive(Clone)]
 pub struct S {
     pub width: Option<f32>,
     pub height: Option<f32>,
+    /// Percent of the parent instead of pixels.
+    pub width_pct: Option<f32>,
+    pub height_pct: Option<f32>,
+    pub min: [f32; 2],
+    pub max_width: f32,
     pub grow: f32,
     pub gap: f32,
     pub pad: f32,
     pub row: bool,
     pub align: u32,
     pub justify: u32,
+    /// This part's own `ui_align` in its parent.
+    pub self_align: Option<u32>,
+    /// `abi::ui_flags`.
+    pub flags: u32,
+    /// Text size, 1 = normal.
+    pub scale: f32,
+    /// Style class (`title`, `dim`, `button`, `chat`...), empty for the kind's own.
+    pub class: &'static str,
     /// Translation shown while the mouse is over the part, empty for none.
-    pub tooltip: &'static str,
+    pub tooltip: String,
+    tooltip_args: Vec<ArgBuf>,
+}
+
+/// An argument kept until the node is sent.
+#[derive(Clone)]
+enum ArgBuf {
+    Text(String, u32),
+    Num(f64, u32, u32),
 }
 
 impl Default for S {
     fn default() -> Self {
-        S { width: None, height: None, grow: 0.0, gap: 0.0, pad: 0.0, row: false, align: abi::ui_align::START, justify: abi::ui_justify::START, tooltip: "" }
+        S {
+            width: None,
+            height: None,
+            width_pct: None,
+            height_pct: None,
+            min: [0.0; 2],
+            max_width: f32::INFINITY,
+            grow: 0.0,
+            gap: 0.0,
+            pad: 0.0,
+            row: false,
+            align: abi::ui_align::START,
+            justify: abi::ui_justify::START,
+            self_align: None,
+            flags: 0,
+            scale: 1.0,
+            class: "",
+            tooltip: String::new(),
+            tooltip_args: Vec::new(),
+        }
     }
 }
 
@@ -122,8 +170,87 @@ impl S {
         S::default()
     }
     /// A tooltip over the part (a translation key, with all of rich text).
-    pub fn tooltip(mut self, key: &'static str) -> S {
-        self.tooltip = key;
+    pub fn tooltip(self, key: &str) -> S {
+        self.tooltip_args(key, &[])
+    }
+    pub fn tooltip_args(mut self, key: &str, args: &[Arg]) -> S {
+        self.tooltip = key.to_string();
+        self.tooltip_args = raw_args(args)
+            .iter()
+            .zip(args)
+            .map(|(r, a)| match a {
+                Arg::Text(t) | Arg::Key(t) | Arg::Name(t) => ArgBuf::Text(t.to_string(), r.kind),
+                _ => ArgBuf::Num(r.num, r.digits, r.kind),
+            })
+            .collect();
+        self
+    }
+    pub fn class(mut self, class: &'static str) -> S {
+        self.class = class;
+        self
+    }
+    pub fn h(mut self, h: f32) -> S {
+        self.height = Some(h);
+        self
+    }
+    pub fn w_pct(mut self, p: f32) -> S {
+        self.width_pct = Some(p);
+        self
+    }
+    pub fn h_pct(mut self, p: f32) -> S {
+        self.height_pct = Some(p);
+        self
+    }
+    pub fn min_w(mut self, w: f32) -> S {
+        self.min[0] = w;
+        self
+    }
+    pub fn min_h(mut self, h: f32) -> S {
+        self.min[1] = h;
+        self
+    }
+    pub fn max_w(mut self, w: f32) -> S {
+        self.max_width = w;
+        self
+    }
+    /// Its own place across its parent (`abi::ui_align`).
+    pub fn self_align(mut self, a: u32) -> S {
+        self.self_align = Some(a);
+        self
+    }
+    /// Children scroll (mouse wheel) and are clipped to the part, with a bar when longer.
+    pub fn scroll(mut self) -> S {
+        self.flags |= abi::ui_flags::SCROLL;
+        self
+    }
+    /// Text on one line.
+    pub fn no_wrap(mut self) -> S {
+        self.flags |= abi::ui_flags::NO_WRAP;
+        self
+    }
+    /// Text with every glyph in a digit-wide cell, so changing numbers don't move what follows
+    /// (`{mono}..{/mono}` does it for a part of a text).
+    pub fn mono(mut self) -> S {
+        self.flags |= abi::ui_flags::MONO;
+        self
+    }
+    /// Text size (2 for a screen's title).
+    pub fn scale(mut self, s: f32) -> S {
+        self.scale = s;
+        self
+    }
+    /// A button that can't be pressed now.
+    pub fn disabled(mut self, yes: bool) -> S {
+        if yes {
+            self.flags |= abi::ui_flags::DISABLED;
+        }
+        self
+    }
+    /// A button shown as the chosen one (the open tab).
+    pub fn selected(mut self, yes: bool) -> S {
+        if yes {
+            self.flags |= abi::ui_flags::SELECTED;
+        }
         self
     }
     pub fn gap(mut self, g: f32) -> S {
@@ -181,11 +308,47 @@ pub(crate) fn ui_callback(f: impl Fn(&mut Ui) + Send + Sync + 'static) -> abi::C
     })
 }
 
-fn node(kind: u32, s: S) -> abi::UiNode {
-    abi::UiNode {
+/// A node with what it points at, alive until it is sent.
+struct Node {
+    raw: abi::UiNode,
+    _s: S,
+    _tip: Vec<abi::UiArg>,
+}
+
+impl std::ops::Deref for Node {
+    type Target = abi::UiNode;
+    fn deref(&self) -> &abi::UiNode {
+        &self.raw
+    }
+}
+
+impl std::ops::DerefMut for Node {
+    fn deref_mut(&mut self) -> &mut abi::UiNode {
+        &mut self.raw
+    }
+}
+
+fn node(kind: u32, s: S) -> Node {
+    let tip: Vec<abi::UiArg> = s
+        .tooltip_args
+        .iter()
+        .map(|a| match a {
+            ArgBuf::Text(t, kind) => abi::UiArg { kind: *kind, text: Str::new(t), ..abi::UiArg::DEFAULT },
+            ArgBuf::Num(v, digits, kind) => abi::UiArg { kind: *kind, num: *v, digits: *digits, ..abi::UiArg::DEFAULT },
+        })
+        .collect();
+    let raw = abi::UiNode {
         kind,
+        class: Str::new(s.class),
         width: s.width.unwrap_or(f32::NAN),
         height: s.height.unwrap_or(f32::NAN),
+        width_pct: s.width_pct.unwrap_or(f32::NAN),
+        height_pct: s.height_pct.unwrap_or(f32::NAN),
+        min: s.min,
+        max_width: s.max_width,
+        self_align: s.self_align.unwrap_or(u32::MAX),
+        flags: s.flags,
+        scale: s.scale,
         grow: s.grow,
         gap: s.gap,
         pad: [s.pad; 4],
@@ -193,9 +356,11 @@ fn node(kind: u32, s: S) -> abi::UiNode {
         align: s.align,
         justify: s.justify,
         data: 0,
-        tooltip: Str::new(s.tooltip),
+        tooltip: Str::new(&s.tooltip),
+        tooltip_args: Slice::new(&tip),
         ..abi::UiNode::DEFAULT
-    }
+    };
+    Node { raw, _s: s, _tip: tip }
 }
 
 impl Ui {
@@ -203,21 +368,21 @@ impl Ui {
         self.client
     }
 
-    fn open(&mut self, n: &abi::UiNode) {
-        unsafe { (host().ui_open)(self.raw, n) }
+    fn open(&mut self, n: &Node) {
+        unsafe { (host().ui_open)(self.raw, &n.raw) }
     }
 
     fn close(&mut self) {
         unsafe { (host().ui_close)(self.raw) }
     }
 
-    fn with(&mut self, n: abi::UiNode, f: impl FnOnce(&mut Ui)) {
+    fn with(&mut self, n: Node, f: impl FnOnce(&mut Ui)) {
         self.open(&n);
         f(self);
         self.close();
     }
 
-    fn leaf(&mut self, n: abi::UiNode) {
+    fn leaf(&mut self, n: Node) {
         self.open(&n);
         self.close();
     }
@@ -243,8 +408,13 @@ impl Ui {
     }
 
     pub fn text_args(&mut self, key: &str, args: &[Arg]) {
+        self.text_styled(S::default(), key, args)
+    }
+
+    /// Text with a class, size, one line, `mono`...: `ui.text_styled(S::col().class("title").scale(2.0), "mymod.title", &[])`.
+    pub fn text_styled(&mut self, s: S, key: &str, args: &[Arg]) {
         let a = raw_args(args);
-        let mut n = node(k::TEXT, S::default());
+        let mut n = node(k::TEXT, s);
         n.text = Str::new(key);
         n.args = Slice::new(&a);
         self.leaf(n)
@@ -252,7 +422,11 @@ impl Ui {
 
     /// Text recomputed every frame; redrawn only when it changes.
     pub fn text_bind(&mut self, f: impl Fn(&ClientView, &mut TextOut) + Send + Sync + 'static) {
-        let mut n = node(k::TEXT, S::default());
+        self.text_bind_styled(S::default(), f)
+    }
+
+    pub fn text_bind_styled(&mut self, s: S, f: impl Fn(&ClientView, &mut TextOut) + Send + Sync + 'static) {
+        let mut n = node(k::TEXT, s);
         n.bind = callback(move |a: &mut abi::UiBindArgs| {
             let view = ClientView { raw: a.client };
             let mut out = TextOut { raw: a.text };
@@ -396,11 +570,43 @@ impl Ui {
     }
 
     pub fn button(&mut self, key: &str, s: S, f: impl Fn(&ClientView) + Send + Sync + 'static) {
+        self.button_args(key, &[], s, f)
+    }
+
+    /// A button whose label has arguments (`settings.gui_scale` with the scale).
+    pub fn button_args(&mut self, key: &str, args: &[Arg], s: S, f: impl Fn(&ClientView) + Send + Sync + 'static) {
         let mut n = node(k::BUTTON, s);
         n.on_click = callback(move |a: &mut abi::UiArgs| f(&ClientView { raw: a.client }));
-        n.class = Str::new("button");
-        let key = key.to_string();
-        self.with(n, |ui| ui.text(&key));
+        if n.class.len == 0 {
+            n.class = Str::new("button");
+        }
+        self.with(n, |ui| ui.text_styled(S::col().class("button").no_wrap(), key, args));
+    }
+
+    /// A one-line text field starting with `value` (at most `max` characters, 0 for any);
+    /// `on_change` gets the text after every edit.
+    pub fn input(&mut self, value: &str, max: u32, s: S, on_change: impl Fn(&ClientView, &str) + Send + Sync + 'static) {
+        let mut n = node(k::INPUT, s);
+        n.text = Str::new(value);
+        n.count = max;
+        n.on_change = callback(move |a: &mut abi::UiChangeArgs| on_change(&ClientView { raw: a.client }, unsafe { a.text.as_str() }));
+        self.leaf(n)
+    }
+
+    /// A slider at `value` (0..1, read every frame); `on_change` gets where the player drags it.
+    pub fn slider(&mut self, s: S, value: impl Fn(&ClientView) -> f32 + Send + Sync + 'static, on_change: impl Fn(&ClientView, f32) + Send + Sync + 'static) {
+        let mut n = node(k::SLIDER, s);
+        n.bind = bind(value);
+        n.on_change = callback(move |a: &mut abi::UiChangeArgs| on_change(&ClientView { raw: a.client }, a.value));
+        self.leaf(n)
+    }
+
+    /// An item's icon, with `count` under it when above 1.
+    pub fn item(&mut self, item: u32, count: u32, s: S) {
+        let mut n = node(k::ITEM, s);
+        n.data = item;
+        n.count = count;
+        self.leaf(n)
     }
 }
 
@@ -418,6 +624,11 @@ impl TextOut {
     pub fn set(&mut self, key: &str, args: &[Arg]) {
         let a = raw_args(args);
         unsafe { (host().ui_text)(self.raw, Str::new(key), Slice::new(&a)) }
+    }
+
+    /// Ready text, shown as it is (not a translation).
+    pub fn text(&mut self, text: &str) {
+        self.set("", &[Arg::Text(text)])
     }
 }
 

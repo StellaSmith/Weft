@@ -223,13 +223,20 @@ impl Inventory {
     pub fn insert(&self, stack: ItemStack) -> ItemStack {
         unsafe { (host().inv_insert)(self.world.raw(), self.owner, stack) }
     }
-    /// A machine's slot group (`MachineBuilder::group`) in this inventory.
+    /// A machine's slot group (`MachineBuilder::group`) in this inventory; a name it doesn't
+    /// have is logged as a mistake and gives no slots.
     pub fn group(&self, name: &str) -> InventoryGroup {
-        let mut out = [0u32; 2];
-        if unsafe { (host().inventory_group)(self.world.raw(), self.owner, Str::new(name), &mut out) } == 0 {
+        self.find_group(name).unwrap_or_else(|| {
             crate::error!("the inventory of entity {} has no group {name}", self.owner);
-        }
-        InventoryGroup { inv: Inventory { world: self.world, owner: self.owner }, start: out[0], len: out[1] }
+            InventoryGroup { inv: Inventory { world: self.world, owner: self.owner }, start: 0, len: 0 }
+        })
+    }
+
+    /// The group if this inventory has it: a player's equipment, which mobs don't have.
+    pub fn find_group(&self, name: &str) -> Option<InventoryGroup> {
+        let mut out = [0u32; 2];
+        let found = unsafe { (host().inventory_group)(self.world.raw(), self.owner, Str::new(name), &mut out) } != 0;
+        found.then(|| InventoryGroup { inv: Inventory { world: self.world, owner: self.owner }, start: out[0], len: out[1] })
     }
 }
 
@@ -1180,9 +1187,10 @@ impl Registry {
     }
 
     /// A screen opened with `Client::open_screen` (or `--screen <name>`); registering an engine
-    /// screen's handle (`screens::PAUSE`) replaces that one.
-    pub fn screen(&mut self, screen: &Screen, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
-        unsafe { (host().reg_screen)(self.raw, Str::new(screen.name()), ui_callback(f)) }
+    /// screen's handle (`screens::PAUSE`) replaces that one. How it behaves is declared on it,
+    /// the same properties the engine's screens have: `r.screen(&screens::PAUSE, build).pauses()`.
+    pub fn screen<'a>(&'a mut self, screen: &Screen, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> ScreenBuilder<'a> {
+        ScreenBuilder { raw: self.raw, name: screen.name().to_string(), desc: abi::ScreenDesc { build: ui_callback(f), ..abi::ScreenDesc::DEFAULT }, _p: std::marker::PhantomData }
     }
 
     /// HUD element at `anchor` (`hud_anchor::*`); `order` 0 sits nearest the anchor's edge.
@@ -1606,4 +1614,51 @@ pub mod entity_categories {
     pub static HOSTILE: EntityCategory = EntityCategory::named("core:hostile");
     pub static PASSIVE: EntityCategory = EntityCategory::named("core:passive");
     pub static MISC: EntityCategory = EntityCategory::named("core:misc");
+}
+
+pub struct ScreenBuilder<'a> {
+    raw: *mut abi::Registrar,
+    name: String,
+    desc: abi::ScreenDesc,
+    _p: std::marker::PhantomData<&'a mut Registry>,
+}
+
+impl ScreenBuilder<'_> {
+    /// Single player stops while it is open (the pause and settings screens).
+    pub fn pauses(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::PAUSES;
+        self
+    }
+    /// Escape doesn't close it (the death screen).
+    pub fn keep_on_escape(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::KEEP_ON_ESCAPE;
+        self
+    }
+    /// It closes when the player respawns.
+    pub fn closes_on_respawn(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::CLOSES_ON_RESPAWN;
+        self
+    }
+    /// Like the chat screen: the HUD leaves the messages to it and Enter sends the text of its
+    /// input of class `chat`.
+    pub fn shows_chat(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::SHOWS_CHAT;
+        self
+    }
+    /// Keys pressed while it is on top, by their settings name (`Enter`, `KeyE`), before
+    /// Escape and the other global keys.
+    pub fn on_key(mut self, f: impl Fn(&crate::ClientView, &str) + Send + Sync + 'static) -> Self {
+        self.desc.on_key = crate::callback(move |a: &mut abi::ScreenKeyArgs| f(&crate::ClientView::from_raw(a.client), unsafe { a.key.as_str() }));
+        self
+    }
+}
+
+impl Drop for ScreenBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let desc = abi::ScreenDesc { name: Str::new(&self.name), ..self.desc };
+        unsafe { (host().reg_screen)(self.raw, &desc) }
+    }
 }

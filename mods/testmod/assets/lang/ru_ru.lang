@@ -45,3 +45,7 @@ command.testmod.morph = теперь вы {0}, {1} x {2}
 command.testmod.unmorph = снова вы
 command.testmod.tagbench = нс на запрос: поле {0}, тег {1}, вызов хоста {2}, тег по имени {3}
 testmod.energy_label = {0} / {1} EU
+testmod.about.name = Привет, {0}
+testmod.about.volume = Громкость: {0}
+testmod.about.closed = Закрыто
+testmod.about.fov = Поле зрения здесь: {0}

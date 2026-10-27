@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::font::Font;
 use crate::model::{Animation, Prop};
 use super::text::Placed;
-use super::theme::Theme;
+use super::look::Look;
 use super::{Kind, Rect, Ui};
 use crate::assets::{Assets, decode_png};
 use crate::shaders::{Hook, Slots};
@@ -18,9 +18,9 @@ use crate::client::textures::GameTextures;
 use crate::content::Content;
 pub use crate::gpu_layout::Quad;
 
-/// Quads of a node and its children moved by keyframes every frame: `<class>.animation =
-/// ns:name` in a theme names `animations/<name>.animation.json`, whose `open` animation plays
-/// once when the screen opens and `idle` loops after. Any bone: position in GUI pixels (y up),
+/// Quads of a node and its children moved by keyframes every frame: `animation = ns:name` in the
+/// `.gui` of a class's texture names `animations/<name>.animation.json`, whose `open` animation
+/// plays once when the screen opens and `idle` loops after. Any bone: position in GUI pixels (y up),
 /// rotation z in degrees clockwise and scale, about the node's center.
 #[derive(Clone)]
 pub struct Animated {
@@ -59,8 +59,8 @@ pub fn animate(quads: &mut [Quad], list: &[Animated]) {
 
 /// How a GUI texture fills a rectangle of another size. Set by the texture itself: a `.gui` file
 /// next to it (`scaling = nine_slice | tile | stretch`, `border = 3` or `border = l t r b`,
-/// `size = w h` when the image is a higher resolution than the GUI pixels it stands for). Themes
-/// only give a fallback for bare images.
+/// `size = w h` when the image is a higher resolution than the GUI pixels it stands for). A bare
+/// image is stretched.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Slicing {
     /// Corners keep their size, edges and center stretch; borders left, top, right, bottom in GUI
@@ -97,6 +97,8 @@ pub struct UiRenderer {
     font_tex: TextureId,
     font_idx: u32,
     textures: FxHashMap<String, Option<(u32, u32, u32)>>,
+    /// Animated GUI textures by bindless index: `Quad::layer` for them.
+    strips: FxHashMap<u32, u32>,
     /// Slicing a texture declares for itself, and how far it reaches outside the box it is
     /// drawn for (`outset` in its `.gui`: shadows, frames drawn around the content).
     slicing: FxHashMap<String, Option<Slicing>>,
@@ -113,7 +115,7 @@ pub struct UiRenderer {
     fx: Slots,
     gui: Slots,
     fx_slots: Vec<u32>,
-    /// Theme animation files by name, and the nodes the last `build` animated.
+    /// UI animation files by name, and the nodes the last `build` animated.
     anims: FxHashMap<String, Vec<Arc<Animation>>>,
     pub animated: Vec<Animated>,
 }
@@ -158,6 +160,7 @@ impl UiRenderer {
             font_tex,
             font_idx,
             textures: FxHashMap::default(),
+            strips: FxHashMap::default(),
             slicing: FxHashMap::default(),
             outset: FxHashMap::default(),
             owned: Vec::new(),
@@ -252,17 +255,19 @@ impl UiRenderer {
             gpu.destroy_texture(t);
         }
         self.textures.clear();
-        // How textures slice comes with them: a pack's `.mcmeta` must not outlive the pack.
+        self.strips.clear();
+        // How textures slice comes with them: a pack's `.gui` must not outlive the pack.
         self.slicing.clear();
         self.outset.clear();
         self.anims.clear();
     }
 
-    /// Bindless index and size of a theme/GUI texture, loaded the first time it is used.
+    /// Bindless index and size of a GUI texture, loaded the first time it is used.
     pub fn texture(&mut self, gpu: &mut dyn Backend, assets: &Assets, name: &str) -> Option<(u32, u32, u32)> {
         if let Some(t) = self.textures.get(name) {
             return *t;
         }
+        let anim = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
         let loaded = assets.read(name, "textures", "png").and_then(|b| decode_png(&b)).map(|img| {
             let t = gpu.create_texture(
                 &TextureDesc { width: img.width, height: img.height, mips: 1, format: Format::Rgba8Srgb, render_target: false },
@@ -270,7 +275,19 @@ impl UiRenderer {
             );
             gpu.write_texture(t, 0, &img.rgba);
             self.owned.push(t);
-            (gpu.texture_index(t), img.width, img.height)
+            let idx = gpu.texture_index(t);
+            // Animated like a block texture: frames stacked down (square, or `frame_height` pixels
+            // high), `frametime` ticks each.
+            let num = |src: &str, k: &str| crate::kv::get(src, k).and_then(|v| v.parse::<u32>().ok());
+            let frame = anim.as_deref().map(|src| num(src, "frame_height").unwrap_or(img.width).max(1));
+            match (anim.as_deref(), frame) {
+                (Some(src), Some(fh)) if img.height > fh && img.height % fh == 0 => {
+                    let ticks = num(src, "frametime").unwrap_or(1);
+                    self.strips.insert(idx, (img.height / fh).min(0xFFFF) | ticks.clamp(1, 0xFFFF) << 16);
+                    (idx, img.width, fh)
+                }
+                _ => (idx, img.width, img.height),
+            }
         });
         if loaded.is_none() {
             log::warn!("missing gui texture {name}");
@@ -303,8 +320,8 @@ impl UiRenderer {
         }
     }
 
-    /// Draws GUI texture `name` over `r` the way the texture asks for, or with `fallback` (from the
-    /// theme) when it says nothing. False if the texture is missing.
+    /// Draws GUI texture `name` over `r` the way the texture asks for (its `.gui`), or with
+    /// `fallback` when it says nothing. False if the texture is missing.
     pub fn draw_gui(&mut self, gpu: &mut dyn Backend, assets: &Assets, name: &str, r: Rect, scale: f32, color: u32, fallback: Slicing) -> bool {
         let Some(tex) = self.texture(gpu, assets, name) else { return false };
         let pixels = [tex.1 as f32, tex.2 as f32];
@@ -321,6 +338,34 @@ impl UiRenderer {
             Slicing::Stretch => self.image(r, tex.0, [0.0, 0.0, 1.0, 1.0], color),
         }
         true
+    }
+
+    /// A class's look in a state (`ui::look`): the shader its `.gui` names, else its texture,
+    /// else the missing-texture checkerboard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn class_background(&mut self, gpu: &mut dyn Backend, assets: &Assets, look: &Look, class: &str, state: &str, r: Rect, scale: f32) {
+        if let Some(shader) = look.sidecar(class, "shader") {
+            if self.shader_fill(r, &shader, 0xFFFFFFFF) {
+                return;
+            }
+        }
+        let drawn = look.texture_or_plain(class, state).is_some_and(|n| self.draw_gui(gpu, assets, &n, r, scale, 0xFFFFFFFF, Slicing::Stretch));
+        if !drawn {
+            self.checker(r, scale);
+        }
+    }
+
+    /// Magenta and black squares (4 GUI pixels), where a class has no texture.
+    pub fn checker(&mut self, r: Rect, scale: f32) {
+        let cell = 4.0 * scale;
+        let (nx, ny) = ((r.w / cell).ceil() as i32, (r.h / cell).ceil() as i32);
+        self.rect(r, 0x000000FF);
+        for j in 0..ny.min(64) {
+            for i in (j % 2..nx.min(64)).step_by(2) {
+                let (x, y) = (r.x + i as f32 * cell, r.y + j as f32 * cell);
+                self.rect(Rect { x, y, w: cell.min(r.x + r.w - x), h: cell.min(r.y + r.h - y) }, 0xF800F8FF);
+            }
+        }
     }
 
     /// `draw_gui` for a texture already loaded (by an earlier `texture` call); false otherwise.
@@ -533,7 +578,7 @@ impl UiRenderer {
         gpu: &mut dyn Backend,
         assets: &Assets,
         ui: &Ui,
-        theme: &Theme,
+        look: &Look,
         scale: f32,
         game: Option<(&Content, &GameTextures)>,
         custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool, Option<u32>),
@@ -543,7 +588,7 @@ impl UiRenderer {
         self.icon_counts.clear();
         self.animated.clear();
         let mut icons = Vec::new();
-        self.node(gpu, assets, ui, theme, 0, scale, &mut icons, custom, None);
+        self.node(gpu, assets, ui, look, 0, scale, &mut icons, custom, None);
         if let Some((c, t)) = game {
             let clips = std::mem::take(&mut self.icon_clips);
             let counts = std::mem::take(&mut self.icon_counts);
@@ -565,7 +610,7 @@ impl UiRenderer {
     }
 
     /// The hovered node's tooltip next to the mouse (physical pixels), drawn every frame on top.
-    pub fn tooltip(&mut self, gpu: &mut dyn Backend, assets: &Assets, ui: &Ui, theme: &Theme, scale: f32, at: glam::Vec2, game: Option<(&Content, &GameTextures)>) {
+    pub fn tooltip(&mut self, gpu: &mut dyn Backend, assets: &Assets, ui: &Ui, look: &Look, scale: f32, at: glam::Vec2, game: Option<(&Content, &GameTextures)>) {
         let Some(tip) = ui.hovered.and_then(|h| ui.nodes.get(h)).and_then(|n| n.tooltip.as_ref()) else { return };
         // Vanilla's spacing: lines 10 GUI pixels apart, 3 pixels of padding inside the frame.
         let px = scale * ui.text_unit;
@@ -579,17 +624,10 @@ impl UiRenderer {
             x = (at.x - w - 12.0 * scale).max(0.0);
         }
         let bg = Rect { x, y, w, h: hgt };
-        let drawn = theme.get("tooltip", "texture").map(str::to_string).is_some_and(|n| self.draw_gui(gpu, assets, &n, bg, scale, 0xFFFFFFFF, theme_slicing(theme, "tooltip")));
-        if !drawn {
-            self.rect(bg, 0x100010F0);
-        }
-        if let Some(frame) = theme.get("tooltip", "frame").map(str::to_string) {
-            self.draw_gui(gpu, assets, &frame, bg, scale, 0xFFFFFFFF, theme_slicing(theme, "tooltip"));
-        }
+        self.class_background(gpu, assets, look, "tooltip", "", bg, scale);
         let mut icons = Vec::new();
-        let color = theme.color("tooltip", "text", 0xFFFFFFFF);
         self.load_images(gpu, assets, &layout);
-        self.glyph_run(&layout.items, x + pad, y + pad, px, color, Some(0x3F3F3FFF), &mut icons);
+        self.glyph_run(&layout.items, x + pad, y + pad, px, look.text("tooltip", ""), look.shadow("tooltip"), &mut icons);
         if let Some((c, t)) = game {
             for (ix, iy, s, item) in icons {
                 self.text_icon(c, t, ix, iy, s, item);
@@ -628,7 +666,7 @@ impl UiRenderer {
         gpu: &mut dyn Backend,
         assets: &Assets,
         ui: &Ui,
-        theme: &Theme,
+        look: &Look,
         id: usize,
         scale: f32,
         icons: &mut Vec<(f32, f32, f32, u32)>,
@@ -639,21 +677,9 @@ impl UiRenderer {
         let r = Rect { x: n.rect.x * scale, y: n.rect.y * scale, w: n.rect.w * scale, h: n.rect.h * scale };
         let (quad_start, icon_start) = (self.quads.len(), icons.len());
         let hovered = ui.hovered == Some(id);
-        let mut background = |me: &mut UiRenderer, class: &str, state: &str| {
-            let color = theme.color(class, "color", 0xFFFFFFFF);
-            if let Some(shader) = theme.get(class, "shader").map(str::to_string) {
-                if me.shader_fill(r, &shader, color) {
-                    return;
-                }
-            }
-            let name = theme.get(class, state).or_else(|| theme.get(class, "texture")).map(str::to_string);
-            let drawn = name.is_some_and(|n| me.draw_gui(gpu, assets, &n, r, scale, color, theme_slicing(theme, class)));
-            if !drawn && theme.get(class, "fill").is_some() {
-                me.rect(r, theme.color(class, "fill", 0));
-            }
-        };
+        let mut background = |me: &mut UiRenderer, class: &str, state: &str| me.class_background(gpu, assets, look, class, state, r, scale);
         match &n.kind {
-            Kind::Container { class: Some(class) } => background(self, class, "texture"),
+            Kind::Container { class: Some(class) } => background(self, class, ""),
             Kind::Container { class: None } => {}
             Kind::Button { class, enabled, selected, .. } => {
                 let state = if !enabled {
@@ -663,7 +689,7 @@ impl UiRenderer {
                 } else if hovered {
                     "hover"
                 } else {
-                    "texture"
+                    ""
                 };
                 background(self, class, state);
             }
@@ -672,18 +698,19 @@ impl UiRenderer {
                 let parent = ui.nodes.iter().position(|p| p.children.contains(&id));
                 let parent_hover = parent.is_some_and(|p| ui.hovered == Some(p));
                 let parent_disabled = parent.is_some_and(|p| matches!(ui.nodes[p].kind, Kind::Button { enabled: false, .. }));
-                let state = if parent_disabled { "disabled_text" } else if parent_hover { "hover_text" } else { "text" };
+                let state = if parent_disabled { "disabled" } else if parent_hover { "hover" } else { "" };
                 // Generic classes inherit from the surface: `default` its text color, `dim` its
                 // dim color.
                 let class = match (t.class.as_str(), surface) {
                     ("default", Some(s)) => s,
                     _ => t.class.as_str(),
                 };
-                let state = if t.class == "dim" && surface.is_some_and(|s| theme.get(s, "dim_text").is_some()) { "dim_text" } else { state };
-                let class = if state == "dim_text" { surface.unwrap_or(class) } else { class };
-                let default = t.color.unwrap_or_else(|| theme.color(class, state, theme.color(class, "text", 0xFFFFFFFF)));
-                // `none` turns off a shadow the default class would give (dark text on light panels).
-                let shadow = if parent_disabled { None } else { theme.get(class, "shadow").filter(|v| *v != "none").map(|_| theme.color(class, "shadow", 0x3F3F3FFF)) };
+                let (class, state) = match surface {
+                    Some(s) if t.class == "dim" && look.has_text(&format!("{s}_dim")) => (s, "dim"),
+                    _ => (class, state),
+                };
+                let default = t.color.unwrap_or_else(|| look.text(class, state));
+                let shadow = if parent_disabled { None } else { look.shadow(class) };
                 let x = if t.center { r.x + (r.w - t.layout.width * px) / 2.0 } else { r.x };
                 self.load_images(gpu, assets, &t.layout);
                 self.glyph_run(&t.layout.items, x, r.y, px, default, shadow, icons);
@@ -702,8 +729,8 @@ impl UiRenderer {
                 }
             }
             Kind::Progress { class, value, dir, .. } => {
-                background(self, class, "background");
-                let fill = theme.get(class, "fill_texture").map(str::to_string).and_then(|n| self.texture(gpu, assets, &n));
+                background(self, class, "");
+                let fill = look.texture(class, "fill").and_then(|n| self.texture(gpu, assets, &n));
                 let v = value.clamp(0.0, 1.0);
                 let (fr, uv) = match *dir {
                     weft_abi::ui_dir::UP => (Rect { y: r.y + r.h * (1.0 - v), h: r.h * v, ..r }, [0.0, 1.0 - v, 1.0, 1.0]),
@@ -713,11 +740,11 @@ impl UiRenderer {
                 };
                 match fill {
                     Some((idx, _, _)) => self.image(fr, idx, uv, 0xFFFFFFFF),
-                    None => self.rect(fr, theme.color(class, "fill", 0x60C060FF)),
+                    None => self.checker(fr, scale),
                 }
             }
             Kind::Icons { class, count, value, rtl, .. } if *value >= 0.0 => {
-                let names = ["full", "half", "empty"].map(|s| theme.get(class, s).map(str::to_string));
+                let names = ["full", "half", "empty"].map(|s| look.texture(class, s));
                 let tex = names.map(|n| n.and_then(|n| self.texture(gpu, assets, &n)));
                 for i in 0..*count {
                     let v = *value - i as f32 * 2.0;
@@ -731,7 +758,7 @@ impl UiRenderer {
                         if let Some((idx, _, _)) = tex[which] {
                             self.image(rr, idx, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
                         } else {
-                            self.rect(rr, theme.color(class, "fill", 0xD02020FF));
+                            self.checker(rr, scale);
                         }
                     }
                 }
@@ -739,18 +766,11 @@ impl UiRenderer {
             Kind::Icons { .. } => {}
             Kind::Slider { value, .. } => {
                 let k = Rect { x: r.x + (r.w - 8.0 * scale) * value.clamp(0.0, 1.0), y: r.y, w: 8.0 * scale, h: r.h };
-                let fallback = theme_slicing(theme, "slider");
-                let track = theme.get("slider", "track").map(str::to_string);
-                if !track.is_some_and(|n| self.draw_gui(gpu, assets, &n, r, scale, 0xFFFFFFFF, fallback)) {
-                    self.rect(Rect { x: r.x, y: r.y + r.h * 0.4, w: r.w, h: r.h * 0.2 }, theme.color("slider", "track", 0x404040FF));
-                }
-                let knob = theme.get("slider", if hovered { "knob_hover" } else { "knob" }).or_else(|| theme.get("slider", "knob")).map(str::to_string);
-                if !knob.is_some_and(|n| self.draw_gui(gpu, assets, &n, k, scale, 0xFFFFFFFF, fallback)) {
-                    self.rect(k, theme.color("slider", if hovered { "knob_hover" } else { "knob" }, 0xC0C0C0FF));
-                }
+                self.class_background(gpu, assets, look, "slider", "", r, scale);
+                self.class_background(gpu, assets, look, "slider_knob", if hovered { "hover" } else { "" }, k, scale);
             }
             Kind::Input { value, caret, .. } => {
-                background(self, "input", if ui.focused == Some(id) { "focused" } else { "texture" });
+                background(self, "input", if ui.focused == Some(id) { "focused" } else { "" });
                 let px = scale * ui.text_unit;
                 let spans = super::text::plain(value);
                 let layout = super::text::layout(&spans, &self.font, None);
@@ -766,11 +786,11 @@ impl UiRenderer {
                 if let Some(a) = ui.anchor.filter(|&a| ui.focused == Some(id) && a != *caret) {
                     let x_at = |n: usize| super::text::layout(&super::text::plain(&value.chars().take(n).collect::<String>()), &self.font, None).width * px;
                     let (x0, x1) = (x_at(a.min(*caret)), x_at(a.max(*caret)));
-                    self.rect(Rect { x: tx + x0, y: ty, w: x1 - x0, h: 16.0 * px }, theme.color("input", "selection", 0x3060C0C0));
+                    self.class_background(gpu, assets, look, "input_selection", "", Rect { x: tx + x0, y: ty, w: x1 - x0, h: 16.0 * px }, scale);
                 }
-                self.glyph_run(&layout.items, tx, ty, px, theme.color("input", "text", 0xFFFFFFFF), None, icons);
+                self.glyph_run(&layout.items, tx, ty, px, look.text("input", ""), None, icons);
                 if ui.focused == Some(id) {
-                    self.rect(Rect { x: tx + caret_x, y: ty, w: px.max(1.0), h: 16.0 * px }, 0xFFFFFFFF);
+                    self.class_background(gpu, assets, look, "caret", "", Rect { x: tx + caret_x, y: ty, w: px.max(1.0), h: 16.0 * px }, scale);
                 }
                 let field = [r.x + 2.0 * scale, r.y, r.x + r.w - 2.0 * scale, r.y + r.h];
                 for q in &mut self.quads[start..] {
@@ -778,8 +798,9 @@ impl UiRenderer {
                 }
             }
             Kind::Custom { tag, data } => {
-                for (class, state) in [("slot", "texture"), ("hotbar", "texture"), ("well", "texture")] {
-                    if let Some(name) = theme.get(class, state).map(str::to_string) {
+                // What engine-drawn nodes use, loaded for `draw_loaded`.
+                for class in ["slot", "hotbar", "hotbar_selected", "slot_highlight", "well", "crosshair"] {
+                    if let Some(name) = look.texture(class, "") {
                         if let Some(t) = self.texture(gpu, assets, &name) {
                             self.declared_slicing(assets, &name, [t.1 as f32, t.2 as f32]);
                         }
@@ -789,9 +810,9 @@ impl UiRenderer {
                 custom(self, *tag, *data, r, hovered, icon)
             }
         }
-        // Children of a themed panel or button read text colors from it.
+        // Children of a panel or button whose class has a text color read colors from it.
         let own = match &n.kind {
-            Kind::Container { class: Some(c) } | Kind::Button { class: c, .. } if theme.get(c, "text").is_some() => Some(c.as_str()),
+            Kind::Container { class: Some(c) } | Kind::Button { class: c, .. } if look.has_text(c) => Some(c.as_str()),
             _ => None,
         };
         let inner_surface = own.or(surface);
@@ -809,21 +830,16 @@ impl UiRenderer {
         self.icon_clips.resize(icon_start, [0.0; 4]);
         self.icon_clips.resize(icons.len(), clip);
         for &c in &n.children {
-            self.node(gpu, assets, ui, theme, c, scale, icons, custom, inner_surface);
+            self.node(gpu, assets, ui, look, c, scale, icons, custom, inner_surface);
         }
         if let Some(bar) = n.scrollbar {
             let start = self.quads.len();
             let px = |r: super::Rect| Rect { x: r.x * scale, y: r.y * scale, w: r.w * scale, h: r.h * scale };
             let track = px(super::Rect { x: bar.track.x + (bar.track.w - 6.0) / 2.0, w: 6.0, ..bar.track });
-            if !theme.get("scrollbar", "track").map(str::to_string).is_some_and(|t| self.draw_gui(gpu, assets, &t, track, scale, 0xFFFFFFFF, Slicing::Stretch)) {
-                self.rect(track, theme.color("scrollbar", "track", 0x00000060));
-            }
+            self.class_background(gpu, assets, look, "scrollbar", "", track, scale);
             let handle = bar.handle();
             let over = ui.dragging_bar() == Some(id);
-            let name = theme.get("scrollbar", if over { "handle_hover" } else { "handle" }).or_else(|| theme.get("scrollbar", "handle")).map(str::to_string);
-            if !name.is_some_and(|t| self.draw_gui(gpu, assets, &t, px(handle), scale, 0xFFFFFFFF, Slicing::Stretch)) {
-                self.rect(px(handle), theme.color("scrollbar", "handle", 0xC0C0C0FF));
-            }
+            self.class_background(gpu, assets, look, "scrollbar_handle", if over { "hover" } else { "" }, px(handle), scale);
             if n.clip.is_some() {
                 for q in &mut self.quads[start..] {
                     q.clip = clip;
@@ -836,9 +852,9 @@ impl UiRenderer {
             _ => None,
         };
         // Item icons are queued apart and do not follow these animations yet.
-        if let Some(file) = class.and_then(|c| theme.get(c, "animation")) {
-            let list = self.anims.entry(file.to_string()).or_insert_with(|| {
-                let src = assets.read(file, "animations", "animation.json").map(|b| String::from_utf8_lossy(&b).into_owned());
+        if let Some(file) = class.and_then(|c| look.sidecar(c, "animation")) {
+            let list = self.anims.entry(file.clone()).or_insert_with(|| {
+                let src = assets.read(&file, "animations", "animation.json").map(|b| String::from_utf8_lossy(&b).into_owned());
                 match src.map(|s| crate::model::load_animations(&s)) {
                     Some(Ok(list)) => list.into_iter().map(Arc::new).collect(),
                     Some(Err(e)) => {
@@ -864,6 +880,13 @@ impl UiRenderer {
         if self.quads.is_empty() {
             return;
         }
+        if !self.strips.is_empty() {
+            for q in &mut self.quads {
+                if q.mode != ui_mode::FONT {
+                    q.layer = self.strips.get(&q.tex).copied().unwrap_or(0);
+                }
+            }
+        }
         let buf = crate::gpu_layout::frame_buffer(gpu, &mut self.buffers, frame.slot, self.quads.len() as u32, size_of::<Quad>() as u64, usage::STORAGE, "ui quads");
         gpu.mapped(buf)[..self.quads.len() * size_of::<Quad>()].copy_from_slice(bytemuck::cast_slice(&self.quads));
         let sb = self.screen[frame.slot];
@@ -877,17 +900,6 @@ impl UiRenderer {
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         gpu.destroy_texture(self.font_tex);
-    }
-}
-
-/// What the theme says for textures that declare nothing: `<class>.tile = n` or `<class>.border`.
-fn theme_slicing(theme: &Theme, class: &str) -> Slicing {
-    match theme.get(class, "tile") {
-        Some(_) => {
-            let t = theme.num(class, "tile", 32.0);
-            Slicing::Tile { size: [t, t] }
-        }
-        None => Slicing::Nine { size: [0.0; 2], border: [theme.num(class, "border", 3.0); 4] },
     }
 }
 

@@ -28,7 +28,7 @@ use crate::settings::Settings;
 use crate::ui::lang::Lang;
 use crate::ui::render::UiRenderer;
 use crate::ui::text::{self, Arg, Msg};
-use crate::ui::theme::Theme;
+use crate::ui::look::Look;
 use crate::ui::{Kind, Ui};
 
 pub type BackendFactory = fn(&BackendDesc) -> Result<Box<dyn Backend>, weft_render::Error>;
@@ -147,7 +147,7 @@ pub(crate) struct Running {
     pub(crate) settings: Settings,
     lang: Lang,
     languages: Vec<(String, String)>,
-    theme: Theme,
+    look: Look,
     assets: Assets,
     textures: GameTextures,
     ui: UiRenderer,
@@ -247,6 +247,13 @@ struct Applied {
     gui_scale: u32,
 }
 
+/// Mod ids in load order (where a bare UI class looks for its texture, the last first).
+fn mod_ids() -> Vec<String> {
+    let mut mods: Vec<&crate::content::ModMeta> = content().mods.iter().collect();
+    mods.sort_by_key(|m| m.order);
+    mods.iter().map(|m| m.id.clone()).collect()
+}
+
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
         // Mods first: the engine's settings are `core:` configs like theirs.
@@ -289,7 +296,7 @@ impl App {
         let assets = Assets::new(roots, packs);
         crate::assets::set_current(&assets);
         let lang = Lang::load(&assets, &settings.language(), self.opts.dev);
-        let theme = Theme::load(&assets);
+        let look = Look::new(&assets, &mod_ids(), &lang);
         let textures = GameTextures::new(&mut *gpu, content(), &assets);
         let ui = UiRenderer::new(&mut *gpu, &assets)?;
         let post = crate::post::Post::new(&mut *gpu, &assets);
@@ -314,7 +321,7 @@ impl App {
             settings,
             lang,
             languages: Vec::new(),
-            theme,
+            look,
             assets,
             textures,
             ui,
@@ -993,6 +1000,7 @@ impl Running {
         let relang = now.language != self.applied.language;
         if relang {
             self.lang = Lang::load(&self.assets, &now.language, self.lang.dev);
+            self.look = Look::new(&self.assets, &mod_ids(), &self.lang);
         }
         s.apply_binds(&mut self.input);
         if relang || now.gui_scale != self.applied.gui_scale {
@@ -1422,8 +1430,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.hud.load_layout(&opts.run_dir);
         r.ui.reload(&mut *r.gpu, &r.assets);
         r.post.reload(&mut *r.gpu, &r.assets);
-        r.theme = Theme::load(&r.assets);
         r.lang = Lang::load(&r.assets, &r.settings.language(), r.lang.dev);
+        r.look = Look::new(&r.assets, &mod_ids(), &r.lang);
         r.textures.reload(&mut *r.gpu, content(), &r.assets);
         if let Some(g) = &mut r.game {
             g.client.render.reload_shaders(&mut *r.gpu, &r.textures, &r.assets);
@@ -1617,11 +1625,11 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         // see-through overlay.
         layers.extend(r.screens.last().map(|(_, u)| u));
         for ui in layers {
-            let theme = &r.theme;
+            let look = &r.look;
             let textures = &r.textures;
             let unit = ui.text_unit;
             let mut custom = |ren: &mut UiRenderer, tag: u32, data: u64, rect: crate::ui::Rect, hovered: bool, icon: Option<u32>| {
-                crate::hud::draw_custom(ren, theme, textures, client, tag, data, rect, hovered, icon, scale, unit);
+                crate::hud::draw_custom(ren, look, textures, client, tag, data, rect, hovered, icon, scale, unit);
                 if tag == crate::client::modui::TAG_ENTITY {
                     let inner = crate::ui::Rect { x: rect.x + scale, y: rect.y + scale, w: rect.w - 2.0 * scale, h: rect.h - 2.0 * scale };
                     previews.push([inner.x, inner.y, inner.w, inner.h]);
@@ -1631,7 +1639,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 }
             };
             let base = all.len();
-            r.ui.build(&mut *r.gpu, &r.assets, ui, &r.theme, scale, game, &mut custom);
+            r.ui.build(&mut *r.gpu, &r.assets, ui, &r.look, scale, game, &mut custom);
             all.append(&mut r.ui.quads);
             animated.extend(r.ui.animated.drain(..).map(|mut a| {
                 a.quads = a.quads.start + base..a.quads.end + base;
@@ -1679,7 +1687,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
     if let Some((_, ui)) = r.screens.last() {
         let game = crate::content::try_content().map(|c| (c, &r.textures));
-        r.ui.tooltip(&mut *r.gpu, &r.assets, ui, &r.theme, scale, r.input.cursor, game);
+        r.ui.tooltip(&mut *r.gpu, &r.assets, ui, &r.look, scale, r.input.cursor, game);
     }
     // Name of a newly held item above the hotbar, fading out.
     if let Some(g) = r.game.as_ref().filter(|_| r.screens.is_empty()) {

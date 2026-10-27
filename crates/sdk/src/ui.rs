@@ -390,7 +390,7 @@ impl Ui {
         self.with(node(k::CONTAINER, S { row: true, ..s }), f)
     }
 
-    /// Themed 9-slice background (`class` from the theme, e.g. "panel").
+    /// A background of class `class` (`gui/<class>.png`, e.g. "panel").
     pub fn panel(&mut self, class: &str, s: S, f: impl FnOnce(&mut Ui)) {
         let mut n = node(k::PANEL, s);
         n.class = Str::new(class);

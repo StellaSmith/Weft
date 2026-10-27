@@ -5,7 +5,7 @@
 //! - wisps: floating entities drawn by an entity shader, their core glowing by a mask,
 //! - a rune whose tooltip uses text effects (engine and own) and conditions (own and engine),
 //!   and which shows the area it would affect as a see-through box while held,
-//! - a screen effect toggled with a key, and machine screens drawn by a GUI shader (theme),
+//! - a screen effect toggled with a key, and machine screens drawn by a GUI shader (named in a `.gui`),
 //! - an idol from a Blockbench model file (bones, a mesh pair of wings) that idles by keyframes
 //!   and bows when used, and an orb whose model is built in code (a sphere mesh and a ring of
 //!   stones on a child bone) but animated from a file,

@@ -126,14 +126,9 @@ item.base.coal.tooltip = Burns, but only in my {#ffe070}boiler{/}.
 - other languages work with their own file (`ru_ru.lang`), a missing key falls back to English
 
 ## Look
-The box is a theme part (`mods/base/assets/ui/theme.theme`):
-```
-tooltip.texture = base:gui/tooltip
-tooltip.frame = base:gui/tooltip_frame
-```
-`texture` is the background and `frame` the border drawn over it, both are 9-slice GUI textures
-(`.gui` sidecars set the slicing), `tooltip.text` is the default text color. A resource pack can replace the
-files or the theme. Without a texture the box is a dark purple vanilla-like rectangle.
+The box is the class `tooltip`: `gui/tooltip.png` with its `.gui` (base's is a 9-slice), and
+`color.tooltip` in the language files is the default text color, `color.tooltip_dim` the gray of
+the lines under the name. A resource pack replaces the picture or the colors like anything else.
 
 ## Limits
 - the text is the same for every stack of an item, so no tooltips like an enchantment or a charge on one

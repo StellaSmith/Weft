@@ -1,4 +1,27 @@
 language.name = English
+# The base game's look of the engine's classes (see the engine's color.* keys).
+color.default = {#d8dceb}
+color.default_shadow = {#1f1f2e}
+color.title = {#ffffff}
+color.title_shadow = {#1f1f2e}
+color.dim = {#8d93ae}
+color.label = {#d8dceb}
+color.panel = {#d8dceb}
+color.panel_dim = {#8d93ae}
+color.panel_shadow = {#1f1f2e}
+color.well = {#d8dceb}
+color.well_dim = {#8d93ae}
+color.button = {#d8dceb}
+color.button_hover = {#ffffff}
+color.button_shadow = {#1f1f2e}
+color.button_disabled = {#6b6f86}
+color.input = {#d8dceb}
+color.news = {#d8dceb}
+color.tooltip = {#d8dceb}
+color.chat = {#ffffff}
+color.chat_shadow = {#202020}
+color.debug = {#ffffff}
+color.debug_shadow = {#202020}
 menu.base.inventory = Crafting
 menu.base.chest = Chest
 menu.base.furnace = Furnace
@@ -50,7 +73,7 @@ block.base.blue_lamp = Blue Lamp
 block.base.crafting_table = Crafting Table
 block.base.furnace = Furnace
 block.base.furnace.tooltip = Smelts ores and cooks food.
-    {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Burns {item:base:coal} coal, {item:base:oak_planks} planks or other {#ffe070}fuel{/} in the bottom slot.{/on_key}
+    {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Burns {item:base:coal} coal, {item:base:oak_planks} planks or other {color:key}fuel{/} in the bottom slot.{/on_key}
 block.base.chest = Chest
 block.base.torch = Torch
 block.base.ladder = Ladder
@@ -64,7 +87,7 @@ block.base.coal_block = Block of Coal
 block.base.wool = Wool
 item.base.stick = Stick
 item.base.coal = Coal
-item.base.coal.tooltip = Fuel: smelts {#ffe070}8{/} items.
+item.base.coal.tooltip = Fuel: smelts {color:key}8{/} items.
 item.base.iron_ingot = Iron Ingot
 item.base.raw_iron = Raw Iron
 item.base.raw_gold = Raw Gold

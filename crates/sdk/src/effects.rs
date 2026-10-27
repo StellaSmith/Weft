@@ -7,7 +7,7 @@
 //! r.text_condition(&CHARGED, |v| v.player_component(&CHARGE).is_some_and(|c| *c > 0));
 //! c.post_effect("mymod:underwater", 1.0);                  // client: until turned off
 //! ```
-//! Shaders for text (`{fx:..}`), GUI panels (theme `shader`), particles, entities and screen
+//! Shaders for text (`{fx:..}`), GUI panels (`shader` in a class's `.gui`), particles, entities and screen
 //! effects are assets: `shaders/fx|gui|particle|entity|post/<name>.wgsl` in the mod's folder.
 
 use std::marker::PhantomData;

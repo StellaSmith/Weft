@@ -23,7 +23,7 @@ A snippet is a file `shaders/<kind>/<name>.wgsl` in your mod, holding one functi
 | kind | folder | function | used by |
 |---|---|---|---|
 | text effects | `shaders/fx/` | `fn effect(g: Glyph) -> Glyph` | `{fx:mymod:name}` in a translation |
-| panels | `shaders/gui/` | `fn fill(p: GuiPixel) -> vec4<f32>` | a theme class: `class.shader = mymod:name` |
+| panels | `shaders/gui/` | `fn fill(p: GuiPixel) -> vec4<f32>` | a class's `.gui`: `shader = mymod:name` |
 | entities | `shaders/entity/` | `fn shade(p: EntityPixel) -> vec4<f32>` | `r.entity(..).shader("name")` |
 | blocks | `shaders/block/` | `fn shade(p: BlockPixel) -> vec4<f32>` | `r.block(..).shader("name")` |
 | particles | `shaders/particle/` | `fn shade(p: ParticleFrag) -> vec4<f32>` | `r.particle(..).shader("name")` |
@@ -49,9 +49,9 @@ fn effect(g: Glyph) -> Glyph {
 The function runs for every corner of every letter, so it pays to keep it small. How to use the effects inside translations is in the [tooltips guide](tooltips.md#effects).
 
 ## Panels
-A theme class can name a shader, and the panel is filled by it instead of a texture:
+A class's `.gui` (next to its texture) can name a shader, and the panel is filled by it instead of the picture:
 ```
-testmod_panel.shader = testmod:circuit
+shader = testmod:circuit
 ```
 ```wgsl
 fn fill(p: GuiPixel) -> vec4<f32> {
@@ -60,7 +60,7 @@ fn fill(p: GuiPixel) -> vec4<f32> {
     return vec4(vec3(0.02) + vec3(0.25) * border, 0.97);
 }
 ```
-`GuiPixel` has `uv` (0 to 1 across the panel), `size` (in pixels), `color` (the theme's color for it, linear) and `time`. More on themes is in the [UI guide](ui.md#themes).
+`GuiPixel` has `uv` (0 to 1 across the panel), `size` (in pixels), `color` (linear) and `time`. More on how classes look is in the [UI guide](ui.md#looks).
 
 ## Entities
 An entity shader colors the pixels of a mob. It takes over from the normal lit skin, so it also decides how light affects the mob:

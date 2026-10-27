@@ -1,5 +1,5 @@
 //! Player-chosen client packs. Resource packs (`resourcepacks/<id>/`) are laid out like mod assets
-//! per namespace (`<ns>/textures/...`, `<ns>/lang/...`, `.ctm`, themes) and stack in the order the
+//! per namespace (`<ns>/textures/...`, `<ns>/lang/...`, `.ctm`, GUI textures) and stack in the order the
 //! player picks. A shader pack (`shaderpacks/<id>/`) replaces engine shaders file by file
 //! (`world.wgsl`, `entity.wgsl`, `model.wgsl`, `particle.wgsl`, `post.wgsl`, `ui.wgsl`) and has
 //! to keep their entry points and bindings; a file that fails to compile falls back to the

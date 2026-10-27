@@ -1,4 +1,4 @@
-//! Retained UI: a tree rebuilt when a screen opens (or the language/theme/scale changes), bound
+//! Retained UI: a tree rebuilt when a screen opens (or the language, the packs or the scale change), bound
 //! values polled every frame, geometry regenerated only when something actually changed.
 //!
 //! Layout is a small flexbox: rows/columns, padding, gap, grow, alignment. Sizes are in GUI pixels
@@ -11,7 +11,7 @@ pub mod font;
 pub mod lang;
 pub mod render;
 pub mod text;
-pub mod theme;
+pub mod look;
 
 use std::rc::Rc;
 
@@ -197,7 +197,7 @@ pub struct TextNode {
     pub scale: f32,
     pub color: Option<u32>,
     pub center: bool,
-    /// Theme class for the default color.
+    /// Class for the default color (`ui::look`).
     pub class: String,
 }
 
@@ -209,7 +209,7 @@ pub enum Kind {
     Item { bind: ItemBind, last: (u32, u32) },
     /// `dir`: `abi::ui_dir` the bar fills towards.
     Progress { class: String, bind: FloatBind, value: f32, dir: u32 },
-    /// `count` icons showing `value` in half steps (hearts): theme `class.full/half/empty`.
+    /// `count` icons showing `value` in half steps (hearts): textures `gui/<class>_full`, `_half`, `_empty`.
     Icons { class: String, count: u32, bind: FloatBind, value: f32, rtl: bool },
     /// Single-line text field; `caret` is a char index.
     Input { value: String, caret: usize, max: usize, on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>> },

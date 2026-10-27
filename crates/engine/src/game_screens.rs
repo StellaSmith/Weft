@@ -229,13 +229,13 @@ impl Screen for Chat {
                     let first = st.selected.saturating_sub(9);
                     ui.panel("suggest", Style::default().pad(2.0).self_align(crate::ui::Align::Start), |ui| {
                         for (i, s) in comp.suggestions.iter().enumerate().skip(first).take(10) {
-                            let color = if i == st.selected { 0xFFFF55 } else { 0xA0A0A0 };
-                            ui.text(vec![Span::text(s.clone(), Some(color))], "chat");
+                            let color = cx.lang.color(if i == st.selected { "color.suggest" } else { "color.suggest_dim" }).map(|c| c >> 8);
+                            ui.text(vec![Span::text(s.clone(), color)], "chat");
                         }
                     });
                 } else if !comp.hint.is_empty() {
                     ui.container(Style::default().pad(2.0).self_align(crate::ui::Align::Start), |ui| {
-                        ui.text(vec![Span::text(comp.hint.clone(), Some(0x808080))], "chat");
+                        ui.text(vec![Span::text(comp.hint.clone(), cx.lang.color("color.suggest_hint").map(|c| c >> 8))], "chat");
                     });
                 }
             }

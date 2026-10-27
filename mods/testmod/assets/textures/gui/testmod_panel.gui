@@ -1,0 +1,3 @@
+border = 2
+shader = testmod:circuit
+animation = testmod:ui_panel

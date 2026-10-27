@@ -1,13 +1,20 @@
 language.name = English
+color.testmod_panel = {#d0ffe0}
+color.testmod_panel_dim = {#80c0a0}
+color.testmod_panel_shadow = {#001008}
+color.testmod_title = {#55ffff}
 block.testmod.fuel_slot = Fuel: anything that burns. It stays in until it is burnt.
 recipe.testmod.alloying = Alloying
-recipe.testmod.alloying.info = Uses {#ffe070}{0} FE/t{/} for {1} s
+recipe.testmod.alloying.info = Uses {color:key}{0} FE/t{/} for {1} s
 recipe.testmod.infusing = Infusing
 testmod.infusing.plus = +
 testmod.infusing.time = Soaks for {0} s, laid out by the test mod itself
+block.testmod.generator = Generator
+block.testmod.electric_furnace = Electric Furnace
+block.testmod.battery = Battery
 block.testmod.pedestal = Pedestal
 block.testmod.cable = Cable
-testmod.energy = {#ffe070}{0}{/} / {1} FE
+testmod.energy = {color:key}{0}{/} / {1} FE
 block.testmod.regolith = Regolith
 block.testmod.basalt = Red Basalt
 block.testmod.tin_ore = Tin Ore
@@ -42,13 +49,13 @@ item.testmod.steel_pickaxe = Steel Pickaxe
 block.testmod.reinforced_stone = Reinforced Stone
 block.testmod.vent = Vent
 config.testmod.volume_machines = Machine volume
-testmod.debug = {#55ffff}Testmod
+testmod.debug = {color:testmod_title}Testmod
 testmod.debug.speed = Speed {0} b/s, fall {1}
 block.testmod.glow_moss = Glow Moss
 block.testmod.glow_log = Glowing Birch Log
 block.testmod.glow_leaves = Glowing Birch Leaves
 block.testmod.glow_flower = Glow Flower
-testmod.about.title = {#55ffff}Test Mod
+testmod.about.title = {color:testmod_title}Test Mod
 testmod.about.text = A screen of the mod's own, opened by name.
 testmod.about.hover = Hover me
 testmod.about.button = About Test Mod
@@ -56,7 +63,7 @@ testmod.about.tip = {#ff6060}A tooltip of the mod's own screen, {0} words long
 mod.testmod.name = Test Mod
 mod.testmod.description = Proves that a mod needs no engine changes.
     {align:center}{img:testmod:icon 32x32}{/align}
-    Energy, its own dimensions, a biome in {#ffe070}another mod's{/} overworld, machines and recipes of its own.
+    Energy, its own dimensions, a biome in {color:key}another mod's{/} overworld, machines and recipes of its own.
     Its generator burns fuel the way {block:base:furnace} furnaces do, lit up like {block:base:furnace[lit=true]}.
 mod.testmod.authors = Weft developers
 command.testmod.morph = now a {0}, {1} x {2}

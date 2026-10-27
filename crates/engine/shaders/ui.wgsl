@@ -33,6 +33,12 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     }
     out.clip = vec4(p.x / screen.size.x * 2.0 - 1.0, 1.0 - p.y / screen.size.y * 2.0, 0.0, 1.0);
     out.uv = mix(q.uv.xy, q.uv.zw, c);
+    // A strip of frames (`.anim` next to the texture): the frame of this tick.
+    if q.layer != 0u && q.mode != UI_MODE_FONT {
+        let frames = f32(q.layer & 0xffffu);
+        let f = floor(screen.size.z * 20.0 / f32(max(q.layer >> 16u, 1u))) % frames;
+        out.uv.y = (out.uv.y + f) / frames;
+    }
     out.tex = q.tex;
     out.layer = q.layer;
     out.mode = q.mode;

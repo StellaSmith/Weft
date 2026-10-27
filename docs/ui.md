@@ -1,17 +1,17 @@
 # UI guide
 
-Screens, HUD parts and the menus of inventories and machines, plus the theme system that decides how all of it looks.\
+Screens, HUD parts and the menus of inventories and machines, and how all of it looks.\
 Base's inventory, furnace, chest and health bars are built from the same small set of parts you get, so anything you see in the game you can make.
 
 ## Note
 Examples to copy from:
 - `mods/base/src/player.rs`: the HUD bars, the inventory and the crafting table
 - `mods/base/src/machines.rs`: the furnace and the chest, with bars that follow data
-- `mods/testmod/src/lib.rs`: a screen of its own (`about`), machine screens on a themed panel, an F3 panel
-- `mods/base/assets/ui/theme.theme` and `mods/testmod/assets/ui/theme.theme`
+- `mods/testmod/src/lib.rs`: a screen of its own (`about`), machine screens on a panel of its own class, an F3 panel
+- `mods/base/assets/textures/gui/` and the `color.*` lines of `mods/base/assets/lang/en_us.lang`: the base game's look
 
 ## Quick links
-[the parts](#the-parts) | [layout](#layout) | [live values](#live-values) | [screens](#screens) | [HUD](#hud) | [menus](#menus) | [themes](#themes) | [GUI textures](#gui-textures) | [shaders and animations](#shaders-and-animations)
+[the parts](#the-parts) | [layout](#layout) | [live values](#live-values) | [screens](#screens) | [HUD](#hud) | [menus](#menus) | [looks](#looks) | [GUI textures](#gui-textures) | [shaders and animations](#shaders-and-animations)
 
 ## The parts
 A screen is a tree of parts built by a function that receives a `Ui`. Parts that hold others take a closure for their children:
@@ -29,7 +29,7 @@ ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
 | part | what it is |
 |---|---|
 | `column(s, ..)`, `row(s, ..)` | children one under another, or side by side |
-| `panel(class, s, ..)` | a column with a themed background, `"panel"` is the usual window |
+| `panel(class, s, ..)` | a column with the class's background, `"panel"` is the usual window |
 | `text(key)` | a translation. `text_args(key, &[Arg::Int(5)])` fills `{0}` and the rest, `text_styled(s, key, args)` takes a style too (class, size, one line, `mono`) |
 | `button(key, s, on_click)` | a button with a translated label (`button_args` with arguments); the closure runs on click and can drive the game through `c.client()` (open screens and worlds, quit, change settings), even in the main menu |
 | `input(value, max, s, on_change)` | a one-line text field; the closure gets the text after every edit |
@@ -56,7 +56,7 @@ Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in 
 - `w_pct(p)`, `h_pct(p)` size a part in percent of its parent; `min_w`, `min_h`, `max_w` limit it
 - `self_align(abi::ui_align::END)` places one part differently from its siblings
 - `scroll()` lets the children scroll with the wheel, with a bar when they don't fit
-- for text: `class("title")` (the theme's look, also `dim`, `button`, `chat`), `scale(2.0)`, `no_wrap()` and `mono()`, which puts every glyph in a digit-wide cell so numbers don't jump (`{mono}..{/mono}` does it for part of a text)
+- for text: `class("title")` (its color, also `dim`, `button`, `chat`), `scale(2.0)`, `no_wrap()` and `mono()`, which puts every glyph in a digit-wide cell so numbers don't jump (`{mono}..{/mono}` does it for part of a text)
 - for buttons: `disabled(true)` and `selected(true)` (the open tab)
 
 ## Live values
@@ -74,7 +74,7 @@ r.hud_element(&HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
     ui.icons("hearts", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
 });
 ```
-The `class` ("hearts", "arrow", "flame") is a theme class, which is where the textures come from.
+The `class` ("heart", "arrow", "flame") names the textures, see [looks](#looks).
 
 ## Screens
 `r.screen(&SCREEN, |ui| ..)` registers a screen of your own, and what it does besides showing parts is declared on it, the same properties the engine's screens have:
@@ -150,33 +150,29 @@ A group of a plain menu is the menu's own slots, given back to the player when t
 
 Machines are menus tied to a block, with their own data and tick. The [machines guide](machines.md) covers them, including the component flags that their screens read.
 
-## Themes
-How a screen looks comes from themes: the `ui/theme.theme` of each mod, merged together. A pack's file replaces the one of the mod it's made for. Lines are `class.property = value`, and comments are whole lines starting with `#`:
-```
-panel.texture = base:gui/panel
-panel.text = #404040
-button.hover = base:gui/button_hover
-```
-A part asks for its class, so `ui.panel("panel", ..)` looks up `panel.texture`, `panel.text` and so on, and a property the class doesn't have comes from `default.<property>`. Colors are `#rrggbb`, or `#rrggbbaa` when they need transparency. Base sets these, and your own classes can use the same properties (`testmod_panel` is one):
+## Looks
+How a part looks follows from its class by name, there is no theme file. Class `button` is the texture `gui/button.png`; its states are `gui/button_hover.png`, `_pressed`, `_disabled` (and `_focused` for inputs). A bare class is looked up in the resource packs, then in the mods from the last loaded, then in the engine, so base's `base/textures/gui/button.png` dresses every button and a mod's own class (`testmod_panel`) lives in its own folder. `mymod:thing` looks only in `mymod`. A class without a texture shows a magenta and black checkerboard, like a missing block texture, so a typo can't hide.
 
-| class | properties |
+| class | textures |
 |---|---|
-| `panel` | `texture`, `text`, `dim_text`, `shadow` (`none` for no text shadow) |
-| `well` | `texture`, `text`, `dim_text` (a sunken area: lists, the inventory figure's frame) |
-| `button` | `texture`, `hover`, `pressed`, `disabled`, `text`, `hover_text`, `disabled_text`, `shadow` |
-| `slider` | `track`, `knob`, `knob_hover` |
-| `input` | `texture`, `focused`, `text`, `selection` |
-| `slot` | `texture`, `highlight` (over the hovered slot), or `fill`, `light` and `dark` without a texture |
-| `hotbar` | the same for the HUD's hotbar |
-| `scrollbar` | `track`, `handle`, `handle_hover` |
-| `tooltip` | `texture`, `frame` (drawn over it), `text` |
-| `background` | `texture`, `color` (behind menus) |
-| `hearts`, `food`, `armor` | `full`, `half`, `empty` |
-| `arrow`, `flame` | `background`, `fill_texture` |
-| `air` | `fill` |
-| `chat`, `debug` | `text`, `shadow` |
+| `panel`, `well`, `sidebar`, `news`, `tooltip`, `overlay` (behind menus), `background`, `suggest`, `debug_panel`, `death` | the class |
+| `button` | `_hover`, `_pressed`, `_disabled` |
+| `input` | `_focused`, plus `input_selection` and `caret` |
+| `slider`, `slider_knob` | `slider_knob_hover` |
+| `scrollbar`, `scrollbar_handle` | `scrollbar_handle_hover` |
+| `slot`, `recipe_slot`, `hotbar` | `hotbar_selected` (around the selected one), `slot_highlight` (over the hovered one) |
+| `crosshair` | the class |
+| `heart`, `food`, `armor`, `air` | `_full`, `_half`, `_empty` |
+| `arrow`, `flame` and bars of your own | the class behind, `_fill` filling it |
 
-A bar of your own needs two textures and a line each, `energy.background = mymod:gui/energy_bg` and `energy.fill_texture = mymod:gui/energy_fill`, and then `ui.progress_bind("energy", ..)` draws it. A resource pack restyles everything the same way, with its own theme file.
+A bar of your own is two pictures and nothing else: `gui/energy.png` and `gui/energy_fill.png`, then `ui.progress_bind("energy", ..)` draws it.
+
+Text colors are named colors in the language files: `color.<class>` for its text, and `color.<class>_hover`, `_disabled`, `_dim` and `_shadow` (`none` for no shadow) where they differ; whatever a class doesn't set comes from `color.default`. They hold `{#rrggbb}` like any text, so a pack changes one with a single line in its `lang/en_us.lang`:
+```
+color.button = {#d8dceb}
+color.button_hover = {#ffffff}
+```
+The same names work inside any text: `{color:debug_title}Performance` takes the color `color.debug_title` holds. If you want your mod to be easy to restyle, name your colors this way instead of writing `{#hex}` in every line, so they are set once and changed once.
 
 ## GUI textures
 A texture used as a background has to be stretched over parts of any size, and a `.gui` file next to it says how (`panel.gui` for `panel.png`):
@@ -187,10 +183,14 @@ border = 4
 `scaling` is `nine_slice` (the corners keep their size, the edges and middle stretch), `tile` or `stretch`. `border` is one number for all sides or `left top right bottom`, in GUI pixels. Two more keys exist for special cases: `size = w h` for an image with more pixels than the GUI pixels it stands for, and `outset = n` for textures that reach outside their box, like shadows. An image without one is simply stretched.
 
 ## Shaders and animations
-A theme class can have `shader = <name>`, and the panel is then filled by `shaders/gui/<name>.wgsl` instead of a texture:
+A class's `.gui` can name a shader, and the part is then filled by `shaders/gui/<name>.wgsl` instead of the picture (`testmod_panel.gui`):
 ```
-testmod_panel.shader = testmod:circuit
+border = 2
+shader = testmod:circuit
+animation = testmod:ui_panel
 ```
 The file defines `fn fill(p: GuiPixel) -> vec4<f32>`, where `p` has the position across the panel, its size in pixels and the time. The circuit board of the testmod machines is one, see the [shaders guide](shaders.md) for the details.
 
-A class can also have `animation = <name>`, pointing at `animations/<name>.animation.json`. An animation called `open` plays once when the screen opens and `idle` loops afterwards. Both move one bone named `node`, with `position` (GUI pixels, y up), `rotation` (z only, clockwise degrees) and `scale`, around the center of the part. Testmod's panel grows from 85% and rises 10 pixels this way, and the file format is the one from the [models guide](models.md#animations). Item icons inside an animated panel don't follow it yet.
+The `animation` line points at `animations/<name>.animation.json`. An animation called `open` plays once when the screen opens and `idle` loops afterwards. Both move one bone named `node`, with `position` (GUI pixels, y up), `rotation` (z only, clockwise degrees) and `scale`, around the center of the part. Testmod's panel grows from 85% and rises 10 pixels this way, and the file format is the one from the [models guide](models.md#animations). Item icons inside an animated panel don't follow it yet.
+
+The picture itself can be animated like a block texture: frames stacked down in one file and an `.anim` next to it, `frametime = 3` (ticks per frame) and `frame_height = 8` when the frames aren't square, as testmod's `energy_fill` does.

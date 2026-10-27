@@ -59,6 +59,38 @@ impl Lang {
         key
     }
 
+    /// A color a key holds (`color.button = {#d8dceb}`; `#d8dceb` or eight digits with alpha
+    /// too): the engine's and mods' named colors, which packs change like any translation.
+    /// `0xRRGGBBAA`, `None` when missing or not a color.
+    pub fn color(&self, key: &str) -> Option<u32> {
+        let v = self.entries.get(key).or_else(|| self.fallback.get(key))?;
+        let h = v.trim().trim_start_matches('{').trim_end_matches('}').strip_prefix('#')?;
+        let c = u32::from_str_radix(h, 16).ok()?;
+        match h.len() {
+            6 => Some(c << 8 | 0xFF),
+            8 => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Every `color.<name>` key: (name, color) and the names set to `none`.
+    pub fn colors(&self) -> (FxHashMap<String, u32>, FxHashSet<String>) {
+        let (mut colors, mut nones) = (FxHashMap::default(), FxHashSet::default());
+        for k in self.fallback.keys().chain(self.entries.keys()) {
+            let Some(name) = k.strip_prefix("color.") else { continue };
+            match self.color(k) {
+                Some(c) => {
+                    colors.insert(name.to_string(), c);
+                }
+                None if self.get(k).trim() == "none" => {
+                    nones.insert(name.to_string());
+                }
+                None => {}
+            }
+        }
+        (colors, nones)
+    }
+
     pub fn has(&self, key: &str) -> bool {
         self.entries.contains_key(key) || self.fallback.contains_key(key)
     }

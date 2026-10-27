@@ -109,7 +109,7 @@ pub fn register(r: &mut Registry) {
 
     // Survival bars; a negative value hides them (creative).
     r.hud_element(&HUD_HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
-        ui.icons("hearts", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
+        ui.icons("heart", 10, |c| if c.creative() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) })
     });
     r.hud_element(&HUD_ARMOR, hud_anchor::HOTBAR_LEFT, 1, |ui| {
         ui.icons("armor", 10, |c| {

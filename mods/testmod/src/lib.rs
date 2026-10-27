@@ -302,7 +302,7 @@ fn debug_panel(r: &mut Registry) {
 }
 
 fn machine_screen(ui: &mut Ui, slots: impl FnOnce(&mut Ui)) {
-    // Drawn by the mod's GUI shader (`testmod_panel.shader` in its theme).
+    // Drawn by the mod's GUI shader (`shader` in `gui/testmod_panel.gui`).
     ui.panel("testmod_panel", S::col().pad(7.0).gap(4.0), |ui| {
         ui.title();
         ui.row(S::row().gap(8.0), |ui| {

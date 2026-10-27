@@ -358,7 +358,7 @@ Inside any callback you get a `World` (`w`):
 - UI is built in code: `r.screen(&ABOUT, |ui| ui.panel(..)).pauses()`, the engine's screens are in `screens::*` and its pause, death and settings screens use the same parts (inputs, sliders, items, `S::mono()`, `.scroll()`...)
 - HUD elements are built with `r.hud_element(&MANA_BAR, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`
 - F3 panels are at `hud_anchor::DEBUG_LEFT`
-- Looks come from themes and 9-slice sprites in `assets/ui`, so a resource pack can reskin screens
+- Looks come from textures named after the class (`gui/button.png`, `_hover` ...) and named colors in the language files (`color.button`), so a resource pack can reskin screens ([UI guide](ui.md#looks))
 - Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`
 
 Also:
@@ -400,7 +400,7 @@ You can contact me on Discord: `@vortex_so`
 - [Tooltips](tooltips.md): item tooltips, rich text and effects, adding them from other mods and packs
 - [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain, also in other mods' dimensions
 - [Models and animations](models.md): mob models in code or Blockbench, keyframes, the first-person hand, armor
-- [UI](ui.md): screens, HUD, menus, themes, GUI textures
+- [UI](ui.md): screens, HUD, menus, looks, GUI textures
 - [Machines](machines.md): blocks with inventories, recipes, energy
 - [Shaders](shaders.md): text effects, panels, mobs, particles, screen effects, shader packs
 - [Resource packs](resourcepacks.md): what a pack can replace and how it is laid out

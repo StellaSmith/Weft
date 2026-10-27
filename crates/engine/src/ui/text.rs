@@ -403,11 +403,14 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
         rest = &tail[end + 1..];
         if let Some(hex) = tag.strip_prefix('#') {
             st.color = u32::from_str_radix(hex, 16).ok().or(st.color);
+        } else if let Some(name) = tag.strip_prefix("color:") {
+            // A named color (`color.<name>` in the language files), so a pack changes it once.
+            st.color = cx.lang.color(&format!("color.{name}")).map(|c| c >> 8).or(st.color);
         } else if tag == "/" {
             st.color = base;
         } else if let Some(action) = tag.strip_prefix("key:") {
             let name = cx.input.and_then(|i| i.key_of(action)).map(|k| display_key(cx.lang, k)).unwrap_or_else(|| "?".into());
-            let color = Some(st.color.unwrap_or(0xFFE070));
+            let color = st.color.or_else(|| cx.lang.color("color.key").map(|c| c >> 8));
             out.push(st.span(Piece::Text(format!("[{name}]")), color));
         } else if let Some(item) = tag.strip_prefix("item:") {
             if let Some(id) = crate::content::try_content().and_then(|c| c.item_by_ref(item)) {
@@ -441,7 +444,7 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
             st.align = align::LEFT;
         } else if let Some(target) = tag.strip_prefix("link:") {
             out.push(st.span(Piece::LinkStart(target.to_string()), None));
-            st.color = Some(st.color.unwrap_or(0x80B0FF));
+            st.color = st.color.or_else(|| cx.lang.color("color.link").map(|c| c >> 8));
         } else if let Some(key) = tag.strip_prefix("lang:") {
             if depth < 4 {
                 let color = st.color;

@@ -1,9 +1,0 @@
-energy.background = testmod:gui/energy_bg
-energy.fill_texture = testmod:gui/energy_fill
-testmod_panel.shader = testmod:circuit
-testmod_panel.texture = base:gui/panel
-testmod_panel.text = #d0ffe0
-testmod_panel.dim_text = #80c0a0
-testmod_panel.shadow = #001008
-testmod_panel.animation = testmod:ui_panel
-energy.animation = testmod:ui_energy

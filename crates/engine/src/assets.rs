@@ -99,8 +99,8 @@ impl Assets {
         v
     }
 
-    /// Like `list`, but every file instead of the one that wins: the mods' own files first (by
-    /// name), then each pack's from the lowest to the top one. For files read on top of each
+    /// Like `list`, but every file instead of the one that wins: the engine's, then the mods' own
+    /// files (by name), then each pack's from the lowest to the top one. For files read on top of each
     /// other, like translations, where a pack changes single keys.
     pub fn layers(&self, kind: &str, ext: &str) -> Vec<(String, PathBuf)> {
         let collect = |roots: &mut dyn Iterator<Item = (&String, PathBuf)>| {
@@ -118,6 +118,8 @@ impl Assets {
             v
         };
         let mut out = collect(&mut self.mods.iter().map(|(ns, root)| (ns, root.clone())));
+        // The engine's defaults under everything a mod says.
+        out.sort_by_key(|f| !f.0.starts_with("core:"));
         for pack in self.packs.iter().rev() {
             out.extend(collect(&mut self.mods.keys().map(|ns| (ns, pack.join(ns)))));
         }

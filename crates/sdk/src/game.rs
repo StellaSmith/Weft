@@ -58,6 +58,10 @@ impl World {
     pub fn set_entity(&self, id: u64, s: &EntityState) {
         unsafe { (host().entity_set)(self.raw(), id, s) }
     }
+    /// Adds `v` (blocks per second) to its velocity, players included: a trampoline, a blast.
+    pub fn push(&self, id: u64, v: [f64; 3]) {
+        unsafe { (host().entity_push)(self.raw(), id, &v) }
+    }
     /// The entity's own box (width, height, eye height); `None` goes back to its kind's.
     /// Crouching still shrinks it.
     pub fn set_size(&self, id: u64, size: Option<[f32; 3]>) {

@@ -129,6 +129,7 @@ const OPS: &[(&str, &str)] = &[
     ("after", "<ticks:int>"),
     ("rings", ""),
     ("heal", ""),
+    ("push", "<x:float> <y:float> <z:float>"),
     ("health", "[id:int]"),
     ("time", "<ticks:int>"),
     ("mode", "survival | creative | spectator"),
@@ -403,6 +404,11 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
             Ok(String::new())
         }
         "rings" => Ok(RINGS.load(Ordering::Relaxed).to_string()),
+        "push" => {
+            let v = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
+            w.push(player, v);
+            Ok(String::new())
+        }
         "heal" => {
             let mut st = w.entity(player).ok_or("no player")?;
             st.health = st.max_health;

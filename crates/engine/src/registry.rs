@@ -1005,7 +1005,7 @@ pub fn freeze(
     let mut systems: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
     let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
-    let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0), (abi::attribute::VISIBILITY.into(), 1.0, 0.0, 16.0)];
+    let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0), (abi::attribute::VISIBILITY.into(), 1.0, 0.0, 16.0), (abi::attribute::JUMP_STRENGTH.into(), 1.0, 0.0, 16.0)];
     let mut particles: Vec<RawParticle> = engine_particles();
     let mut configs: Vec<(usize, crate::config::ConfigDef)> = crate::config::engine_configs().into_iter().map(|d| (0, d)).collect();
     let mut sounds: Vec<(usize, SoundDef)> = engine_sounds();

@@ -1527,6 +1527,9 @@ pub struct Host {
     pub entity_remove: unsafe extern "C" fn(world: *mut WorldCtx, id: u64),
     pub entity_get: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, out: *mut EntityState) -> u32,
     /// Writes pos, vel, yaw, pitch and health from `state`.
+    /// Adds `v` (blocks per second) to the entity's velocity: a mob's here, a player's on its
+    /// client, the way a hit's knockback goes.
+    pub entity_push: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, v: *const [f64; 3]),
     pub entity_set: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, state: *const EntityState),
     /// AI steering: horizontal direction and speed factor applied by the physics, optional jump.
     pub entity_walk: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dir: *const [f32; 2], speed: f32, jump: u32),
@@ -2314,6 +2317,8 @@ pub mod attribute {
     /// Multiplier on how far mobs notice it (1; 0 in creative, so mobs ignore the player; a mod
     /// can lower it, like vanilla's mob heads).
     pub const VISIBILITY: &str = "core:visibility";
+    /// Multiplier on jump speed (1: a block and a quarter high).
+    pub const JUMP_STRENGTH: &str = "core:jump_strength";
 }
 
 /// How an attribute modifier applies, like vanilla: ADD amounts sum onto the base, then times

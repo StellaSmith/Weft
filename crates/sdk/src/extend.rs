@@ -64,6 +64,8 @@ pub mod attribute {
     pub static MOVEMENT_SPEED: Attribute = Attribute::named(crate::abi::attribute::MOVEMENT_SPEED);
     /// Multiplier on how far mobs notice it (1; 0 in creative).
     pub static VISIBILITY: Attribute = Attribute::named(crate::abi::attribute::VISIBILITY);
+    /// Multiplier on jump speed, players and mobs (1).
+    pub static JUMP_STRENGTH: Attribute = Attribute::named(crate::abi::attribute::JUMP_STRENGTH);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;

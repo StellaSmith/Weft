@@ -11,7 +11,7 @@ pub mod world_render;
 
 use std::time::Instant;
 
-use glam::{DVec2, DVec3, IVec3, Vec3};
+use glam::{DVec3, IVec3, Vec3};
 use rustc_hash::{FxHashMap, FxHashSet};
 use weft_abi::{ItemStack, block_flags as bf};
 use weft_render::{Backend, CommandList, FrameInfo};
@@ -64,6 +64,9 @@ pub struct LocalPlayer {
     /// Riding a body: its id and the position relative to it at the previous and the last
     /// step. Drawn on the body as shown, so a rider and its deck never drift apart.
     pub riding: Option<(u64, DVec3, DVec3)>,
+    /// Walking speed and jump multipliers from the server (attributes).
+    pub speed_mul: f64,
+    pub jump_mul: f64,
 }
 
 pub struct ClientEntity {
@@ -407,6 +410,8 @@ impl Client {
                 noclip: false,
                 fly_speed: 1.0,
                 in_liquid: false,
+                speed_mul: 1.0,
+                jump_mul: 1.0,
             },
             joined: false,
             player_id: 0,
@@ -732,14 +737,16 @@ impl Client {
                     self.menu = None;
                     self.events.push(ClientEvent::CloseMenu);
                 }
-                ToClient::Knockback([x, z]) => {
-                    // Vanilla's knockBack: half the speed, 0.4 away from the hit and up.
-                    let d = DVec2::new(x as f64, z as f64);
-                    let d = if d.length_squared() < 1e-8 { DVec2::X } else { d.normalize() };
+                ToClient::Movement { speed, jump } => {
+                    self.player.speed_mul = speed as f64;
+                    self.player.jump_mul = jump as f64;
+                }
+                ToClient::Push((add, halve)) => {
                     let v = &mut self.player.vel;
-                    *v /= 2.0;
-                    v.x -= d.x * 0.4;
-                    v.z -= d.y * 0.4;
+                    if halve {
+                        *v /= 2.0;
+                    }
+                    *v += DVec3::new(add[0] as f64, add[1] as f64, add[2] as f64);
                     v.y = (v.y + 0.4).min(0.4);
                 }
                 ToClient::Died => {
@@ -1626,7 +1633,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
     } else {
         let slip = block(IVec3::new(feet.x, (p.pos.y - 0.5).floor() as i32, feet.z)).map_or(0.6, |s| c.states[s as usize].friction as f64);
         let speed = if p.on_ground {
-            let walk = if sprint { 0.13 } else { 0.1 };
+            let walk = if sprint { 0.13 } else { 0.1 } * p.speed_mul;
             walk * (0.216 / (slip * slip * slip))
         } else if sprint {
             0.026
@@ -1637,7 +1644,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         if !jump {
             p.jump_cooldown = 0;
         } else if p.on_ground && p.jump_cooldown == 0 {
-            p.vel.y = 0.42;
+            p.vel.y = 0.42 * p.jump_mul;
             if sprint {
                 p.vel += forward * 0.2;
             }

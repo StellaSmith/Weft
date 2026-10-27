@@ -772,7 +772,7 @@ impl Dim {
         let Some(e) = self.entities.get_mut(id) else { return false };
         e.health -= amount;
         e.hurt_cooldown = 10;
-        let mut knocked = None;
+        let mut knocked: Option<[f32; 2]> = None;
         if let Some(from) = knock {
             let d = (e.pos - from).with_y(0.0).normalize_or_zero();
             e.vel += d * 6.0 + DVec3::Y * 5.0;
@@ -781,8 +781,11 @@ impl Dim {
         let (health, player, pos, kind, on_fire) = (e.health, e.player, e.pos, e.kind, e.fire > 0);
         let sounds = k.sounds;
         self.sound(if health <= 0.0 { sounds[1] } else { sounds[0] }, pos + DVec3::Y * (k.height as f64 * 0.5), 1.0, 0.0);
-        if let Some(dir) = knocked {
-            self.entities.knocked.push((id, dir));
+        if let Some([x, z]) = knocked {
+            // Vanilla's knockBack: half the speed, 0.4 away from the hit and up.
+            let d = glam::Vec2::new(x, z);
+            let d = if d.length_squared() < 1e-8 { glam::Vec2::X } else { d.normalize() };
+            self.entities.pushed.push((id, ([-d.x * 0.4, 0.4, -d.y * 0.4], true)));
         }
         self.entities.hurt.push((id, health));
         if health <= 0.0 {

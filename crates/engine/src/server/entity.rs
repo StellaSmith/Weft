@@ -29,6 +29,8 @@ pub struct Entity {
     pub attack_cooldown: u32,
     /// AI steering requested this tick: direction, speed factor, jump.
     pub walk: Option<([f32; 2], f32, bool)>,
+    /// Jump strength attribute when its walk was set (1 = vanilla's).
+    pub jump_mul: f32,
     pub removed: bool,
     pub item: ItemStack,
     pub pickup_delay: u32,
@@ -74,6 +76,7 @@ impl Entity {
             hurt_cooldown: 0,
             attack_cooldown: 0,
             walk: None,
+            jump_mul: 1.0,
             removed: false,
             item: ItemStack::EMPTY,
             pickup_delay: 0,
@@ -161,7 +164,9 @@ pub struct Entities {
     /// Item entities picked up whole this tick, and by whom (clients pull them in).
     pub taken: Vec<(u64, u64)>,
     /// Hurt entities and where the hit came from (players move themselves, so they get told).
-    pub knocked: Vec<(u64, [f32; 2])>,
+    /// Velocity changes for players' clients: (player, change, halve the velocity first), in
+    /// blocks per tick like the client's own.
+    pub pushed: Vec<(u64, ([f32; 3], bool))>,
 }
 
 /// Falls up to this many blocks do no damage.
@@ -369,7 +374,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
             e.vel.z += (target_z - e.vel.z) * accel;
             if jump {
                 if e.on_ground {
-                    e.vel.y = 8.4;
+                    e.vel.y = 8.4 * e.jump_mul as f64;
                 } else if e.in_liquid {
                     e.vel.y = e.vel.y.max(2.5);
                 }

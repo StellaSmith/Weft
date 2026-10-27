@@ -338,7 +338,7 @@ Answering: `cmd.reply("mymod.healed", &[Arg::Int(amount)])` with `mymod.healed =
 
 Inside any callback you get a `World` (`w`):
 - blocks (`get`, `set`, `schedule`)
-- entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `navigate`, `walk`)
+- entities (`spawn`, `entity`, `set_entity`, `damage`, `near`, `navigate`, `walk`, `push` for a trampoline or a blast, players too). Speed and jump are attributes (`attribute::MOVEMENT_SPEED`, `JUMP_STRENGTH`) for mobs and players alike: `w.add_modifier(player, &MOVEMENT_SPEED, ..)` is a speed effect
 - inventories (`inventory(id).get/set/insert`, `inventory(id).group("fuel")`); a player's by the groups its inventory was declared with (`r.player_inventory().group("hotbar", Slots::row(9).hotbar())..`), `core:equipment` for all equipment slots
 - components, energy, menus
 - particles (`w.spawn_particles(&SPARK, pos).count(20)`)

@@ -9,7 +9,7 @@ mod extend;
 mod liquid;
 pub mod path;
 pub use builtin::COMMANDS as BUILTIN_COMMANDS;
-pub use extend::{MAX_HEALTH, MOVEMENT_SPEED, explanation};
+pub use extend::{JUMP_STRENGTH, MAX_HEALTH, MOVEMENT_SPEED, explanation};
 pub mod menu;
 pub mod persist;
 pub mod regions;
@@ -91,6 +91,8 @@ pub struct Player {
     gizmos: Vec<String>,
     /// Health and maximum as last sent.
     sent_health: (f32, f32),
+    /// Walking speed and jump multipliers the client has (attributes).
+    sent_movement: (f32, f32),
     /// Burning entities this player was last told about (sorted).
     sent_burning: Vec<u64>,
 }
@@ -418,6 +420,7 @@ impl Server {
                 teleported: None,
                 gizmos: Vec::new(),
                 sent_health: (-1.0, -1.0),
+                sent_movement: (1.0, 1.0),
                 sent_burning: Vec::new(),
             });
         }
@@ -1727,8 +1730,14 @@ impl Server {
                     p.sent_health = (hp, max);
                     p.conn.send(ToClient::Health { health: hp, max });
                 }
-                if let Some(&(_, dir)) = reg.entities.knocked.iter().rev().find(|h| h.0 == p.entity) {
-                    p.conn.send(ToClient::Knockback(dir));
+                for &(_, push) in reg.entities.pushed.iter().filter(|h| h.0 == p.entity) {
+                    p.conn.send(ToClient::Push(push));
+                }
+                // The client moves its player: speed and jump from the attributes go there.
+                let movement = (reg.attribute(c, p.entity, MOVEMENT_SPEED, false) as f32, reg.attribute(c, p.entity, JUMP_STRENGTH, false) as f32);
+                if movement != p.sent_movement {
+                    p.sent_movement = movement;
+                    p.conn.send(ToClient::Movement { speed: movement.0, jump: movement.1 });
                 }
                 // Own inventory and synced components.
                 if p.first_sync || reg.entities.dirty_inv.contains(&p.entity) {
@@ -1871,7 +1880,7 @@ impl Server {
                 r.entities.hurt.clear();
                 r.entities.taken.clear();
                 r.entities.reshaped.clear();
-                r.entities.knocked.clear();
+                r.entities.pushed.clear();
                 r.entities.dirty_comp.clear();
                 r.gizmos.clear();
                 // Block entity inventory changes must reach the save.

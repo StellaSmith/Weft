@@ -55,6 +55,7 @@ pub static HOST: Host = Host {
     entity_spawn,
     entity_remove,
     entity_get,
+    entity_push,
     entity_set,
     entity_walk,
     entity_damage,
@@ -234,6 +235,10 @@ unsafe extern "C" fn navigate(w: *mut abi::WorldCtx, id: u64, target: *const [f6
         let d = dim(w);
         let target = DVec3::from_array(*target);
         let mul = d.attribute(c, id, crate::server::MOVEMENT_SPEED, false) as f32;
+        let jump_mul = d.attribute(c, id, crate::server::JUMP_STRENGTH, false) as f32;
+        if let Some(e) = d.entities.get_mut(id) {
+            e.jump_mul = jump_mul;
+        }
         d.navigate(id, target, speed * mul) as u32
     }
 }
@@ -493,12 +498,31 @@ unsafe extern "C" fn entity_set(w: *mut abi::WorldCtx, id: u64, s: *const abi::E
     }
 }
 
+unsafe extern "C" fn entity_push(w: *mut abi::WorldCtx, id: u64, v: *const [f64; 3]) {
+    unsafe {
+        let v = DVec3::from_array(*v);
+        if !v.is_finite() {
+            return;
+        }
+        let d = dim(w);
+        let Some(e) = d.entities.get_mut(id) else { return };
+        if e.player {
+            let t = v / 20.0;
+            d.entities.pushed.push((id, ([t.x as f32, t.y as f32, t.z as f32], false)));
+        } else {
+            e.vel += v;
+        }
+    }
+}
+
 unsafe extern "C" fn entity_walk(w: *mut abi::WorldCtx, id: u64, dir: *const [f32; 2], speed: f32, jump: u32) {
     unsafe {
         let d = dim(w);
         let mul = d.attribute(content(), id, crate::server::MOVEMENT_SPEED, false) as f32;
+        let jump_mul = d.attribute(content(), id, crate::server::JUMP_STRENGTH, false) as f32;
         if let Some(e) = d.entities.get_mut(id) {
             e.walk = Some((*dir, speed * mul, jump != 0));
+            e.jump_mul = jump_mul;
         }
     }
 }

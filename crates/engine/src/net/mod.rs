@@ -102,7 +102,11 @@ pub enum ToClient {
     Components(Vec<(u32, Vec<u8>)>),
     Health { health: f32, max: f32 },
     /// Hit by something at this horizontal direction from the player.
-    Knockback([f32; 2]),
+    /// Velocity change in blocks per tick, after halving the velocity when the flag says so
+    /// (knockback, a mod's push).
+    Push(([f32; 3], bool)),
+    /// The player's walking speed and jump multipliers.
+    Movement { speed: f32, jump: f32 },
     /// `block`: the state it was opened on (0: none), `name`: what it belongs to is called.
     OpenMenu { kind: u32, window: u32, slots: u32, owner: u64, block: u32, name: String },
     MenuSlots(Vec<(u32, ItemStack)>),
@@ -204,7 +208,7 @@ macro_rules! messages {
 
 messages!(ToClient, ClientTag, false, [
     Welcome, Cube, Unload, Blocks, Time, Teleport, Spawn, Moves, Despawn, Hurt, Burning, Worn,
-    GameMode, Players, Inventory, Components, Health, Knockback, OpenMenu, MenuSlots,
+    GameMode, Players, Inventory, Components, Health, Push, Movement, OpenMenu, MenuSlots,
     Cursor, CloseMenu, Died, Chat, Disconnect, Gizmos, Packet, EntityComponents, Particles,
     Configs, Sounds, Animate, Taken, Swing, Shapes, Structure, Skin, CommandReply,
 ]);

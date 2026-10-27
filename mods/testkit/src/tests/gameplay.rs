@@ -256,6 +256,50 @@ pub async fn sneak_edge(t: T) -> R {
     Ok(())
 }
 
+/// The player moves by its attributes like a mob: +100% movement speed walks about twice as far,
+/// a stronger jump goes higher, and a push from the server lifts it.
+pub async fn movement_attributes(t: T) -> R {
+    t.flat().await?;
+    t.c().look(0.0, 0.0);
+    let walk = |t: T| async move {
+        let start = t.state().pos;
+        t.hold("core:forward", 1.0);
+        t.secs(1.3).await?;
+        let end = t.state().pos;
+        Ok::<f64, String>(((end[0] - start[0]).powi(2) + (end[2] - start[2]).powi(2)).sqrt())
+    };
+    let slow = walk(t.clone()).await?;
+    t.op("attr_mod me core:movement_speed testkit:fast 1 1 0").await?;
+    t.secs(0.2).await?;
+    let fast = walk(t.clone()).await?;
+    t.note(format!("walked {slow:.2} then {fast:.2} blocks in a second"));
+    t.check(fast > slow * 1.6, format!("faster with the attribute: {slow:.2} -> {fast:.2}"));
+    t.op("attr_rm me core:movement_speed testkit:fast").await?;
+    let jump = |t: T| async move {
+        let y0 = t.state().pos[1];
+        let mut top = y0;
+        t.hold("core:jump", 0.1);
+        for _ in 0..30 {
+            t.frames(1).await?;
+            top = top.max(t.state().pos[1]);
+        }
+        t.secs(1.0).await?;
+        Ok::<f64, String>(top - y0)
+    };
+    let low = jump(t.clone()).await?;
+    t.op("attr_mod me core:jump_strength testkit:spring 1 0.5 0").await?;
+    t.secs(0.2).await?;
+    let high = jump(t.clone()).await?;
+    t.note(format!("jumped {low:.2} then {high:.2}"));
+    t.check(high > low * 1.4, format!("higher with the attribute: {low:.2} -> {high:.2}"));
+    t.op("attr_rm me core:jump_strength testkit:spring").await?;
+    let y = t.state().pos[1];
+    t.op("push 0 12 0").await?;
+    t.secs(0.25).await?;
+    t.check(t.state().pos[1] > y + 0.3, format!("the push lifted the player: {y:.2} -> {:.2}", t.state().pos[1]));
+    Ok(())
+}
+
 pub async fn drop_and_pickup(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 cobblestone 10").await?;

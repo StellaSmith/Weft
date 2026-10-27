@@ -172,6 +172,7 @@ impl Dim {
 pub const MAX_HEALTH: u32 = 0;
 pub const MOVEMENT_SPEED: u32 = 1;
 pub const VISIBILITY: u32 = 2;
+pub const JUMP_STRENGTH: u32 = 3;
 
 impl Dim {
     fn base_attribute(&self, c: &Content, entity: u64, attr: u32) -> Option<f64> {

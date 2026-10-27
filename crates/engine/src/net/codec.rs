@@ -383,9 +383,15 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
         }
         ToClient::CloseMenu => {}
         ToClient::Died | ToClient::Swing => {}
-        ToClient::Knockback([x, z]) => {
-            w.f32(*x);
-            w.f32(*z);
+        ToClient::Push((v, halve)) => {
+            for x in v {
+                w.f32(*x);
+            }
+            w.u8(*halve as u8);
+        }
+        ToClient::Movement { speed, jump } => {
+            w.f32(*speed);
+            w.f32(*jump);
         }
         ToClient::Chat(m) => w.msg(m),
         ToClient::CommandReply { id, lines } => {
@@ -652,7 +658,8 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             }
             ToClient::Burning(ids)
         }
-        ClientTag::Knockback => ToClient::Knockback([r.f32()?, r.f32()?]),
+        ClientTag::Push => ToClient::Push(([r.f32()?, r.f32()?, r.f32()?], r.u8()? != 0)),
+        ClientTag::Movement => ToClient::Movement { speed: r.f32()?, jump: r.f32()? },
         ClientTag::Gizmos => {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n.min(4096));

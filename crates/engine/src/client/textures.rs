@@ -1,4 +1,5 @@
-//! Every texture the game world draws, by name: blocks, items and particles, each animation
+//! Every texture the game world draws: the content's one list (blocks, items, particles) and the
+//! connected texture tiles after it, each animation
 //! frame and glow mask its own image in the bindless table, at its own size. A texture loads the
 //! first time something asks for it (the world's before a mesh using them is drawn, the rest one
 //! frame later); a reload reads again only the files that changed.
@@ -33,11 +34,8 @@ struct Entry {
 
 struct Inner {
     entries: Vec<Entry>,
-    /// Entry per block texture id (content's, then connected texture tiles and composites), per
-    /// item icon and per particle texture.
-    block: Vec<u32>,
-    item: Vec<u32>,
-    particle: Vec<u32>,
+    /// Entry per texture id: the content's, then connected texture tiles and composites.
+    ids: Vec<u32>,
     requests: Vec<u32>,
     /// Glow mask index per bindless color index (`u32::MAX` none), on the GPU too.
     glow_map: Vec<u32>,
@@ -88,25 +86,21 @@ impl GameTextures {
                 entries.len() as u32 - 1
             })
         };
-        let mut block: Vec<u32> = c.block_textures.iter().chain(&extra.names).map(|n| add(n.clone(), Source::File, &mut entries)).collect();
+        let mut ids: Vec<u32> = c.textures.iter().chain(&extra.names).map(|n| add(n.clone(), Source::File, &mut entries)).collect();
         for parts in &extra.composites {
-            let ids = parts.map(|p| block.get(p as usize).copied().unwrap_or(0));
-            let name = composite_name(&ids.map(|i| entries[i as usize].name.clone()));
-            block.push(add(name, Source::Composite(ids), &mut entries));
+            let parts = parts.map(|p| ids.get(p as usize).copied().unwrap_or(0));
+            let name = composite_name(&parts.map(|i| entries[i as usize].name.clone()));
+            ids.push(add(name, Source::Composite(parts), &mut entries));
         }
-        let item = c.item_textures.iter().map(|n| add(n.clone(), Source::File, &mut entries)).collect();
-        let particle = c.game.particle_textures.iter().map(|n| add(n.clone(), Source::File, &mut entries)).collect();
         let blank = gpu.create_texture(&TextureDesc { width: 1, height: 1, mips: 1, format: Format::Rgba8Srgb, render_target: false }, "blank texture");
         gpu.write_texture(blank, 0, &[0, 0, 0, 0]);
         let blank = (blank, gpu.texture_index(blank));
         let glow_buffer = gpu.create_buffer(4096 * 4, usage::STORAGE, "glow map");
-        log::info!("textures: {} known ({} block, {} item, {} particle), loaded when first used", entries.len(), block.len(), c.item_textures.len(), c.game.particle_textures.len());
+        log::info!("textures: {} known ({} of the content), loaded when first used", entries.len(), c.textures.len());
         let t = GameTextures {
             inner: RefCell::new(Inner {
                 entries,
-                block,
-                item,
-                particle,
+                ids,
                 requests: Vec::new(),
                 glow_map: Vec::new(),
                 glow_buffer,
@@ -148,30 +142,20 @@ impl GameTextures {
         en.frames[n as usize % en.frames.len()]
     }
 
-    /// First frame of block texture `id`.
-    pub fn block(&self, id: u32) -> u32 {
-        self.block_frame(id, 0)
+    /// First frame of texture `id` (a block's face, an item's icon, a particle's frame).
+    pub fn texture(&self, id: u32) -> u32 {
+        self.frame_of(id, 0)
     }
 
-    pub fn block_frame(&self, id: u32, n: u32) -> u32 {
-        let e = self.inner.borrow().block.get(id as usize).copied();
+    pub fn frame_of(&self, id: u32, n: u32) -> u32 {
+        let e = self.inner.borrow().ids.get(id as usize).copied();
         self.frame(e, n)
     }
 
-    /// Frames of block texture `id` (1 until it has loaded).
-    pub fn block_frames(&self, id: u32) -> u32 {
+    /// Frames of texture `id` (1 until it has loaded).
+    pub fn frames(&self, id: u32) -> u32 {
         let i = self.inner.borrow();
-        i.block.get(id as usize).and_then(|&e| i.entries.get(e as usize)).map_or(1, |e| e.frames.len().max(1) as u32)
-    }
-
-    pub fn item(&self, icon: u32) -> u32 {
-        let e = self.inner.borrow().item.get(icon as usize).copied();
-        self.frame(e, 0)
-    }
-
-    pub fn particle(&self, index: u32) -> u32 {
-        let e = self.inner.borrow().particle.get(index as usize).copied();
-        self.frame(e, 0)
+        i.ids.get(id as usize).and_then(|&e| i.entries.get(e as usize)).map_or(1, |e| e.frames.len().max(1) as u32)
     }
 
     /// Glow mask of a color texture (bindless index), `u32::MAX` for none.
@@ -196,7 +180,7 @@ impl GameTextures {
             for id in ids {
                 let over = self.overlays.get(id as usize).copied().unwrap_or(0);
                 for id in [Some(id), over.checked_sub(1)].into_iter().flatten() {
-                    let Some(&e) = i.block.get(id as usize) else { continue };
+                    let Some(&e) = i.ids.get(id as usize) else { continue };
                     let en = &mut i.entries[e as usize];
                     if en.frames.is_empty() && !en.requested {
                         en.requested = true;
@@ -245,15 +229,15 @@ impl GameTextures {
         gpu.write_buffer(i.glow_buffer, 0, bytemuck::cast_slice(&words));
     }
 
-    /// The world shader's tables, per block texture id. `info`: two words, static -> (index, 0),
+    /// The world shader's tables, per texture id. `info`: two words, static -> (index, 0),
     /// animated -> (offset into `frames`, count | total ticks << 16 | interpolate << 31).
     /// `frames`: animation frames (index | ticks << 16), then from `overlays` per block texture
     /// its overlay id + 1 or 0.
     pub fn world_tables(&self) -> (Vec<u32>, Vec<u32>, u32) {
         let i = self.inner.borrow();
-        let mut info: Vec<u32> = Vec::with_capacity(i.block.len() * 2);
+        let mut info: Vec<u32> = Vec::with_capacity(i.ids.len() * 2);
         let mut frames: Vec<u32> = vec![0];
-        for &e in &i.block {
+        for &e in &i.ids {
             let en = &i.entries[e as usize];
             match (&en.anim, en.frames.is_empty()) {
                 (Some(a), false) if !a.frames.is_empty() => {
@@ -267,7 +251,7 @@ impl GameTextures {
             }
         }
         let overlays = frames.len() as u32;
-        frames.extend((0..i.block.len()).map(|b| self.overlays.get(b).copied().unwrap_or(0)));
+        frames.extend((0..i.ids.len()).map(|b| self.overlays.get(b).copied().unwrap_or(0)));
         (info, frames, overlays)
     }
 

@@ -466,7 +466,7 @@ impl UiRenderer {
                 v: [0.0, size],
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: 0xFFFFFFFF,
-                tex: tex.item(def.icon),
+                tex: tex.texture(def.icon),
                 mode: ui_mode::ICON,
                 ..Default::default()
             });
@@ -496,7 +496,7 @@ impl UiRenderer {
                 v: [0.0, size],
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: tint(0),
-                tex: tex.block(t),
+                tex: tex.texture(t),
                 mode: ui_mode::ICON,
                 ..Default::default()
             });
@@ -521,11 +521,11 @@ impl UiRenderer {
                 (at([n[0], m[1], n[2]]), [dx * h, dx * q], [-dz * h, dz * q], 3, 1.0, [n[0], n[2], m[0], m[2]]),
             ];
             for (p0, u, v, face, k, uv) in faces {
-                self.quads.push(Quad { p0, u, v, uv, color: shade(tint(face), k), tex: tex.block(b.textures[face]), mode: ui_mode::ICON, ..Default::default() });
+                self.quads.push(Quad { p0, u, v, uv, color: shade(tint(face), k), tex: tex.texture(b.textures[face]), mode: ui_mode::ICON, ..Default::default() });
                 // Tinted overlay on top of its face.
                 if let Some(&ov) = tex.overlays.get(b.textures[face] as usize).filter(|&&ov| ov != 0) {
                     let color = shade(if s.tint == 0 { 0xFFFFFFFF } else { grass }, k);
-                    self.quads.push(Quad { p0, u, v, uv, color, tex: tex.block(ov - 1), mode: ui_mode::ICON, ..Default::default() });
+                    self.quads.push(Quad { p0, u, v, uv, color, tex: tex.texture(ov - 1), mode: ui_mode::ICON, ..Default::default() });
                 }
             }
         }

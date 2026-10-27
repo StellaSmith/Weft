@@ -188,11 +188,11 @@ fn tile_names(v: &str, texture: &str) -> Vec<Option<String>> {
 
 /// Reads the `.ctm` files of all block textures. Tile textures get ids after the content's.
 pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
-    let base = c.block_textures.len() as u32;
+    let base = c.textures.len() as u32;
     let mut extra = Extra::default();
-    let mut ids: FxHashMap<String, u32> = c.block_textures.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
-    let mut ctm = Ctm { by_texture: vec![(0, 0); c.block_textures.len()], rules: Vec::new(), overlay: vec![0; c.block_textures.len()] };
-    for (tex, name) in c.block_textures.iter().enumerate() {
+    let mut ids: FxHashMap<String, u32> = c.textures.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
+    let mut ctm = Ctm { by_texture: vec![(0, 0); c.textures.len()], rules: Vec::new(), overlay: vec![0; c.textures.len()] };
+    for (tex, name) in c.textures.iter().enumerate() {
         let over = format!("{name}_overlay");
         if assets.path(&over, "textures", "png").is_some() {
             extra.names.push(over);
@@ -201,7 +201,7 @@ pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
     }
     // Compact sets waiting for their composite ids, which come after every tile name.
     let mut compact: Vec<(usize, Vec<u32>)> = Vec::new();
-    for (tex, name) in c.block_textures.iter().enumerate() {
+    for (tex, name) in c.textures.iter().enumerate() {
         let Some(src) = assets.read(name, "textures", "ctm").map(|b| String::from_utf8_lossy(&b).into_owned()) else { continue };
         let start = ctm.rules.len() as u32;
         for section in crate::kv::sections(&src) {

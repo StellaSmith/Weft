@@ -30,7 +30,7 @@ pub struct StateInfo {
     pub layer: Layer,
     pub level: u8,
     pub model: Model,
-    /// Block texture ids (`Content::block_textures`) per face.
+    /// Texture ids (`Content::textures`) per face.
     pub textures: [u32; 6],
     pub boxes: Vec<ModelBox>,
     /// In block units.
@@ -412,16 +412,15 @@ pub struct Content {
     pub tool_classes: Vec<(u32, Option<u32>)>,
     /// Items carrying each tag, the preferred first (`refs::tag_items`).
     pub tag_items: FxHashMap<u32, Vec<u32>>,
-    /// Block texture names, index = array layer.
-    pub block_textures: Vec<String>,
-    /// Block breaking stages, indices into `block_textures`.
+    /// Every texture by name (`<ns>:block/..`, `<ns>:item/..`, `<ns>:particle/..`); blocks, items
+    /// and particles hold ids into it, and the client loads this one list.
+    pub textures: Vec<String>,
+    /// Block breaking stages, ids into `textures`.
     pub crack_textures: [u32; 10],
     /// Animated flames drawn around burning entities.
     pub fire_texture: u32,
     /// Engine commands first, then mods' in name order.
     pub commands: Vec<crate::commands::CommandDef>,
-    /// Item icon names, index = array layer.
-    pub item_textures: Vec<String>,
     pub block_names: FxHashMap<String, u32>,
     pub item_names: FxHashMap<String, u32>,
     pub dim_names: FxHashMap<String, u32>,
@@ -1058,21 +1057,20 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         return Err(errors);
     }
 
-    let mut block_textures: Vec<String> = vec!["core:missing".into()];
+    // One list of every texture by name, for blocks, items and particles alike.
+    let mut textures: Vec<String> = vec!["core:missing".into()];
     let mut tex_index: FxHashMap<String, u32> = FxHashMap::default();
     tex_index.insert("core:missing".into(), 0);
-    let mut tex = |name: &str| -> u32 {
+    let intern = |textures: &mut Vec<String>, tex_index: &mut FxHashMap<String, u32>, name: &str| -> u32 {
         if name.is_empty() {
             return 0;
         }
-        if let Some(&i) = tex_index.get(name) {
-            return i;
-        }
-        let i = block_textures.len() as u32;
-        block_textures.push(name.to_string());
-        tex_index.insert(name.to_string(), i);
-        i
+        *tex_index.entry(name.to_string()).or_insert_with(|| {
+            textures.push(name.to_string());
+            textures.len() as u32 - 1
+        })
     };
+    let mut tex = |name: &str| intern(&mut textures, &mut tex_index, name);
     let crack_textures: [u32; 10] = std::array::from_fn(|i| tex(&format!("core:block/destroy_{i}")));
     let fire_texture = tex("core:block/fire");
 
@@ -1220,8 +1218,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let block_names: FxHashMap<String, u32> =
         block_defs.iter().enumerate().map(|(i, b)| (b.name.clone(), i as u32)).collect();
 
-    let mut item_textures: Vec<String> = vec!["core:missing".into()];
-    let mut item_tex_index: FxHashMap<String, u32> = FxHashMap::default();
     let mut item_defs = vec![ItemDef {
         name: "core:empty".into(),
         owner: ModId(u32::MAX),
@@ -1249,14 +1245,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 }
             }
         };
-        let icon = if it.texture.is_empty() && block.is_some() {
-            u32::MAX
-        } else {
-            *item_tex_index.entry(it.texture.clone()).or_insert_with(|| {
-                item_textures.push(it.texture.clone());
-                item_textures.len() as u32 - 1
-            })
-        };
+        let icon = if it.texture.is_empty() && block.is_some() { u32::MAX } else { intern(&mut textures, &mut tex_index, &it.texture) };
         item_values.push((owner, it.components));
         item_defs.push(ItemDef {
             name: it.name,
@@ -1832,6 +1821,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &order_of, &mut errors);
+    for p in &mut game.particles {
+        for f in &mut p.frames {
+            *f = intern(&mut textures, &mut tex_index, &game.particle_textures[*f as usize]);
+        }
+    }
+    game.particle_textures.clear();
     // A structure's box is what its blocks fill; a set size would only disagree with them.
     for kind in game.entities.iter_mut().filter(|k| !k.template_name.is_empty()) {
         match template_names.get(&kind.template_name) {
@@ -1928,11 +1923,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         ids,
         tool_classes,
         tag_items,
-        block_textures,
+        textures,
         crack_textures,
         fire_texture,
         commands,
-        item_textures,
         block_names,
         item_names,
         creative_tabs,

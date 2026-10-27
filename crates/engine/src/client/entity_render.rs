@@ -438,8 +438,8 @@ impl EntityRenderer {
             Some(st) if def.icon == u32::MAX && st.item_sprite().is_none() => block_shape(&mut self.item_boxes, textures, Mat4::IDENTITY, st, white),
             _ => {
                 let l = match block {
-                    Some(st) if def.icon == u32::MAX => textures.block(st.item_sprite().unwrap_or(st.textures[0])),
-                    _ => textures.item(def.icon),
+                    Some(st) if def.icon == u32::MAX => textures.texture(st.item_sprite().unwrap_or(st.textures[0])),
+                    _ => textures.texture(def.icon),
                 };
                 match sprite_name(item).and_then(|n| self.sprites.get(n)).and_then(|s| s.as_ref()) {
                     Some(sp) => {
@@ -740,7 +740,7 @@ impl EntityRenderer {
                 // Over the faces of the block's model (a ladder's board, not its whole cube),
                 // textured like the block's own faces there.
                 let stage = ((progress * 10.0) as usize).min(9);
-                let l = textures.block(c.crack_textures[stage]);
+                let l = textures.texture(c.crack_textures[stage]);
                 let lit = shade(p.as_dvec3() + at + DVec3::splat(0.5));
                 let state = target.filter(|h| h.0.block == p).map(|h| &c.states[h.0.state as usize]);
                 let shape: Vec<(Vec3, Vec3)> = match state {
@@ -867,7 +867,7 @@ impl EntityRenderer {
 /// Two layers of flames facing the camera, the inner one smaller, like vanilla's burning mobs.
 fn fire_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, width: f32, height: f32, cam_yaw: f32, age: f32) {
     let c = content();
-    let frame = |offset: f32| textures.block_frame(c.fire_texture, (age * 20.0 + offset) as u32);
+    let frame = |offset: f32| textures.frame_of(c.fire_texture, (age * 20.0 + offset) as u32);
     for (i, (scale, back)) in [(1.4, 0.0), (1.0, 0.2)].into_iter().enumerate() {
         let l = frame(i as f32 * 11.0);
         let w = width * scale;
@@ -884,10 +884,10 @@ fn sprite_name(item: u32) -> Option<&'static str> {
     let c = content();
     let def = c.items.get(item as usize).filter(|_| item != 0)?;
     if def.icon != u32::MAX {
-        return c.item_textures.get(def.icon as usize).map(String::as_str);
+        return c.textures.get(def.icon as usize).map(String::as_str);
     }
     let st = &c.states[def.block? as usize];
-    st.item_sprite().and_then(|t| c.block_textures.get(t as usize)).map(String::as_str)
+    st.item_sprite().and_then(|t| c.textures.get(t as usize)).map(String::as_str)
 }
 
 /// Where the held item's model goes in front of the camera, posed like vanilla's
@@ -947,7 +947,7 @@ fn block_shape(out: &mut Vec<GpuBox>, textures: &GameTextures, m: Mat4, s: &crat
     for b in s.item_shape() {
         let (mn, mx) = (Vec3::from_array(b.min), Vec3::from_array(b.max));
         let mb = m * Mat4::from_translation(mn) * Mat4::from_scale(mx - mn);
-        let l = b.textures.map(|t| textures.block(t));
+        let l = b.textures.map(|t| textures.texture(t));
         // Faces the block tints take the tint here, not from a tinted copy drawn on top (the
         // untinted faces would show through cutout holes and at the edges).
         let overlaid = |d: usize| textures.overlays.get(b.textures[d] as usize).is_some_and(|&o| o != 0);
@@ -978,7 +978,7 @@ fn tinted_faces(out: &mut Vec<GpuBox>, textures: &GameTextures, m: Mat4, s: &cra
     let rgb = Vec3::new(((tint >> 16) & 255) as f32, ((tint >> 8) & 255) as f32, (tint & 255) as f32) / 255.0;
     for d in 0..6 {
         let Some(tex) = textures.overlays.get(faces[d] as usize).filter(|&&o| o != 0).map(|o| o - 1) else { continue };
-        let l = textures.block(tex);
+        let l = textures.texture(tex);
         // A zero-thick box just outside that face.
         let axis = d / 2;
         let mut offset = Vec3::ZERO;

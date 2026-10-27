@@ -356,7 +356,7 @@ pub struct Game {
     /// Particle kinds by id (sorted by name).
     pub particles: Vec<ParticleDef>,
     pub particle_names: FxHashMap<String, u32>,
-    /// Particle texture names, by particle texture index.
+    /// Particle texture names while freezing; the content moves them into its one list.
     pub particle_textures: Vec<String>,
     /// Items shown with a recipe type in the recipe viewer (the machines making them).
     pub recipe_stations: FxHashMap<String, Vec<u32>>,
@@ -392,7 +392,7 @@ pub struct MusicDef {
 
 pub struct ParticleDef {
     pub name: String,
-    /// Frames over its life (indices into `particle_textures`); empty for block dust.
+    /// Frames over its life (ids into `Content::textures`); empty for block dust.
     pub frames: Vec<u32>,
     pub life: [f32; 2],
     pub scale: [f32; 2],

@@ -259,10 +259,10 @@ impl Particles {
                 let size = if k.flags & pf::SHRINK != 0 { p.size * (1.0 - t) } else { p.size };
                 let (tex, uv) = if k.frames.is_empty() {
                     let (u, v) = (p.piece[0] as u32 * 255 / 16, p.piece[1] as u32 * 255 / 16);
-                    (textures.block(p.layer), u | v << 8 | (u + 64).min(255) << 16 | (v + 64).min(255) << 24)
+                    (textures.texture(p.layer), u | v << 8 | (u + 64).min(255) << 16 | (v + 64).min(255) << 24)
                 } else {
                     let f = k.frames[((t * k.frames.len() as f32) as usize).min(k.frames.len() - 1)];
-                    (textures.particle(f), 0xFFFF_0000)
+                    (textures.texture(f), 0xFFFF_0000)
                 };
                 let light = if k.flags & pf::FULLBRIGHT != 0 { u32::MAX } else { p.light };
                 let rel = (p.pos - cam.pos).as_vec3();

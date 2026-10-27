@@ -98,7 +98,7 @@ pub fn register(r: &mut Registry) {
         .flags(entity_flags::NO_GRAVITY)
         .unpushable()
         
-        .model(Model::from(vec![Part::new([0.0, 3.0, 0.0], abi::part_role::STATIC).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])]).uv(32, 16))
+        .model(Model::from(vec![Part::new("wisp", [0.0, 3.0, 0.0]).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])]).uv(32, 16))
         .shader("ghost")
         .on_tick(wisps);
 
@@ -119,14 +119,14 @@ pub fn register(r: &mut Registry) {
             w.play_animation(id, "bow", false);
         }
     });
-    let ring = Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("ring").child_of(0);
+    let ring = Part::new("ring", [0.0, 8.0, 0.0]).child_of(0);
     let ring = [[6.0, -1.0, -1.0], [-8.0, -1.0, -1.0], [-1.0, -1.0, 6.0], [-1.0, -1.0, -8.0]].into_iter().fold(ring, |p, at| p.cube(at, [2.0, 2.0, 2.0], [16.0, 0.0]));
     r.entity(&ORB)
         .size(0.6, 0.9)
         .health(4.0)
         .flags(entity_flags::NO_GRAVITY)
         
-        .model(Model::from(vec![Part::new([0.0, 8.0, 0.0], abi::part_role::STATIC).named("core").mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]).uv(32, 16));
+        .model(Model::from(vec![Part::new("core", [0.0, 8.0, 0.0]).mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]).uv(32, 16));
 
     r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
     r.item(&RUNE).max_stack(1).on_use(|u| {

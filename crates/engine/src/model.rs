@@ -8,7 +8,7 @@
 
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use serde_json::Value;
-use weft_abi::{MeshVertex, part_role as role};
+use weft_abi::{MeshVertex, worn_parts};
 
 use crate::registry::{Cuboid, Part};
 
@@ -44,10 +44,33 @@ fn angles(r: [f32; 3]) -> [f32; 3] {
     [-r[0].to_radians(), r[1].to_radians(), -r[2].to_radians()]
 }
 
-/// The animation role vanilla's code would give a bone of this name, so walking and looking work
-/// on models from files without keyframes.
-fn role_of(name: &str) -> u32 {
-    match name.to_ascii_lowercase().replace('_', "").as_str() {
+/// How a bone moves by itself, worked out from its name (`role_of`) so code models, model files
+/// and animations agree.
+pub mod role {
+    pub const STATIC: u32 = 0;
+    pub const HEAD: u32 = 1;
+    pub const ARM_LEFT: u32 = 2;
+    pub const ARM_RIGHT: u32 = 3;
+    pub const LEG_LEFT: u32 = 4;
+    pub const LEG_RIGHT: u32 = 5;
+    /// Quadrupeds: front legs swing opposite to back legs.
+    pub const LEG_FRONT_LEFT: u32 = 6;
+    pub const LEG_FRONT_RIGHT: u32 = 7;
+    /// Legs that sweep sideways while walking (spiders), in opposite phase.
+    pub const LEG_SWEEP_A: u32 = 10;
+    pub const LEG_SWEEP_B: u32 = 11;
+}
+
+/// The role vanilla's code gives a bone of this name (Bedrock's names, as Blockbench writes
+/// them), so walking and looking work on any model without keyframes. `legs`: how many
+/// `leg<n>` bones the model has; more than four are a spider's.
+pub fn role_of(name: &str, legs: usize) -> u32 {
+    let n = name.to_ascii_lowercase().replace('_', "");
+    if let Some(i) = n.strip_prefix("leg").and_then(|i| i.parse::<u32>().ok()).filter(|_| legs > 4) {
+        // Spider legs: pairs left, right from the back; neighbors and opposite sides alternate.
+        return if (i / 2 + i % 2) % 2 == 0 { role::LEG_SWEEP_A } else { role::LEG_SWEEP_B };
+    }
+    match n.as_str() {
         "head" => role::HEAD,
         "rightarm" => role::ARM_LEFT,
         "leftarm" => role::ARM_RIGHT,
@@ -57,6 +80,32 @@ fn role_of(name: &str) -> u32 {
         "leg3" => role::LEG_FRONT_LEFT,
         _ => role::STATIC,
     }
+}
+
+/// Every part's role from its name.
+pub fn assign_roles(parts: &mut [Part]) {
+    let legs = parts.iter().filter(|p| p.name.to_ascii_lowercase().strip_prefix("leg").is_some_and(|i| i.parse::<u32>().is_ok())).count();
+    for p in parts {
+        p.role = role_of(&p.name, legs);
+    }
+}
+
+/// The role bits (`1 << role`) of the model regions a worn item covers (`worn_parts`).
+pub fn role_mask(regions: u32) -> u32 {
+    let mut m = 0;
+    if regions & worn_parts::HEAD != 0 {
+        m |= 1 << role::HEAD;
+    }
+    if regions & worn_parts::BODY != 0 {
+        m |= 1 << role::STATIC;
+    }
+    if regions & worn_parts::ARMS != 0 {
+        m |= 1 << role::ARM_LEFT | 1 << role::ARM_RIGHT;
+    }
+    if regions & worn_parts::LEGS != 0 {
+        m |= 1 << role::LEG_LEFT | 1 << role::LEG_RIGHT | 1 << role::LEG_FRONT_LEFT | 1 << role::LEG_FRONT_RIGHT;
+    }
+    m
 }
 
 /// A model file's parts and the texture size it was made for.
@@ -119,8 +168,9 @@ pub fn load_geo(src: &str) -> Result<Geo, String> {
         if let Some(pm) = b.get("poly_mesh") {
             mesh = poly_mesh(pm, tex);
         }
-        parts.push(Part { role: role_of(&name), name, parent, pivot, rest, cuboids, mesh });
+        parts.push(Part { role: 0, name, parent, pivot, rest, cuboids, mesh });
     }
+    assign_roles(&mut parts);
     Ok(Geo { parts, texture })
 }
 
@@ -324,15 +374,17 @@ pub struct Motion<'a> {
     pub crouch: bool,
 }
 
-/// (about x, about y) added to a part's rest by its role.
-pub fn role_angles(r: u32, pitch: f32, swing: f32) -> [f32; 2] {
+/// (about x, about y) added to a part's rest (`rest_x` about x) by its role.
+pub fn role_angles(r: u32, rest_x: f32, pitch: f32, swing: f32) -> [f32; 2] {
+    // Arms resting held out (a zombie's) only sway a little.
+    let arm = if rest_x.abs() > 1.0 { swing * 0.2 } else { swing };
     match r {
         // Faces look along -Z: tilting the front up is a positive turn about X.
         role::HEAD => [pitch, 0.0],
-        role::ARM_LEFT | role::LEG_RIGHT | role::LEG_FRONT_LEFT => [swing, 0.0],
-        role::ARM_RIGHT | role::LEG_LEFT | role::LEG_FRONT_RIGHT => [-swing, 0.0],
-        role::ARM_FORWARD_LEFT => [std::f32::consts::FRAC_PI_2 + swing * 0.2, 0.0],
-        role::ARM_FORWARD_RIGHT => [std::f32::consts::FRAC_PI_2 - swing * 0.2, 0.0],
+        role::ARM_LEFT => [arm, 0.0],
+        role::ARM_RIGHT => [-arm, 0.0],
+        role::LEG_RIGHT | role::LEG_FRONT_LEFT => [swing, 0.0],
+        role::LEG_LEFT | role::LEG_FRONT_RIGHT => [-swing, 0.0],
         role::LEG_SWEEP_A => [0.0, swing * 0.6],
         role::LEG_SWEEP_B => [0.0, -swing * 0.6],
         _ => [0.0, 0.0],
@@ -344,7 +396,7 @@ pub fn role_angles(r: u32, pitch: f32, swing: f32) -> [f32; 2] {
 pub fn pose(parts: &[Part], root: Mat4, m: &Motion, out: &mut Vec<Mat4>) {
     out.clear();
     for (i, p) in parts.iter().enumerate() {
-        let a = role_angles(p.role, m.pitch, m.swing);
+        let a = role_angles(p.role, p.rest[0], m.pitch, m.swing);
         let mut rot = Vec3::new(p.rest[0] + a[0], p.rest[1] + a[1], p.rest[2]);
         let mut offset = Vec3::ZERO;
         let mut scale = Vec3::ONE;
@@ -352,7 +404,7 @@ pub fn pose(parts: &[Part], root: Mat4, m: &Motion, out: &mut Vec<Mat4>) {
             // ModelBiped.isSneak: body leans 0.5 forward, arms 0.4 more, legs move up 3 and back
             // 4 to stay under it, the head drops 1.
             match p.role {
-                role::ARM_LEFT | role::ARM_RIGHT => rot.x -= 0.4,
+                role::ARM_LEFT | role::ARM_RIGHT if p.rest[0].abs() <= 1.0 => rot.x -= 0.4,
                 role::LEG_LEFT | role::LEG_RIGHT => offset += Vec3::new(0.0, 3.0, 4.0),
                 role::HEAD => offset.y -= 1.0,
                 _ if p.name.eq_ignore_ascii_case("body") => rot.x -= 0.5,
@@ -381,6 +433,18 @@ pub fn pose(parts: &[Part], root: Mat4, m: &Motion, out: &mut Vec<Mat4>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roles_from_names() {
+        assert_eq!((role_of("rightArm", 0), role_of("left_leg", 0), role_of("body", 0)), (role::ARM_LEFT, role::LEG_RIGHT, role::STATIC));
+        assert_eq!([0, 1, 2, 3].map(|i| role_of(&format!("leg{i}"), 4)), [role::LEG_RIGHT, role::LEG_LEFT, role::LEG_FRONT_RIGHT, role::LEG_FRONT_LEFT]);
+        // A spider's eight: each left leg and its right twin sweep opposite, and so do neighbors.
+        let (a, b) = (role::LEG_SWEEP_A, role::LEG_SWEEP_B);
+        assert_eq!([0, 1, 2, 3].map(|i| role_of(&format!("leg{i}"), 8)), [a, b, b, a]);
+        // An arm resting held out (a zombie's) only sways.
+        assert_eq!(role_angles(role::ARM_LEFT, std::f32::consts::FRAC_PI_2, 0.0, 1.0), [0.2, 0.0]);
+        assert_eq!(role_angles(role::ARM_LEFT, 0.0, 0.0, 1.0), [1.0, 0.0]);
+    }
 
     #[test]
     fn bedrock_files() {

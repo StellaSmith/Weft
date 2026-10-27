@@ -533,7 +533,7 @@ impl EntityRenderer {
         for &i in worn {
             if let Some((w, t)) = c.worn(i) {
                 if let Some(Some((_, idx, size))) = self.skins.get(t).filter(|_| out.1 < MAX_LAYERS) {
-                    out.0[out.1] = Instance { tex: *idx, tex_size: [size[0] as f32, size[1] as f32], roles: w.roles, inflate: w.inflate, glow: glow(t), ..base };
+                    out.0[out.1] = Instance { tex: *idx, tex_size: [size[0] as f32, size[1] as f32], roles: crate::model::role_mask(w.roles), inflate: w.inflate, glow: glow(t), ..base };
                     out.1 += 1;
                 }
             }
@@ -780,7 +780,10 @@ impl EntityRenderer {
             match hand_transform(cam, &h, pose.unwrap_or(Mat4::IDENTITY)) {
                 Some(m) => hand_item = self.item_model(textures, h.stack.item).map(|(first, n)| (item_instance(m, first, 0.0, shade(cam.pos)), n)),
                 None => {
-                    hand_boxes(&mut boxes, cam, &h, player_skin, pose.unwrap_or(Mat4::IDENTITY));
+                    // The arm is the player model's own right arm bone.
+                    let parts = self.models.kinds.get(c.game.player_kind as usize).map_or(&k.parts, |m| &m.parts);
+                    let arm = parts.iter().find(|p| p.name.eq_ignore_ascii_case("rightArm"));
+                    hand_boxes(&mut boxes, cam, &h, player_skin, arm, pose.unwrap_or(Mat4::IDENTITY));
                     light_boxes(&mut boxes, from, shade(cam.pos));
                 }
             }
@@ -919,27 +922,29 @@ fn hand_transform(cam: &Camera, h: &Hand, pose: Mat4) -> Option<Mat4> {
     })
 }
 
-/// The bare right arm in front of the camera (vanilla's ItemInHandRenderer).
-fn hand_boxes(out: &mut Vec<GpuBox>, cam: &Camera, h: &Hand, skin: Option<(u32, [f32; 2])>, pose: Mat4) {
+/// The bare right arm (the model's `rightArm` bone) in front of the camera (vanilla's
+/// ItemInHandRenderer).
+fn hand_boxes(out: &mut Vec<GpuBox>, cam: &Camera, h: &Hand, skin: Option<(u32, [f32; 2])>, arm: Option<&crate::registry::Part>, pose: Mat4) {
     use std::f32::consts::PI;
-    let Some((tex, size)) = skin else { return };
+    let (Some((tex, size)), Some(arm)) = (skin, arm) else { return };
     let p = h.swing.unwrap_or(0.0);
     let (s, sr) = ((p * PI).sin(), (p.sqrt() * PI).sin());
     // From view space to the camera-relative world: the hand stays put on screen while the
     // bobbing view moves.
     let view = cam.view().inverse() * pose;
     let swing = Mat4::from_translation(Vec3::new(-0.4 * sr, 0.2 * (p.sqrt() * PI * 2.0).sin(), -0.2 * s));
-    // Right arm (skin box at 40,16, 4x12x4 pixels), raised and turned in from the right.
-    let m = view
+    // Raised and turned in from the right; its boxes are around the shoulder pivot.
+    let shoulder = view
         * swing
         * Mat4::from_translation(Vec3::new(0.56, -0.78, -0.36))
         * Mat4::from_rotation_y(0.32 + sr * 0.3)
         * Mat4::from_rotation_x(1.85 + s * 0.5)
         * Mat4::from_rotation_z(0.12)
-        * Mat4::from_scale(Vec3::splat(1.0 / 16.0))
-        * Mat4::from_translation(Vec3::new(-2.0, -10.0, -2.0))
-        * Mat4::from_scale(Vec3::new(4.0, 12.0, 4.0));
-    out.push(GpuBox { rows: rows(m), dims: [4.0, 12.0, 4.0, 0.0], uvo: [40.0, 16.0, size[0], size[1]], color: [1.0, 1.0, 1.0, 0.0], ids: [tex, box_mode::SKIN, 0, 0], ids2: [0; 4] });
+        * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+    for c in &arm.cuboids {
+        let m = shoulder * Mat4::from_translation(Vec3::from_array(c.origin)) * Mat4::from_scale(Vec3::from_array(c.size));
+        out.push(GpuBox { rows: rows(m), dims: [c.size[0], c.size[1], c.size[2], 0.0], uvo: [c.uv[0], c.uv[1], size[0], size[1]], color: [1.0, 1.0, 1.0, 0.0], ids: [tex, box_mode::SKIN, 0, 0], ids2: [0; 4] });
+    }
 }
 
 /// A block item drawn as its model's boxes; `m` maps the block's unit cube.

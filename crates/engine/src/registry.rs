@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
-use weft_abi::{self as abi, Callback, ModId, entity_flags as ef, part_role};
+use weft_abi::{self as abi, Callback, ModId, entity_flags as ef};
 
 use crate::components::{self as comps, Components, RawSet, RawValue};
 
@@ -500,6 +500,8 @@ pub struct RawGame {
     pub client_hooks: Vec<(ModId, u32, Callback)>,
     /// (owner, entity kind, callback).
     pub client_entity_ticks: Vec<(ModId, String, Callback)>,
+    /// (entity kind, parts, skin size) set with `Host::reg_entity_model`.
+    pub entity_models: Vec<(String, Vec<Part>, [u32; 2])>,
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
@@ -764,18 +766,28 @@ fn opt(c: Callback) -> Option<Callback> {
     c.is_some().then_some(c)
 }
 
-pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity {
+/// # Safety
+/// The parts' pointers must be valid for this call.
+pub(crate) unsafe fn copy_parts(list: abi::Slice<abi::ModelPart>) -> Vec<Part> {
     unsafe {
         let mut parts = Vec::new();
-        d.parts.as_slice().iter().copied().for_each(|p| {
+        list.as_slice().iter().copied().for_each(|p| {
             let mut cuboids = Vec::new();
             p.cuboids.as_slice().iter().copied().for_each(|c| {
                 cuboids.push(Cuboid { origin: c.origin, size: c.extent, uv: c.uv, inflate: c.inflate, mirror: c.mirror != 0, faces: (c.per_face != 0).then_some(c.faces) })
             });
             let n = parts.len() as i32;
             let parent = (p.parent >= 0 && p.parent < n).then_some(p.parent as u32);
-            parts.push(Part { name: p.name.as_str().to_string(), parent, pivot: p.pivot, role: p.role, rest: p.rest, cuboids, mesh: p.mesh.as_slice().to_vec() });
+            parts.push(Part { name: p.name.as_str().to_string(), parent, pivot: p.pivot, role: 0, rest: p.rest, cuboids, mesh: p.mesh.as_slice().to_vec() });
         });
+        crate::model::assign_roles(&mut parts);
+        parts
+    }
+}
+
+pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity {
+    unsafe {
+        let parts = copy_parts(d.parts);
         let one = |c: Callback| opt(c).map(|c| vec![(owner, c)]).unwrap_or_default();
         RawEntity {
             name: d.name.as_str().to_string(),
@@ -914,28 +926,6 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
     }
 }
 
-/// Classic player model so other players are visible without any mod providing one (a
-/// `core:models/player.geo.json` in a resource pack replaces it).
-fn player_parts() -> Vec<Part> {
-    let part = |name: &str, pivot: [f32; 3], role: u32, o: [f32; 3], s: [f32; 3], uv: [f32; 2]| Part {
-        name: name.into(),
-        parent: None,
-        pivot,
-        role,
-        rest: [0.0; 3],
-        cuboids: vec![Cuboid::boxed(o, s, uv)],
-        mesh: Vec::new(),
-    };
-    vec![
-        part("head", [0.0, 24.0, 0.0], part_role::HEAD, [-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0]),
-        part("body", [0.0, 24.0, 0.0], part_role::STATIC, [-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0]),
-        part("rightArm", [-6.0, 22.0, 0.0], part_role::ARM_LEFT, [-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
-        part("leftArm", [6.0, 22.0, 0.0], part_role::ARM_RIGHT, [-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
-        part("rightLeg", [-2.0, 12.0, 0.0], part_role::LEG_LEFT, [-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
-        part("leftLeg", [2.0, 12.0, 0.0], part_role::LEG_RIGHT, [-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
-    ]
-}
-
 /// Entity component with attribute modifiers.
 pub const MODIFIERS: &str = "core:modifiers";
 /// Timers set with `Host::entity_after`, saved with their entity.
@@ -951,10 +941,10 @@ pub struct Entities {
 
 pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entities {
     let mut entities: Vec<RawEntity> = raws.iter_mut().flat_map(|r| std::mem::take(&mut r.entities)).collect();
+    let models: Vec<(String, Vec<Part>, [u32; 2])> = raws.iter_mut().flat_map(|r| std::mem::take(&mut r.entity_models)).collect();
     let mut player = builtin(PLAYER, 0.6, 1.8, ef::FALL_DAMAGE | ef::PUSHABLE);
     player.eye = 1.62;
     player.texture = "core:entity/player".into();
-    player.parts = player_parts();
     entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false, components: Vec::new() });
     entities.push(RawEntity { name: ITEM.into(), cell: 0, desc: builtin(ITEM, 0.25, 0.25, ef::INVULNERABLE), replace: false, components: Vec::new() });
     entities.push(RawEntity { name: VIRTUAL.into(), cell: 0, desc: builtin(VIRTUAL, 0.0, 0.0, ef::INVULNERABLE | ef::NO_GRAVITY), replace: false, components: Vec::new() });
@@ -987,6 +977,13 @@ pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entiti
     }
     for (cell, name) in replaced_cells {
         write_cell(cell, out.names[&name]);
+    }
+    // Models set on kinds of others (the player's from base), in load order: the last wins.
+    for (kind, parts, uv) in models {
+        match out.names.get(&kind) {
+            Some(&k) => (out.kinds[k as usize].parts, out.kinds[k as usize].texture_size) = (parts, uv),
+            None => errors.push(format!("model for unknown entity {kind}")),
+        }
     }
     out
 }

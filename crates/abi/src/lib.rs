@@ -758,24 +758,6 @@ pub mod entity_flags {
 }
 
 /// Which body part a model piece is, so the engine can animate it (walk cycle, head look).
-pub mod part_role {
-    pub const STATIC: u32 = 0;
-    pub const HEAD: u32 = 1;
-    pub const ARM_LEFT: u32 = 2;
-    pub const ARM_RIGHT: u32 = 3;
-    pub const LEG_LEFT: u32 = 4;
-    pub const LEG_RIGHT: u32 = 5;
-    /// Quadrupeds: front legs swing opposite to back legs.
-    pub const LEG_FRONT_LEFT: u32 = 6;
-    pub const LEG_FRONT_RIGHT: u32 = 7;
-    /// Arms held forward (zombies).
-    pub const ARM_FORWARD_LEFT: u32 = 8;
-    pub const ARM_FORWARD_RIGHT: u32 = 9;
-    /// Legs that sweep sideways while walking (spiders), in opposite phase.
-    pub const LEG_SWEEP_A: u32 = 10;
-    pub const LEG_SWEEP_B: u32 = 11;
-}
-
 /// Box in model pixels (1/16 block) relative to the part pivot; `uv` is the top-left texel of the
 /// classic box unwrap, or with `per_face` set each face takes its own rectangle.
 #[repr(C)]
@@ -808,18 +790,19 @@ pub struct MeshVertex {
 pub struct ModelPart {
     /// Pivot in model pixels, y up from the feet.
     pub pivot: [f32; 3],
-    pub role: u32,
     pub cuboids: Slice<ModelCuboid>,
-    /// Resting rotation in radians about x, y, z, applied x first; the role's animation adds to it.
+    /// Resting rotation in radians about x, y, z, applied x first; walking and looking add to it.
     pub rest: [f32; 3],
-    /// Bone name, what keyframe animations address.
+    /// Bone name: what keyframe animations address, and what decides how it moves by itself
+    /// (`head` looks, `rightArm`/`leftArm`/`rightLeg`/`leftLeg` swing, `body` leans when
+    /// sneaking, `leg0`..`leg3` of a quadruped, `leg0`..`leg7` of a spider sweep).
     pub name: Str,
     /// Index of the part this one hangs from (it moves with it), -1 for none.
     pub parent: i32,
     /// Triangles, three corners each, besides the boxes.
     pub mesh: Slice<MeshVertex>,
 }
-defaults!(ModelPart { pivot: [0.0; 3], role: 0, cuboids: Slice::EMPTY, rest: [0.0; 3], name: Str::EMPTY, parent: -1, mesh: Slice::EMPTY });
+defaults!(ModelPart { pivot: [0.0; 3], cuboids: Slice::EMPTY, rest: [0.0; 3], name: Str::EMPTY, parent: -1, mesh: Slice::EMPTY });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1213,18 +1196,19 @@ pub struct ClientCtx {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Worn {
-    /// Bit `1 << role` for every model part role it covers, see `worn_parts`.
+    /// The regions of the wearer's model it covers (`worn_parts`).
     pub roles: u32,
     /// Model pixels added on every side, so layers sit above the skin and each other.
     pub inflate: f32,
 }
 
+/// Regions of a model by its bone names: the head, the body (and any bone not named as a limb),
+/// the arms, the legs.
 pub mod worn_parts {
-    use super::part_role as r;
-    pub const HEAD: u32 = 1 << r::HEAD;
-    pub const BODY: u32 = 1 << r::STATIC;
-    pub const ARMS: u32 = 1 << r::ARM_LEFT | 1 << r::ARM_RIGHT | 1 << r::ARM_FORWARD_LEFT | 1 << r::ARM_FORWARD_RIGHT;
-    pub const LEGS: u32 = 1 << r::LEG_LEFT | 1 << r::LEG_RIGHT | 1 << r::LEG_FRONT_LEFT | 1 << r::LEG_FRONT_RIGHT;
+    pub const HEAD: u32 = 1;
+    pub const BODY: u32 = 2;
+    pub const ARMS: u32 = 4;
+    pub const LEGS: u32 = 8;
 }
 
 pub mod ui_kind {
@@ -1458,6 +1442,9 @@ pub struct Host {
     pub reg_biome: unsafe extern "C" fn(reg: *mut Registrar, desc: *const BiomeDesc),
     pub reg_dimension: unsafe extern "C" fn(reg: *mut Registrar, desc: *const DimensionDesc),
     pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
+    /// The model (parts on a skin of `uv_width` x `uv_height` texels) of a kind of any mod or the engine's
+    /// (`core:player`); a later mod's wins.
+    pub reg_entity_model: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, parts: Slice<ModelPart>, uv_width: u32, uv_height: u32),
     pub reg_component: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ComponentDesc),
     /// `cb` (`WorldTickArgs`) once per tick in every region of every dimension, for logic that
     /// isn't one entity's or block's (a dimension's loaded parts are regions run in parallel).

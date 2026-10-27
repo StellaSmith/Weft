@@ -39,5 +39,5 @@ pub fn register(r: &mut Registry) {
         .invulnerable()
         .solid()
         .texture("bodies")
-        .model(Model::from(vec![Part::new([0.0; 3], abi::part_role::STATIC).cube([-8.0, 0.0, -8.0], [16.0, 16.0, 16.0], [0.0, 24.0])]).uv(64, 64));
+        .model(Model::from(vec![Part::new("crate", [0.0; 3]).cube([-8.0, 0.0, -8.0], [16.0, 16.0, 16.0], [0.0, 24.0])]).uv(64, 64));
 }

@@ -4,7 +4,7 @@ use crate::content::{Block, Biome, Entity, EntityCategory, EquipmentSlot, GizmoG
 use crate::ui::{Ui, ui_callback};
 use crate::{Registry, World, callback, host, qualify};
 
-pub use abi::{Energy, EntityState, component_flags, damage, entity_flags, part_role, slot_flags};
+pub use abi::{Energy, EntityState, component_flags, damage, entity_flags, slot_flags};
 
 /// Eye height as a share of an entity's height, the engine's default too.
 pub const EYE_SHARE: f32 = 0.85;
@@ -362,11 +362,14 @@ fn event_cb(f: impl Fn(&mut EntityEvent) + Send + Sync + 'static) -> abi::Callba
     callback(move |a: &mut abi::EntityEventArgs| f(unsafe { &mut *(a as *mut abi::EntityEventArgs as *mut EntityEvent) }))
 }
 
-/// A model part (a bone): pivot, animation role, boxes, free-form triangles, and the part it
-/// hangs from.
+/// A model part (a bone): its name, pivot, boxes, free-form triangles, and the part it hangs
+/// from. The name says how it moves by itself, like in Blockbench's Bedrock models: `head` looks
+/// around, `rightArm`, `leftArm`, `rightLeg`, `leftLeg` swing while walking (arms resting held
+/// out, like a zombie's, only sway), `body` leans when sneaking, `leg0`..`leg3` are a
+/// quadruped's and `leg0`..`leg7` a spider's sweeping legs; other names keep still. Keyframe
+/// animations address bones by the same names.
 pub struct Part {
     pub pivot: [f32; 3],
-    pub role: u32,
     pub boxes: Vec<abi::ModelCuboid>,
     pub rest: [f32; 3],
     pub name: String,
@@ -375,8 +378,8 @@ pub struct Part {
 }
 
 impl Part {
-    pub fn new(pivot: [f32; 3], role: u32) -> Part {
-        Part { pivot, role, boxes: Vec::new(), rest: [0.0; 3], name: String::new(), parent: -1, mesh: Vec::new() }
+    pub fn new(name: &str, pivot: [f32; 3]) -> Part {
+        Part { pivot, boxes: Vec::new(), rest: [0.0; 3], name: name.to_string(), parent: -1, mesh: Vec::new() }
     }
     /// Resting rotation in radians about x, y, z (applied in that order).
     pub fn rotation(mut self, x: f32, y: f32, z: f32) -> Part {
@@ -393,11 +396,6 @@ impl Part {
         if let Some(b) = self.boxes.last_mut() {
             b.mirror = 1;
         }
-        self
-    }
-    /// Bone name keyframe animations address.
-    pub fn named(mut self, name: &str) -> Part {
-        self.name = name.to_string();
         self
     }
     /// Hangs from the part at `index` in the same model: moves and turns with it.
@@ -455,15 +453,16 @@ impl From<Vec<Part>> for Model {
     }
 }
 
+/// Classic humanoid on a 64x32 skin, the player's too; `arms_forward` for zombies.
 pub fn biped(arms_forward: bool) -> Model {
-    let (l, r) = if arms_forward { (part_role::ARM_FORWARD_LEFT, part_role::ARM_FORWARD_RIGHT) } else { (part_role::ARM_LEFT, part_role::ARM_RIGHT) };
+    let arms = if arms_forward { std::f32::consts::FRAC_PI_2 } else { 0.0 };
     Model::from(vec![
-        Part::new([0.0, 24.0, 0.0], part_role::HEAD).cube([-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0]),
-        Part::new([0.0, 24.0, 0.0], part_role::STATIC).cube([-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0]),
-        Part::new([-6.0, 22.0, 0.0], l).cube([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
-        Part::new([6.0, 22.0, 0.0], r).cube([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]),
-        Part::new([-2.0, 12.0, 0.0], part_role::LEG_LEFT).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
-        Part::new([2.0, 12.0, 0.0], part_role::LEG_RIGHT).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
+        Part::new("head", [0.0, 24.0, 0.0]).cube([-4.0, 0.0, -4.0], [8.0, 8.0, 8.0], [0.0, 0.0]),
+        Part::new("body", [0.0, 24.0, 0.0]).cube([-4.0, -12.0, -2.0], [8.0, 12.0, 4.0], [16.0, 16.0]),
+        Part::new("rightArm", [-6.0, 22.0, 0.0]).cube([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]).rotation(arms, 0.0, 0.0),
+        Part::new("leftArm", [6.0, 22.0, 0.0]).cube([-2.0, -10.0, -2.0], [4.0, 12.0, 4.0], [40.0, 16.0]).rotation(arms, 0.0, 0.0),
+        Part::new("rightLeg", [-2.0, 12.0, 0.0]).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
+        Part::new("leftLeg", [2.0, 12.0, 0.0]).cube([-2.0, -12.0, -2.0], [4.0, 12.0, 4.0], [0.0, 16.0]),
     ])
 }
 
@@ -471,15 +470,14 @@ pub fn biped(arms_forward: bool) -> Model {
 pub fn spider() -> Model {
     use std::f32::consts::FRAC_PI_4 as Q;
     let mut parts = vec![
-        Part::new([0.0, 9.0, -3.0], part_role::HEAD).cube([-4.0, -4.0, -8.0], [8.0, 8.0, 8.0], [32.0, 4.0]),
-        Part::new([0.0, 9.0, 0.0], part_role::STATIC).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0]),
-        Part::new([0.0, 9.0, 9.0], part_role::STATIC).cube([-5.0, -4.0, -6.0], [10.0, 8.0, 12.0], [0.0, 12.0]),
+        Part::new("head", [0.0, 9.0, -3.0]).cube([-4.0, -4.0, -8.0], [8.0, 8.0, 8.0], [32.0, 4.0]),
+        Part::new("neck", [0.0, 9.0, 0.0]).cube([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0]),
+        Part::new("body", [0.0, 9.0, 9.0]).cube([-5.0, -4.0, -6.0], [10.0, 8.0, 12.0], [0.0, 12.0]),
     ];
-    // (z, sideways splay, fan) back to front; right legs mirror the left ones.
+    // (z, sideways splay, fan) back to front, a left leg then its right twin: leg0, leg1 ...
     for (i, (z, splay, fan)) in [(2.0, 1.0, 2.0), (1.0, 0.74, 1.0), (0.0, 0.74, -1.0), (-1.0, 1.0, -2.0)].into_iter().enumerate() {
-        let (a, b) = if i % 2 == 0 { (part_role::LEG_SWEEP_A, part_role::LEG_SWEEP_B) } else { (part_role::LEG_SWEEP_B, part_role::LEG_SWEEP_A) };
-        parts.push(Part::new([-4.0, 9.0, z], a).cube([-15.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, fan * Q / 2.0, splay * Q));
-        parts.push(Part::new([4.0, 9.0, z], b).cube([-1.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, -fan * Q / 2.0, -splay * Q));
+        parts.push(Part::new(&format!("leg{}", i * 2), [-4.0, 9.0, z]).cube([-15.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, fan * Q / 2.0, splay * Q));
+        parts.push(Part::new(&format!("leg{}", i * 2 + 1), [4.0, 9.0, z]).cube([-1.0, -1.0, -1.0], [16.0, 2.0, 2.0], [18.0, 0.0]).rotation(0.0, -fan * Q / 2.0, -splay * Q));
     }
     Model::from(parts)
 }
@@ -489,18 +487,19 @@ pub fn spider() -> Model {
 pub fn quadruped(body: [f32; 3], leg: f32, head: [f32; 3]) -> Model {
     let [bw, bh, bl] = body;
     let y = leg;
+    // Bedrock's quadruped names: leg0 and leg1 at the back, leg2 and leg3 at the front.
     let legs = [
-        ([-bw / 2.0 + 2.0, y, -bl / 2.0 + 2.0], part_role::LEG_FRONT_LEFT),
-        ([bw / 2.0 - 2.0, y, -bl / 2.0 + 2.0], part_role::LEG_FRONT_RIGHT),
-        ([-bw / 2.0 + 2.0, y, bl / 2.0 - 2.0], part_role::LEG_RIGHT),
-        ([bw / 2.0 - 2.0, y, bl / 2.0 - 2.0], part_role::LEG_LEFT),
+        ("leg0", [-bw / 2.0 + 2.0, y, bl / 2.0 - 2.0]),
+        ("leg1", [bw / 2.0 - 2.0, y, bl / 2.0 - 2.0]),
+        ("leg2", [bw / 2.0 - 2.0, y, -bl / 2.0 + 2.0]),
+        ("leg3", [-bw / 2.0 + 2.0, y, -bl / 2.0 + 2.0]),
     ];
     let mut parts = vec![
-        Part::new([0.0, y, 0.0], part_role::STATIC).cube([-bw / 2.0, 0.0, -bl / 2.0], [bw, bh, bl], [0.0, 32.0]),
-        Part::new([0.0, y + bh * 0.75, -bl / 2.0], part_role::HEAD).cube([-head[0] / 2.0, -head[1] / 2.0, -head[2]], head, [0.0, 0.0]),
+        Part::new("body", [0.0, y, 0.0]).cube([-bw / 2.0, 0.0, -bl / 2.0], [bw, bh, bl], [0.0, 32.0]),
+        Part::new("head", [0.0, y + bh * 0.75, -bl / 2.0]).cube([-head[0] / 2.0, -head[1] / 2.0, -head[2]], head, [0.0, 0.0]),
     ];
-    for (pivot, role) in legs {
-        parts.push(Part::new(pivot, role).cube([-2.0, -leg, -2.0], [4.0, leg, 4.0], [0.0, 16.0]));
+    for (name, pivot) in legs {
+        parts.push(Part::new(name, pivot).cube([-2.0, -leg, -2.0], [4.0, leg, 4.0], [0.0, 16.0]));
     }
     Model::from(parts).uv(64, 64)
 }
@@ -733,6 +732,20 @@ impl EntityBuilder<'_> {
     }
 }
 
+fn raw_part(p: &Part) -> abi::ModelPart {
+    abi::ModelPart { pivot: p.pivot, cuboids: Slice::new(&p.boxes), rest: p.rest, name: Str::new(&p.name), parent: p.parent, mesh: Slice::new(&p.mesh), ..abi::ModelPart::DEFAULT }
+}
+
+impl Registry {
+    /// The model of a kind registered elsewhere, another mod's or the engine's (`core:player`
+    /// is drawn with `biped(false)` by base); a later mod's wins.
+    pub fn entity_model(&mut self, kind: &Entity, model: impl Into<Model>) {
+        let m = model.into();
+        let parts: Vec<abi::ModelPart> = m.parts.iter().map(raw_part).collect();
+        unsafe { (host().reg_entity_model)(self.raw, Str::new(kind.name()), Slice::new(&parts), m.uv[0], m.uv[1]) }
+    }
+}
+
 impl Drop for EntityBuilder<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
@@ -741,7 +754,7 @@ impl Drop for EntityBuilder<'_> {
         let parts: Vec<abi::ModelPart> = self
             .parts
             .iter()
-            .map(|p| abi::ModelPart { pivot: p.pivot, role: p.role, cuboids: Slice::new(&p.boxes), rest: p.rest, name: Str::new(&p.name), parent: p.parent, mesh: Slice::new(&p.mesh), ..abi::ModelPart::DEFAULT })
+            .map(raw_part)
             .collect();
         let mut scratch = Vec::new();
         let values = crate::content::raw_values_pub(&self.components, &mut scratch);

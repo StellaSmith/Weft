@@ -22,6 +22,7 @@ pub static HOST: Host = Host {
     reg_biome,
     reg_dimension,
     reg_entity,
+    reg_entity_model,
     reg_component,
     reg_world_tick,
     entity_after,
@@ -1134,6 +1135,13 @@ unsafe extern "C" fn reg_entity(r: *mut abi::Registrar, d: *const abi::EntityDes
         let r = reg(r);
         let owner = r.owner;
         r.game.entities.push(registry::copy_entity(owner, &*d));
+    }
+}
+
+unsafe extern "C" fn reg_entity_model(r: *mut abi::Registrar, kind: Str, parts: abi::Slice<abi::ModelPart>, uv_width: u32, uv_height: u32) {
+    unsafe {
+        let parts = registry::copy_parts(parts);
+        reg(r).game.entity_models.push((kind.as_str().to_string(), parts, [uv_width, uv_height]));
     }
 }
 

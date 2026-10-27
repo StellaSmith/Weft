@@ -320,6 +320,8 @@ pub struct Game {
     pub energy: u32,
     /// (owner, hook, callback) in mod order, see `abi::client_hook`.
     pub client_hooks: Vec<(ModId, u32, Callback)>,
+    /// Client cosmetics by entity kind (`Host::reg_client_entity_tick`).
+    pub client_entity_ticks: FxHashMap<u32, (ModId, Callback)>,
     /// Mod message channels by id (sorted by name, so both sides agree).
     pub packets: Vec<PacketDef>,
     pub packet_names: FxHashMap<String, u32>,
@@ -498,6 +500,8 @@ pub struct RawGame {
     /// Components and tags set on other mods' entries.
     pub sets: Vec<RawSet>,
     pub client_hooks: Vec<(ModId, u32, Callback)>,
+    /// (owner, entity kind, callback).
+    pub client_entity_ticks: Vec<(ModId, String, Callback)>,
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
@@ -1030,7 +1034,9 @@ pub fn freeze(
         CategoryDef { name: "core:hostile".into(), cap: 8, despawn: 128.0 },
         CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0 },
     ];
+    let mut entity_ticks: Vec<(ModId, String, Callback)> = Vec::new();
     for r in raws {
+        entity_ticks.extend(r.client_entity_ticks);
         sounds.extend(r.sounds);
         music.extend(r.music);
         particles.extend(r.particles);
@@ -1084,6 +1090,15 @@ pub fn freeze(
     g.falling_kind = g.entity_names[FALLING];
     g.virtual_kind = g.entity_names[VIRTUAL];
     g.client_hooks.sort_by_key(|h| order(h.0));
+    entity_ticks.sort_by_key(|t| order(t.0));
+    for (owner, kind, cb) in entity_ticks {
+        match g.entity_names.get(&kind) {
+            Some(&k) => {
+                g.client_entity_ticks.insert(k, (owner, cb));
+            }
+            None => errors.push(format!("client entity tick for unknown entity {kind}")),
+        }
+    }
     freeze_particles(&mut g, particles, errors);
     // Volume settings right after the master volume.
     let volumes: Vec<(usize, crate::config::ConfigDef)> = sound_categories.iter().filter_map(|k| k.setting.as_deref()).map(|s| (0, crate::config::volume(s))).collect();

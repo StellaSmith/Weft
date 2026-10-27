@@ -510,6 +510,14 @@ impl Registry {
         unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::FRAME, cb) }
     }
 
+    /// Cosmetics of entities of `kind` on the client, every frame (wing flaps, sparks, purring),
+    /// instead of the engine's steps, idle noises and death smoke; `e.engine_effects()` keeps
+    /// those. One per kind: a later mod's replaces an earlier one's.
+    pub fn client_entity_tick(&mut self, kind: &crate::Entity, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
+        let cb = callback(move |a: &mut abi::ClientEntityArgs| f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) }));
+        unsafe { (host().reg_client_entity_tick)(self.raw, s(kind.name()), cb) }
+    }
+
     /// When the top screen changes; the name is empty back in the world.
     pub fn client_screen(&mut self, f: impl Fn(&Client, &str) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ClientScreenArgs| f(&Client::from_raw(a.client), unsafe { a.screen.as_str() }));
@@ -628,4 +636,44 @@ pub mod screens {
     pub static RESOURCE_PACKS: Screen = Screen::named("core:resource_packs");
     pub static SHADER_PACKS: Screen = Screen::named("core:shader_packs");
     pub static SOUND: Screen = Screen::named("core:sound");
+}
+
+/// One entity in `Registry::client_entity_tick`.
+#[repr(transparent)]
+pub struct ClientEntity(abi::ClientEntityArgs);
+
+impl ClientEntity {
+    pub fn id(&self) -> u64 {
+        self.0.entity
+    }
+    pub fn kind(&self) -> u32 {
+        self.0.kind
+    }
+    pub fn pos(&self) -> [f64; 3] {
+        self.0.pos
+    }
+    pub fn yaw(&self) -> f32 {
+        self.0.yaw
+    }
+    /// Distance walked so far; steps go by how it grows.
+    pub fn walked(&self) -> f32 {
+        self.0.walked
+    }
+    /// Seconds into its death animation (1: over, the last call), `None` while alive.
+    pub fn dying(&self) -> Option<f32> {
+        (self.0.dying >= 0.0).then_some(self.0.dying)
+    }
+    /// Seconds since this client first saw it.
+    pub fn age(&self) -> f32 {
+        self.0.age
+    }
+    /// Seconds since the last call.
+    pub fn dt(&self) -> f32 {
+        self.0.dt
+    }
+    /// What the engine does for kinds without a tick: steps, idle noises, death smoke.
+    pub fn engine_effects(&self) {
+        let mut a = abi::ClientEntityArgs { ..self.0 };
+        unsafe { (host().client_entity_defaults)(&mut a) }
+    }
 }

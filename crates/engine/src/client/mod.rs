@@ -123,6 +123,11 @@ impl LocalPlayer {
 }
 
 impl ClientEntity {
+    /// What its kind's client tick gets (`client` filled in by the caller).
+    pub fn args(&self, id: u64, dt: f32) -> weft_abi::ClientEntityArgs {
+        weft_abi::ClientEntityArgs { client: std::ptr::null_mut(), entity: id, kind: self.kind, pos: self.pos.to_array(), yaw: self.yaw, walked: self.walk, dying: self.dying.unwrap_or(-1.0), age: self.age, dt }
+    }
+
     /// Half width, height and eye height of its box, like the server's `Entity::dims`.
     pub fn dims(&self) -> (f64, f64, f64) {
         let k = &content().game.entities[self.kind as usize];
@@ -1108,17 +1113,7 @@ impl Client {
             }
         }
         self.frames = frames;
-        // Finished death animations turn into a puff of smoke (vanilla's 20 poof particles).
         let c = content();
-        let done: Vec<u64> = self.entities.iter().filter(|(_, e)| e.dying.is_some_and(|d| d >= 1.0)).map(|(&id, _)| id).collect();
-        for id in done {
-            let Some(e) = self.entities.remove(&id) else { continue };
-            let Some(&kind) = c.game.particle_names.get(weft_abi::particle::POOF) else { continue };
-            let k = &c.game.entities[e.kind as usize];
-            let (w, h) = (k.width * 0.5, k.height * 0.5);
-            let pos = (e.pos + DVec3::Y * h as f64).to_array();
-            self.particles.spawn(&weft_abi::ParticleBurst { kind, pos, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..weft_abi::ParticleBurst::DEFAULT });
-        }
         // Hitting a block chips pieces off the face being hit, one per tick like vanilla.
         self.hit_dust -= dt as f32;
         if let (Some((frame, pos, _)), Some(hit)) = (self.breaking, self.target) {
@@ -1180,8 +1175,40 @@ impl Client {
         (self.rng >> 40) as f32 / (1u64 << 24) as f32
     }
 
-    /// Steps (own and others', by distance walked on the ground), mobs' idle noises and the knock
-    /// of the block being mined; all decided here, nothing travels for them.
+    /// The engine's cosmetics of one entity, its kind's client tick unless a mod gave it one:
+    /// steps by distance walked, idle noises about every twelve seconds (vanilla's ambient
+    /// timer), and a puff of smoke when its death animation ends (vanilla's 20 poof particles).
+    pub fn entity_effects(&mut self, a: &weft_abi::ClientEntityArgs) {
+        use crate::audio::Play;
+        let c = content();
+        let k = &c.game.entities[a.kind as usize];
+        let pos = DVec3::from_array(a.pos);
+        if a.dying >= 1.0 {
+            if let Some(&kind) = c.game.particle_names.get(weft_abi::particle::POOF) {
+                let (w, h) = (k.width * 0.5, k.height * 0.5);
+                let at = (pos + DVec3::Y * h as f64).to_array();
+                self.particles.spawn(&weft_abi::ParticleBurst { kind, pos: at, spread: [w, h, w], velocity: [0.0, 0.4, 0.0], speed: 0.8, count: 20, ..weft_abi::ParticleBurst::DEFAULT });
+            }
+            return;
+        }
+        if a.dying >= 0.0 {
+            return;
+        }
+        let Some(e) = self.entities.get_mut(&a.entity) else { return };
+        if a.walked >= e.next_step {
+            e.next_step = a.walked + 1.6;
+            let sound = if k.sounds[3] != u32::MAX { k.sounds[3] } else { self.world.block_or_air((pos - DVec3::Y * 0.2).floor().as_ivec3()).map_or(u32::MAX, |s| c.states[s as usize].sounds[2]) };
+            if sound != u32::MAX {
+                self.sounds.push(Play { sound, pos: Some(pos), volume: 0.2, pitch: 0.0 });
+            }
+        }
+        if k.sounds[2] != u32::MAX && self.chance() < a.dt / 12.0 {
+            self.sounds.push(Play { sound: k.sounds[2], pos: Some(pos + DVec3::Y * k.eye as f64), volume: 1.0, pitch: 0.0 });
+        }
+    }
+
+    /// The player's own steps and the knock of the block being mined; decided here, nothing
+    /// travels for them.
     fn creature_sounds(&mut self, dt: f32, moved: f32) {
         use crate::audio::Play;
         let c = content();
@@ -1193,31 +1220,6 @@ impl Client {
                 self.next_step = 1.6;
                 let sound = below(&self.world, self.player.pos);
                 self.sounds.push(Play { sound, pos: Some(self.player.pos), volume: 0.25, pitch: 0.0 });
-            }
-        }
-        let mut plays = Vec::new();
-        for e in self.entities.values_mut() {
-            if !e.item.is_empty() || e.dying.is_some() {
-                continue;
-            }
-            let k = &c.game.entities[e.kind as usize];
-            if e.walk >= e.next_step {
-                e.next_step = e.walk + 1.6;
-                let sound = if k.sounds[3] != u32::MAX { k.sounds[3] } else { below(&self.world, e.pos) };
-                plays.push(Play { sound, pos: Some(e.pos), volume: 0.2, pitch: 0.0 });
-            }
-            if k.sounds[2] != u32::MAX {
-                plays.push(Play { sound: k.sounds[2], pos: Some(e.pos + DVec3::Y * k.eye as f64), volume: 1.0, pitch: -dt });
-            }
-        }
-        // Idle noises about every twelve seconds per mob, like vanilla's ambient timer.
-        for p in plays {
-            if p.pitch < 0.0 {
-                if self.chance() < -p.pitch / 12.0 {
-                    self.sounds.push(Play { pitch: 0.0, ..p });
-                }
-            } else if p.sound != u32::MAX {
-                self.sounds.push(p);
             }
         }
         self.hit_sound -= dt;

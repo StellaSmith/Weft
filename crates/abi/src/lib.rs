@@ -1619,6 +1619,12 @@ pub struct Host {
     // ------------------------------------------------ client side and mod channels
     /// Client callback, see `client_hook`.
     pub reg_client_hook: unsafe extern "C" fn(reg: *mut Registrar, hook: u32, cb: Callback),
+    /// Cosmetics of entities of `kind` on the client (`ClientEntityArgs`), every frame, instead of
+    /// the engine's (steps, idle noises, the smoke when a death ends); one per kind, a later mod's
+    /// replaces an earlier one's.
+    pub reg_client_entity_tick: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
+    /// The engine's own cosmetics for this entity, what a kind without a tick gets.
+    pub client_entity_defaults: unsafe extern "C" fn(args: *mut ClientEntityArgs),
     /// Message channel `name` between a mod's client and server parts, carrying values of
     /// `schema` (both sides must agree, sends with another are refused). `side` 0: `cb` runs on
     /// the server with `PacketArgs` when a client sends; 1: on the client with `ClientPacketArgs`.
@@ -2496,6 +2502,25 @@ pub mod client_hook {
 #[repr(C)]
 pub struct ClientFrameArgs {
     pub client: *mut ClientCtx,
+}
+
+/// One entity on the client, for `Host::reg_client_entity_tick`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ClientEntityArgs {
+    pub client: *mut ClientCtx,
+    pub entity: u64,
+    pub kind: u32,
+    pub pos: [f64; 3],
+    pub yaw: f32,
+    /// Distance walked so far (it drives the limbs); steps go by how it grows.
+    pub walked: f32,
+    /// Seconds into its death animation (1 = over, its last call), negative while alive.
+    pub dying: f32,
+    /// Seconds since the client first saw it.
+    pub age: f32,
+    /// Seconds since the last call.
+    pub dt: f32,
 }
 
 #[repr(C)]

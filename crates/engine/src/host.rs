@@ -99,6 +99,8 @@ pub static HOST: Host = Host {
     gizmo_on,
     gizmo,
     reg_client_hook,
+    reg_client_entity_tick,
+    client_entity_defaults: crate::app::api::client_entity_defaults,
     reg_packet,
     reg_key,
     reg_error,
@@ -1617,6 +1619,14 @@ unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Call
         }
         let owner = r.owner;
         r.game.client_hooks.push((owner, hook, cb));
+    }
+}
+
+unsafe extern "C" fn reg_client_entity_tick(r: *mut abi::Registrar, kind: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game.client_entity_ticks.push((owner, kind.as_str().to_string(), cb));
     }
 }
 

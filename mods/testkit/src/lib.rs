@@ -23,6 +23,9 @@ static PLAN: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 /// What came back on the typed channels (`extend::typed_channels`).
 pub static ECHOED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static GREETED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+/// Calls of the pigs' client tick, and the last ones, when a death ends (`extend::client_entity_tick`).
+pub static PIG_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static PIG_DEATHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn init(r: &mut Registry) {
     server::register(r);
@@ -33,6 +36,15 @@ fn init(r: &mut Registry) {
     r.command_branch("gizmo", "probe <n:int>", |cmd| {
         let n = cmd.int("n").unwrap_or(0);
         cmd.reply("command.testkit.gizmo_probe", &[Arg::Int(n as i64)]);
+    });
+    // Pigs' cosmetics through a mod's tick that keeps the engine's (testkit is never shipped).
+    static PIG: Entity = Entity::named("base:pig");
+    r.client_entity_tick(&PIG, |_, e| {
+        PIG_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if e.dying().is_some_and(|d| d >= 1.0) {
+            PIG_DEATHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        e.engine_effects();
     });
     // A command that never reaches the server: answers from the client it runs on.
     r.client_command("probe", "<what:word(alpha,beta)>", |cmd| {

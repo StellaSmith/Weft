@@ -69,6 +69,7 @@ pub fn all() -> Vec<TestDef> {
         extend::key_to_server,
         extend::typed_channels,
         extend::block_properties,
+        extend::client_entity_tick,
         extend::facing_placement,
         liquids::mod_liquid_bucket,
         liquids::mod_sand_soil,

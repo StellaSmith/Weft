@@ -170,4 +170,14 @@ fn client(_r: &mut Registry) {
     // r.key(&DASH, "R").on_press_server(|p| { let w = p.world(); info!("{} dashes", p.player()); w.time(); });
     // r.screen(&ABOUT, |ui| ui.panel("background", S::col().pad(8.0), |ui| ui.text("examplemod.about")));
     // r.hud_element(&MANA, hud_anchor::HOTBAR_RIGHT, 2, |ui| ui.text_bind(|c, out| { /* ... */ }));
+    //
+    // Sparks around a mob while it lives, the engine's steps and idle noises kept:
+    // static WISP: Entity = Entity::named("wisp");
+    // static SPARK: Particle = Particle::named("spark");
+    // r.client_entity_tick(&WISP, |c, e| {
+    //     if e.dying().is_none() {
+    //         c.spawn_particles(&SPARK, e.pos());
+    //     }
+    //     e.engine_effects();
+    // });
 }

@@ -133,6 +133,23 @@ pub async fn block_properties(t: T) -> R {
     Ok(())
 }
 
+/// A mod's client tick for pigs runs every frame, gets a last call when a death ends, and keeps
+/// the engine's cosmetics (the smoke) through `engine_effects`.
+pub async fn client_entity_tick(t: T) -> R {
+    use std::sync::atomic::Ordering::Relaxed;
+    t.flat().await?;
+    let p = add(t.feet(), [3, 0, 0]);
+    let before = crate::PIG_TICKS.load(Relaxed);
+    t.op(&format!("spawn pig {}", at(p))).await?;
+    t.until("the pig's client tick", Duration::from_secs(3), |_| crate::PIG_TICKS.load(Relaxed) > before + 10).await?;
+    let deaths = crate::PIG_DEATHS.load(Relaxed);
+    t.cmd("/kill @e[type=base:pig]").await?;
+    t.until("the last call when the death ends", Duration::from_secs(5), |_| crate::PIG_DEATHS.load(Relaxed) > deaths).await?;
+    let smoke = t.state().particles;
+    t.check(smoke >= 10, format!("the engine's death smoke through engine_effects: {smoke} particles"));
+    Ok(())
+}
+
 /// Typed channels: a `value!` struct and a string go to the server and the answers come back
 /// typed, no bytes handled by hand.
 pub async fn typed_channels(t: T) -> R {

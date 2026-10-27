@@ -950,6 +950,31 @@ impl Running {
         }
     }
 
+    /// Every entity's cosmetics this frame: its kind's mod tick or the engine's; finished deaths
+    /// go after their last call.
+    fn entity_ticks(&mut self, dt: f32) {
+        let Some(g) = &self.game else { return };
+        let c = content();
+        let all: Vec<abi::ClientEntityArgs> = g.client.entities.iter().filter(|(_, e)| e.item.is_empty() && e.structure.is_none()).map(|(&id, e)| e.args(id, dt)).collect();
+        for mut a in all {
+            match c.game.client_entity_ticks.get(&a.kind) {
+                Some(&(owner, cb)) => {
+                    let mut v = self.frame_view();
+                    a.client = v.raw();
+                    crate::host::invoke(owner, cb, &mut a);
+                }
+                None => {
+                    if let Some(g) = &mut self.game {
+                        g.client.entity_effects(&a);
+                    }
+                }
+            }
+        }
+        if let Some(g) = &mut self.game {
+            g.client.entities.retain(|_, e| !e.dying.is_some_and(|d| d >= 1.0));
+        }
+    }
+
     fn frame_view(&mut self) -> crate::client::modui::ClientView {
         let mut v = crate::client::modui::ClientView::new(self.game.as_ref().map(|g| &g.client));
         v.run = self as *mut Running as *mut std::ffi::c_void;
@@ -1406,6 +1431,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.prof[0] = t.elapsed().as_secs_f32() * 1000.0;
         r.prof[1] = Instant::now().duration_since(now).as_secs_f32() * 1000.0;
     }
+    r.entity_ticks(dt as f32);
     r.client_packets();
     if let Some(a) = &mut r.audio {
         let listener = r.game.as_ref().map(|g| g.client.listener());

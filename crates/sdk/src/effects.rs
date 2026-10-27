@@ -13,7 +13,7 @@
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{Client, ClientView, GizmoGroup, Music, Particle, Registry, SoundCategory, TextCondition, World, callback, host, qualify};
+use crate::{Client, ClientView, Music, Particle, Registry, SoundCategory, TextCondition, World, callback, host, qualify};
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -184,11 +184,6 @@ impl World {
     pub fn spawn_particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
         burst(Target::World(*self), kind, pos)
     }
-
-    /// A filled box for players showing `group` (`/gizmo <group>`), see-through by `color`'s alpha.
-    pub fn draw_fill(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
-        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), 3, &min, &max, color, ticks, Str::EMPTY, abi::Slice::EMPTY) }
-    }
 }
 
 impl Client {
@@ -201,11 +196,6 @@ impl Client {
     pub fn post_effect(&self, name: &str, strength: f32) -> bool {
         let name = qualify(crate::mod_id(), name);
         unsafe { (host().client_command)(self.raw(), abi::client_op::POST_EFFECT, Str::new(&name), strength as f64) != 0 }
-    }
-
-    /// A filled box drawn this frame, see-through by `color`'s alpha (range previews, blueprints).
-    pub fn draw_fill(&self, min: [f64; 3], max: [f64; 3], color: u32) {
-        unsafe { (host().client_draw)(self.raw(), 4, &min, &max, color, Str::EMPTY, abi::Slice::EMPTY) }
     }
 }
 

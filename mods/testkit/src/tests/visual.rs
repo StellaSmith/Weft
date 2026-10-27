@@ -462,21 +462,37 @@ pub async fn client_hooks(t: T) -> R {
     let f = t.feet();
     let b = [f[0] as f64 + 2.0, f[1] as f64, f[2] as f64 - 4.0];
     t.c().look(0.0, -10.0);
+    static DRAWN: weft_sdk::GizmoGroup = weft_sdk::GizmoGroup::named("drawn");
+    let green = |shot: &crate::runner::Shot| shot.share(0.0, 0.0, 1.0, 0.9, |c| c[1] > 200 && c[0] < 80 && c[2] < 80);
     for _ in 0..3 {
-        t.c().draw_box(b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
-        t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
+        t.c().draw_fill(Some(&DRAWN), [b[0] - 3.0, b[1], b[2]], [b[0] - 2.0, b[1] + 1.0, b[2] + 1.0], 0x20FF20FF);
+        t.c().draw_box(None, b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
+        t.c().draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
         t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF);
         t.frames(1).await?;
     }
-    t.c().draw_box(b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
-    t.c().draw_text([b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
+    t.c().draw_fill(Some(&DRAWN), [b[0] - 3.0, b[1], b[2]], [b[0] - 2.0, b[1] + 1.0, b[2] + 1.0], 0x20FF20FF);
+    t.c().draw_box(None, b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
+    t.c().draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
     t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF);
     let shot = t.shot("drawn").await?;
+    let hidden = green(&shot);
+    t.probe("a shape of a group that is off is not drawn", hidden, hidden < 0.0005);
     let red = shot.share(0.0, 0.0, 1.0, 0.9, probe::red);
     t.probe("the box drawn in the world", red, red > 0.001);
     let cyan = shot.share(0.25, 0.25, 0.75, 0.4, |c| c[2] > 200 && c[1] > 200 && c[0] < 190);
     t.probe("the screen text", cyan, cyan > 0.003);
     let yellow = shot.share(0.0, 0.0, 1.0, 0.5, |c| c[0] > 200 && c[1] > 200 && c[2] < 170);
     t.probe("the text drawn in the world", yellow, yellow > 0.001);
+    t.cmd("/gizmo testkit:drawn").await?;
+    for _ in 0..3 {
+        t.c().draw_fill(Some(&DRAWN), [b[0] - 3.0, b[1], b[2]], [b[0] - 2.0, b[1] + 1.0, b[2] + 1.0], 0x20FF20FF);
+        t.frames(1).await?;
+    }
+    t.c().draw_fill(Some(&DRAWN), [b[0] - 3.0, b[1], b[2]], [b[0] - 2.0, b[1] + 1.0, b[2] + 1.0], 0x20FF20FF);
+    let shot = t.shot("drawn_group").await?;
+    t.cmd("/gizmo testkit:drawn").await?;
+    let shown = green(&shot);
+    t.probe("the same shape once its group is on", shown, shown > 0.001);
     Ok(())
 }

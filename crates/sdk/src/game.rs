@@ -201,6 +201,10 @@ impl World {
     pub fn draw_box(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
         self.gizmo(group, abi::gizmo_kind::BOX, min, max, color, ticks, "", &[]);
     }
+    /// See-through by `color`'s alpha.
+    pub fn draw_fill(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
+        self.gizmo(group, abi::gizmo_kind::FILL, min, max, color, ticks, "", &[]);
+    }
     /// The translation `key` with `args` at `pos`, in each viewer's language.
     pub fn draw_text(&self, group: &GizmoGroup, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, ticks: u32) {
         self.gizmo(group, abi::gizmo_kind::LABEL, pos, pos, color, ticks, key, args);

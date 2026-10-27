@@ -542,26 +542,18 @@ pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out:
     }
 }
 
-pub unsafe extern "C" fn client_draw(c: *mut abi::ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, key: Str, args: Slice<abi::UiArg>) {
+pub unsafe extern "C" fn client_draw(c: *mut abi::ClientCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, key: Str, args: Slice<abi::UiArg>) {
     unsafe {
         let Some(r) = run(c) else { return };
+        let group = group.as_str();
+        if !group.is_empty() && !r.game.as_ref().is_some_and(|g| g.client.gizmos.on(group)) {
+            return;
+        }
         let (a, b, text) = (DVec3::from_array(*a), DVec3::from_array(*b), crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)));
         match kind {
-            0 => r.mod_lines.push((a, b, color)),
-            1 => {
-                let (lo, hi) = (a.min(b), a.max(b));
-                let corner = |i: u32| DVec3::new(if i & 1 != 0 { hi.x } else { lo.x }, if i & 2 != 0 { hi.y } else { lo.y }, if i & 4 != 0 { hi.z } else { lo.z });
-                for i in 0..8u32 {
-                    for bit in [1, 2, 4] {
-                        if i & bit == 0 {
-                            r.mod_lines.push((corner(i), corner(i | bit), color));
-                        }
-                    }
-                }
-            }
-            2 => r.mod_labels.push((a, text, color)),
-            4 => r.mod_fills.push((a.min(b), a.max(b), color)),
-            _ => r.mod_screen_text.push((a.x as f32, a.y as f32, text, color)),
+            abi::gizmo_kind::SCREEN_LABEL => r.mod_screen_text.push((a.x as f32, a.y as f32, text, color)),
+            k if k <= abi::gizmo_kind::FILL => r.mod_gizmos.push(crate::net::GizmoShape { group: group.to_string(), kind: k as u8, a, b, color, ticks: 0, text }),
+            _ => {}
         }
     }
 }

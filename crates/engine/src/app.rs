@@ -193,11 +193,9 @@ pub(crate) struct Running {
     /// Keys mods hold down, released at the given time.
     mod_held: Vec<(Key, Instant)>,
     /// What mods draw this frame (`Host::client_draw`).
-    mod_lines: Vec<crate::client::gizmo::Line>,
-    mod_fills: Vec<crate::client::gizmo::Fill>,
+    mod_gizmos: Vec<crate::net::GizmoShape>,
     /// Sounds of the UI and of mods' client code, played after this frame's world sounds.
     ui_sounds: Vec<crate::audio::Play>,
-    mod_labels: Vec<crate::client::gizmo::Label>,
     mod_screen_text: Vec<(f32, f32, Msg, u32)>,
     frame_no: u64,
     frame_dt: f32,
@@ -353,10 +351,8 @@ impl App {
             shot_path: None,
             shot_image: None,
             mod_held: Vec::new(),
-            mod_lines: Vec::new(),
-            mod_fills: Vec::new(),
+            mod_gizmos: Vec::new(),
             ui_sounds: Vec::new(),
-            mod_labels: Vec::new(),
             mod_screen_text: Vec::new(),
             frame_no: 0,
             frame_dt: 0.0,
@@ -1266,9 +1262,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     // Textures first asked for while drawing the last frame.
     r.textures.load_requested(&mut *r.gpu);
     r.release_mod_keys();
-    r.mod_lines.clear();
-    r.mod_fills.clear();
-    r.mod_labels.clear();
+    r.mod_gizmos.clear();
     r.mod_screen_text.clear();
     r.client_hooks(abi::client_hook::FRAME, "");
     if opts.automated && r.screens.is_empty() && r.game.is_some() {
@@ -1608,9 +1602,10 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
     if let Some(g) = &mut r.game {
         g.client.collect_gizmos();
-        g.client.gizmo_lines.extend_from_slice(&r.mod_lines);
-        g.client.gizmo_fills.extend_from_slice(&r.mod_fills);
-        g.client.gizmo_labels.extend(r.mod_labels.iter().cloned());
+        let cl = &mut g.client;
+        for s in &r.mod_gizmos {
+            crate::client::gizmo::shape(s, &mut cl.gizmo_lines, &mut cl.gizmo_fills, &mut cl.gizmo_labels);
+        }
         let cam = g.client.render_camera();
         let view_proj = cam.proj(info.width as f32 / info.height.max(1) as f32) * cam.view();
         for (pos, text, color) in &g.client.gizmo_labels {

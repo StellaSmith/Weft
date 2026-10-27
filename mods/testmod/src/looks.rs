@@ -153,7 +153,7 @@ pub fn register(r: &mut Registry) {
         let st = c.state();
         if c.inventory_slot(st.selected).item == RUNE.id() {
             let p = st.pos.map(f64::floor);
-            c.draw_fill([p[0] - 2.0, p[1], p[2] - 2.0], [p[0] + 3.0, p[1] + 0.06, p[2] + 3.0], 0x60D0FF50);
+            c.draw_fill(None, [p[0] - 2.0, p[1], p[2] - 2.0], [p[0] + 3.0, p[1] + 0.06, p[2] + 3.0], 0x60D0FF50);
         }
     });
 }

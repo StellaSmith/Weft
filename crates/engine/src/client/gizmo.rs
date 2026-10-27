@@ -69,12 +69,7 @@ impl Gizmos {
         let now = Instant::now();
         self.shapes.retain(|s| s.1 > now);
         for (s, _) in &self.shapes {
-            match s.kind as u32 {
-                weft_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
-                weft_abi::gizmo_kind::BOX => cuboid(&mut lines, s.a, s.b, s.color),
-                weft_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
-                _ => labels.push((s.a, s.text.clone(), s.color)),
-            }
+            shape(s, &mut lines, &mut fills, &mut labels);
         }
         let c = content();
         let me = client.player.pos;
@@ -151,6 +146,16 @@ impl Gizmos {
             }
         }
         (lines, fills, labels)
+    }
+}
+
+/// What a server's or a mod's shape draws.
+pub fn shape(s: &GizmoShape, lines: &mut Vec<Line>, fills: &mut Vec<Fill>, labels: &mut Vec<Label>) {
+    match s.kind as u32 {
+        weft_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
+        weft_abi::gizmo_kind::BOX => cuboid(lines, s.a.min(s.b), s.a.max(s.b), s.color),
+        weft_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
+        _ => labels.push((s.a, s.text.clone(), s.color)),
     }
 }
 

@@ -780,12 +780,12 @@ unsafe extern "C" fn gizmo(w: *mut abi::WorldCtx, group: Str, kind: u32, a: *con
     unsafe {
         let d = dim(w);
         let group = group.as_str();
-        if !d.gizmo_groups.iter().any(|g| g == group) {
+        if kind > abi::gizmo_kind::FILL || !d.gizmo_groups.iter().any(|g| g == group) {
             return;
         }
         d.gizmos.push(crate::net::GizmoShape {
             group: group.to_string(),
-            kind: kind.min(abi::gizmo_kind::FILL) as u8,
+            kind: kind as u8,
             a: DVec3::from_array(*a),
             b: DVec3::from_array(*b),
             color,

@@ -9,7 +9,7 @@
 //! r.key(&SCAN, "K").on_press(|c| { /* on this client */ });
 //! ```
 
-use crate::abi::{self, ItemStack, Slice, Str};
+use crate::abi::{self, ItemStack, Slice, Str, gizmo_kind as gk};
 use crate::{ClientView, Key, Registry, Screen, Value, World, callback, host};
 
 pub use abi::{ClientState, client_flags};
@@ -285,28 +285,35 @@ impl Client {
         true
     }
 
-    fn draw(&self, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, key: &str, args: &[crate::Arg]) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw(&self, group: Option<&crate::GizmoGroup>, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, key: &str, args: &[crate::Arg]) {
         let raw = crate::ui::raw_args(args);
-        unsafe { (host().client_draw)(self.raw, kind, &a, &b, color, s(key), crate::abi::Slice::new(&raw)) }
+        unsafe { (host().client_draw)(self.raw, s(group.map_or("", |g| g.name())), kind, &a, &b, color, s(key), crate::abi::Slice::new(&raw)) }
     }
 
-    /// Lines, boxes and labels for this frame only; colors are 0xRRGGBBAA.
-    pub fn draw_line(&self, a: [f64; 3], b: [f64; 3], color: u32) {
-        self.draw(0, a, b, color, "", &[]);
+    /// The server's `draw_*` for this frame only: always, or with a `group` while the player
+    /// shows it (`/gizmo <group>`). Colors are 0xRRGGBBAA.
+    pub fn draw_line(&self, group: Option<&crate::GizmoGroup>, a: [f64; 3], b: [f64; 3], color: u32) {
+        self.draw(group, gk::LINE, a, b, color, "", &[]);
     }
 
-    pub fn draw_box(&self, min: [f64; 3], max: [f64; 3], color: u32) {
-        self.draw(1, min, max, color, "", &[]);
+    pub fn draw_box(&self, group: Option<&crate::GizmoGroup>, min: [f64; 3], max: [f64; 3], color: u32) {
+        self.draw(group, gk::BOX, min, max, color, "", &[]);
+    }
+
+    /// See-through by `color`'s alpha (range previews, blueprints).
+    pub fn draw_fill(&self, group: Option<&crate::GizmoGroup>, min: [f64; 3], max: [f64; 3], color: u32) {
+        self.draw(group, gk::FILL, min, max, color, "", &[]);
     }
 
     /// The translation `key` with `args` at a world position.
-    pub fn draw_text(&self, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32) {
-        self.draw(2, pos, pos, color, key, args);
+    pub fn draw_text(&self, group: Option<&crate::GizmoGroup>, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32) {
+        self.draw(group, gk::LABEL, pos, pos, color, key, args);
     }
 
     /// The translation `key` with `args`, centered at fractions of the window.
     pub fn screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32) {
-        self.draw(3, [x as f64, y as f64, 0.0], [0.0; 3], color, key, args);
+        self.draw(None, gk::SCREEN_LABEL, [x as f64, y as f64, 0.0], [0.0; 3], color, key, args);
     }
 
     /// Sends `value` on `channel` to the server.

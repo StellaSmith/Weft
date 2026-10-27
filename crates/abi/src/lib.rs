@@ -1686,7 +1686,8 @@ pub struct Host {
     /// with `args` at a world position, 3 the same on screen at `a[0], a[1]` (fractions of the
     /// window), 4 filled box (see-through by its alpha: range previews, blueprints); color
     /// 0xRRGGBBAA.
-    pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, key: Str, args: Slice<UiArg>),
+    /// A `gizmo_kind` shape for this frame; with a `group` only while the player shows it.
+    pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, group: Str, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, key: Str, args: Slice<UiArg>),
     /// Client: sends `data` on channel `name` to the server.
     pub client_send_packet: unsafe extern "C" fn(client: *mut ClientCtx, name: Str, schema: Str, data: Slice<u8>),
 
@@ -1960,7 +1961,8 @@ pub mod ui_justify {
     pub const BETWEEN: u32 = 3;
 }
 
-/// `Host::gizmo` shapes.
+/// Debug shapes, the same for `Host::gizmo` (server, for some ticks) and `Host::client_draw`
+/// (this frame).
 pub mod gizmo_kind {
     /// From `a` to `b`.
     pub const LINE: u32 = 0;
@@ -1970,6 +1972,8 @@ pub mod gizmo_kind {
     pub const LABEL: u32 = 2;
     /// The box `a`..`b` filled, see-through by the color's alpha.
     pub const FILL: u32 = 3;
+    /// Client only: `text` centered at fractions of the window (`a[0]`, `a[1]`).
+    pub const SCREEN_LABEL: u32 = 4;
 }
 
 /// `Host::reg_entity_hook`.

@@ -1,34 +1,16 @@
+//! The client's options as the engine reads them: typed views of its `core:` settings
+//! (`config::engine_configs`), which live in `config/core.txt` like every mod's. Setting one
+//! saves it; the client applies what changed by itself (`Running::apply_settings`).
+
 use std::path::{Path, PathBuf};
 
+use crate::config;
 use crate::input::{Input, Key};
 
 #[derive(Clone)]
 pub struct Settings {
     pub run_dir: PathBuf,
-    pub path: PathBuf,
-    pub language: String,
-    /// 0 = automatic.
-    pub gui_scale: u32,
-    pub view_distance: i32,
-    pub vsync: bool,
-    pub fov: f32,
-    pub sensitivity: f32,
-    /// 0 moody .. 1 bright.
-    pub brightness: f32,
-    /// Bit per debug overlay group shown (F3 + number).
-    pub debug_groups: u32,
-    pub name: String,
-    /// action -> key name, only for actions the player rebound.
-    pub binds: Vec<(String, String)>,
-    /// Extra iroh relay URLs; empty uses the public defaults.
-    pub relays: Vec<String>,
-    /// Enabled resource packs, highest priority first.
-    pub resource_packs: Vec<String>,
-    pub shader_pack: Option<String>,
-    /// Command line values for this run only, with the file's: (given, saved). Saving keeps the
-    /// file's value unless the player changed the setting since.
-    pub cli_vsync: Option<(bool, bool)>,
-    pub cli_view: Option<(i32, i32)>,
+    /// An automated run: it saves nothing and never takes the real mouse.
     pub read_only: bool,
 }
 
@@ -37,135 +19,118 @@ pub fn max_gui_scale(window: (u32, u32)) -> u32 {
     (window.0 / 320).min(window.1 / 240).max(1)
 }
 
+fn id(name: &str) -> u32 {
+    config::by_name(name).unwrap_or(u32::MAX)
+}
+
+fn number(name: &str) -> f64 {
+    config::get(id(name))
+}
+
+fn list(name: &str) -> Vec<String> {
+    config::text(id(name)).split(',').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect()
+}
+
 impl Settings {
-    pub fn load(run_dir: &Path) -> Settings {
-        let path = run_dir.join("config").join("settings.txt");
-        let mut s = Settings {
-            run_dir: run_dir.to_path_buf(),
-            path: path.clone(),
-            language: system_language(),
-            gui_scale: 0,
-            view_distance: 12,
-            vsync: true,
-            fov: 70.0,
-            sensitivity: 1.0,
-            brightness: 0.5,
-            debug_groups: u32::MAX,
-            name: std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "Player".into()),
-            binds: Vec::new(),
-            relays: Vec::new(),
-            resource_packs: Vec::new(),
-            shader_pack: None,
-            cli_vsync: None,
-            cli_view: None,
-            read_only: false,
-        };
-        let Ok(src) = std::fs::read_to_string(&path) else { return s };
-        for (_, k, v) in crate::kv::pairs(&src) {
-            if !s.set(k, v) {
-                if let Some(action) = k.strip_prefix("key.") {
-                    s.binds.push((action.to_string(), v.to_string()));
-                }
-            }
-        }
-        s
+    pub fn new(run_dir: &Path) -> Settings {
+        Settings { run_dir: run_dir.to_path_buf(), read_only: false }
     }
 
-    /// One `key = value` line of settings.txt; false for keys it does not know.
-    pub fn set(&mut self, k: &str, v: &str) -> bool {
-        match k {
-            "language" => self.language = v.to_string(),
-            "gui_scale" => self.gui_scale = v.parse().unwrap_or(0),
-            "view_distance" => self.view_distance = v.parse().unwrap_or(12),
-            "vsync" => self.vsync = v == "true",
-            "fov" => self.fov = v.parse().unwrap_or(70.0),
-            "sensitivity" => self.sensitivity = v.parse().unwrap_or(1.0),
-            "brightness" => self.brightness = v.parse().unwrap_or(0.5),
-            "debug_groups" => self.debug_groups = v.parse().unwrap_or(u32::MAX),
-            "name" => self.name = v.to_string(),
-            "relay" => self.relays.push(v.to_string()),
-            "resource_pack" => self.resource_packs.push(v.to_string()),
-            "resource_packs" => self.resource_packs = v.split(',').map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect(),
-            "shader_pack" => self.shader_pack = Some(v.to_string()).filter(|v| !v.is_empty()),
-            _ => return false,
-        }
-        true
+    pub fn language(&self) -> String {
+        config::text(id("core:language"))
+    }
+    /// 0 = automatic.
+    pub fn gui_scale(&self) -> u32 {
+        number("core:gui_scale") as u32
+    }
+    pub fn view_distance(&self) -> i32 {
+        number("core:view_distance") as i32
+    }
+    pub fn vsync(&self) -> bool {
+        number("core:vsync") != 0.0
+    }
+    pub fn fov(&self) -> f32 {
+        number("core:fov") as f32
+    }
+    pub fn sensitivity(&self) -> f32 {
+        number("core:sensitivity") as f32
+    }
+    /// 0 moody .. 1 bright.
+    pub fn brightness(&self) -> f32 {
+        number("core:brightness") as f32
+    }
+    /// Bit per debug overlay group shown (F3 + number).
+    pub fn debug_groups(&self) -> u32 {
+        number("core:debug_groups") as u32
+    }
+    pub fn name(&self) -> String {
+        config::text(id("core:name"))
+    }
+    /// Extra iroh relay URLs; empty uses the public defaults.
+    pub fn relays(&self) -> Vec<String> {
+        list("core:relays")
+    }
+    /// Enabled resource packs, highest priority first.
+    pub fn resource_packs(&self) -> Vec<String> {
+        list("core:resource_packs")
+    }
+    pub fn shader_pack(&self) -> Option<String> {
+        Some(config::text(id("core:shader_pack"))).filter(|p| !p.is_empty())
     }
 
-    /// The value `set` takes for `k`, as text.
-    pub fn get(&self, k: &str) -> Option<String> {
-        Some(match k {
-            "language" => self.language.clone(),
-            "gui_scale" => self.gui_scale.to_string(),
-            "view_distance" => self.view_distance.to_string(),
-            "vsync" => self.vsync.to_string(),
-            "fov" => self.fov.to_string(),
-            "sensitivity" => self.sensitivity.to_string(),
-            "brightness" => self.brightness.to_string(),
-            "debug_groups" => self.debug_groups.to_string(),
-            "name" => self.name.clone(),
-            "resource_packs" => self.resource_packs.join(","),
-            "shader_pack" => self.shader_pack.clone().unwrap_or_default(),
-            _ => return None,
-        })
+    pub fn set(&self, name: &str, v: f64) {
+        config::set(id(&format!("core:{name}")), v);
+    }
+    pub fn set_text(&self, name: &str, v: &str) {
+        config::set_text(id(&format!("core:{name}")), v);
+    }
+    pub fn set_resource_packs(&self, packs: &[String]) {
+        self.set_text("resource_packs", &packs.join(","));
     }
 
     pub fn saves_dir(&self) -> PathBuf {
         self.run_dir.join("saves")
     }
 
-    pub fn save(&self) {
-        // Automated runs change settings for themselves only.
-        if self.read_only {
-            return;
-        }
-        let vsync = match self.cli_vsync {
-            Some((given, saved)) if self.vsync == given => saved,
-            _ => self.vsync,
-        };
-        let view = match self.cli_view {
-            Some((given, saved)) if self.view_distance == given => saved,
-            _ => self.view_distance,
-        };
-        let mut out = format!(
-            "language = {}\ngui_scale = {}\nview_distance = {}\nvsync = {}\nfov = {}\nsensitivity = {}\nbrightness = {}\nname = {}\ndebug_groups = {}\n",
-            self.language, self.gui_scale, view, vsync, self.fov, self.sensitivity, self.brightness, self.name, self.debug_groups
-        );
-        for r in &self.relays {
-            out.push_str(&format!("relay = {r}\n"));
-        }
-        for p in &self.resource_packs {
-            out.push_str(&format!("resource_pack = {p}\n"));
-        }
-        if let Some(p) = &self.shader_pack {
-            out.push_str(&format!("shader_pack = {p}\n"));
-        }
-        for (a, k) in &self.binds {
-            out.push_str(&format!("key.{a} = {k}\n"));
-        }
-        if let Some(dir) = self.path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(e) = std::fs::write(&self.path, out) {
-            log::error!("saving settings: {e}");
-        }
-    }
-
+    /// Every key as its `core:key.<action>` setting says.
     pub fn apply_binds(&self, input: &mut Input) {
-        for (action, key) in &self.binds {
-            if let Some(k) = parse_key(key) {
-                input.rebind(action, k);
+        let actions: Vec<String> = input.binds.iter().map(|b| b.action.clone()).collect();
+        for action in actions {
+            match parse_key(&config::text(id(&format!("core:key.{action}")))) {
+                Some(k) => input.rebind(&action, k),
+                None => log::warn!("key binding {action}: unknown key {}", config::text(id(&format!("core:key.{action}")))),
             }
         }
     }
 
-    pub fn set_bind(&mut self, action: &str, key: Key) {
-        self.binds.retain(|(a, _)| a != action);
-        self.binds.push((action.to_string(), key_id(key)));
+    pub fn set_bind(&self, action: &str, key: Key) {
+        config::set_text(id(&format!("core:key.{action}")), &key_id(key));
     }
 }
 
-fn system_language() -> String {
+/// The old `config/settings.txt` joins `config/core.txt` once (lists were one line per entry).
+pub fn migrate(run_dir: &Path) {
+    let (old, new) = (run_dir.join("config").join("settings.txt"), run_dir.join("config").join("core.txt"));
+    let Ok(src) = std::fs::read_to_string(&old) else { return };
+    let mut out = std::fs::read_to_string(&new).unwrap_or_default();
+    let (mut packs, mut relays) = (Vec::new(), Vec::new());
+    for (_, k, v) in crate::kv::pairs(&src) {
+        match k {
+            "resource_pack" => packs.push(v),
+            "relay" => relays.push(v),
+            _ => out.push_str(&format!("{k} = {v}
+")),
+        }
+    }
+    out.push_str(&format!("resource_packs = {}
+relays = {}
+", packs.join(","), relays.join(",")));
+    if std::fs::write(&new, out).is_ok() {
+        let _ = std::fs::remove_file(&old);
+    }
+}
+
+pub fn system_language() -> String {
     let lang = std::env::var("LANG").unwrap_or_default().to_lowercase();
     if lang.starts_with("ru") || sys_locale_ru() { "ru_ru".into() } else { "en_us".into() }
 }

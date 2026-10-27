@@ -142,10 +142,10 @@ pub async fn texture_reload(t: T) -> R {
         t.settled().await?;
         t.grab().await
     };
-    t.c().setting("resource_packs", "testkit_reload");
+    weft_sdk::settings::RESOURCE_PACKS.set("testkit_reload");
     let red = reload(Some([200, 40, 40])).await?;
     let blue = reload(Some([40, 40, 200])).await?;
-    t.c().setting("resource_packs", "");
+    weft_sdk::settings::RESOURCE_PACKS.set("");
     let back = reload(None).await?;
     t.check(T::differ(&plain, &red) > 0.2, "the pack's dirt shows after a reload");
     t.check(T::differ(&red, &blue) > 0.2, "a changed file shows after the next reload");
@@ -160,7 +160,7 @@ pub async fn pack_lang(t: T) -> R {
     let dir = format!("{pack}/core/lang");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(format!("{dir}/en_us.lang"), "menu.done = Pack Done\n").map_err(|e| e.to_string())?;
-    t.c().setting("resource_packs", "testkit_lang");
+    weft_sdk::settings::RESOURCE_PACKS.set("testkit_lang");
     t.c().reload_assets();
     t.frames(2).await?;
     t.c().open_screen(&screens::SETTINGS);
@@ -168,7 +168,7 @@ pub async fn pack_lang(t: T) -> R {
     t.frames(2).await?;
     t.laid_out(&["text:Pack Done", "text:View distance", "text:Language"]);
     t.c().close_screen();
-    t.c().setting("resource_packs", "");
+    weft_sdk::settings::RESOURCE_PACKS.set("");
     drop(std::fs::remove_dir_all(&pack));
     t.c().reload_assets();
     t.frames(2).await?;
@@ -196,11 +196,11 @@ pub async fn broken_shader_pack(t: T) -> R {
     for name in ["world.wgsl", "entity.wgsl", "model.wgsl", "particle.wgsl", "post.wgsl", "ui.wgsl"] {
         std::fs::write(format!("{dir}/{name}"), "this is not wgsl").map_err(|e| e.to_string())?;
     }
-    t.c().setting("shader_pack", "testkit_broken");
+    weft_sdk::settings::SHADER_PACK.set("testkit_broken");
     t.c().reload_assets();
     t.frames(5).await?;
     let after = t.grab().await?;
-    t.c().setting("shader_pack", "");
+    weft_sdk::settings::SHADER_PACK.set("");
     t.c().reload_assets();
     let _ = std::fs::remove_dir_all(&dir);
     t.frames(2).await?;

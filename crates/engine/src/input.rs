@@ -8,6 +8,44 @@ use winit::keyboard::KeyCode;
 /// The hotbar slot actions, first to ninth.
 pub const HOTBAR: [&str; 9] = ["core:hotbar1", "core:hotbar2", "core:hotbar3", "core:hotbar4", "core:hotbar5", "core:hotbar6", "core:hotbar7", "core:hotbar8", "core:hotbar9"];
 
+/// The engine's actions and their default keys.
+pub const ENGINE_KEYS: &[(&str, Key)] = {
+    use KeyCode::*;
+    &[
+        ("core:forward", Key::Code(KeyW)),
+        ("core:back", Key::Code(KeyS)),
+        ("core:left", Key::Code(KeyA)),
+        ("core:right", Key::Code(KeyD)),
+        ("core:jump", Key::Code(Space)),
+        ("core:sneak", Key::Code(ShiftLeft)),
+        ("core:sprint", Key::Code(ControlLeft)),
+        ("core:fly", Key::Code(KeyF)),
+        ("core:inventory", Key::Code(KeyE)),
+        ("core:drop", Key::Code(KeyQ)),
+        ("core:command", Key::Code(Slash)),
+        ("core:chat", Key::Code(KeyT)),
+        ("core:debug", Key::Code(F3)),
+        ("core:screenshot", Key::Code(F2)),
+        ("core:perspective", Key::Code(F5)),
+        // Also F3+T, like vanilla.
+        ("core:reload", Key::Code(F8)),
+        ("core:recipes", Key::Code(KeyR)),
+        ("core:uses", Key::Code(KeyU)),
+        ("core:attack", Key::Mouse(0)),
+        ("core:use", Key::Mouse(1)),
+        ("core:pick", Key::Mouse(2)),
+        (HOTBAR[0], Key::Code(Digit1)),
+        (HOTBAR[1], Key::Code(Digit2)),
+        (HOTBAR[2], Key::Code(Digit3)),
+        (HOTBAR[3], Key::Code(Digit4)),
+        (HOTBAR[4], Key::Code(Digit5)),
+        (HOTBAR[5], Key::Code(Digit6)),
+        (HOTBAR[6], Key::Code(Digit7)),
+        (HOTBAR[7], Key::Code(Digit8)),
+        (HOTBAR[8], Key::Code(Digit9)),
+    ]
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Code(KeyCode),
@@ -49,40 +87,7 @@ impl Default for Input {
             binds: Vec::new(),
             lookup: FxHashMap::default(),
         };
-        use KeyCode::*;
-        for (name, key) in [
-            ("core:forward", Key::Code(KeyW)),
-            ("core:back", Key::Code(KeyS)),
-            ("core:left", Key::Code(KeyA)),
-            ("core:right", Key::Code(KeyD)),
-            ("core:jump", Key::Code(Space)),
-            ("core:sneak", Key::Code(ShiftLeft)),
-            ("core:sprint", Key::Code(ControlLeft)),
-            ("core:fly", Key::Code(KeyF)),
-            ("core:inventory", Key::Code(KeyE)),
-            ("core:drop", Key::Code(KeyQ)),
-            ("core:command", Key::Code(Slash)),
-            ("core:chat", Key::Code(KeyT)),
-            ("core:debug", Key::Code(F3)),
-            ("core:screenshot", Key::Code(F2)),
-            ("core:perspective", Key::Code(F5)),
-            // Also F3+T, like vanilla.
-            ("core:reload", Key::Code(F8)),
-            ("core:recipes", Key::Code(KeyR)),
-            ("core:uses", Key::Code(KeyU)),
-            ("core:attack", Key::Mouse(0)),
-            ("core:use", Key::Mouse(1)),
-            ("core:pick", Key::Mouse(2)),
-            (HOTBAR[0], Key::Code(Digit1)),
-            (HOTBAR[1], Key::Code(Digit2)),
-            (HOTBAR[2], Key::Code(Digit3)),
-            (HOTBAR[3], Key::Code(Digit4)),
-            (HOTBAR[4], Key::Code(Digit5)),
-            (HOTBAR[5], Key::Code(Digit6)),
-            (HOTBAR[6], Key::Code(Digit7)),
-            (HOTBAR[7], Key::Code(Digit8)),
-            (HOTBAR[8], Key::Code(Digit9)),
-        ] {
+        for &(name, key) in ENGINE_KEYS {
             i.register(name, key);
         }
         i

@@ -90,7 +90,6 @@ pub struct Dim {
     pub gizmos: Vec<crate::net::GizmoShape>,
     pub gizmo_groups: Arc<[String]>,
     /// World rule values by rule id (`Game::rules`), set by the server before each tick.
-    pub rules: Arc<[i64]>,
     /// Event values waiting for delivery, by event id (ordered, so delivery is deterministic).
     pub event_queue: std::collections::BTreeMap<u32, Vec<u8>>,
     /// A moving structure's own space (`structure.rs`): blocks in its own coordinates, lit as
@@ -386,7 +385,6 @@ impl Dim {
             conn: FxHashMap::default(),
             gizmos: Vec::new(),
             gizmo_groups: Arc::from([]),
-            rules: Arc::from([]),
             event_queue: Default::default(),
         }
     }
@@ -903,7 +901,6 @@ impl Dim {
         for id in ids {
             let s = self.structures.get_mut(&id).unwrap();
             s.time = self.time - 1;
-            s.rules = self.rules.clone();
             s.tick(c);
             self.hand_over(c, id);
         }
@@ -976,7 +973,7 @@ impl Dim {
         if self.time % 40 != 0 || c.game.spawns.is_empty() {
             return;
         }
-        let on = self.rules.get(c.game.mob_spawning_rule).copied().unwrap_or(1) != 0;
+        let on = crate::config::get(c.game.mob_spawning) != 0.0;
         if !on {
             return;
         }

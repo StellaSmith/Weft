@@ -66,8 +66,6 @@ pub enum Request {
     Close,
     Quit,
     Rebuild,
-    ApplySettings,
-    SetLanguage(String),
     WaitKey(String),
     Rebind(String, Key),
     ResetBinds,
@@ -176,6 +174,9 @@ pub(crate) struct Running {
     /// F3 held and used for a combination since it went down (then releasing it does not toggle).
     f3_combo: Option<bool>,
     reload_requested: bool,
+    /// The settings in effect, and the config changes seen (`apply_settings`).
+    applied: Applied,
+    config_seen: u64,
     /// CPU milliseconds of the last frame, see `bench::CPU_PARTS`.
     prof: [f32; 5],
     bench: Option<crate::bench::Bench>,
@@ -237,17 +238,30 @@ fn engine_assets(dev: bool) -> PathBuf {
     }
 }
 
+/// The settings `Running::apply_settings` last put into effect.
+#[derive(Default, PartialEq)]
+struct Applied {
+    vsync: bool,
+    view: i32,
+    language: String,
+    gui_scale: u32,
+}
+
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
-        let mut settings = Settings::load(&self.opts.run_dir);
+        // Mods first: the engine's settings are `core:` configs like theirs.
+        let cache = self.opts.run_dir.join("cache");
+        let mods = modloader::load(&self.opts.mod_dirs, &cache)?;
+        crate::config::set_automated(self.opts.automated);
+        crate::settings::migrate(&self.opts.run_dir);
+        crate::config::load(&self.opts.run_dir);
         if self.opts.no_vsync {
-            settings.cli_vsync = Some((false, settings.vsync));
-            settings.vsync = false;
+            crate::config::override_for_run("core:vsync", "false");
         }
         if let Some(v) = self.opts.view {
-            settings.cli_view = Some((v, settings.view_distance));
-            settings.view_distance = v;
+            crate::config::override_for_run("core:view_distance", &v.to_string());
         }
+        let mut settings = Settings::new(&self.opts.run_dir);
         let mut attrs = Window::default_attributes()
             .with_title("Weft")
             .with_inner_size(winit::dpi::PhysicalSize::new(self.opts.size.0, self.opts.size.1));
@@ -262,22 +276,19 @@ impl App {
             window: &*window,
             width: size.width,
             height: size.height,
-            vsync: settings.vsync,
+            vsync: settings.vsync(),
             debug: self.opts.gpu_debug,
         })
         .map_err(|e| e.to_string())?;
 
-        let cache = self.opts.run_dir.join("cache");
-        let mods = modloader::load(&self.opts.mod_dirs, &cache)?;
-        crate::config::load(&self.opts.run_dir);
         let mut roots: Vec<(String, PathBuf)> = vec![("core".into(), engine_assets(self.opts.dev))];
         roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
-        let packs = crate::packs::enabled(&self.opts.run_dir, &settings.resource_packs);
-        crate::packs::set_shader_pack(settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&self.opts.run_dir).join(p)));
+        let packs = crate::packs::enabled(&self.opts.run_dir, &settings.resource_packs());
+        crate::packs::set_shader_pack(settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&self.opts.run_dir).join(p)));
         crate::packs::set_dev(self.opts.dev);
         let assets = Assets::new(roots, packs);
         crate::assets::set_current(&assets);
-        let lang = Lang::load(&assets, &settings.language, self.opts.dev);
+        let lang = Lang::load(&assets, &settings.language(), self.opts.dev);
         let theme = Theme::load(&assets);
         let textures = GameTextures::new(&mut *gpu, content(), &assets);
         let ui = UiRenderer::new(&mut *gpu, &assets)?;
@@ -341,6 +352,8 @@ impl App {
             },
             f3_combo: None,
             reload_requested: false,
+            applied: Applied::default(),
+            config_seen: u64::MAX,
             prof: [0.0; 5],
             bench: None,
             diag: Default::default(),
@@ -393,7 +406,7 @@ fn make_depth(gpu: &mut dyn Backend, w: u32, h: u32) -> (TextureId, u32, u32) {
 impl Running {
     fn gui_scale(&self) -> f32 {
         let max = crate::settings::max_gui_scale(self.gpu.surface_size());
-        let s = if self.settings.gui_scale == 0 { max } else { self.settings.gui_scale.min(max) };
+        let s = if self.settings.gui_scale() == 0 { max } else { self.settings.gui_scale().min(max) };
         s as f32
     }
 
@@ -489,13 +502,13 @@ impl Running {
         }
         let storage = saves::Storage::open(meta.clone(), content());
         let server = server::spawn(
-            ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance, view_height: 6 },
+            ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance(), view_height: 6 },
             Some(storage),
         );
         let (client_conn, server_conn) = net::local_pair();
         let _ = server.connect.send(server_conn);
         let key = net::p2p::player_key(&self.settings.run_dir);
-        match Client::new(&mut *self.gpu, &self.assets, &self.textures, client_conn, &self.settings.name, &key, self.settings.view_distance, std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok()) {
+        match Client::new(&mut *self.gpu, &self.assets, &self.textures, client_conn, &self.settings.name(), &key, self.settings.view_distance(), std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok()) {
             Ok(mut client) => {
                 client.sent = load_chat_history(&self.settings.run_dir);
                 self.game = Some(Game { client, server: Some(server) });
@@ -583,20 +596,6 @@ impl Running {
                         }
                     }
                 }
-                Request::ApplySettings => {
-                    self.gpu.set_vsync(self.settings.vsync);
-                    if let Some(g) = &mut self.game {
-                        g.client.set_view_distance(self.settings.view_distance);
-                        if let Some(s) = &g.server {
-                            s.set_view(self.settings.view_distance);
-                        }
-                    }
-                }
-                Request::SetLanguage(code) => {
-                    self.settings.language = code.clone();
-                    self.lang = Lang::load(&self.assets, &code, self.lang.dev);
-                    self.rebuild_all();
-                }
                 Request::WaitKey(a) => {
                     self.waiting_key = Some(a.clone());
                     if let Some((s, _)) = self.screens.last_mut() {
@@ -616,8 +615,8 @@ impl Running {
                     let defaults: Vec<(String, Key)> = self.input.binds.iter().map(|b| (b.action.clone(), b.default)).collect();
                     for (a, k) in defaults {
                         self.input.rebind(&a, k);
+                        self.settings.set_bind(&a, k);
                     }
-                    self.settings.binds.clear();
                     self.rebuild_all();
                 }
                 Request::SelectWorld(i) => {
@@ -683,7 +682,7 @@ impl Running {
                     Ok(conn) => {
                         self.leave_world_silent();
                         let key = net::p2p::player_key(&self.settings.run_dir);
-                        match Client::new(&mut *self.gpu, &self.assets, &self.textures, conn, &self.settings.name, &key, self.settings.view_distance, std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok()) {
+                        match Client::new(&mut *self.gpu, &self.assets, &self.textures, conn, &self.settings.name(), &key, self.settings.view_distance(), std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok()) {
                             Ok(mut client) => {
                                 client.sent = load_chat_history(&self.settings.run_dir);
                                 self.game = Some(Game { client, server: None });
@@ -975,6 +974,33 @@ impl Running {
         }
     }
 
+    /// Puts what changed in the settings into effect, whoever changed them: a screen, a mod, a
+    /// command or a test.
+    fn apply_settings(&mut self) {
+        let s = self.settings.clone();
+        let now = Applied { vsync: s.vsync(), view: s.view_distance(), language: s.language(), gui_scale: s.gui_scale() };
+        if now.vsync != self.applied.vsync {
+            self.gpu.set_vsync(now.vsync);
+        }
+        if now.view != self.applied.view {
+            if let Some(g) = &mut self.game {
+                g.client.set_view_distance(now.view);
+                if let Some(sv) = &g.server {
+                    sv.set_view(now.view);
+                }
+            }
+        }
+        let relang = now.language != self.applied.language;
+        if relang {
+            self.lang = Lang::load(&self.assets, &now.language, self.lang.dev);
+        }
+        s.apply_binds(&mut self.input);
+        if relang || now.gui_scale != self.applied.gui_scale {
+            self.rebuild_all();
+        }
+        self.applied = now;
+    }
+
     fn frame_view(&mut self) -> crate::client::modui::ClientView {
         let mut v = crate::client::modui::ClientView::new(self.game.as_ref().map(|g| &g.client));
         v.run = self as *mut Running as *mut std::ffi::c_void;
@@ -1252,7 +1278,6 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if frame(r, &self.opts) || r.quit {
                     r.leave_world_silent();
-                    r.settings.save();
                     el.exit();
                 }
             }
@@ -1283,6 +1308,10 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     let scale = r.gui_scale();
 
     r.frame_no += 1;
+    if crate::config::generation() != r.config_seen {
+        r.config_seen = crate::config::generation();
+        r.apply_settings();
+    }
     r.frame_dt = dt as f32;
     // Textures first asked for while drawing the last frame.
     r.textures.load_requested(&mut *r.gpu);
@@ -1373,8 +1402,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let groups = crate::hud::DEBUG_GROUPS.len() + crate::hud::mod_debug_groups().len();
         for (i, k) in digits.into_iter().take(groups).enumerate() {
             if r.input.pressed_key(Key::Code(k)) {
-                r.settings.debug_groups ^= 1 << i;
-                r.settings.save();
+                r.settings.set("debug_groups", (r.settings.debug_groups() ^ (1 << i)) as f64);
                 r.f3_combo = Some(true);
                 r.debug = true;
                 r.hud.invalidate();
@@ -1387,15 +1415,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         }
     }
     if r.input.pressed("core:reload") || f3_reload || std::mem::take(&mut r.reload_requested) {
-        r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs));
-        crate::packs::set_shader_pack(r.settings.shader_pack.as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
+        r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs()));
+        crate::packs::set_shader_pack(r.settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
         r.assets.rescan();
         crate::assets::set_current(&r.assets);
         r.hud.load_layout(&opts.run_dir);
         r.ui.reload(&mut *r.gpu, &r.assets);
         r.post.reload(&mut *r.gpu, &r.assets);
         r.theme = Theme::load(&r.assets);
-        r.lang = Lang::load(&r.assets, &r.settings.language, r.lang.dev);
+        r.lang = Lang::load(&r.assets, &r.settings.language(), r.lang.dev);
         r.textures.reload(&mut *r.gpu, content(), &r.assets);
         if let Some(g) = &mut r.game {
             g.client.render.reload_shaders(&mut *r.gpu);
@@ -1420,8 +1448,8 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         if let Some(s) = &g.server {
             s.set_paused(paused && !s.is_hosting());
         }
-        g.client.fov = r.settings.fov;
-        g.client.brightness = r.settings.brightness;
+        g.client.fov = r.settings.fov();
+        g.client.brightness = r.settings.brightness();
         let t = Instant::now();
         if world_input {
             g.client.update(&mut *r.gpu, &r.textures, &r.input, dt);
@@ -1512,7 +1540,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.open(screens::engine("core:title", &r.settings));
         r.open(Box::new(screens::Message { title: "multiplayer.disconnected".into(), args: vec![Arg::Text(reason)] }));
     }
-    r.input.sensitivity = r.settings.sensitivity;
+    r.input.sensitivity = r.settings.sensitivity();
     r.input.end_frame();
     let top = (r.screens.len(), r.screens.last().map(|(s, _)| s.name().to_string()).unwrap_or_default());
     if top != r.screen_seen {
@@ -1526,7 +1554,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
 
     if let Some(g) = &r.game {
         let chat_open = r.screens.last().is_some_and(|(s, _)| s.shows_chat());
-        if r.hud.update(&g.client, r.debug, r.settings.debug_groups, chat_open, &r.lang, &r.input) {
+        if r.hud.update(&g.client, r.debug, r.settings.debug_groups(), chat_open, &r.lang, &r.input) {
             r.quads_dirty = true;
         }
         let mut h = g.client.selected as u64;

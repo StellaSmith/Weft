@@ -17,14 +17,14 @@ pub static MARK: Component<u32> = Component::named("testkit:mark");
 /// Server-side stack data that is not saved either.
 pub static SECRET: Component<u32> = Component::named("testkit:secret");
 static PIG: Entity = Entity::named("base:pig");
-pub static COUNT_MARKS: Rule = Rule::named("count_marks");
-pub static PROTECT_GOLD: Rule = Rule::named("protect_gold");
-pub static HALF_DAMAGE: Rule = Rule::named("half_damage");
+pub static COUNT_MARKS: Config<bool> = Config::named("count_marks");
+pub static PROTECT_GOLD: Config<bool> = Config::named("protect_gold");
+pub static HALF_DAMAGE: Config<bool> = Config::named("half_damage");
 /// Mobs may not attack while it is on.
-pub static PEACE: Rule = Rule::named("peace");
+pub static PEACE: Config<bool> = Config::named("peace");
 /// Players can't be hurt (`question::HURT`) or use items (`question::USE_ITEM`) while on.
-pub static NO_HURT: Rule = Rule::named("no_hurt");
-pub static NO_USE: Rule = Rule::named("no_use");
+pub static NO_HURT: Config<bool> = Config::named("no_hurt");
+pub static NO_USE: Config<bool> = Config::named("no_use");
 value! {
     /// A number sent to the server, which answers with it doubled (typed channels).
     pub struct Echo { pub n: u32 }
@@ -49,10 +49,10 @@ fn count(i: usize, n: usize) {
 pub fn register(r: &mut Registry) {
     r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS);
     r.attach(&PIG, &MARK);
-    r.rule(&COUNT_MARKS, 0);
+    r.config(&COUNT_MARKS).bool(false).world();
     // While the rule is on, every marked pig counts up once a tick.
     r.system(&MARK, |b| {
-        if b.world().rule(&COUNT_MARKS) == 0 {
+        if !COUNT_MARKS.get() {
             return;
         }
         for m in b.values().iter_mut().filter(|m| **m > 0) {
@@ -63,25 +63,25 @@ pub fn register(r: &mut Registry) {
     // Block properties are components: another mod's block glows blue (testkit is never shipped).
     r.set("base:mossy_cobblestone", &LIGHT, [0, 0, 9]);
     // Switches for the tests of the extension mechanisms, off unless a test turns them on.
-    r.rule(&PROTECT_GOLD, 0);
-    r.rule(&PEACE, 0);
+    r.config(&PROTECT_GOLD).bool(false).world();
+    r.config(&PEACE).bool(false).world();
     r.intercept(&question::ATTACK, |q| {
         let w = q.world();
         let mob = w.entity(q.entity()).is_some_and(|e| !w.each_player().any(|p| p == q.entity()) && e.health > 0.0);
-        if mob && w.rule(&PEACE) != 0 { Verdict::Deny } else { Verdict::Abstain }
+        if mob && PEACE.get() { Verdict::Deny } else { Verdict::Abstain }
     });
-    r.rule(&NO_HURT, 0);
-    r.rule(&NO_USE, 0);
+    r.config(&NO_HURT).bool(false).world();
+    r.config(&NO_USE).bool(false).world();
     let player = |w: &World, id: u64| w.each_player().any(|p| p == id);
-    r.intercept(&question::HURT, move |q| if player(&q.world(), q.entity()) && q.world().rule(&NO_HURT) != 0 { Verdict::Deny } else { Verdict::Abstain });
-    r.intercept(&question::USE_ITEM, |q| if q.world().rule(&NO_USE) != 0 { Verdict::Deny } else { Verdict::Abstain });
+    r.intercept(&question::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.intercept(&question::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
     r.on(&RANG, |b| {
         RINGS.fetch_add(b.len() as u32, Ordering::Relaxed);
     });
-    r.rule(&HALF_DAMAGE, 0);
-    r.intercept(&question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && q.world().rule(&PROTECT_GOLD) != 0 { Verdict::Deny } else { Verdict::Abstain });
+    r.config(&HALF_DAMAGE).bool(false).world();
+    r.intercept(&question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && PROTECT_GOLD.get() { Verdict::Deny } else { Verdict::Abstain });
     r.modify(&chain::DAMAGE, stage::FINAL, |m| {
-        if m.world().rule(&HALF_DAMAGE) != 0 {
+        if HALF_DAMAGE.get() {
             m.value *= 0.5;
         }
     });

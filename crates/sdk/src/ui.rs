@@ -23,11 +23,6 @@ impl ClientView {
     pub fn player(&self) -> u64 {
         unsafe { (host().client_player)(self.raw) }
     }
-    /// A settings.txt value (`view_distance`, `language`, `fov`...), empty for an unknown key;
-    /// `client().setting(key, value)` changes it.
-    pub fn setting(&self, key: &str) -> String {
-        unsafe { (host().client_setting)(self.raw, Str::new(key)).as_str().to_string() }
-    }
     /// Own player's synced component.
     pub fn component<T: Value>(&self, c: &Component<T>) -> Option<T> {
         let p = unsafe { (host().client_component)(self.raw, 0, c.id()) };

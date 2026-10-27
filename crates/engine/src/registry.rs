@@ -327,8 +327,6 @@ pub struct Game {
     pub packet_names: FxHashMap<String, u32>,
     /// Mod key bindings: (action, default key).
     pub keys: Vec<(String, String)>,
-    /// World rules (name, default), sorted by name; values live in the server.
-    pub rules: Vec<(String, i64)>,
     pub events: Vec<EventDef>,
     pub event_names: FxHashMap<String, u32>,
     pub interceptors: FxHashMap<String, Vec<(ModId, Callback)>>,
@@ -349,8 +347,8 @@ pub struct Game {
     pub menu_comps: Vec<u32>,
     /// Per component: synced to anyone at all (its changes are looked for every tick).
     pub synced_comps: Vec<bool>,
-    /// Index of `core:mob_spawning` in `rules`.
-    pub mob_spawning_rule: usize,
+    /// Config id of `core:mob_spawning`.
+    pub mob_spawning: u32,
     /// (owner, component, system) in mod order.
     pub systems: Vec<(ModId, u32, Callback)>,
     /// `{if:name}` conditions mods answer.
@@ -508,8 +506,6 @@ pub struct RawGame {
     pub keys: Vec<(String, String)>,
     /// (block name, flow rules).
     pub liquids: Vec<(String, weft_abi::LiquidDesc)>,
-    /// World rules: (name, default).
-    pub rules: Vec<(String, i64)>,
     /// liquid, touching, source result, flowing result, falls-into result.
     pub reactions: Vec<[String; 5]>,
     /// (owner, event, schema, handler).
@@ -1024,7 +1020,7 @@ pub fn freeze(
     let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
     let mut attributes: Vec<(String, f64, f64, f64)> = vec![(abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0), (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0), (abi::attribute::VISIBILITY.into(), 1.0, 0.0, 16.0), (abi::attribute::JUMP_STRENGTH.into(), 1.0, 0.0, 16.0)];
     let mut particles: Vec<RawParticle> = engine_particles();
-    let mut configs: Vec<(usize, crate::config::ConfigDef)> = crate::config::engine_configs().into_iter().map(|d| (0, d)).collect();
+    let mut configs: Vec<(usize, crate::config::ConfigDef)> = Vec::new();
     let mut sounds: Vec<(usize, SoundDef)> = engine_sounds();
     let mut music: Vec<(String, MusicDef)> = Vec::new();
     let mut spawns: Vec<RawSpawn> = Vec::new();
@@ -1050,7 +1046,6 @@ pub fn freeze(
         g.client_hooks.extend(r.client_hooks);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
-        g.rules.extend(r.rules);
         spawns.extend(r.spawns);
         event_handlers.extend(r.event_handlers);
         systems.extend(r.systems);
@@ -1132,6 +1127,15 @@ pub fn freeze(
         }
         g.music.push(m);
     }
+    // The engine's settings, with a binding per key: the engine's and the mods'.
+    let mut keys: Vec<(String, String)> = crate::input::ENGINE_KEYS.iter().map(|(a, k)| (a.to_string(), crate::settings::key_id(*k))).collect();
+    for (action, key) in &g.keys {
+        match crate::settings::parse_key(key) {
+            Some(k) => keys.push((action.clone(), crate::settings::key_id(k))),
+            None => errors.push(format!("key {action}: unknown key {key}")),
+        }
+    }
+    configs.extend(crate::config::engine_configs(&keys).into_iter().map(|d| (0, d)));
     configs.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     for (cell, d) in configs {
         if g.config_names.contains_key(&d.name) {
@@ -1143,6 +1147,7 @@ pub fn freeze(
         g.config_names.insert(d.name.clone(), id);
         g.configs.push(d);
     }
+    g.mob_spawning = g.config_names["core:mob_spawning"];
     for d in &categories {
         if categories.iter().filter(|o| o.name == d.name).count() > 1 && !errors.iter().any(|e| e.contains(&d.name)) {
             errors.push(format!("entity category {} registered twice", d.name));
@@ -1182,13 +1187,6 @@ pub fn freeze(
         g.spawns.push(SpawnRule { entity, category, biome, ground, dimension, light: s.light, y: s.y, group: s.group, weight: s.weight, chance: s.chance });
     }
     // Natural spawning (`spawns`) runs while this is on.
-    g.rules.push(("core:mob_spawning".into(), 1));
-    g.rules.sort_by(|a, b| a.0.cmp(&b.0));
-    for w in g.rules.windows(2).filter(|w| w[0].0 == w[1].0) {
-        errors.push(format!("rule {} is registered twice", w[0].0));
-    }
-    g.rules.dedup_by(|a, b| a.0 == b.0);
-    g.mob_spawning_rule = g.rules.iter().position(|r| r.0 == "core:mob_spawning").unwrap_or(0);
 
     let mut events: Vec<EventDef> = ENGINE_EVENTS.iter().map(|(n, s, size)| EventDef { name: n.to_string(), schema: s.to_string(), size: (*size).into(), handlers: Vec::new() }).collect();
     event_handlers.sort_by_key(|h| order(h.0));

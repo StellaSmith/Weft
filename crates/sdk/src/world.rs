@@ -110,17 +110,4 @@ pub fn item_name(item: u32) -> &'static str {
     name_of(abi::entry_kind::ITEM, item)
 }
 
-impl World {
-    /// Current value of a world rule (`Registry::rule`).
-    pub fn rule(&self, rule: &crate::Rule) -> i64 {
-        unsafe { (host().rule)(self.raw, Str::new(rule.name())) }
-    }
-}
 
-impl crate::Registry {
-    /// A world rule players change with `/rule <name> <value>` (saved with the world), like
-    /// vanilla's game rules: `r.rule(&MOB_SPAWNING, 1)`, read with `w.rule(&MOB_SPAWNING)`.
-    pub fn rule(&mut self, rule: &crate::Rule, default: i64) {
-        unsafe { (host().reg_rule)(self.raw, Str::new(rule.name()), default) }
-    }
-}

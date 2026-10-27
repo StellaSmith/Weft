@@ -97,8 +97,8 @@ pub fn named(name: &str, settings: &Settings) -> Option<Box<dyn Screen>> {
         "core:chat" => Box::new(crate::game_screens::Chat::new("")),
         "core:death" => Box::new(crate::game_screens::Death),
         "core:multiplayer" => Box::new(crate::net::screens::Multiplayer::default()),
-        "core:resource_packs" => Box::new(crate::packs::ResourcePacks::new(&settings.resource_packs)),
-        "core:shader_packs" => Box::new(crate::packs::ShaderPacks::new(settings.shader_pack.clone())),
+        "core:resource_packs" => Box::new(crate::packs::ResourcePacks::new(&settings.resource_packs())),
+        "core:shader_packs" => Box::new(crate::packs::ShaderPacks::new(settings.shader_pack().clone())),
         "core:sound" => Box::new(ConfigScreen { ns: "core".into(), title: Some("settings.sound".into()) }),
         "core:tags" => Box::new(crate::game_screens::TagList::default()),
         "core:mods" => Box::new(ModList::default()),
@@ -238,10 +238,10 @@ impl Screen for Profile {
                 label(ui, cx, "profile.name", &[], "default");
                 let input = ui.add(
                     Kind::Input {
-                        value: cx.settings.name.clone(),
-                        caret: cx.settings.name.chars().count(),
+                        value: cx.settings.name().clone(),
+                        caret: cx.settings.name().chars().count(),
                         max: 16,
-                        on_change: Some(Rc::new(|c: &mut Ctx, v: &str| c.settings.name = v.to_string())),
+                        on_change: Some(Rc::new(|c: &mut Ctx, v: &str| c.settings.set_text("name", v))),
                     },
                     Style::default().h(16.0).w(300.0),
                 );
@@ -259,10 +259,7 @@ impl Screen for Profile {
                 let dir = cx.settings.run_dir.join("skins");
                 button(ui, cx, "profile.skins_folder", &[], 120.0, move |_| crate::packs::open_folder(&dir));
             });
-            button(ui, cx, "menu.done", &[], 200.0, |c| {
-                c.settings.save();
-                c.requests.push(Request::Close);
-            });
+            button(ui, cx, "menu.done", &[], 200.0, |c| c.requests.push(Request::Close));
         });
     }
 }
@@ -438,25 +435,20 @@ impl Screen for SettingsScreen {
             desc::frame(d, cx.in_game, "settings.title", |d| {
                 let panel = abi::UiNode { class: abi::Str::new("panel"), pad: [8.0; 4], gap: 6.0, align: abi::ui_align::STRETCH, width: 320.0, ..desc::node(abi::ui_kind::PANEL) };
                 d.open(&panel, |d| {
-                    d.slider("settings.view_distance", 4.0, 64.0, 1.0, |s| s.view_distance as f32, |r, v| {
-                        if r.settings.view_distance != v as i32 {
-                            r.settings.view_distance = v as i32;
-                            r.handle(vec![Request::ApplySettings]);
-                        }
-                    });
-                    d.slider("settings.fov", 50.0, 110.0, 1.0, |s| s.fov, |r, v| r.settings.fov = v);
-                    d.slider("settings.sensitivity", 20.0, 300.0, 5.0, |s| s.sensitivity * 100.0, |r, v| r.settings.sensitivity = v / 100.0);
-                    d.slider("settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness * 100.0, |r, v| r.settings.brightness = v / 100.0);
-                    let scale = if s.gui_scale == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale as i64) };
+                    d.slider("settings.view_distance", 4.0, 64.0, 1.0, |s| s.view_distance() as f32, |r, v| r.settings.set("view_distance", v as f64));
+                    d.slider("settings.fov", 50.0, 110.0, 1.0, |s| s.fov(), |r, v| r.settings.set("fov", v as f64));
+                    d.slider("settings.sensitivity", 20.0, 300.0, 5.0, |s| s.sensitivity() * 100.0, |r, v| r.settings.set("sensitivity", v as f64 / 100.0));
+                    d.slider("settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness() * 100.0, |r, v| r.settings.set("brightness", v as f64 / 100.0));
+                    let scale = if s.gui_scale() == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale() as i64) };
                     d.button("settings.gui_scale", &[scale], 300.0, false, |r| {
                         // Auto, then every scale the window can actually show.
                         let max = crate::settings::max_gui_scale(r.stats.window);
-                        r.settings.gui_scale = if r.settings.gui_scale >= max { 0 } else { r.settings.gui_scale + 1 };
-                        r.handle(vec![Request::Rebuild]);
+                        let next = if r.settings.gui_scale() >= max { 0 } else { r.settings.gui_scale() + 1 };
+                        r.settings.set("gui_scale", next as f64);
                     });
-                    d.button("settings.vsync", &[on_off(s.vsync)], 300.0, false, |r| {
-                        r.settings.vsync = !r.settings.vsync;
-                        r.handle(vec![Request::ApplySettings, Request::Rebuild]);
+                    d.button("settings.vsync", &[on_off(s.vsync())], 300.0, false, |r| {
+                        r.settings.set("vsync", !r.settings.vsync() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
                     });
                     let row = abi::UiNode { row: 1, gap: 6.0, justify: abi::ui_justify::CENTER, align: abi::ui_align::CENTER, self_align: abi::ui_align::STRETCH, ..desc::node(abi::ui_kind::CONTAINER) };
                     for [(a, sa), (b, sb)] in [
@@ -471,10 +463,7 @@ impl Screen for SettingsScreen {
                     }
                     d.parts("core:settings", "buttons");
                 });
-                d.button("menu.done", &[], 200.0, false, |r| {
-                    r.settings.save();
-                    r.handle(vec![Request::Close]);
-                });
+                d.button("menu.done", &[], 200.0, false, |r| r.handle(vec![Request::Close]));
             });
         });
     }
@@ -638,7 +627,7 @@ impl Screen for LanguageScreen {
                     let code = code.clone();
                     let selected = code == cx.lang.code;
                     let b = ui.button("button", Style::default().min_h(20.0).pad_xy(6.0, 4.0).stretch(), Rc::new(move |c: &mut Ctx| {
-                        c.requests.push(Request::SetLanguage(code.clone()));
+                        c.settings.set_text("language", &code);
                     }), |ui| {
                         ui.text(text::plain(name), "button");
                     });
@@ -647,10 +636,7 @@ impl Screen for LanguageScreen {
                     }
                 }
             });
-            button(ui, cx, "menu.done", &[], 200.0, |c| {
-                c.settings.save();
-                c.requests.push(Request::Close);
-            });
+            button(ui, cx, "menu.done", &[], 200.0, |c| c.requests.push(Request::Close));
         });
     }
 }
@@ -716,10 +702,7 @@ impl Screen for Controls {
             ui.set_id(list, "controls");
             ui.container(Style::row().gap(6.0), |ui| {
                 button(ui, cx, "controls.reset", &[], 120.0, |c| c.requests.push(Request::ResetBinds));
-                button(ui, cx, "menu.done", &[], 120.0, |c| {
-                    c.settings.save();
-                    c.requests.push(Request::Close);
-                });
+                button(ui, cx, "menu.done", &[], 120.0, |c| c.requests.push(Request::Close));
             });
         });
     }

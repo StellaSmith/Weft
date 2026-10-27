@@ -101,7 +101,7 @@ fn mod_list() -> String {
 }
 
 fn relay_mode(settings: &Settings) -> RelayMode {
-    let custom: Vec<RelayUrl> = settings.relays.iter().filter_map(|r| r.parse().ok()).collect();
+    let custom: Vec<RelayUrl> = settings.relays().iter().filter_map(|r| r.parse().ok()).collect();
     if custom.is_empty() { RelayMode::Default } else { RelayMode::custom(custom) }
 }
 

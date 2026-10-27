@@ -1869,7 +1869,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             None => errors.push(format!("{}: block {} opens unknown menu {menu}", mods.get(def.owner.0 as usize).map_or("engine", |m| m.id.as_str()), def.name)),
         }
     }
-    word_sets.entry("core:rules".into()).or_default().extend(game.rules.iter().map(|r| r.0.clone()));
+    word_sets.entry("core:rules".into()).or_default().extend(game.configs.iter().filter(|d| d.scope == abi::config_scope::WORLD).map(|d| d.name.clone()));
     for (table, t) in &loot {
         for k in t.pools.iter().flat_map(|p| &p.entries).filter_map(|e| e.smelt.as_ref()) {
             if !game.recipe_kinds.contains(k) {

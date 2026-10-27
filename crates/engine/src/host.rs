@@ -118,7 +118,6 @@ pub static HOST: Host = Host {
     client_command: crate::app::api::client_command,
     client_text: crate::app::api::client_text,
     client_command_reply: crate::app::api::client_command_reply,
-    client_setting: crate::app::api::client_setting,
     client_block: crate::app::api::client_block,
     client_slot: crate::app::api::client_slot,
     client_menu: crate::app::api::client_menu,
@@ -135,8 +134,6 @@ pub static HOST: Host = Host {
     reg_liquid_reaction,
     liquid_of,
     use_container,
-    reg_rule,
-    rule,
     reg_event_handler,
     find_event,
     emit,
@@ -166,6 +163,8 @@ pub static HOST: Host = Host {
     reg_config,
     config_value,
     config_set,
+    config_text,
+    config_set_text,
     reg_sound,
     reg_music,
     play_animation,
@@ -1592,24 +1591,6 @@ unsafe extern "C" fn reg_stack_component(r: *mut abi::Registrar, name: Str, sche
     unsafe { reg(r).game.stack_components.push((name.as_str().to_string(), schema.as_str().to_string(), flags)) }
 }
 
-unsafe extern "C" fn reg_rule(r: *mut abi::Registrar, name: Str, default: i64) {
-    unsafe { reg(r).game.rules.push((name.as_str().to_string(), default)) }
-}
-
-unsafe extern "C" fn rule(w: *mut abi::WorldCtx, name: Str) -> i64 {
-    unsafe {
-        let name = name.as_str();
-        let rules = &content().game.rules;
-        match rules.binary_search_by(|r| r.0.as_str().cmp(name)) {
-            Ok(i) => dim(w).rules.get(i).copied().unwrap_or(rules[i].1),
-            Err(_) => {
-                misuse("rule", || format!("no rule {name}"));
-                0
-            }
-        }
-    }
-}
-
 unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Callback) {
     unsafe {
         let r = reg(r);
@@ -1703,7 +1684,13 @@ unsafe extern "C" fn reg_config(r: *mut abi::Registrar, d: *const abi::ConfigDes
             step: d.step,
             choices: d.choices.as_slice().iter().map(|s| s.as_str().to_string()).collect(),
             flags: d.flags,
+            scope: d.scope,
+            text: d.text.as_str().to_string(),
         };
+        if def.kind == abi::config_kind::TEXT && def.scope != abi::config_scope::CLIENT {
+            reg(r).errors.push(format!("setting {}: text settings are the client's own", def.name));
+            return;
+        }
         let def = crate::config::ConfigDef { default: def.fit(d.default), ..def };
         reg(r).game.configs.push((d.cell as usize, def));
     }
@@ -1715,4 +1702,19 @@ unsafe extern "C" fn config_value(id: u32) -> f64 {
 
 unsafe extern "C" fn config_set(id: u32, value: f64) {
     crate::config::set(id, value);
+}
+
+unsafe extern "C" fn config_text(id: u32) -> Str {
+    thread_local! {
+        static TEXT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    TEXT.with(|t| {
+        *t.borrow_mut() = crate::config::text(id);
+        let t = t.borrow();
+        Str { ptr: t.as_ptr(), len: t.len() }
+    })
+}
+
+unsafe extern "C" fn config_set_text(id: u32, value: Str) {
+    unsafe { crate::config::set_text(id, value.as_str()) }
 }

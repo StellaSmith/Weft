@@ -190,17 +190,6 @@ impl Client {
         self.command(abi::client_op::RESPAWN, "", 0.0);
     }
 
-    /// A settings.txt value for this session only (`gui_scale`, `language`, `view_distance`...);
-    /// `save_settings` keeps them.
-    pub fn setting(&self, key: &str, value: &str) -> bool {
-        self.command(abi::client_op::SETTING, &format!("{key} = {value}"), 0.0) != 0
-    }
-
-    /// Writes the settings as they are now to settings.txt (a settings screen's Done).
-    pub fn save_settings(&self) {
-        self.command(abi::client_op::SAVE_SETTINGS, "", 0.0);
-    }
-
     fn text(&self, which: u32, index: u32) -> String {
         unsafe { (host().client_text)(self.raw, which, index).as_str().to_string() }
     }

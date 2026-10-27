@@ -40,7 +40,7 @@ static DREAM_STYLE: Config<u32> = Config::named("dream_style");
 pub fn register(r: &mut Registry) {
     r.config(&CRYSTAL_SPARKS).bool(true);
     // The server decides how much its wisps sparkle; joining players get its value.
-    r.config(&WISP_SPARKS).int(2, 0, 10).synced();
+    r.config(&WISP_SPARKS).int(2, 0, 10).server();
     r.config(&DREAM_STRENGTH).float(1.0, 0.1, 1.0).step(0.05);
     r.config(&DREAM_STYLE).choice(0, &["warm", "cold"]);
     r.particle(&SPARK)

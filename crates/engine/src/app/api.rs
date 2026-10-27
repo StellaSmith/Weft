@@ -109,16 +109,6 @@ pub(crate) unsafe fn run<'a>(c: *mut abi::ClientCtx) -> Option<&'a mut Running> 
     unsafe { view(c).and_then(|v| (v.run as *mut Running).as_mut()) }
 }
 
-/// The settings, from a callback that drives the client or from a UI binding.
-pub(crate) unsafe fn settings<'a>(c: *mut abi::ClientCtx) -> Option<&'a crate::settings::Settings> {
-    unsafe {
-        match run(c) {
-            Some(r) => Some(&r.settings),
-            None => view(c).and_then(|v| v.settings.as_ref()),
-        }
-    }
-}
-
 /// The answer to a command run with `client_op::RUN_COMMAND`, once it came: its lines in the
 /// client's language, one per line.
 pub unsafe extern "C" fn client_command_reply(c: *mut abi::ClientCtx, id: u32, out: *mut Str) -> u32 {
@@ -130,10 +120,6 @@ pub unsafe extern "C" fn client_command_reply(c: *mut abi::ClientCtx, id: u32, o
         *out = text_out(&text.join("\n"));
         1
     }
-}
-
-pub unsafe extern "C" fn client_setting(c: *mut abi::ClientCtx, key: Str) -> Str {
-    unsafe { text_out(&settings(c).and_then(|s| s.get(key.as_str())).unwrap_or_default()) }
 }
 
 thread_local! {
@@ -400,19 +386,6 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
             op_::POST_EFFECT => return r.post.set(&text, num as f32) as u64,
             op_::BENCH => r.bench = Some(crate::bench::Bench::new(&text, num.max(0.1) as f32)),
             op_::RESPAWN => r.handle(vec![Request::Respawn]),
-            op_::SETTING => {
-                let Some((k, v)) = text.split_once('=') else { return 0 };
-                let (k, v) = (k.trim(), v.trim());
-                if !r.settings.set(k, v) {
-                    return 0;
-                }
-                match k {
-                    "language" => r.handle(vec![Request::SetLanguage(v.to_string())]),
-                    "gui_scale" => r.rebuild_all(),
-                    _ => r.handle(vec![Request::ApplySettings]),
-                }
-            }
-            op_::SAVE_SETTINGS => r.settings.save(),
             op_::RUN_COMMAND => return r.run_command(&text) as u64,
             _ => return 0,
         }

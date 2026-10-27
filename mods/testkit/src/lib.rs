@@ -86,8 +86,17 @@ fn start(c: &Client) {
         return;
     }
     // Same conditions on every machine; nothing of this is saved.
-    for (k, v) in [("language", "en_us"), ("gui_scale", "2"), ("view_distance", "12"), ("fov", "70"), ("brightness", "0.5"), ("vsync", "true"), ("resource_packs", ""), ("shader_pack", ""), ("debug_groups", "4294967295")] {
-        c.setting(k, v);
+    {
+        use weft_sdk::settings::*;
+        LANGUAGE.set("en_us");
+        GUI_SCALE.set(2);
+        VIEW_DISTANCE.set(12);
+        FOV.set(70.0);
+        BRIGHTNESS.set(0.5);
+        VSYNC.set(true);
+        RESOURCE_PACKS.set("");
+        SHADER_PACK.set("");
+        DEBUG_GROUPS.set(u32::MAX);
     }
     // The player's packs would change every picture.
     c.reload_assets();

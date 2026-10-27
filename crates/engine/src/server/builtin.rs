@@ -271,17 +271,17 @@ fn regions(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     say("regions.done", vec![text(&parts.join(", "))])
 }
 
-fn rule(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+/// The world's settings (`config_scope::WORLD`), like vanilla's game rules.
+fn rule(_s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let (c, a) = (x.c, x.a);
-    let rules = &c.game.rules;
+    let rules: Vec<(u32, &crate::config::ConfigDef)> = c.game.configs.iter().enumerate().filter(|(_, d)| d.scope == weft_abi::config_scope::WORLD).map(|(i, d)| (i as u32, d)).collect();
+    let value = |id: u32, d: &crate::config::ConfigDef| say("rule.value", vec![text(&d.name), text(&d.show(crate::config::get(id)))]);
     let Some(name) = a.text("name") else {
-        return rules.iter().zip(s.rules.iter()).flat_map(|(r, v)| say("rule.value", vec![text(&r.0), int(*v)])).collect();
+        return rules.iter().flat_map(|&(id, d)| value(id, d)).collect();
     };
-    let Some(i) = rules.iter().position(|r| r.0 == name || r.0.rsplit(':').next() == Some(name)) else { return say("rule.unknown", vec![text(name)]) };
+    let Some(&(id, d)) = rules.iter().find(|r| r.1.name == name || r.1.name.rsplit(':').next() == Some(name)) else { return say("rule.unknown", vec![text(name)]) };
     if let Some(v) = a.int("value") {
-        let mut now = s.rules.to_vec();
-        now[i] = v;
-        s.rules = now.into();
+        crate::config::set(id, v as f64);
     }
-    say("rule.value", vec![text(&rules[i].0), int(s.rules[i])])
+    value(id, d)
 }

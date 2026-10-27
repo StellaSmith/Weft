@@ -77,11 +77,10 @@ impl D {
     /// Text worked out every frame from the settings.
     pub(crate) fn text_bound(&mut self, n: abi::UiNode, f: impl Fn(&Settings) -> (String, Vec<Arg>) + 'static) {
         let bind = self.keep(move |a: &mut abi::UiBindArgs| {
-            if let Some(s) = unsafe { crate::app::api::settings(a.client) } {
-                let (key, args) = f(s);
-                let (raw, _texts) = raw_args(&args);
-                unsafe { modui::ui_text(a.text, Str::new(&key), abi::Slice::new(&raw)) };
-            }
+            // Settings are read from the configs; no client needed.
+            let (key, args) = f(&Settings::new(std::path::Path::new("")));
+            let (raw, _texts) = raw_args(&args);
+            unsafe { modui::ui_text(a.text, Str::new(&key), abi::Slice::new(&raw)) };
         });
         self.leaf(&abi::UiNode { kind: k::TEXT, bind, ..n });
     }
@@ -110,9 +109,7 @@ impl D {
         self.open(&col, |d| {
             d.text_bound(node(k::TEXT), move |s| (key.to_string(), vec![Arg::Int(get(s).round() as i64)]));
             let bind = d.keep(move |a: &mut abi::UiBindArgs| {
-                if let Some(s) = unsafe { crate::app::api::settings(a.client) } {
-                    a.value = (get(s) - min) / range;
-                }
+                a.value = (get(&Settings::new(std::path::Path::new(""))) - min) / range;
             });
             let on_change = d.keep(move |a: &mut abi::UiChangeArgs| {
                 if let Some(r) = unsafe { crate::app::api::run(a.client) } {

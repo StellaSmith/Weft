@@ -31,7 +31,7 @@ pub mod kind {
             })*
         };
     }
-    named_kinds!(Key, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot, Scatter, Template);
+    named_kinds!(Key, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot, Scatter, Template);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -170,7 +170,6 @@ pub type CreativeTab = Handle<kind::CreativeTab>;
 pub type Question = Handle<kind::Question>;
 pub type Chain = Handle<kind::Chain>;
 pub type Attribute = Handle<kind::Attribute>;
-pub type Rule = Handle<kind::Rule>;
 pub type RecipeKind = Handle<kind::RecipeKind>;
 pub type LootTable = Handle<kind::LootTable>;
 pub type TextCondition = Handle<kind::TextCondition>;

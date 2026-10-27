@@ -38,8 +38,8 @@ pub struct WorldMeta {
     pub last_played: u64,
     pub times: Vec<(String, u64)>,
     pub next_entity: u64,
-    /// World rules set by players (`/rule`).
-    pub rules: Vec<(String, i64)>,
+    /// The world's settings (`config_scope::WORLD`: game rules, `/rule`).
+    pub configs: Vec<(String, f64)>,
     /// Mods (id, version) the world was last played with.
     pub mods: Vec<(String, String)>,
 }
@@ -51,7 +51,7 @@ pub fn now_secs() -> u64 {
 impl WorldMeta {
     pub fn load(dir: &Path) -> Option<WorldMeta> {
         let src = std::fs::read_to_string(dir.join("world.txt")).ok()?;
-        let mut m = WorldMeta { dir: dir.to_path_buf(), format: 1, name: String::new(), seed: 0, last_played: 0, times: Vec::new(), next_entity: 1, rules: Vec::new(), mods: Vec::new() };
+        let mut m = WorldMeta { dir: dir.to_path_buf(), format: 1, name: String::new(), seed: 0, last_played: 0, times: Vec::new(), next_entity: 1, configs: Vec::new(), mods: Vec::new() };
         for (_, k, v) in crate::kv::pairs(&src) {
             match k {
                 "name" => m.name = v.to_string(),
@@ -62,8 +62,8 @@ impl WorldMeta {
                 _ => {
                     if let Some(d) = k.strip_prefix("time.") {
                         m.times.push((d.to_string(), v.parse().unwrap_or(0)));
-                    } else if let Some(r) = k.strip_prefix("rule.") {
-                        m.rules.push((r.to_string(), v.parse().unwrap_or(0)));
+                    } else if let Some(r) = k.strip_prefix("config.") {
+                        m.configs.push((r.to_string(), v.parse().unwrap_or(0.0)));
                     } else if let Some(id) = k.strip_prefix("mod.") {
                         m.mods.push((id.to_string(), v.to_string()));
                     }
@@ -81,8 +81,8 @@ impl WorldMeta {
         for (d, t) in &self.times {
             s.push_str(&format!("time.{d} = {t}\n"));
         }
-        for (r, v) in &self.rules {
-            s.push_str(&format!("rule.{r} = {v}\n"));
+        for (r, v) in &self.configs {
+            s.push_str(&format!("config.{r} = {v}\n"));
         }
         for (id, v) in &self.mods {
             s.push_str(&format!("mod.{id} = {v}\n"));
@@ -119,7 +119,7 @@ pub fn create(saves: &Path, name: &str, seed: u64) -> WorldMeta {
         n += 1;
         dir = saves.join(format!("{base}_{n}"));
     }
-    let m = WorldMeta { dir, format: SAVE_FORMAT, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), next_entity: 1, rules: Vec::new(), mods: Vec::new() };
+    let m = WorldMeta { dir, format: SAVE_FORMAT, name: name.to_string(), seed, last_played: now_secs(), times: Vec::new(), next_entity: 1, configs: Vec::new(), mods: Vec::new() };
     m.save();
     m
 }

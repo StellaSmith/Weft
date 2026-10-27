@@ -458,9 +458,9 @@ pub async fn creative_and_invulnerable(t: T) -> R {
 pub async fn creative_clicks(t: T) -> R {
     t.flat().await?;
     t.op("mode creative").await?;
-    t.c().setting("vsync", "false");
+    weft_sdk::settings::VSYNC.set(false);
     let r = creative_clicks_fast(&t).await;
-    t.c().setting("vsync", "true");
+    weft_sdk::settings::VSYNC.set(true);
     r
 }
 

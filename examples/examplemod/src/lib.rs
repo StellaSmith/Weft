@@ -52,7 +52,12 @@ fn config(r: &mut Registry) {
     //      static STYLE: Config<u32> = Config::named("style");
     //      r.config(&POWER).int(10, 0, 100);
     //      r.config(&STYLE).choice(0, &["warm", "cold"]);
-    // `.synced()` means server value overrides clients' values, for anything gameplay depends on
+    // Where the value lives: the player's own by default, `.server()` the server's (its players
+    // get it and every change, for anything gameplay depends on), `.world()` saved with the
+    // world and changed with `/rule` (game rules):
+    //      static HARD_MODE: Config<bool> = Config::named("hard_mode");
+    //      r.config(&HARD_MODE).bool(false).world();
+    // The engine's own settings are the same: `settings::FOV.get()`, `settings::LANGUAGE.set("ru_ru")`.
 }
 
 /// Your blocks, texture is `block/<name>.png`, translation is `block.examplemod.<name>`.

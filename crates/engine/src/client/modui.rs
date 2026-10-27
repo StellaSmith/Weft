@@ -46,18 +46,16 @@ struct TextSink {
 pub struct ClientView {
     pub client: *const Client,
     pub run: *mut std::ffi::c_void,
-    /// For bindings, which may read settings but not drive the client.
-    pub settings: *const crate::settings::Settings,
 }
 
 impl ClientView {
     pub fn new(client: Option<&Client>) -> ClientView {
-        ClientView { client: client.map_or(std::ptr::null(), |c| c as *const Client), run: std::ptr::null_mut(), settings: std::ptr::null() }
+        ClientView { client: client.map_or(std::ptr::null(), |c| c as *const Client), run: std::ptr::null_mut() }
     }
 
     /// For a binding run with `ctx`.
     pub fn bound(ctx: &Ctx) -> ClientView {
-        ClientView { settings: &*ctx.settings as *const crate::settings::Settings, ..ClientView::new(ctx.client.as_deref()) }
+        ClientView::new(ctx.client.as_deref())
     }
 
     pub fn raw(&mut self) -> *mut abi::ClientCtx {

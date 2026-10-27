@@ -166,7 +166,7 @@ impl Screen for ResourcePacks {
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let dir = resource_dir(&cx.settings.run_dir);
         let all = list(&dir);
-        let selected = cx.settings.resource_packs.clone();
+        let selected = cx.settings.resource_packs();
         let initial = self.initial.clone();
         frame(ui, cx, "settings.resource_packs", |ui| {
             ui.container(Style::row().gap(8.0).grow().h(0.0).stretch(), |ui| {
@@ -181,7 +181,9 @@ impl Screen for ResourcePacks {
                             let id = p.id.clone();
                             pack_row(ui, cx, p, |ui| {
                                 small(ui, "+", move |c| {
-                                    c.settings.resource_packs.insert(0, id.clone());
+                                    let mut p = c.settings.resource_packs();
+                                    p.insert(0, id.clone());
+                                    c.settings.set_resource_packs(&p);
                                     c.requests.push(Request::Rebuild);
                                 });
                             });
@@ -197,18 +199,24 @@ impl Screen for ResourcePacks {
                             pack_row(ui, cx, info.unwrap_or(&missing), |ui| {
                                 if i > 0 {
                                     small(ui, "\u{25b2}", move |c| {
-                                        c.settings.resource_packs.swap(i, i - 1);
+                                        let mut p = c.settings.resource_packs();
+                                        p.swap(i, i - 1);
+                                        c.settings.set_resource_packs(&p);
                                         c.requests.push(Request::Rebuild);
                                     });
                                 }
                                 if i + 1 < selected.len() {
                                     small(ui, "\u{25bc}", move |c| {
-                                        c.settings.resource_packs.swap(i, i + 1);
+                                        let mut p = c.settings.resource_packs();
+                                        p.swap(i, i + 1);
+                                        c.settings.set_resource_packs(&p);
                                         c.requests.push(Request::Rebuild);
                                     });
                                 }
                                 small(ui, "-", move |c| {
-                                    c.settings.resource_packs.remove(i);
+                                    let mut p = c.settings.resource_packs();
+                                    p.remove(i);
+                                    c.settings.set_resource_packs(&p);
                                     c.requests.push(Request::Rebuild);
                                 });
                             });
@@ -219,8 +227,7 @@ impl Screen for ResourcePacks {
             ui.container(Style::row().gap(6.0).justify(Justify::Center), |ui| {
                 button(ui, cx, "packs.open_folder", &[], 140.0, move |_| open_folder(&dir));
                 button(ui, cx, "menu.done", &[], 140.0, move |c| {
-                    c.settings.save();
-                    if c.settings.resource_packs != initial {
+                    if c.settings.resource_packs() != initial {
                         c.requests.push(Request::ReloadAssets);
                     }
                     c.requests.push(Request::Close);
@@ -253,7 +260,7 @@ impl Screen for ShaderPacks {
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let dir = shader_dir(&cx.settings.run_dir);
         let all = list(&dir);
-        let current = cx.settings.shader_pack.clone();
+        let current = cx.settings.shader_pack();
         let initial = self.initial.clone();
         frame(ui, cx, "settings.shader_packs", |ui| {
             ui.panel("panel", Style::default().pad(8.0).gap(4.0).w(320.0).h(0.0).grow().min_h(60.0).scroll().stretch(), |ui| {
@@ -262,7 +269,7 @@ impl Screen for ShaderPacks {
                 for (id, name, description) in choices {
                     let selected = id == current;
                     let b = ui.button("button", Style::default().min_h(20.0).pad_xy(6.0, 4.0).stretch(), Rc::new(move |c: &mut Ctx| {
-                        c.settings.shader_pack = id.clone();
+                        c.settings.set_text("shader_pack", id.as_deref().unwrap_or(""));
                         c.requests.push(Request::Rebuild);
                     }), |ui| {
                         ui.text(name, "button");
@@ -279,8 +286,7 @@ impl Screen for ShaderPacks {
             ui.container(Style::row().gap(6.0).justify(Justify::Center), |ui| {
                 button(ui, cx, "packs.open_folder", &[], 140.0, move |_| open_folder(&dir));
                 button(ui, cx, "menu.done", &[], 140.0, move |c| {
-                    c.settings.save();
-                    if c.settings.shader_pack != initial {
+                    if c.settings.shader_pack() != initial {
                         c.requests.push(Request::ReloadAssets);
                     }
                     c.requests.push(Request::Close);

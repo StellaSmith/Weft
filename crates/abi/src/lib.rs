@@ -1670,9 +1670,6 @@ pub struct Host {
     /// 1 and the answer's lines (in the client's language, joined by `\n`) once command `id`
     /// (`client_op::RUN_COMMAND`) was answered, 0 before. An answer is read once.
     pub client_command_reply: unsafe extern "C" fn(client: *mut ClientCtx, id: u32, out: *mut Str) -> u32,
-    /// A settings.txt value (`view_distance`, `language`...), empty for an unknown key. Works in
-    /// UI bindings too. Valid until the next call.
-    pub client_setting: unsafe extern "C" fn(client: *mut ClientCtx, key: Str) -> Str,
     /// Block the client has at `pos`, `u32::MAX` if that cube is not loaded there.
     pub client_block: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
     /// Group `name` of the player inventory (`reg_player_inventory`, equipment slots,
@@ -1718,12 +1715,6 @@ pub struct Host {
     /// does for items with a `liquid` component or empty containers of one). Returns the stack
     /// the player holds afterwards; `handled` is set non-zero if anything happened.
     pub use_container: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, stack: ItemStack, handled: *mut u32) -> ItemStack,
-
-    /// A world rule (like vanilla's game rules) with its default; players change it with
-    /// `/rule <name> <value>`, worlds save it.
-    pub reg_rule: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: i64),
-    /// Current value of a rule in this world, 0 for unknown names.
-    pub rule: unsafe extern "C" fn(world: *mut WorldCtx, name: Str) -> i64,
 
     // ------------------------------------------------ events, interceptors, modifiers, loot
     /// Subscribes to event `name` carrying values of `schema` (checked against every other use);
@@ -1796,6 +1787,9 @@ pub struct Host {
     pub config_value: unsafe extern "C" fn(id: u32) -> f64,
     /// Changes config `id` (clamped to its range, saved). Synced ones only on the server.
     pub config_set: unsafe extern "C" fn(id: u32, value: f64),
+    /// The value of a `TEXT` setting.
+    pub config_text: unsafe extern "C" fn(id: u32) -> Str,
+    pub config_set_text: unsafe extern "C" fn(id: u32, value: Str),
     /// A sound event, see `SoundDesc`.
     pub reg_sound: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SoundDesc),
     /// Background music, see `MusicDesc`.
@@ -2042,13 +2036,23 @@ pub mod config_kind {
     pub const FLOAT: u32 = 2;
     /// One of `choices`, stored as its index.
     pub const CHOICE: u32 = 3;
+    /// Text (`Host::config_text`); its default is `ConfigDesc::text`. Client scope only.
+    pub const TEXT: u32 = 4;
 }
 
 pub mod config_flags {
-    /// The server's value counts: players joining get it and cannot change it there.
-    pub const SYNCED: u32 = 1;
     /// Takes effect after a restart; the settings screen says so.
     pub const RESTART: u32 = 2;
+}
+
+/// Where a setting's value lives.
+pub mod config_scope {
+    /// Each player's own, in their `config/<ns>.txt`.
+    pub const CLIENT: u32 = 0;
+    /// The server's, in its `config/<ns>.txt`; its players get it, and every change.
+    pub const SERVER: u32 = 1;
+    /// Saved with the world (game rules, changed with `/rule`); players get it like the server's.
+    pub const WORLD: u32 = 2;
 }
 
 /// A mod setting. Shown as `config.<ns>.<key>` (and `.tooltip`) from the language files.
@@ -2066,8 +2070,12 @@ pub struct ConfigDesc {
     pub step: f64,
     pub choices: Slice<Str>,
     pub flags: u32,
+    /// `config_scope`.
+    pub scope: u32,
+    /// The default of a `TEXT` setting.
+    pub text: Str,
 }
-defaults!(ConfigDesc { name: Str::EMPTY, cell: core::ptr::null(), kind: config_kind::BOOL, default: 0.0, min: 0.0, max: 1.0, step: 0.0, choices: Slice::EMPTY, flags: 0 });
+defaults!(ConfigDesc { name: Str::EMPTY, cell: core::ptr::null(), kind: config_kind::BOOL, default: 0.0, min: 0.0, max: 1.0, step: 0.0, choices: Slice::EMPTY, flags: 0, scope: config_scope::CLIENT, text: Str::EMPTY });
 
 #[repr(C)]
 pub struct TextConditionArgs {
@@ -2737,13 +2745,9 @@ pub mod client_op {
     /// `text`; the numbers land in `ClientState::bench_*`.
     pub const BENCH: u32 = 11;
     pub const RESPAWN: u32 = 12;
-    /// `text` = `key = value` as in settings.txt, applied for this session only.
-    pub const SETTING: u32 = 13;
     /// Post-processing effect `text` (`shaders/post/<name>.wgsl`) at strength `num`, 0 turns it
     /// off. Effects stay on until changed and run in the order they were turned on.
     pub const POST_EFFECT: u32 = 14;
-    /// Writes the settings as they are now to settings.txt.
-    pub const SAVE_SETTINGS: u32 = 15;
     /// Runs command `text` (`/tp ~ ~5 ~`) as the player, here if it is a client command, else
     /// on the server; returns an id for `Host::client_command_reply`. The chat stays out of it.
     pub const RUN_COMMAND: u32 = 16;

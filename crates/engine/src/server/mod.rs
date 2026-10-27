@@ -170,7 +170,6 @@ pub struct Server {
     /// Generated and inserted totals at the last `load` report.
     load_seen: (u64, u64),
     /// World rule values by rule id.
-    rules: Arc<[i64]>,
     /// Synced config values as players last got them.
     configs: Vec<(u32, f64)>,
 }
@@ -301,14 +300,8 @@ impl Server {
             }
         }
         let (gen_tx, gen_rx) = unbounded();
-        let rules: Arc<[i64]> = c
-            .game
-            .rules
-            .iter()
-            .map(|(name, default)| storage.as_ref().and_then(|s| s.meta.rules.iter().find(|r| &r.0 == name)).map_or(*default, |r| r.1))
-            .collect();
+        crate::config::load_world(storage.as_ref().map_or(&[][..], |s| &s.meta.configs));
         Server {
-            rules,
             cfg,
             dims,
             players: Vec::new(),
@@ -456,7 +449,6 @@ impl Server {
             for r in &mut d.regions {
                 r.time = t;
                 r.gizmo_groups = groups.clone();
-                r.rules = self.rules.clone();
             }
             d.time += 1;
         }
@@ -689,7 +681,7 @@ impl Server {
             }
         }
         s.meta.times = self.dims.iter().map(|d| (c.dims[d.id as usize].name.clone(), d.time)).collect();
-        s.meta.rules = c.game.rules.iter().zip(self.rules.iter()).map(|(r, v)| (r.0.clone(), *v)).collect();
+        s.meta.configs = crate::config::world_values();
         s.meta.next_entity = self.next_id.load(Ordering::Relaxed);
         for p in &mut self.players {
             if p.joined || players {

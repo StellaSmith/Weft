@@ -149,7 +149,7 @@ pub fn register(r: &mut Registry) {
     leaves(r, &SPRUCE_LEAVES, "leaves_spruce");
 
     // Vanilla numbers: water steps every 5 ticks and reaches 7 blocks, lava every 30 and 3.
-    r.liquid(&WATER).tint(&tints::WATER).renewable(2).tag("water").bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
+    r.liquid(&WATER).tint(&tints::WATER).translucent().renewable(2).tag("water").bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid(&LAVA).light(15).drag(0.3).flow_delay(30).drop_off(2).slope_find(2).temperature(1300).tag("lava").tag("hot").bucket(Item::generated("lava_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid_reaction("#hot", "#water").source_block("obsidian").flowing_block("cobblestone").turns_below_into("stone");
 

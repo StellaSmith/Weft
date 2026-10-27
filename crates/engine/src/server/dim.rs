@@ -997,7 +997,8 @@ impl Dim {
 
     /// Natural spawning (`abi::SpawnDesc`) around this region's players every two seconds.
     fn natural_spawns(&mut self, c: &'static Content) {
-        if self.time % 40 != 0 || c.game.spawns.is_empty() {
+        // Nothing spawns where nothing may change (the debug blocks, the void).
+        if self.time % 40 != 0 || c.game.spawns.is_empty() || !c.dims[self.id as usize].editable {
             return;
         }
         let on = crate::config::get(c.game.mob_spawning) != 0.0;

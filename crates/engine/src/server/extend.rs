@@ -123,6 +123,10 @@ impl Dim {
 
     /// Whether the interceptors of `question` let it happen: any deny wins.
     pub fn ask(&mut self, c: &'static Content, question: &str, q: &mut abi::Query) -> bool {
+        if !c.dims[self.id as usize].editable && (question == abi::question::BREAK_BLOCK || question == abi::question::PLACE_BLOCK) {
+            q.verdict = verdict::DENY;
+            return false;
+        }
         let Some(list) = c.game.interceptors.get(question) else { return true };
         let mut allowed = true;
         for &(owner, cb) in list {

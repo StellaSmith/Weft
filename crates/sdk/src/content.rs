@@ -1688,6 +1688,7 @@ pub struct LiquidBuilder<'a> {
     light: [u8; 3],
     opacity: u8,
     drag: f32,
+    translucent: bool,
     components: Vec<Pending>,
     desc: abi::LiquidDesc,
     bucket: Option<(&'static Item, String, String)>,
@@ -1716,6 +1717,11 @@ impl LiquidBuilder<'_> {
     /// Movement speed multiplier inside.
     pub fn drag(mut self, d: f32) -> Self {
         self.drag = d;
+        self
+    }
+    /// Seen through (water); otherwise drawn solid like lava.
+    pub fn translucent(mut self) -> Self {
+        self.translucent = true;
         self
     }
     /// Ticks between flow steps (water 5, lava 30).
@@ -1770,6 +1776,9 @@ impl Drop for LiquidBuilder<'_> {
         let mut b = self.reg.block(self.handle).texture(&tex).prop("level", 0..=15).unbreakable().light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
         if let Some(kind) = tint {
             b = b.tint(kind);
+        }
+        if self.translucent {
+            b = b.translucent().opacity(opacity);
         }
         b.components = std::mem::take(&mut self.components);
         drop(b);
@@ -1828,6 +1837,7 @@ impl Registry {
             light: [0; 3],
             opacity: 2,
             drag: 0.5,
+            translucent: false,
             components: Vec::new(),
             desc: abi::LiquidDesc::DEFAULT,
             bucket: None,

@@ -877,14 +877,14 @@ fn void_dimension() -> DimensionDef {
 
 pub const DEBUG_DIM: &str = "core:debug_blocks";
 
-/// Every block state in a grid two blocks apart on a floor, like vanilla's debug world: for
-/// checking textures and models at a glance. Nothing in it updates or changes.
+/// Every block state in a grid two blocks apart, like vanilla's debug world: for checking
+/// textures and models at a glance. Nothing in it updates, changes or spawns; no gravity, so
+/// players float over the grid.
 fn debug_dimension() -> DimensionDef {
     DimensionDef {
         name: DEBUG_DIM.into(),
         sky_cube_y: 1,
         sky_light: true,
-        gravity: 32.0,
         day_length: 24000,
         fixed_time: 6000,
         sky_color: 0x78a7ff,
@@ -902,17 +902,11 @@ fn debug_blocks(c: &Content, cube: glam::IVec3, blocks: &mut [u32]) {
     if cube.y != 0 {
         return;
     }
-    let floor = c.states.iter().position(|s| s.flags & abi::block_flags::OPAQUE != 0 && s.model == abi::Model::Cube).unwrap_or(0) as u32;
     let n = c.states.len() as i32 - 1;
     let side = (n as f64).sqrt().ceil() as i32;
     for z in 0..16 {
         for x in 0..16 {
-            // The floor reaches a little past the grid, so players can walk around it.
             let (wx, wz) = (cube.x * 16 + x, cube.z * 16 + z);
-            if !(-4..side * 2 + 4).contains(&wx) || !(-4..side * 2 + 4).contains(&wz) {
-                continue;
-            }
-            blocks[(z * 16 + x) as usize] = floor;
             if !(0..side * 2).contains(&wx) || !(0..side * 2).contains(&wz) {
                 continue;
             }
@@ -2057,7 +2051,6 @@ fn freeze_liquids(
             st.liquid = Some(id);
             st.level = if s < 8 { s as u8 } else { 0 };
             st.flags = abi::block_flags::LIQUID | abi::block_flags::REPLACEABLE | abi::block_flags::NOT_TARGETABLE | (st.flags & abi::block_flags::RANDOM_TICKS);
-            st.layer = Layer::Translucent;
         }
         liquids.push(LiquidDef {
             name: name.clone(),

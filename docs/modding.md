@@ -264,6 +264,7 @@ Look at testmod's generator for an example.
 
 ### Liquids
 `r.liquid(&LIQUID)` and then:
+- `translucent()` to see through it (water); without it it's drawn solid (lava)
 - `flow_delay`, `drop_off`, `slope_find`, `flows_up()`
 - `renewable(n)`: a new source where n sources meet (water 2)
 - `temperature`

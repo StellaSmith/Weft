@@ -364,12 +364,38 @@ pub async fn dimensions(t: T) -> R {
     t.check_eq(t.block([x + 1, y, z]).await?, "core:air".to_string(), "debug water does not flow");
     t.cmd(&format!("/setblock {} {y} {z} base:stone", x + 1)).await?;
     t.check_eq(t.block([x + 1, y, z]).await?, "core:air".to_string(), "debug blocks refuse /setblock");
+    // Breaking is refused like placing, and nothing holds the grid up.
+    let at = t.op("find 40 base:stone").await?;
+    let s: Vec<i32> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    let [sx, sy, sz] = s[..] else { return Err(format!("no stone among the debug blocks: {at}")) };
+    // Refused, not just undone: a refused break sends the block back to the player's client.
+    let broke = t.op(&format!("break {sx} {sy} {sz}")).await?;
+    t.check_eq(broke, "0".to_string(), "breaking a debug block is refused");
+    t.check_eq(t.block([sx, sy, sz]).await?, "base:stone".to_string(), "debug blocks refuse breaking");
+    t.check_eq(t.block([sx, sy - 1, sz]).await?, "core:air".to_string(), "no floor under the debug blocks");
+    t.cmd("/rule core:mob_spawning 1").await?;
+    t.secs(4.5).await?;
+    let mobs = t.op(&format!("near {sx} {sy} {sz} 64")).await?;
+    t.cmd("/rule core:mob_spawning 0").await?;
+    // Block entities (furnaces, chests) are there; mobs must not be.
+    let spawned: Vec<&str> = mobs.split_whitespace().filter(|e| ["pig", "cow", "zombie", "spider"].iter().any(|m| e.ends_with(&format!("base:{m}")))).collect();
+    t.check(spawned.is_empty(), format!("nothing spawns among the debug blocks: {spawned:?}"));
+    // Lava is drawn solid: blocks behind ice do not show through it.
+    let at = t.op("find 60 base:lava").await?;
+    let l: Vec<i32> = at.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    if let [lx, ly, lz] = l[..] {
+        t.cmd(&format!("/tp {} {} {}", lx as f64 + 0.5, ly + 2, lz as f64 + 4.5)).await?;
+        t.c().look(0.0, -30.0);
+        t.frames(20).await?;
+        t.shot("lava").await?;
+    }
     t.cmd("/tp -3 1 -3").await?;
     t.c().look(225.0, -25.0);
     t.frames(20).await?;
     let grid = t.shot("debug_blocks").await?;
-    // Many different blocks in view: no color class covers most of the floor.
-    let biggest = [probe::grass, probe::dark, probe::light, probe::brown].map(|f| grid.share(0.0, 0.5, 1.0, 0.9, f)).into_iter().fold(0.0f32, f32::max);
+    // Many different blocks in view: no color class covers most of the grid (it floats in the
+    // sky, so only the band it fills counts).
+    let biggest = [probe::grass, probe::dark, probe::light, probe::brown].map(|f| grid.share(0.3, 0.22, 0.7, 0.36, f)).into_iter().fold(0.0f32, f32::max);
     t.probe("debug blocks: largest share of one color class", biggest, biggest < 0.6);
     Ok(())
 }

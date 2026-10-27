@@ -52,7 +52,7 @@ impl RawValue {
         unsafe {
             let schema = v.schema.as_str().to_string();
             let bytes = v.value.as_slice().to_vec();
-            let text = (schema == "str" && bytes.len() == size_of::<Str>()).then(|| std::ptr::read_unaligned(bytes.as_ptr() as *const Str).as_str().to_string());
+            let text = (written_as_text(&schema) && bytes.len() == size_of::<Str>()).then(|| std::ptr::read_unaligned(bytes.as_ptr() as *const Str).as_str().to_string());
             RawValue { name: v.name.as_str().to_string(), schema, bytes, text }
         }
     }
@@ -86,13 +86,19 @@ pub struct RawSet {
     pub remove: bool,
 }
 
+/// Schemas a mod writes as text: `str` stays text; references (`block`: one block or state,
+/// `blocks`: a weighted list `name[:weight] ..`) are resolved into ids at freeze, with errors.
+pub fn written_as_text(schema: &str) -> bool {
+    matches!(schema, "str" | "block" | "blocks")
+}
+
 /// Byte size a schema implies, if it is a primitive.
 fn primitive_size(schema: &str) -> Option<usize> {
     Some(match schema {
         "" => 0,
         "u8" | "i8" | "bool" => 1,
         "u16" | "i16" => 2,
-        "u32" | "i32" | "f32" => 4,
+        "u32" | "i32" | "f32" | "block" | "blocks" => 4,
         "u64" | "i64" | "f64" => 8,
         "str" => size_of::<Str>(),
         _ => return None,
@@ -197,11 +203,13 @@ pub struct Builder {
     setters: FxHashMap<(usize, u32, u32), String>,
     /// Values that could not be stored (freeze errors).
     pub errors: Vec<String>,
+    /// Turns the text of a reference value (`block`, `blocks`) into its bytes.
+    pub refs: Option<Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String>>>,
 }
 
 impl Default for Builder {
     fn default() -> Self {
-        let mut b = Builder { decl: FxHashMap::default(), names: Vec::new(), ids: FxHashMap::default(), tables: Vec::new(), texts: Vec::new(), setters: FxHashMap::default(), errors: Vec::new() };
+        let mut b = Builder { decl: FxHashMap::default(), names: Vec::new(), ids: FxHashMap::default(), tables: Vec::new(), texts: Vec::new(), setters: FxHashMap::default(), errors: Vec::new(), refs: None };
         for (name, schema) in BUILTIN {
             b.decl.insert(name.to_string(), (schema.to_string(), "the engine".into()));
         }
@@ -262,15 +270,19 @@ impl Builder {
         (0..t.entries).filter(|&e| t.bits[(e * t.words) as usize..((e + 1) * t.words) as usize].iter().zip(&mask).any(|(b, m)| b & m != 0)).collect()
     }
 
-    fn encode<'v>(&mut self, v: &'v RawValue) -> std::borrow::Cow<'v, [u8]> {
+    fn encode<'v>(&mut self, v: &'v RawValue) -> Result<std::borrow::Cow<'v, [u8]>, String> {
         match &v.text {
+            Some(t) if v.schema != "str" => match &self.refs {
+                Some(resolve) => resolve(&v.schema, t).map(Into::into),
+                None => Err("references resolve only at load".into()),
+            },
             Some(t) => {
                 let boxed: Box<str> = t.as_str().into();
                 let s = Str { ptr: boxed.as_ptr(), len: boxed.len() };
                 self.texts.push(boxed);
-                unsafe { std::slice::from_raw_parts(&s as *const Str as *const u8, size_of::<Str>()).to_vec().into() }
+                Ok(unsafe { std::slice::from_raw_parts(&s as *const Str as *const u8, size_of::<Str>()).to_vec().into() })
             }
-            None => v.bytes.as_slice().into(),
+            None => Ok(v.bytes.as_slice().into()),
         }
     }
 
@@ -278,7 +290,13 @@ impl Builder {
     /// registration); replacing another mod's different value is logged.
     pub fn put(&mut self, kind: usize, entry: u32, v: &RawValue, setter: Option<(ModId, &str)>, label: &dyn Fn() -> String) {
         let Some(comp) = self.id(&v.name) else { return };
-        let bytes = self.encode(v);
+        let bytes = match self.encode(v) {
+            Ok(b) => b,
+            Err(e) => {
+                self.errors.push(format!("{}: {}: {e}", label(), v.name));
+                return;
+            }
+        };
         let t = &mut self.tables[kind];
         if entry >= t.entries {
             return;
@@ -392,6 +410,22 @@ mod tests {
         b.declare("burn", "u32", Some(8), &|| "other: other:x".into(), &mut errors);
         assert_eq!(errors.len(), 3, "{errors:?}");
         assert!(errors[0].contains("fuel") && errors[0].contains("other:wood") && errors[0].contains("base:coal"));
+    }
+
+    /// Block references become ids at freeze; one that names nothing is an error, not a zero.
+    #[test]
+    fn references_resolve_or_fail() {
+        let mut b = Builder::default();
+        let mut errors = Vec::new();
+        b.declare("leaves", "block", None, &|| "a".into(), &mut errors);
+        b.start([1, 0, 0, 0, 0]);
+        b.refs = Some(Box::new(|_, t| if t == "a:oak_leaves" { Ok(7u32.to_le_bytes().to_vec()) } else { Err(format!("unknown block {t}")) }));
+        let v = |t: &str| RawValue { name: "leaves".into(), schema: "block".into(), bytes: vec![], text: Some(t.into()) };
+        b.put(BLOCK, 0, &v("a:oak_leaves"), None, &|| "log".into());
+        b.put(BLOCK, 0, &v("a:oak_leafs"), None, &|| "log".into());
+        assert_eq!(b.errors, vec!["log: leaves: unknown block a:oak_leafs".to_string()]);
+        let c = b.finish();
+        assert_eq!(c.get::<u32>(BLOCK, 0, c.id("leaves").unwrap()), Some(7));
     }
 
     #[test]

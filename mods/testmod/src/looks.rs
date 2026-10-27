@@ -72,8 +72,8 @@ pub fn register(r: &mut Registry) {
     r.block(&GLOW_MOSS).tint(&GLOW).hardness(0.6).mineable("shovel");
     // A glowing birch (a log's `tree` component grows it from a sapling or worldgen) and
     // flower; not generated in the world, only from the creative tabs.
-    static TREE: Component<Text> = Component::named("tree");
-    r.block(&GLOW_LOG).textures("glow_log_top", "glow_log", "glow_log_top").hardness(2.0).mineable("axe").tag("logs").set_text(&TREE, "round testmod:glow_leaves");
+    static TREE_LEAVES: Component<BlockRef> = Component::named("tree_leaves");
+    r.block(&GLOW_LOG).textures("glow_log_top", "glow_log", "glow_log_top").hardness(2.0).mineable("axe").tag("logs").set_text(&TREE_LEAVES, "glow_leaves");
     r.block(&GLOW_LEAVES).cutout().opacity(1).tint(&GLOW).hardness(0.2).tag("leaves").mineable("shears");
     r.block(&GLOW_FLOWER).plant().needs_below("#plant_soil").tint(&GLOW);
     r.block(&GLOW_CRYSTAL)

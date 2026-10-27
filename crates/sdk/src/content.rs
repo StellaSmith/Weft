@@ -212,8 +212,10 @@ pub trait WithComponents: Sized {
         self.pending().push(comp.raw_value(&v));
         self
     }
-    fn set_text(mut self, comp: &Component<c::Text>, text: &str) -> Self {
-        self.pending().push(Pending::text(comp.name(), text));
+    /// A value written as text: plain text, or block names the engine resolves (`BlockRef`,
+    /// `BlockList`).
+    fn set_text<T: c::TextValue>(mut self, comp: &Component<T>, text: &str) -> Self {
+        self.pending().push(Pending::text_as(comp.name(), &T::schema(), text));
         self
     }
 }
@@ -244,7 +246,23 @@ impl Pending {
         Pending { name: name.to_string(), schema, bytes, text: None }
     }
     pub(crate) fn text(name: &str, text: &str) -> Pending {
-        Pending { name: name.to_string(), schema: "str".into(), bytes: Vec::new(), text: Some(text.to_string()) }
+        Pending::text_as(name, "str", text)
+    }
+    pub(crate) fn text_as(name: &str, schema: &str, text: &str) -> Pending {
+        // Block names without a namespace are this mod's, like everywhere else.
+        let text = match schema {
+            "block" | "blocks" => text
+                .split_whitespace()
+                .map(|e| match e.rsplit_once(':') {
+                    // `oak_log:4`: the weight stays, the name gets the namespace.
+                    Some((n, w)) if w.parse::<u32>().is_ok() => format!("{}:{w}", crate::full_name(n)),
+                    _ => crate::full_name(e),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => text.to_string(),
+        };
+        Pending { name: name.to_string(), schema: schema.into(), bytes: Vec::new(), text: Some(text) }
     }
     fn tag(name: &str) -> Pending {
         Pending { name: name.to_string(), schema: String::new(), bytes: Vec::new(), text: None }
@@ -396,8 +414,8 @@ impl Registry {
 
     /// A text component on entries of any mod, e.g. keyframes for the player:
     /// `r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "mymod:player")`.
-    pub fn set_text_on(&mut self, target: Target, comp: &Component<c::Text>, text: &str) {
-        self.send_set(target, &Pending::text(comp.name(), text), false);
+    pub fn set_text_on<T: c::TextValue>(&mut self, target: Target, comp: &Component<T>, text: &str) {
+        self.send_set(target, &Pending::text_as(comp.name(), &T::schema(), text), false);
     }
 
     /// Takes a component or tag away from entries of any mod.

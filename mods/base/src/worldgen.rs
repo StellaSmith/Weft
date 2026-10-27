@@ -14,18 +14,20 @@ static PLANT_SOIL: Tag = Tag::named("plant_soil");
 static CACTUS_SOIL: Tag = Tag::named("cactus_soil");
 static SUGAR_CANE_SOIL: Tag = Tag::named("sugar_cane_soil");
 /// What a biome grows, as data any mod can set on any biome: trees per 5x5 cell (0..1), share of
-/// grass on plantable soil, which trees and flowers, and tags `frozen` (nothing grows, set by
+/// grass on plantable soil, which trees and flowers (block lists the engine checks), and tags `frozen` (nothing grows, set by
 /// `.frozen(..)`), `dry` (cacti).
 pub static TREES: Component<f32> = Component::named("trees");
 pub static GRASS_COVER: Component<f32> = Component::named("grass");
 /// The logs of the trees a biome grows, with weights: `"base:birch_log:1 base:oak_log:4"`
 /// (oaks where unset).
-pub static TREE_KINDS: Component<Text> = Component::named("tree_kinds");
+pub static TREE_KINDS: Component<BlockList> = Component::named("tree_kinds");
 /// Flowers a biome grows, picked evenly (`"base:dandelion base:rose"` where unset).
-pub static FLOWERS: Component<Text> = Component::named("flowers");
+pub static FLOWERS: Component<BlockList> = Component::named("flowers");
 /// On a log, the tree it grows into: `round <leaves>` (like oaks, 4-6 high) or `cone <leaves>`
 /// (like spruces, 6-9 high).
-pub static TREE: Component<Text> = Component::named("tree");
+pub static TREE_LEAVES: Component<BlockRef> = Component::named("tree_leaves");
+/// Logs with this tag grow into cones (spruces), the others round (oaks, birches).
+pub static CONE_TREE: Tag = Tag::named("cone_tree");
 static FROZEN: Tag = Tag::named("frozen");
 static DRY: Tag = Tag::named("dry");
 
@@ -87,7 +89,7 @@ pub fn register(r: &mut Registry) {
     // Trees wherever a biome asks for them, in any dimension.
     r.scatter(&TREE_SITES).cell(5).reach(3).density(&TREES).shape(|s| {
         let [x, y, z] = s.pos();
-        let Some(log) = pick(TREE_KINDS.on_biome(s.biome()).map_or("base:oak_log", |t| t.as_str()), s.random() >> 40) else { return };
+        let log = TREE_KINDS.on_biome(s.biome()).and_then(|l| l.pick(s.random() >> 40)).unwrap_or(OAK_LOG.id());
         let Some(t) = tree_at(log, x, y, z, s.random() >> 32) else { return };
         tree_blocks(&t, |x, y, z, state, force| if force { s.force([x, y, z], state) } else { s.put([x, y, z], state) });
     });
@@ -106,31 +108,12 @@ struct TreeAt {
     height: i32,
 }
 
-/// One of `"name:weight name ..."` (weight 1 when left out) by `roll`, as a block state.
-fn pick(list: &str, roll: u64) -> Option<u32> {
-    let entries = || {
-        list.split_whitespace().map(|e| match e.rsplit_once(':').and_then(|(n, w)| Some((n, w.parse::<u32>().ok()?))) {
-            Some(nw) => nw,
-            None => (e, 1),
-        })
-    };
-    let total: u32 = entries().map(|e| e.1).sum();
-    let mut r = (roll % total.max(1) as u64) as u32;
-    for (name, w) in entries() {
-        if r < w {
-            return Block::lookup(name);
-        }
-        r -= w;
-    }
-    None
-}
-
 /// A tree growing from `log` (its `tree` component), `h` deciding the height.
 fn tree_at(log: u32, x: i32, y: i32, z: i32, h: u64) -> Option<TreeAt> {
-    let (shape, leaves) = TREE.on_block(log)?.as_str().split_once(' ')?;
-    let cone = shape == "cone";
+    let leaves = TREE_LEAVES.on_block(log)?.0;
+    let cone = CONE_TREE.on_block(log);
     let height = if cone { 6 + (h % 4) as i32 } else { 4 + (h % 3) as i32 };
-    Some(TreeAt { x, y, z, log, leaves: Block::lookup(leaves.trim())?, cone, height })
+    Some(TreeAt { x, y, z, log, leaves, cone, height })
 }
 
 /// Calls `put(x, y, z, state, force)` for every block of the tree.
@@ -222,8 +205,9 @@ fn decorate(g: &mut Gen) {
             if PLANT_SOIL.on_block(below) {
                 let grass_chance = GRASS_COVER.on_biome(b).unwrap_or(0.05) as f64;
                 if roll < 0.012 {
-                    if let Some(f) = pick(FLOWERS.on_biome(b).map_or("base:dandelion base:rose", |t| t.as_str()), h >> 32) {
-                        g.set(x, y, z, f);
+                    let flower = FLOWERS.on_biome(b).map_or_else(|| [DANDELION.id(), ROSE.id()][(h >> 32) as usize % 2], |l| l.pick(h >> 32).unwrap_or(0));
+                    if flower != 0 {
+                        g.set(x, y, z, flower);
                     }
                 } else if roll < grass_chance {
                     g.set(x, y, z, TALL_GRASS.id());

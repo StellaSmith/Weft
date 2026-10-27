@@ -406,6 +406,8 @@ pub struct Content {
     pub dims: Vec<DimensionDef>,
     pub templates: Vec<TemplateDef>,
     pub template_names: FxHashMap<String, u32>,
+    /// Weighted lists of block states from `blocks` component values, by the index the value holds.
+    pub ref_lists: Vec<Vec<[u32; 2]>>,
     pub components: Components,
     pub ids: Ids,
     /// (`mineable/<class>`, `tools/<class>`) component ids per tool class.
@@ -1423,6 +1425,40 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         return Err(errors);
     }
     cb.start([states.len(), item_defs.len(), entities.kinds.len(), biome_defs.len(), dim_defs.len()]);
+    // References in values (`block`, `blocks`) become state ids here, so a typo is a load error.
+    let ref_lists: std::rc::Rc<std::cell::RefCell<Vec<Vec<[u32; 2]>>>> = Default::default();
+    {
+        let blocks: FxHashMap<String, (u32, Vec<Prop>)> = block_defs.iter().map(|b| (b.name.clone(), (b.first_state, b.props.clone()))).collect();
+        let lists = ref_lists.clone();
+        let state = move |text: &str| -> Result<u32, String> {
+            let (name, props) = split_state(text)?;
+            let (first, defs) = blocks.get(name).ok_or_else(|| format!("unknown block {name}"))?;
+            let mut s = *first;
+            for (k, v) in props {
+                let p = defs.iter().find(|p| p.name == k).ok_or_else(|| format!("{name} has no property {k}"))?;
+                let vi = p.values.iter().position(|x| x == v).ok_or_else(|| format!("{name} property {k} has no value {v}"))?;
+                s += vi as u32 * p.stride;
+            }
+            Ok(s)
+        };
+        cb.refs = Some(Box::new(move |schema: &str, text: &str| match schema {
+            "block" => state(text.trim()).map(|s| s.to_le_bytes().to_vec()),
+            _ => {
+                let mut list = Vec::new();
+                for e in text.split_whitespace() {
+                    // `name:weight`, the weight after the last colon when it is a number.
+                    let (name, weight) = match e.rsplit_once(':') {
+                        Some((n, w)) if w.parse::<u32>().is_ok() => (n, w.parse().unwrap()),
+                        _ => (e, 1),
+                    };
+                    list.push([state(name)?, weight]);
+                }
+                let mut all = lists.borrow_mut();
+                all.push(list);
+                Ok(((all.len() - 1) as u32).to_le_bytes().to_vec())
+            }
+        }));
+    }
     for (i, (_, bv, sv, _)) in block_values.iter().enumerate() {
         let d = &block_defs[i];
         for (k, values) in sv.iter().enumerate() {
@@ -1906,6 +1942,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         biomes: biome_defs,
         templates,
         template_names,
+        ref_lists: std::mem::take(&mut *ref_lists.borrow_mut()),
         word_sets,
         tint_kinds,
         dims: dim_defs,

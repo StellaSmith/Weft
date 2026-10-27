@@ -175,6 +175,7 @@ pub static HOST: Host = Host {
     navigating,
     reg_structure,
     reg_template,
+    ref_list,
     world_place,
     structure_near,
     fall_block,
@@ -211,6 +212,10 @@ unsafe extern "C" fn reg_template(r: *mut abi::Registrar, d: *const abi::Templat
             blocks: d.blocks.as_slice().iter().map(|b| (b.pos, b.block.as_str().to_string())).collect(),
         });
     }
+}
+
+unsafe extern "C" fn ref_list(index: u32) -> abi::Slice<[u32; 2]> {
+    try_content().and_then(|c| c.ref_lists.get(index as usize)).map_or(abi::Slice::EMPTY, |l| abi::Slice::new(l))
 }
 
 unsafe extern "C" fn world_place(w: *mut abi::WorldCtx, name: Str, pos: *const [i32; 3]) -> u32 {

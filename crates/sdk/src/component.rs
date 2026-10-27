@@ -80,6 +80,60 @@ unsafe impl Value for Text {
     }
 }
 
+/// Values written as text and read as something else: `Text` stays text, `BlockRef` and
+/// `BlockList` name blocks that the engine resolves when the game loads (a typo is a load error).
+pub trait TextValue: Value {}
+impl TextValue for Text {}
+impl TextValue for BlockRef {}
+impl TextValue for BlockList {}
+
+/// A block (or a state, `base:furnace[lit=true]`) a component names: `set_text(&TREE_LEAVES,
+/// "oak_leaves")`, read back as its state id.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockRef(pub u32);
+
+unsafe impl Value for BlockRef {
+    fn schema() -> String {
+        "block".into()
+    }
+}
+
+/// Blocks with weights a component names: `set_text(&TREE_KINDS, "birch_log:1 oak_log:4")`
+/// (weight 1 when left out), resolved when the game loads.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockList(pub u32);
+
+unsafe impl Value for BlockList {
+    fn schema() -> String {
+        "blocks".into()
+    }
+}
+
+impl BlockList {
+    /// (state, weight) pairs.
+    pub fn entries(&self) -> &'static [[u32; 2]] {
+        unsafe { (host().ref_list)(self.0).as_slice() }
+    }
+    /// One state by its weight, `roll` being any random number.
+    pub fn pick(&self, roll: u64) -> Option<u32> {
+        let e = self.entries();
+        let total: u64 = e.iter().map(|x| x[1] as u64).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut r = roll % total;
+        for x in e {
+            if r < x[1] as u64 {
+                return Some(x[0]);
+            }
+            r -= x[1] as u64;
+        }
+        None
+    }
+}
+
 /// Declares a struct usable as a component value; its schema lists the fields, so two mods that
 /// declare the same struct agree without depending on each other.
 ///

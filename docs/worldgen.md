@@ -178,7 +178,7 @@ r.scatter(&TREE_SITES).cell(5).reach(3).density(&TREES).shape(|s| {
 - `shape(f)`: the blocks, in world coordinates. `s.biome()` and `s.random()` (the same bits every time) pick the kind. It runs again for each cube the thing reaches, so it has to be pure
 - `dimension(&D)`: only there
 
-Base's real trees are in `mods/base/src/worldgen.rs`; how many grow where and which kinds are the biome components `trees` and `tree_kinds`, so another mod can give a biome trees without touching code.
+Base's real trees are in `mods/base/src/worldgen.rs`; how many grow where and which kinds are the biome components `trees` and `tree_kinds` (a `BlockList` of logs, `"birch_log:1 oak_log:4"`), and a log's leaves its `tree_leaves` (a `BlockRef`; logs tagged `cone_tree` grow spruce-like), so another mod can give a biome trees without touching code.
 
 ## Decorations
 Grass, flowers and anything else that is decided column by column go in `r.decorate(f)`, which runs for every generated cube after the terrain and the scatters, in every dimension (`.dimension(&D)` to limit it). `g.columns()` has the surface `height` and `biome` of each of the cube's columns, indexed `z * 16 + x`. Base does grass, flowers and cacti like this:

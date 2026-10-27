@@ -1829,6 +1829,8 @@ pub struct Host {
     pub navigating: unsafe extern "C" fn(world: *mut WorldCtx, id: u64) -> u32,
     pub reg_structure: unsafe extern "C" fn(reg: *mut Registrar, desc: *const StructureDesc),
     pub reg_template: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TemplateDesc),
+    /// A `blocks` component value's list: (state, weight) pairs.
+    pub ref_list: unsafe extern "C" fn(index: u32) -> Slice<[u32; 2]>,
     /// Places template `name` with its lowest corner at `pos`; 0 if it doesn't exist or part of
     /// it isn't loaded (nothing is placed then).
     pub world_place: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, pos: *const [i32; 3]) -> u32,

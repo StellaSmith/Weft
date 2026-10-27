@@ -66,11 +66,13 @@ fn axis_placement(p: &Place, props: &mut Props) {
     });
 }
 
-fn log(r: &mut Registry, handle: &'static Block, wood: &str, tree: &str) {
+/// A log that grows into a tree of `leaves` (a cone, like a spruce, when `cone`).
+fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone: bool) {
     let side = format!("log_{wood}");
     let top = format!("log_{wood}_top");
-    r.block(handle)
-        .set_text(&crate::worldgen::TREE, tree)
+    let b = r.block(handle).set_text(&crate::worldgen::TREE_LEAVES, leaves);
+    let b = if cone { b.tag("cone_tree") } else { b };
+    b
         .sound_group("wood")
         .hardness(2.0)
         .mineable("axe")
@@ -144,9 +146,9 @@ pub fn register(r: &mut Registry) {
     r.block(&GOLD_ORE).sound_group("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).drops("raw_gold", 1).tag("ores").tag("ores/gold").tab(&crate::tabs::NATURAL);
     r.block(&DIAMOND_ORE).sound_group("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).drops("diamond", 1).tag("ores").tag("ores/diamond").tab(&crate::tabs::NATURAL);
 
-    log(r, &OAK_LOG, "oak", "round base:oak_leaves");
-    log(r, &BIRCH_LOG, "birch", "round base:birch_leaves");
-    log(r, &SPRUCE_LOG, "spruce", "cone base:spruce_leaves");
+    log(r, &OAK_LOG, "oak", "oak_leaves", false);
+    log(r, &BIRCH_LOG, "birch", "birch_leaves", false);
+    log(r, &SPRUCE_LOG, "spruce", "spruce_leaves", true);
     for (h, tex) in [(&OAK_PLANKS, "planks_oak"), (&BIRCH_PLANKS, "planks_birch"), (&SPRUCE_PLANKS, "planks_spruce")] {
         r.block(h).sound_group("wood").texture(tex).hardness(2.0).mineable("axe").tag("planks").tag("materials/wood").set(&FLAMMABLE, 5).set(&FUEL, 300).tab(&crate::tabs::BUILDING);
     }

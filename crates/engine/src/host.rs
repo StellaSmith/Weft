@@ -1513,7 +1513,7 @@ unsafe extern "C" fn reg_loot_modifier(r: *mut abi::Registrar, d: *const abi::Lo
 unsafe extern "C" fn roll_loot(w: *mut abi::WorldCtx, name: Str, ctx: *const abi::LootCtx, out: *mut ItemStack, max: usize) -> usize {
     unsafe {
         let x = if ctx.is_null() { abi::LootCtx::DEFAULT } else { *ctx };
-        let ctx = crate::loot::Ctx { tool: x.tool, by_player: x.by_player != 0, on_fire: x.on_fire != 0 };
+        let ctx = crate::loot::Ctx { tool: x.tool, by_player: x.by_player != 0, on_fire: x.on_fire != 0, mined: x.mined };
         let stacks = dim(w).roll_loot(content(), name.as_str(), &ctx);
         for (i, s) in stacks.iter().take(max).enumerate() {
             *out.add(i) = *s;

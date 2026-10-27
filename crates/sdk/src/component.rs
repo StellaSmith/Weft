@@ -455,7 +455,6 @@ pub static ATTACK_DAMAGE: Component<f32> = Component::named(abi::comp::ATTACK_DA
 pub static MINING_SPEED: Component<f32> = Component::named(abi::comp::MINING_SPEED);
 pub static TOOL_LEVEL: Component<u32> = Component::named(abi::comp::TOOL_LEVEL);
 pub static HARVEST_LEVEL: Component<u32> = Component::named(abi::comp::HARVEST_LEVEL);
-pub static NEEDS_TOOL: Tag = Tag::named(abi::comp::NEEDS_TOOL);
 pub static DAMAGE: Component<u32> = Component::named(abi::comp::DAMAGE);
 pub static CONDUCTOR: Tag = Tag::named(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::named(abi::comp::ENERGY);

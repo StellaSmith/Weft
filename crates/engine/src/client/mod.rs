@@ -989,7 +989,7 @@ impl Client {
                     self.breaking = None;
                 } else if let Some(hit) = self.target {
                     let held = self.held().item;
-                    let (time, _) = crate::server::break_time(c, hit.state, held);
+                    let time = crate::server::break_time(c, hit.state, held);
                     let time = if self.mode == GameMode::Creative { 0.0 } else { time };
                     let done = match self.breaking {
                         Some((f, p, v)) if (f, p) == (hit.frame, hit.block) => v,

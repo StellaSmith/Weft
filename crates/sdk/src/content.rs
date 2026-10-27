@@ -316,8 +316,7 @@ impl Registry {
             handle: Some(block),
             states: vec![StateDef::new(&tex)],
             components: Vec::new(),
-            drop: String::new(),
-            drop_count: 1,
+            drops: None,
             item: true,
             item_texture: String::new(),
             callbacks: BlockCallbacks::default(),
@@ -747,8 +746,8 @@ pub struct BlockBuilder<'a> {
     handle: Option<&'static Block>,
     states: Vec<StateDef>,
     components: Vec<Pending>,
-    drop: String,
-    drop_count: u32,
+    /// A loot table to register: (item, count), an empty item = nothing.
+    drops: Option<(String, u32)>,
     item: bool,
     item_texture: String,
     callbacks: BlockCallbacks,
@@ -861,12 +860,10 @@ impl<'a> BlockBuilder<'a> {
 
     /// Drops nothing unless mined with a fitting tool of at least this level (`abi::tool_tier`:
     /// wood 0, stone 100, iron 200, diamond 300; any number between works), like vanilla's
-    /// "requires correct tool".
+    /// "requires correct tool". It is the `harvest_level` component, checked by
+    /// `Cond::Harvested` on the block's loot.
     pub fn needs_tool(mut self, level: u32) -> Self {
-        self.components.push(Pending::tag(abi::comp::NEEDS_TOOL));
-        if level > 0 {
-            self.components.push(c::HARVEST_LEVEL.raw_value(&level));
-        }
+        self.components.push(c::HARVEST_LEVEL.raw_value(&level));
         self
     }
 
@@ -885,14 +882,16 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Its loot table: `count` of `item` when harvested (`Cond::Harvested`). Without it the
+    /// block drops its own item the same way; `r.loot(&BLOCK)` writes any other table.
     pub fn drops(mut self, item: &str, count: u32) -> Self {
-        self.drop = qualify(self.reg.ns, item);
-        self.drop_count = count;
+        self.drops = Some((item.to_string(), count));
         self
     }
 
+    /// An empty loot table.
     pub fn drops_nothing(mut self) -> Self {
-        self.drop = "-".into();
+        self.drops = Some((String::new(), 0));
         self
     }
 
@@ -1094,8 +1093,6 @@ impl Drop for BlockBuilder<'_> {
             states: Slice::new(&states),
             props: Slice::new(&props),
             components: Slice::new(&values),
-            drop: Str::new(&self.drop),
-            drop_count: self.drop_count,
             on_use: cb.on_use.unwrap_or(abi::Callback::NONE),
 
             on_random_tick: cb.on_random_tick.unwrap_or(abi::Callback::NONE),
@@ -1129,6 +1126,12 @@ impl Drop for BlockBuilder<'_> {
                 on_use: abi::Callback::NONE,
             };
             drop(item);
+        }
+        if let Some((item, count)) = self.drops.take() {
+            let pools = if item.is_empty() { vec![] } else { vec![crate::extend::Pool::new().when(crate::extend::Cond::Harvested).items(&item, count, count)] };
+            let raw = crate::extend::raw_pools(self.reg.ns, &pools);
+            let desc = abi::LootDesc { name: Str::new(&self.name), pools: Slice::new(&raw.pools), ..abi::LootDesc::DEFAULT };
+            unsafe { (host().reg_loot)(self.reg.raw, &desc) }
         }
     }
 }

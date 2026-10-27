@@ -524,6 +524,8 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
                 match word {
                     "fire" => ctx.on_fire = true,
                     "player" => ctx.by_player = true,
+                    // Mined by the tool, from the block the table is named after.
+                    "mined" => ctx.mined = Block::lookup(table.name()).ok_or("not a block's table")?,
                     tool => ctx.tool = ItemStack::new(item(tool)?, 1),
                 }
             }

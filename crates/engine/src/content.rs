@@ -94,9 +94,6 @@ pub struct BlockDef {
     /// Named properties and their values; states are every combination, the last property
     /// changing fastest.
     pub props: Vec<Prop>,
-    /// Resolved after items are frozen. `None` = drops nothing.
-    pub drop: Option<u32>,
-    pub drop_count: u32,
     pub cb: BlockCallbacks,
     /// The menu using the block opens.
     pub opens: Option<u32>,
@@ -384,7 +381,6 @@ pub struct Ids {
     pub mining_speed: Option<u32>,
     pub tool_level: Option<u32>,
     pub harvest_level: Option<u32>,
-    pub needs_tool: Option<u32>,
     pub damage: Option<u32>,
     pub name: Option<u32>,
     pub conductor: Option<u32>,
@@ -486,10 +482,13 @@ impl Content {
         (v + 1 < p.values.len() as u32).then(|| b.with_value(state, pi, v + 1))
     }
 
-    /// The item a middle click on this block picks: the block's own item, else what it drops.
+    /// The item a middle click on this block picks: the block's own item, else the first its
+    /// loot table names.
     pub fn pick_item(&self, state: u32) -> Option<u32> {
         let b = self.block_of(state);
-        self.items.iter().position(|i| i.block == Some(b.first_state)).map(|i| i as u32).filter(|&i| i != 0).or(b.drop)
+        self.items.iter().position(|i| i.block == Some(b.first_state)).map(|i| i as u32).filter(|&i| i != 0).or_else(|| {
+            self.loot.get(&b.name)?.pools.iter().flat_map(|p| &p.entries).map(|e| e.item).find(|&i| i != 0)
+        })
     }
 
     #[inline]
@@ -537,9 +536,21 @@ impl Content {
         self.block_value::<u32>(state, self.ids.harvest_level).unwrap_or(0)
     }
 
-    /// Drops nothing without a fitting tool: `needs_tool`, or a harvest level above 0.
+    /// Has a `harvest_level`: drops its loot only to a fitting tool.
     pub fn needs_tool(&self, state: u32) -> bool {
-        self.block_has(state, self.ids.needs_tool) || self.harvest_level(state) > 0
+        self.block_value::<u32>(state, self.ids.harvest_level).is_some()
+    }
+
+    /// The tool is of a class the block is mineable with (`mineable/pickaxe` on the block,
+    /// `tools/pickaxe` on the item).
+    pub fn tool_fits(&self, state: u32, tool: u32) -> bool {
+        tool != 0 && self.tool_classes.iter().any(|&(mineable, tools)| self.components.has(comps::BLOCK, state, mineable) && self.item_has(tool, tools))
+    }
+
+    /// Mining the block with `tool` (0 = hand) harvests it: it needs no tool, or this one fits
+    /// and is of a high enough level.
+    pub fn harvests(&self, state: u32, tool: u32) -> bool {
+        !self.needs_tool(state) || (self.tool_fits(state, tool) && self.item_value::<u32>(tool, self.ids.tool_level).unwrap_or(0) >= self.harvest_level(state))
     }
 
     pub fn max_stack(&self, item: u32) -> u32 {
@@ -634,8 +645,6 @@ pub struct RawBlock {
     pub states: Vec<RawState>,
     pub props: Vec<(String, Vec<String>)>,
     pub components: Vec<RawValue>,
-    pub drop: String,
-    pub drop_count: u32,
     pub cb: BlockCallbacks,
     pub replace: bool,
     /// False for a replacement that keeps the replaced block's states.
@@ -752,8 +761,6 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
             states,
             props: d.props.as_slice().iter().map(|p| (p.name.as_str().to_string(), p.values.as_slice().iter().map(|v| v.as_str().to_string()).collect())).collect(),
             components: RawValue::list(d.components),
-            drop: d.drop.as_str().to_string(),
-            drop_count: d.drop_count,
             cb: BlockCallbacks {
                 on_use: cb(d.on_use),
                 on_random_tick: cb(d.on_random_tick),
@@ -1130,11 +1137,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         states: 1,
         props: Vec::new(),
         opens: None,
-        drop: None,
-        drop_count: 0,
         cb: BlockCallbacks::default(),
     }];
-    let mut block_drops = vec![String::new()];
     // Per block: (block components, per-state components, support tags) for the component pass.
     let mut block_values: Vec<(ModId, Vec<RawValue>, Vec<Vec<RawValue>>, Vec<(String, String)>)> = vec![(ModId(u32::MAX), Vec::new(), vec![Vec::new()], vec![(String::new(), String::new())])];
     for (owner, b) in blocks {
@@ -1226,8 +1230,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             supports.push((support_tag(s.support), support_tag(s.support_near)));
             state_values.push(s.components);
         }
-        let drop = if b.drop.is_empty() { b.name.clone() } else { b.drop.clone() };
-        block_drops.push(drop);
         block_values.push((owner, b.components, state_values, supports));
         let count = (states.len() as u32) - first;
         let mut props = Vec::new();
@@ -1251,8 +1253,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             first_state: first,
             states: count,
             props,
-            drop: None,
-            drop_count: b.drop_count,
             cb: b.cb,
         });
     }
@@ -1313,15 +1313,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let item_names: FxHashMap<String, u32> =
         item_defs.iter().enumerate().map(|(i, b)| (b.name.clone(), i as u32)).collect();
-    for (b, drop) in block_defs.iter_mut().zip(block_drops) {
-        if drop == "-" || drop.is_empty() {
-            continue;
-        }
-        b.drop = item_names.get(&drop).copied();
-        if b.drop.is_none() && drop != b.name {
-            errors.push(format!("block {} drops unknown item {drop}", b.name));
-        }
-    }
 
     let mut biome_values = Vec::new();
     let mut biome_rules = Vec::new();
@@ -1564,7 +1555,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         mining_speed: id(abi::comp::MINING_SPEED),
         tool_level: id(abi::comp::TOOL_LEVEL),
         harvest_level: id(abi::comp::HARVEST_LEVEL),
-        needs_tool: id(abi::comp::NEEDS_TOOL),
         damage: id(abi::comp::DAMAGE),
         name: id(abi::comp::NAME),
         conductor: id(abi::comp::CONDUCTOR),
@@ -1835,9 +1825,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
     let tag_items = crate::refs::tag_items(&components, &ordered_items);
     let mut defaults: FxHashMap<String, crate::loot::Table> = FxHashMap::default();
+    // A block without a table of its own drops its item when harvested.
     for b in &block_defs[1..] {
-        if let Some(item) = b.drop {
-            defaults.insert(b.name.clone(), crate::loot::single(item, b.drop_count.max(1)));
+        if let Some(item) = item_defs.iter().position(|i| i.block == Some(b.first_state)).filter(|&i| i != 0) {
+            defaults.insert(b.name.clone(), crate::loot::harvested(item as u32, 1));
         }
     }
     let raw_loot: Vec<crate::loot::RawLoot> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.loot)).collect();

@@ -26,7 +26,6 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::MINING_SPEED, "f32"),
     (abi::comp::TOOL_LEVEL, "u32"),
     (abi::comp::HARVEST_LEVEL, "u32"),
-    (abi::comp::NEEDS_TOOL, ""),
     (abi::comp::DAMAGE, "u32"),
     (abi::comp::CONDUCTOR, ""),
     (abi::comp::ENERGY, "{stored:i64,capacity:i64,max_in:i64,max_out:i64}"),

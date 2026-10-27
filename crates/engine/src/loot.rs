@@ -1,5 +1,5 @@
 //! Loot tables: pools of weighted entries with counts and conditions, for blocks (the table named
-//! like the block, by default its `drops`), entities (named like the kind) and anything a mod
+//! like the block, by default its own item when harvested), entities (named like the kind) and anything a mod
 //! names (chests). Other mods change tables with modifiers instead of replacing them.
 
 use rustc_hash::FxHashMap;
@@ -45,6 +45,8 @@ pub struct Ctx {
     pub tool: ItemStack,
     pub by_player: bool,
     pub on_fire: bool,
+    /// The block state mined with `tool` (0 = none, or broken by the world).
+    pub mined: u32,
 }
 
 // ---------------------------------------------------------------- registration
@@ -190,9 +192,10 @@ pub fn freeze(raw: Vec<RawLoot>, mut mods_list: Vec<RawLootMod>, order: &dyn Fn(
     tables
 }
 
-/// One item with a count range: what `drops(x, n)` means.
-pub fn single(item: u32, count: u32) -> Table {
-    Table { pools: vec![Pool { rolls: (1, 1), conds: Vec::new(), entries: vec![Entry { item, weight: 1, min: count, max: count, conds: Vec::new(), smelt: None }] }] }
+/// One item when the block is harvested: a block's table when it names none.
+pub fn harvested(item: u32, count: u32) -> Table {
+    let conds = vec![Cond { kind: lc::HARVESTED, value: 1.0, tag: u32::MAX }];
+    Table { pools: vec![Pool { rolls: (1, 1), conds, entries: vec![Entry { item, weight: 1, min: count, max: count, conds: Vec::new(), smelt: None }] }] }
 }
 
 // ---------------------------------------------------------------- rolling
@@ -205,6 +208,7 @@ fn passes(c: &crate::content::Content, conds: &[Cond], ctx: &Ctx, rng: &mut dyn 
         lc::TOOL_LEVEL => !ctx.tool.is_empty() && c.item_value::<u32>(ctx.tool.item, c.ids.tool_level).unwrap_or(0) as f32 >= cd.value,
         lc::KILLED_BY_PLAYER => ctx.by_player,
         lc::ON_FIRE => ctx.on_fire,
+        lc::HARVESTED => ctx.mined == 0 || c.harvests(ctx.mined, ctx.tool.item),
         _ => false,
     })
 }

@@ -231,6 +231,8 @@ pub struct LootCtx {
     pub killer: u64,
     pub by_player: bool,
     pub on_fire: bool,
+    /// The block state mined with `tool`, for `Cond::Harvested` (0 = none).
+    pub mined: u32,
 }
 
 /// A loot condition.
@@ -243,6 +245,9 @@ pub enum Cond {
     ToolLevel(u32),
     KilledByPlayer,
     OnFire,
+    /// The block was harvested: broken by the world, or mined with a tool its `needs_tool`
+    /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
+    Harvested,
 }
 
 impl Cond {
@@ -258,6 +263,7 @@ impl Cond {
             Cond::ToolLevel(l) => (k::TOOL_LEVEL, *l as f32, ""),
             Cond::KilledByPlayer => (k::KILLED_BY_PLAYER, 1.0, ""),
             Cond::OnFire => (k::ON_FIRE, 1.0, ""),
+            Cond::Harvested => (k::HARVESTED, 1.0, ""),
         }
     }
 }
@@ -336,14 +342,14 @@ impl Pool {
 }
 
 /// The ABI view of pools, kept alive while a descriptor points into it.
-struct RawPools {
+pub(crate) struct RawPools {
     conds: Vec<Vec<abi::LootCond>>,
     entries: Vec<Vec<abi::LootEntry>>,
-    pools: Vec<abi::LootPool>,
+    pub(crate) pools: Vec<abi::LootPool>,
     _names: Vec<String>,
 }
 
-fn raw_pools(ns: &str, pools: &[Pool]) -> RawPools {
+pub(crate) fn raw_pools(ns: &str, pools: &[Pool]) -> RawPools {
     let mut names: Vec<String> = Vec::new();
     for p in pools {
         for e in &p.entries {
@@ -606,7 +612,7 @@ impl World {
 
     pub fn roll_loot(&self, table: &dyn LootSource, ctx: &LootCtx) -> Vec<ItemStack> {
         let table = table.table_name();
-        let c = abi::LootCtx { tool: ctx.tool, killer: ctx.killer, by_player: ctx.by_player as u32, on_fire: ctx.on_fire as u32, ..abi::LootCtx::DEFAULT };
+        let c = abi::LootCtx { tool: ctx.tool, killer: ctx.killer, by_player: ctx.by_player as u32, on_fire: ctx.on_fire as u32, mined: ctx.mined };
         let mut buf = vec![ItemStack::EMPTY; 16];
         let n = unsafe { (host().roll_loot)(self.raw(), Str::new(table), &c, buf.as_mut_ptr(), buf.len()) };
         if n > buf.len() {

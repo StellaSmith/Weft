@@ -211,8 +211,8 @@ is dropped.
 `r.block(&BLOCK)` and then:
 - `hardness`
 - `mineable("pickaxe")`
-- `needs_tool(tier)`
-- `drops(item, n)` or `drops_nothing()`
+- `needs_tool(tier)`: the `harvest_level` component; loot pools with `Cond::Harvested` pass only for a fitting tool of that tier
+- `drops(item, n)` or `drops_nothing()`: shorthand for its loot table (`drops` puts `Cond::Harvested` on the pool). Without either the block drops its own item the same way
 - `light(15)` or `light_rgb(r, g, b)`
 - `cutout()`, `translucent()`
 - `model_box(min, max, texture)`, `collision(..)`, `selection(..)` when what the crosshair picks and outlines should differ from those (by default: collision boxes, else model boxes, else a plant's cross)
@@ -287,7 +287,8 @@ It works on other mods' dimensions too, so adding a biome to base's overworld is
 Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with stations.
 
 ### Loot
-`r.loot(&RUBY_ORE).pool(Pool::new().rolls(1, 2).item("ruby"))` (a block's or entity's table is what it drops, `LootTable::named(..)` is a table of its own)\
+`r.loot(&RUBY_ORE).pool(Pool::new().when(Cond::Harvested).rolls(1, 2).item("ruby"))` (a block's or entity's table is what it drops, `LootTable::named(..)` is a table of its own)\
+A block's table is all it drops, there is no tool check in front of it: put `Cond::Harvested` on the pools that need the right tool (broken by the world, like a torch losing its wall, always counts as harvested).\
 and other mods' tables without replacing them: `r.loot_modify(&ZOMBIE).add_pool(..)` with `ZOMBIE = Entity::named("base:zombie")`.
 
 ### Replacing something of another mod

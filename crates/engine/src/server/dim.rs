@@ -340,21 +340,15 @@ pub fn see_through(c: &Content, cube: &Cube) -> u16 {
     cube.connectivity(|s| c.states[s as usize].flags & bf::OPAQUE == 0)
 }
 
-/// Seconds to break `state` holding `tool` (item id, 0 = hand), and whether it drops anything.
-pub fn break_time(c: &Content, state: u32, tool: u32) -> (f32, bool) {
+/// Seconds to break `state` holding `tool` (item id, 0 = hand); vanilla's slower rate without
+/// a tool that harvests it.
+pub fn break_time(c: &Content, state: u32, tool: u32) -> f32 {
     let s = &c.states[state as usize];
     if s.hardness < 0.0 {
-        return (f32::INFINITY, false);
+        return f32::INFINITY;
     }
-    // A tool fits when it is of a class the block is mineable with (`mineable/pickaxe` on the
-    // block, `tools/pickaxe` on the item).
-    let fits = tool != 0 && c.tool_classes.iter().any(|&(mineable, tools)| c.components.has(comps::BLOCK, state, mineable) && c.item_has(tool, tools));
-    let level = c.item_value::<u32>(tool, c.ids.tool_level).unwrap_or(0);
-    let needed = c.harvest_level(state);
-    let harvest = !c.needs_tool(state) || (fits && level >= needed);
-    let speed = if fits { c.item_value::<f32>(tool, c.ids.mining_speed).unwrap_or(1.0) } else { 1.0 };
-    let base = s.hardness * if harvest { 1.5 } else { 5.0 };
-    (base / speed, harvest)
+    let speed = if c.tool_fits(state, tool) { c.item_value::<f32>(tool, c.ids.mining_speed).unwrap_or(1.0) } else { 1.0 };
+    s.hardness * if c.harvests(state, tool) { 1.5 } else { 5.0 } / speed
 }
 
 impl Dim {
@@ -698,7 +692,7 @@ impl Dim {
             if ground && free && self.supported(c, p, state) {
                 self.set(c, p, state);
             } else {
-                self.drop_block_loot(c, p, state, ItemStack::EMPTY, None);
+                self.drop_block_loot(c, p, state, ItemStack::EMPTY, false, None);
             }
         }
     }
@@ -803,7 +797,7 @@ impl Dim {
             if !player {
                 let by_player = self.entities.get(source).is_some_and(|s| s.player);
                 let tool = self.entities.get(source).filter(|s| s.player).and_then(|s| self.entities.inventories.get(&source).and_then(|i| i.get(s.selected as usize)).copied()).unwrap_or_default();
-                let ctx = crate::loot::Ctx { tool, by_player, on_fire: on_fire || cause == damage::FIRE || cause == damage::LAVA };
+                let ctx = crate::loot::Ctx { tool, by_player, on_fire: on_fire || cause == damage::FIRE || cause == damage::LAVA, mined: 0 };
                 for s in self.roll_loot(c, &k.name, &ctx) {
                     self.spawn_item(c, pos + DVec3::Y * 0.5, s);
                 }
@@ -1340,7 +1334,7 @@ impl Dim {
     fn break_off(&mut self, c: &'static Content, p: IVec3, state: u32) {
         self.set(c, p, AIR);
         self.block_dust(c, p, state);
-        self.drop_block_loot(c, p, state, ItemStack::EMPTY, None);
+        self.drop_block_loot(c, p, state, ItemStack::EMPTY, false, None);
         self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player: 0, pos: p.to_array(), state, item: 0 });
     }
 
@@ -1360,8 +1354,8 @@ impl Dim {
         }
     }
 
-    /// Breaks a block as if mined with `tool`: asks interceptors, drops its loot if the tool may
-    /// harvest it (and `drops`), tells the block and fires `block_broken`.
+    /// Breaks a block as if mined with `tool`: asks interceptors, rolls its loot (if `drops`),
+    /// tells the block and fires `block_broken`.
     pub fn break_block(&mut self, c: &'static Content, p: IVec3, tool: ItemStack, player: u64, drops: bool) -> bool {
         let Some(state) = self.get(p) else { return false };
         if state == AIR || c.states[state as usize].hardness < 0.0 {
@@ -1371,14 +1365,13 @@ impl Dim {
         if !self.ask(c, abi::question::BREAK_BLOCK, &mut q) {
             return false;
         }
-        let (_, harvest) = break_time(c, state, tool.item);
         // The block entity's own name goes back onto the block's item.
         let name = self.entities.anchors.get(&p).and_then(|id| self.entities.comps.get(&(*id, c.game.name_comp))).map(|b| String::from_utf8_lossy(b).into_owned());
         self.set(c, p, AIR);
         self.block_dust(c, p, state);
         self.sound(c.states[state as usize].sounds[0], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
-        if harvest && drops {
-            self.drop_block_loot(c, p, state, tool, name.as_deref());
+        if drops {
+            self.drop_block_loot(c, p, state, tool, true, name.as_deref());
         }
         self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
         true
@@ -1523,12 +1516,13 @@ impl Dim {
         self.events.push(DimEvent::Particles { dim: self.id, burst });
     }
 
-    /// Spawns what a block's loot table gives for `tool`.
+    /// Spawns what a block's loot table gives for `tool`; `mined`: by that tool, not by the world
+    /// (support, liquids), which always harvests.
     /// `own_name`: what a renamed block entity was called, given back to the block's item.
-    pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack, own_name: Option<&str>) {
+    pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack, mined: bool, own_name: Option<&str>) {
         let b = c.block_of(state);
         let own_item = c.items.iter().position(|i| i.block == Some(b.first_state)).map(|i| i as u32);
-        for s in self.roll_loot(c, &b.name, &crate::loot::Ctx { tool, ..Default::default() }) {
+        for s in self.roll_loot(c, &b.name, &crate::loot::Ctx { tool, mined: if mined { state } else { 0 }, ..Default::default() }) {
             let s = if Some(s.item) == own_item { crate::stack::with_name(s, own_name) } else { s };
             self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), s);
         }

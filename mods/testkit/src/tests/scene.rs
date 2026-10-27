@@ -328,7 +328,14 @@ async fn loot_tables(t: &T) -> R {
     let seeds = grass.get("base:wheat_seeds").copied().unwrap_or(0);
     t.check((380..=620).contains(&seeds), format!("seeds from 4000 tall grass: {seeds} (vanilla 12.5%: 500)"));
     let stone = counts(&t.op("loot base:stone 10").await?);
-    t.check_eq(stone.get("base:cobblestone").copied(), Some(10), "drops() is a one entry table");
+    t.check_eq(stone.get("base:cobblestone").copied(), Some(10), "drops() is a one entry table, broken by the world");
+    t.check_eq(t.op("loot base:stone 10 mined").await?, String::new(), "stone mined by hand drops nothing");
+    let stone = counts(&t.op("loot base:stone 10 mined wood_pickaxe").await?);
+    t.check_eq(stone.get("base:cobblestone").copied(), Some(10), "stone mined with a pickaxe");
+    t.check_eq(t.op("loot base:bricks 10 mined").await?, String::new(), "a block's own item needs the tool too");
+    let shorn = counts(&t.op("loot base:oak_leaves 4000 mined").await?);
+    let saplings = shorn.get("base:sapling").copied().unwrap_or(0);
+    t.check((140..=260).contains(&saplings), format!("saplings from 4000 oak leaves mined by hand: {saplings}"));
     Ok(())
 }
 
@@ -337,6 +344,8 @@ async fn loot_tables(t: &T) -> R {
 async fn tool_tiers(t: &T, o: [i32; 3]) -> R {
     let mut drops = 0;
     for (i, (block, tool, gets)) in [
+        ("stone", "stick", false),
+        ("stone", "wood_pickaxe", true),
         ("iron_ore", "wood_pickaxe", false),
         ("iron_ore", "stone_pickaxe", true),
         ("diamond_ore", "stone_pickaxe", false),
@@ -348,7 +357,7 @@ async fn tool_tiers(t: &T, o: [i32; 3]) -> R {
     .into_iter()
     .enumerate()
     {
-        let p = add(o, [i as i32 * 2 - 6, 0, 0]);
+        let p = add(o, [i as i32 * 2 - 8, 0, 0]);
         t.set(p, block).await?;
         t.op(&format!("break {} {tool}", at(p))).await?;
         t.frames(5).await?;

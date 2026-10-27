@@ -234,8 +234,8 @@ pub mod comp {
     pub const ATTACK_DAMAGE: &str = "attack_damage";
     pub const MINING_SPEED: &str = "mining_speed";
     pub const TOOL_LEVEL: &str = "tool_level";
+    /// The block drops its loot only to a fitting tool of at least this level (0 = any tier).
     pub const HARVEST_LEVEL: &str = "harvest_level";
-    pub const NEEDS_TOOL: &str = "needs_tool";
     pub const DAMAGE: &str = "damage";
     /// The own name of one stack or block entity (UTF-8), as a player gave it: shown instead of
     /// the item's or block's, and carried from the stack to the placed block and back.
@@ -415,9 +415,6 @@ pub struct BlockDesc {
     /// Components of every state (tags, mining, fuel ...). Its item gets them too unless it sets
     /// its own.
     pub components: Slice<CompValue>,
-    /// Item dropped when broken, empty = the item with the same name if it exists, `-` = none.
-    pub drop: Str,
-    pub drop_count: u32,
     /// `UseArgs`; return `handled = 1` to consume the click.
     pub on_use: Callback,
     /// `BlockEventArgs`.
@@ -451,8 +448,6 @@ defaults!(BlockDesc {
     states: Slice::EMPTY,
     props: Slice::EMPTY,
     components: Slice::EMPTY,
-    drop: Str::EMPTY,
-    drop_count: 1,
     on_use: Callback::NONE,
 
     on_random_tick: Callback::NONE,
@@ -2362,6 +2357,9 @@ pub mod loot_cond {
     pub const TOOL_LEVEL: u32 = 3;
     pub const KILLED_BY_PLAYER: u32 = 4;
     pub const ON_FIRE: u32 = 5;
+    /// The block was harvested: broken by the world, or mined with a tool its `harvest_level`
+    /// accepts. Block tables made from `drops` have it on their pool.
+    pub const HARVESTED: u32 = 6;
 }
 
 #[repr(C)]
@@ -2440,8 +2438,10 @@ pub struct LootCtx {
     pub killer: u64,
     pub by_player: u32,
     pub on_fire: u32,
+    /// The block state being mined with `tool` (0 = none), for `loot_cond::HARVESTED`.
+    pub mined: u32,
 }
-defaults!(LootCtx { tool: ItemStack::EMPTY, killer: 0, by_player: 0, on_fire: 0 });
+defaults!(LootCtx { tool: ItemStack::EMPTY, killer: 0, by_player: 0, on_fire: 0, mined: 0 });
 
 /// Flags of stack components (`Host::reg_stack_component`).
 pub mod stack_flags {

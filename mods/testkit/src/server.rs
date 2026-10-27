@@ -141,6 +141,7 @@ const OPS: &[(&str, &str)] = &[
     ("structure", "<name:word> <r:int>"),
     ("after", "<ticks:int>"),
     ("rings", ""),
+    ("look", ""),
     ("heal", ""),
     ("push", "<x:float> <y:float> <z:float> [id:int]"),
     ("drive", "<id:int> <dx:float> <dz:float> <ticks:int>"),
@@ -418,6 +419,7 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
             Ok(String::new())
         }
         "rings" => Ok(RINGS.load(Ordering::Relaxed).to_string()),
+        "look" => Ok(w.look_at(player, 5.0, false).map_or("none".into(), |l| format!("{} {} {} {} {}", l.frame, l.pos[0], l.pos[1], l.pos[2], block_name(l.state)))),
         "drive" => {
             let dir = [cmd.float("dx").unwrap_or(0.0) as f32, cmd.float("dz").unwrap_or(0.0) as f32];
             DRIVEN.lock().unwrap().push((int(cmd, "id")?, dir, int(cmd, "ticks")?));

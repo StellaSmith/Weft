@@ -35,6 +35,9 @@ pub struct StateInfo {
     pub boxes: Vec<ModelBox>,
     /// In block units.
     pub collision: Vec<[f32; 6]>,
+    /// What rays pick and what is outlined and cracked, in block units: worked out once at
+    /// freeze, so all three agree.
+    pub selection: Vec<[f32; 6]>,
     pub hardness: f32,
     pub friction: f32,
     pub drag: f32,
@@ -605,6 +608,7 @@ pub struct RawState {
     pub textures: [String; 6],
     pub boxes: Vec<([f32; 3], [f32; 3], [String; 6])>,
     pub collision: Vec<[f32; 6]>,
+    pub selection: Vec<[f32; 6]>,
     pub hardness: f32,
     pub friction: f32,
     pub drag: f32,
@@ -722,6 +726,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 textures: std::array::from_fn(|i| s.textures[i].as_str().to_string()),
                 boxes,
                 collision: s.collision.as_slice().to_vec(),
+                selection: s.selection.as_slice().to_vec(),
                 hardness: s.hardness,
                 friction: s.friction,
                 drag: s.drag,
@@ -1096,6 +1101,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         textures: [0; 6],
         boxes: Vec::new(),
         collision: Vec::new(),
+        selection: Vec::new(),
         hardness: -1.0,
         friction: 0.6,
         drag: 1.0,
@@ -1152,6 +1158,19 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 collision.push(u);
             }
             boxes.shrink_to_fit();
+            let selection: Vec<[f32; 6]> = if !s.selection.is_empty() {
+                s.selection.iter().map(|b| b.map(|v| v / 16.0)).collect()
+            } else if s.model == Model::Cube {
+                vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+            } else if !collision.is_empty() {
+                collision.clone()
+            } else if !boxes.is_empty() {
+                boxes.iter().map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]]).collect()
+            } else if s.model == Model::Cross {
+                vec![[0.125, 0.0, 0.125, 0.875, 0.8, 0.875]]
+            } else {
+                vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
+            };
             // Random ticks reach blocks that have the callback, inherited ones included.
             let random = if b.cb.on_random_tick.is_some() { abi::block_flags::RANDOM_TICKS } else { 0 };
             states.push(StateInfo {
@@ -1173,6 +1192,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 },
                 boxes,
                 collision,
+                selection,
                 hardness: s.hardness,
                 friction: s.friction,
                 drag: s.drag,

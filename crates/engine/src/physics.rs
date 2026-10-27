@@ -331,10 +331,49 @@ pub struct Hit {
     /// Face index (-X, +X, -Y, +Y, -Z, +Z) that was entered.
     pub face: u8,
     pub state: u32,
+    /// From the ray's start to where it entered the block's selection.
+    pub dist: f64,
 }
 
-/// Amanatides-Woo traversal. Non-cube blocks are hit when the ray crosses their collision box
-/// (or selection box); blocks the ray starts inside are skipped.
+/// The one way to find what a ray from `eye` hits within `reach`: the nearest selection box of
+/// the world's blocks and of moving structures (`(entity, where its block (0, 0, 0) is, its
+/// blocks)`), by where the ray enters it. The client's crosshair, the server's and mods'
+/// `look_at` all ask this.
+pub fn pick(c: &Content, world: &impl Fn(IVec3) -> Option<u32>, structures: &[(u64, DVec3, &dyn Blocks)], eye: DVec3, dir: DVec3, reach: f64, liquids: bool) -> Option<Hit> {
+    let mut best = raycast(c, world, eye, dir, reach, liquids);
+    for &(id, origin, blocks) in structures {
+        let block = |p: IVec3| Some(blocks.block(p));
+        if let Some(mut h) = raycast(c, &block, eye - origin, dir, reach, liquids) {
+            if best.is_none_or(|b| h.dist < b.dist) {
+                h.frame = id;
+                best = Some(h);
+            }
+        }
+    }
+    best
+}
+
+/// Where a ray enters box `b` (0 when it starts inside), within `max`: entities picked by the
+/// crosshair.
+pub fn ray_aabb(o: DVec3, d: DVec3, b: &Aabb, max: f64) -> Option<f64> {
+    let (mut t0, mut t1) = (0.0f64, max);
+    for i in 0..3 {
+        if d[i].abs() < 1e-12 {
+            if o[i] < b.min[i] || o[i] > b.max[i] {
+                return None;
+            }
+            continue;
+        }
+        let a = (b.min[i] - o[i]) / d[i];
+        let c = (b.max[i] - o[i]) / d[i];
+        t0 = t0.max(a.min(c));
+        t1 = t1.min(a.max(c));
+    }
+    (t0 <= t1).then_some(t0)
+}
+
+/// Amanatides-Woo traversal. Blocks are hit where the ray crosses their selection boxes; blocks
+/// the ray starts inside are skipped.
 /// First targetable block along the ray; with `liquids` liquids stop it too.
 pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3, dir: DVec3, max: f64, liquids: bool) -> Option<Hit> {
     let dir = dir.normalize();
@@ -351,17 +390,10 @@ pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3
         if let Some(state) = block(p) {
             let s = &c.states[state as usize];
             if s.flags & bf::NOT_TARGETABLE == 0 || (liquids && s.flags & bf::LIQUID != 0) {
-                let shape: Vec<[f32; 6]> = match s.model {
-                    Model::Cube => vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]],
-                    Model::Cross => vec![[0.125, 0.0, 0.125, 0.875, 0.8, 0.875]],
-                    _ if !s.collision.is_empty() => s.collision.clone(),
-                    _ if !s.boxes.is_empty() => s.boxes.iter().map(|b| [b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]]).collect(),
-                    _ => vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]],
-                };
                 let local = origin - p.as_dvec3();
-                let best = shape.iter().filter_map(|b| ray_box(local, dir, b, max)).min_by(|a, b| a.0.total_cmp(&b.0));
-                if let Some((_, face)) = best {
-                    return Some(Hit { frame: 0, block: p, face, state });
+                let best = s.selection.iter().filter_map(|b| ray_box(local, dir, b, max)).min_by(|a, b| a.0.total_cmp(&b.0));
+                if let Some((dist, face)) = best {
+                    return Some(Hit { frame: 0, block: p, face, state, dist });
                 }
             }
         }

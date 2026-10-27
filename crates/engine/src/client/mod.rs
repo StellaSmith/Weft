@@ -1311,8 +1311,8 @@ impl Client {
             }
             let (hw, h, _) = e.dims();
             let b = physics::Aabb::around(e.pos, hw, h);
-            if let Some(t) = ray_aabb(eye, dir, &b) {
-                if t <= max && best.is_none_or(|(bt, _)| t < bt) {
+            if let Some(t) = physics::ray_aabb(eye, dir, &b, max) {
+                if best.is_none_or(|(bt, _)| t < bt) {
                     best = Some((t, id));
                 }
             }
@@ -1336,26 +1336,16 @@ impl Client {
         }
     }
 
-    /// The block looked at: the world's or a structure's, whichever is nearer.
+    /// The block looked at: the world's or a structure's, whichever the ray enters first.
     fn raycast(&self, eye: DVec3, look: DVec3, reach: f64) -> Option<Hit> {
-        let c = content();
         let world = &self.world;
-        let block = |p: IVec3| world.block_or_air(p);
-        let mut best = physics::raycast(c, &block, eye, look, reach, false).map(|h| (h, (h.block.as_dvec3() + DVec3::splat(0.5) - eye).length()));
         let now = self.body_tick(self.body_clock - STEP + self.accum);
-        for (&id, e) in &self.entities {
-            let Some(s) = e.structure.as_deref() else { continue };
-            let o = crate::server::structure_origin(e.pose(now));
-            let block = |p: IVec3| Some(physics::Blocks::block(s, p));
-            if let Some(mut h) = physics::raycast(c, &block, eye - o, look, reach, false) {
-                h.frame = id;
-                let d = (h.block.as_dvec3() + DVec3::splat(0.5) + o - eye).length();
-                if best.is_none_or(|b| d < b.1) {
-                    best = Some((h, d));
-                }
-            }
-        }
-        best.map(|b| b.0)
+        let structures: Vec<(u64, DVec3, &dyn physics::Blocks)> = self
+            .entities
+            .iter()
+            .filter_map(|(&id, e)| e.structure.as_deref().map(|s| (id, crate::server::structure_origin(e.pose(now)), s as &dyn physics::Blocks)))
+            .collect();
+        physics::pick(content(), &|p| world.block_or_air(p), &structures, eye, look, reach, false)
     }
 
     /// Server tick (fractional) bodies are shown at when the client clock reads `clock`.
@@ -1526,24 +1516,6 @@ impl Client {
     pub fn fog_color(&self) -> [f32; 4] {
         self.sky_colors().0.extend(1.0).to_array()
     }
-}
-
-fn ray_aabb(o: DVec3, d: DVec3, b: &physics::Aabb) -> Option<f64> {
-    let mut t0: f64 = 0.0;
-    let mut t1: f64 = f64::INFINITY;
-    for i in 0..3 {
-        if d[i].abs() < 1e-12 {
-            if o[i] < b.min[i] || o[i] > b.max[i] {
-                return None;
-            }
-            continue;
-        }
-        let a = (b.min[i] - o[i]) / d[i];
-        let c = (b.max[i] - o[i]) / d[i];
-        t0 = t0.max(a.min(c));
-        t1 = t1.min(a.max(c));
-    }
-    (t0 <= t1).then_some(t0)
 }
 
 /// One 20 Hz tick of player movement with vanilla's numbers (blocks per tick): acceleration

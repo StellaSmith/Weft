@@ -527,18 +527,12 @@ unsafe extern "C" fn entity_walk(w: *mut abi::WorldCtx, id: u64, dir: *const [f3
     }
 }
 
-unsafe extern "C" fn entity_look_at(w: *mut abi::WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32) -> u32 {
+unsafe extern "C" fn entity_look_at(w: *mut abi::WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32, frame: *mut u64) -> u32 {
     unsafe {
-        let c = content();
-        let d = dim(w);
-        let Some(e) = d.entities.get(id) else { return 0 };
-        let eye = e.pos + DVec3::Y * e.eye(c);
-        let (sy, cy) = (e.yaw as f64).sin_cos();
-        let (sp, cp) = (e.pitch as f64).sin_cos();
-        let dir = DVec3::new(-sy * cp, sp, -cy * cp);
-        let Some(hit) = crate::physics::raycast(c, &|p| d.get(p), eye, dir, max, liquids != 0) else { return 0 };
+        let Some(hit) = dim(w).look_ray(content(), id, max, liquids != 0) else { return 0 };
         *pos = hit.block.to_array();
         *face = hit.face as u32;
+        *frame = hit.frame;
         hit.state + 1
     }
 }

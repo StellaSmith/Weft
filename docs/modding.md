@@ -213,7 +213,7 @@ is dropped.
 - `drops(item, n)` or `drops_nothing()`
 - `light(15)` or `light_rgb(r, g, b)`
 - `cutout()`, `translucent()`
-- `model_box(min, max, texture)`, `collision(..)`
+- `model_box(min, max, texture)`, `collision(..)`, `selection(..)` when what the crosshair picks and outlines should differ from those (by default: collision boxes, else model boxes, else a plant's cross)
 - `needs_below("#soil")`
 - `growth(seconds, min_light)` + `on_grow(..)` for plants
 - `on_random_tick(..)`

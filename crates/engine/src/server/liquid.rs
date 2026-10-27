@@ -229,7 +229,7 @@ impl Dim {
         }
         let creative = self.entities.get(player).is_some_and(|e| e.mode == crate::world::GameMode::Creative);
         if let Some(&(l, empty)) = c.item_liquid.get(&held.item) {
-            let hit = self.look_ray(c, player, 5.0, false)?;
+            let hit = self.look_ray(c, player, 5.0, false).filter(|h| h.frame == 0)?;
             let replaceable = |s: u32| c.states[s as usize].flags & bf::REPLACEABLE != 0;
             let target = if replaceable(hit.state) { hit.block } else { hit.block + DIRS[hit.face as usize] };
             if !self.get(target).is_some_and(replaceable) {
@@ -238,7 +238,7 @@ impl Dim {
             self.spread_to(c, target, c.liquids[l as usize].first_state, false, l);
             return Some(if creative || empty == 0 { held } else { ItemStack::new(empty, 1) });
         }
-        let hit = self.look_ray(c, player, 5.0, true)?;
+        let hit = self.look_ray(c, player, 5.0, true).filter(|h| h.frame == 0)?;
         let f = decode(c, hit.state).filter(|f| f.source)?;
         let filled = *c.containers.get(&(held.item, f.id))?;
         self.set(c, hit.block, AIR);
@@ -256,14 +256,19 @@ impl Dim {
         Some(ItemStack { count: held.count - 1, ..held })
     }
 
-    /// The block an entity looks at from its eyes.
+    /// The block an entity looks at from its eyes, in the world or a moving structure.
     pub fn look_ray(&self, c: &Content, id: u64, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let e = self.entities.get(id)?;
         let eye = e.pos + DVec3::Y * e.eye(c);
         let (sy, cy) = (e.yaw as f64).sin_cos();
         let (sp, cp) = (e.pitch as f64).sin_cos();
         let dir = DVec3::new(-sy * cp, sp, -cy * cp);
-        crate::physics::raycast(c, &|p| self.get(p), eye, dir, max, liquids)
+        let structures: Vec<(u64, DVec3, &dyn crate::physics::Blocks)> = self
+            .structures
+            .iter()
+            .filter_map(|(&sid, s)| self.entities.get(sid).map(|b| (sid, super::structure::origin(b.pos), &**s as &dyn crate::physics::Blocks)))
+            .collect();
+        crate::physics::pick(c, &|p| self.get(p), &structures, eye, dir, max, liquids)
     }
 }
 

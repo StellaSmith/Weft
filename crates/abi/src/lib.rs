@@ -356,8 +356,11 @@ pub struct StateDesc {
     pub model: Model,
     pub textures: [Str; 6],
     pub boxes: Slice<ModelBox>,
-    /// Collision/selection box in 1/16 units; ignored for full cubes.
+    /// Collision boxes in 1/16 units; ignored for full cubes.
     pub collision: Slice<[f32; 6]>,
+    /// What the crosshair picks, outlines and cracks, in 1/16 units; empty: the collision boxes,
+    /// else the model's boxes, else a plant's cross, else the whole block.
+    pub selection: Slice<[f32; 6]>,
     /// Seconds to break by hand at speed 1; negative = unbreakable.
     pub hardness: f32,
     pub friction: f32,
@@ -389,6 +392,7 @@ defaults!(StateDesc {
     textures: [Str::EMPTY; 6],
     boxes: Slice::EMPTY,
     collision: Slice::EMPTY,
+    selection: Slice::EMPTY,
     hardness: 1.0,
     friction: 0.6,
     drag: 1.0,
@@ -1540,7 +1544,9 @@ pub struct Host {
     pub entity_attack: unsafe extern "C" fn(world: *mut WorldCtx, attacker: u64, target: u64) -> u32,
     /// The block an entity looks at from its eyes within `max` blocks, liquids too if `liquids`:
     /// its state + 1 (0 = nothing), position and face hit.
-    pub entity_look_at: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32) -> u32,
+    /// The block entity `id` looks at within `max` (the world's or a moving structure's: `frame`
+    /// is its entity, 0 for the world, `pos` in its blocks); state + 1, or 0 for none.
+    pub entity_look_at: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, max: f64, liquids: u32, pos: *mut [i32; 3], face: *mut u32, frame: *mut u64) -> u32,
     /// Fills `out` with ids near `pos` (all kinds if `kind` is u32::MAX), returns how many matched.
     pub entities_near: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3], radius: f64, kind: u32, out: *mut u64, max: usize) -> usize,
     /// An entity's component bytes, null if it has none. Changes are found by comparing with

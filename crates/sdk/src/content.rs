@@ -433,6 +433,7 @@ struct StateDef {
     textures: [String; 6],
     boxes: Vec<([f32; 3], [f32; 3], [String; 6])>,
     collision: Vec<[f32; 6]>,
+    selection: Vec<[f32; 6]>,
     hardness: f32,
     friction: f32,
     drag: f32,
@@ -458,6 +459,7 @@ impl StateDef {
             textures: std::array::from_fn(|_| tex.to_string()),
             boxes: Vec::new(),
             collision: Vec::new(),
+            selection: Vec::new(),
             hardness: d.hardness,
             friction: d.friction,
             drag: d.drag,
@@ -656,6 +658,12 @@ macro_rules! state_setters {
                 s.layer = Layer::Cutout;
                 s.boxes.push((min, max, std::array::from_fn(|i| block_tex(ns, f[i]))));
             });
+            self
+        }
+        /// What the crosshair picks, outlines and cracks (pixels 0..16; call again for more boxes),
+        /// when it should differ from the collision and model boxes.
+        pub fn selection(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
+            self.each(|s, _| s.selection.push([min[0], min[1], min[2], max[0], max[1], max[2]]));
             self
         }
         pub fn collision(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
@@ -1045,6 +1053,7 @@ impl Drop for BlockBuilder<'_> {
                 textures: std::array::from_fn(|i| Str::new(&s.textures[i])),
                 boxes: Slice::new(b),
                 collision: Slice::new(&s.collision),
+                selection: Slice::new(&s.selection),
                 hardness: s.hardness,
                 friction: s.friction,
                 drag: s.drag,

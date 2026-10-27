@@ -233,6 +233,9 @@ pub async fn skiff_blocks(t: T) -> R {
     t.press("core:use");
     t.secs(0.5).await?;
     t.check_eq(t.op(&sb([0, 1, -1])).await?, "base:stone".to_string(), "a stone placed on the flying deck");
+    // The server's pick (what mods' `look_at` gets) sees the structure's blocks too.
+    let look = t.op("look").await?;
+    t.check(look.starts_with(&format!("{id} ")), format!("look_at hits the flying structure: {look}"));
     // Looking at a spot of the deck 0.02 from the edge between two planks (along the way it
     // flies) while riding, the same block stays targeted.
     let st = t.state();

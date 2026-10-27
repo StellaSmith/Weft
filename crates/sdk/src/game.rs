@@ -98,10 +98,10 @@ impl World {
     }
     /// The block `id` looks at within `max` blocks (liquids count if `liquids`): position, face
     /// hit (-X, +X, -Y, +Y, -Z, +Z) and state.
-    pub fn look_at(&self, id: u64, max: f64, liquids: bool) -> Option<([i32; 3], u32, u32)> {
-        let (mut pos, mut face) = ([0; 3], 0);
-        let s = unsafe { (host().entity_look_at)(self.raw(), id, max, liquids as u32, &mut pos, &mut face) };
-        (s != 0).then_some((pos, face, s - 1))
+    pub fn look_at(&self, id: u64, max: f64, liquids: bool) -> Option<LookAt> {
+        let (mut pos, mut face, mut frame) = ([0; 3], 0, 0);
+        let s = unsafe { (host().entity_look_at)(self.raw(), id, max, liquids as u32, &mut pos, &mut face, &mut frame) };
+        (s != 0).then_some(LookAt { pos, face, state: s - 1, frame })
     }
     pub fn damage(&self, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         unsafe { (host().entity_damage)(self.raw(), id, amount, source, cause) != 0 }
@@ -1657,4 +1657,14 @@ impl Drop for ScreenBuilder<'_> {
         let desc = abi::ScreenDesc { name: Str::new(&self.name), ..self.desc };
         unsafe { (host().reg_screen)(self.raw, &desc) }
     }
+}
+
+/// What an entity looks at (`World::look_at`): a block of the world (`frame` 0) or of a moving
+/// structure (`frame` its entity, `pos` in its blocks).
+#[derive(Clone, Copy, Debug)]
+pub struct LookAt {
+    pub pos: [i32; 3],
+    pub face: u32,
+    pub state: u32,
+    pub frame: u64,
 }

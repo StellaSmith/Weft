@@ -6,7 +6,6 @@ use crate::gpu_layout::box_mode;
 use super::models::{MAX_LAYERS, Posed};
 use glam::{DVec3, IVec3, Mat4, Quat, Vec3, Vec4};
 use rustc_hash::FxHashMap;
-use weft_abi::Model;
 use weft_render::*;
 
 use super::ClientEntity;
@@ -696,17 +695,10 @@ impl EntityRenderer {
         self.posed = posed;
         self.models.draw(gpu, list, frame, super::models::Batch::World, self.model_pipe, vb);
 
-        // Selection outline: twelve thin dark boxes along the edges of the target's shape.
-        if let Some((hit, at)) = target {
-            let s = &c.states[hit.state as usize];
-            let (mn, mx) = match s.collision.first() {
-                Some(b) if s.model != Model::Cube => (Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])),
-                _ => match s.boxes.first() {
-                    Some(b) if s.model == Model::Boxes => (Vec3::from_array(b.min), Vec3::from_array(b.max)),
-                    _ => (Vec3::ZERO, Vec3::ONE),
-                },
-            };
-            let o = rel(hit.block.as_dvec3() + at);
+        // Selection outline: twelve thin dark boxes along the edges of each selection box.
+        let outlined = target.map(|(hit, at)| (&c.states[hit.state as usize].selection, rel(hit.block.as_dvec3() + at)));
+        for (sel, o) in outlined.iter().flat_map(|(sel, o)| sel.iter().map(move |s| (s, *o))) {
+            let (mn, mx) = (Vec3::new(sel[0], sel[1], sel[2]), Vec3::new(sel[3], sel[4], sel[5]));
             let t = 0.006;
             let (a, b) = (o + mn - Vec3::splat(t), o + mx + Vec3::splat(t));
             for axis in 0..3 {
@@ -759,8 +751,8 @@ impl EntityRenderer {
                 let lit = shade(p.as_dvec3() + at + DVec3::splat(0.5));
                 let state = target.filter(|h| h.0.block == p).map(|h| &c.states[h.0.state as usize]);
                 let shape: Vec<(Vec3, Vec3)> = match state {
-                    Some(s) if s.model == Model::Boxes && !s.boxes.is_empty() => s.boxes.iter().map(|b| (Vec3::from_array(b.min), Vec3::from_array(b.max))).collect(),
-                    _ => vec![(Vec3::ZERO, Vec3::ONE)],
+                    Some(s) => s.selection.iter().map(|b| (Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]))).collect(),
+                    None => vec![(Vec3::ZERO, Vec3::ONE)],
                 };
                 for (mn, mx) in shape {
                     let (a, b) = (mn - Vec3::splat(0.004), mx + Vec3::splat(0.004));

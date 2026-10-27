@@ -239,7 +239,6 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 for i in &e.worn {
                     w.u32(*i);
                 }
-                w.u32(e.block);
             }
         }
         ToClient::Moves(tick, list) => {
@@ -479,11 +478,10 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
-                let mut e = EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()?, health: r.f32()?, worn: Vec::new(), block: 0 };
+                let mut e = EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()?, health: r.f32()?, worn: Vec::new() };
                 for _ in 0..r.len()? {
                     e.worn.push(r.u32()?);
                 }
-                e.block = r.u32()?;
                 list.push(e);
             }
             ToClient::Spawn(list)

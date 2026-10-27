@@ -112,6 +112,9 @@ pub struct EntityKind {
     pub sounds: [u32; 4],
     /// Solid bodies: riders up to this high above it move with it.
     pub carry_height: f32,
+    /// A moving structure: its template (`Content::templates`), by name until the freeze.
+    pub template_name: String,
+    pub template: Option<u32>,
 }
 
 impl EntityKind {
@@ -489,6 +492,7 @@ pub struct RawGame {
     pub decorations: Vec<(ModId, Vec<String>, Callback)>,
     pub terrain: Vec<crate::server::terrain::RawTerrain>,
     pub structures: Vec<RawStructure>,
+    pub templates: Vec<RawTemplate>,
     /// (name, icon item) in registration order.
     pub creative_tabs: Vec<(String, String)>,
     /// Components and tags set on other mods' entries.
@@ -741,10 +745,14 @@ pub struct RawScatter {
     pub shape: Callback,
 }
 
-pub struct RawStructure {
+pub struct RawTemplate {
     pub name: String,
-    pub dimension: String,
     pub blocks: Vec<([i32; 3], String)>,
+}
+
+pub struct RawStructure {
+    pub template: String,
+    pub dimension: String,
     pub spacing: u32,
     pub chance: f32,
     pub biome: String,
@@ -793,6 +801,8 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 slots: 0,
                 sounds: [u32::MAX; 4],
                 carry_height: d.carry_height,
+                template_name: d.template.as_str().to_string(),
+                template: None,
             },
         }
     }
@@ -898,6 +908,8 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         slots: 0,
         sounds: [u32::MAX; 4],
         carry_height: 0.0,
+        template_name: String::new(),
+        template: None,
     }
 }
 

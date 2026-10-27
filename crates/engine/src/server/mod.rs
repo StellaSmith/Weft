@@ -1634,7 +1634,7 @@ impl Server {
                     visible.insert(e.id);
                     if !p.known.contains(&e.id) {
                         let worn = e.worn.clone();
-                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: crate::stack::for_client(e.item), health: e.health, worn, block: e.block });
+                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: crate::stack::for_client(e.item), health: e.health, worn });
                     }
                 }
             }

@@ -41,8 +41,6 @@ pub struct EntityView {
     pub item: ItemStack,
     pub health: f32,
     pub worn: Vec<u32>,
-    /// Falling blocks: the state.
-    pub block: u32,
 }
 
 /// A debug shape for a gizmo group (`client::gizmo`): `kind` 0 is a line from `a` to `b`, 1 a box

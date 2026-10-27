@@ -55,11 +55,13 @@ pub fn register(r: &mut Registry) {
         .shader("twinkle");
 
     // A glowing obelisk here and there in the deserts of another mod's world.
-    let mut obelisk = r.structure(&crate::OVERWORLD, "obelisk").layer(&["sss", "sss", "sss"]);
+    static OBELISK: Template = Template::named("obelisk");
+    let mut obelisk = r.template(&OBELISK).layer(&["sss", "sss", "sss"]);
     for _ in 0..4 {
         obelisk = obelisk.layer(&["   ", " g ", "   "]);
     }
-    obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("#dry").buried(1);
+    drop(obelisk.key('s', "base:sandstone").key('g', "glow_crystal"));
+    r.structure(&crate::OVERWORLD, &OBELISK).spacing(128).chance(0.5).biome("#dry").buried(1);
     // Glow crystals grow only in the overworld's deep caves (an underground biome).
     r.ore(&GLOW_CRYSTAL).veins(3).size(6).replace("#stone_ore_replaceables").biome("#cave");
     // A 64x64 texture among 16x16 ones: every texture keeps its own size.

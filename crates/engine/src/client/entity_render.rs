@@ -632,17 +632,10 @@ impl EntityRenderer {
             }
             let lit = shade(e.pos + DVec3::Y * 0.5);
             let hurt = (e.hurt / 0.4).clamp(0.0, 1.0);
-            let from = boxes.len();
             if !e.item.is_empty() {
                 if let Some(m) = self.item_model(textures, e.item.item) {
                     instances.push((e.item.item, item_instance(ground_transform(base, e.age, e.item.item), m.0, hurt, lit)));
                 }
-                continue;
-            }
-            if e.block != 0 {
-                let m = Mat4::from_translation(base - Vec3::new(0.5, 0.0, 0.5));
-                block_shape(&mut boxes, textures, m, &c.states[e.block as usize], Vec4::ONE.with_w(0.0));
-                light_boxes(&mut boxes, from, lit);
                 continue;
             }
             let kind = e.look();

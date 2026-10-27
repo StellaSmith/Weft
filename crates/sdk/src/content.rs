@@ -31,7 +31,7 @@ pub mod kind {
             })*
         };
     }
-    named_kinds!(Key, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot, Scatter);
+    named_kinds!(Key, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot, Scatter, Template);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -153,6 +153,9 @@ pub type HudElement = Handle<kind::HudElement>;
 pub type GizmoGroup = Handle<kind::GizmoGroup>;
 pub type TintKind = Handle<kind::TintKind>;
 pub type Scatter = Handle<kind::Scatter>;
+/// A fixed shape of blocks (`Registry::template`), for world structures, moving structures and
+/// `World::place`.
+pub type Template = Handle<kind::Template>;
 
 /// The engine's tint kinds; biomes color them with `.tint(&GRASS, 0x..)`.
 pub mod tints {
@@ -351,18 +354,16 @@ impl Registry {
         }
     }
 
-    pub fn structure<'a>(&'a mut self, dimension: &Dimension, name: &str) -> StructureBuilder<'a> {
-        StructureBuilder {
-            raw: self.raw,
-            ns: self.ns,
-            name: qualify(self.ns, name),
-            dimension: dimension.name().to_string(),
-            layers: Vec::new(),
-            keys: Vec::new(),
-            biome: String::new(),
-            desc: abi::StructureDesc::DEFAULT,
-            _p: PhantomData,
-        }
+    /// A template placed now and then on the surface of `dimension` (the structure is called
+    /// like the template, for `World::structure_near`).
+    pub fn structure<'a>(&'a mut self, dimension: &Dimension, template: &Template) -> StructureBuilder<'a> {
+        StructureBuilder { raw: self.raw, template: template.name().to_string(), dimension: dimension.name().to_string(), biome: String::new(), desc: abi::StructureDesc::DEFAULT, _p: PhantomData }
+    }
+
+    /// A fixed shape of blocks, drawn in layers of rows (`layer` + `key`) or filled with boxes
+    /// (`fill`), checked when the game loads.
+    pub fn template<'a>(&'a mut self, template: &Template) -> TemplateBuilder<'a> {
+        TemplateBuilder { raw: self.raw, ns: self.ns, name: template.name().to_string(), layers: Vec::new(), keys: Vec::new(), fills: Vec::new(), _p: PhantomData }
     }
 
     pub fn dimension<'a>(&'a mut self, dimension: &'static Dimension) -> DimensionBuilder<'a> {
@@ -1382,27 +1383,14 @@ impl Drop for DimensionBuilder<'_> {
 /// ```
 pub struct StructureBuilder<'a> {
     raw: *mut abi::Registrar,
-    ns: &'static str,
-    name: String,
+    template: String,
     dimension: String,
-    layers: Vec<Vec<String>>,
-    keys: Vec<(char, String)>,
     biome: String,
     desc: abi::StructureDesc,
     _p: PhantomData<&'a mut Registry>,
 }
 
 impl StructureBuilder<'_> {
-    pub fn layer(mut self, rows: &[&str]) -> Self {
-        self.layers.push(rows.iter().map(|r| r.to_string()).collect());
-        self
-    }
-    /// `block` may name a state (`furnace[lit=true]`) or `air` to clear.
-    pub fn key(mut self, c: char, block: &str) -> Self {
-        let block = if block == "air" { "core:air".to_string() } else { qualify(self.ns, block) };
-        self.keys.push((c, block));
-        self
-    }
     /// One chance per `blocks` x `blocks` cell.
     pub fn spacing(mut self, blocks: u32) -> Self {
         self.desc.spacing = blocks;
@@ -1429,6 +1417,49 @@ impl Drop for StructureBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
+        let desc = abi::StructureDesc { template: Str::new(&self.template), dimension: Str::new(&self.dimension), biome: Str::new(&self.biome), ..self.desc };
+        unsafe { (host().reg_structure)(self.raw, &desc) }
+    }
+}
+
+/// Layers from the bottom up, each a list of rows along z, each character one block along x:
+/// a key says which block it means, a space leaves what is there, `air` clears.
+pub struct TemplateBuilder<'a> {
+    raw: *mut abi::Registrar,
+    ns: &'static str,
+    name: String,
+    layers: Vec<Vec<String>>,
+    keys: Vec<(char, String)>,
+    fills: Vec<(String, [i32; 3], [i32; 3])>,
+    _p: PhantomData<&'a mut Registry>,
+}
+
+impl TemplateBuilder<'_> {
+    pub fn layer(mut self, rows: &[&str]) -> Self {
+        self.layers.push(rows.iter().map(|r| r.to_string()).collect());
+        self
+    }
+    /// `block` may name a state (`furnace[lit=true]`) or `air` to clear.
+    pub fn key(mut self, c: char, block: &str) -> Self {
+        self.keys.push((c, block_ref(self.ns, block)));
+        self
+    }
+    /// A box of `block` from `from` to `to`, inclusive (a moving structure's deck).
+    pub fn fill(mut self, block: &str, from: [i32; 3], to: [i32; 3]) -> Self {
+        self.fills.push((block_ref(self.ns, block), from, to));
+        self
+    }
+}
+
+fn block_ref(ns: &str, block: &str) -> String {
+    if block == "air" { "core:air".to_string() } else { qualify(ns, block) }
+}
+
+impl Drop for TemplateBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
         let mut names: Vec<([i32; 3], &str)> = Vec::new();
         for (y, layer) in self.layers.iter().enumerate() {
             for (z, row) in layer.iter().enumerate() {
@@ -1439,9 +1470,18 @@ impl Drop for StructureBuilder<'_> {
                 }
             }
         }
+        for (b, f, t) in &self.fills {
+            for y in f[1].min(t[1])..=f[1].max(t[1]) {
+                for z in f[2].min(t[2])..=f[2].max(t[2]) {
+                    for x in f[0].min(t[0])..=f[0].max(t[0]) {
+                        names.push(([x, y, z], b));
+                    }
+                }
+            }
+        }
         let blocks: Vec<abi::StructureBlock> = names.iter().map(|(p, b)| abi::StructureBlock { pos: *p, block: Str::new(b) }).collect();
-        let desc = abi::StructureDesc { name: Str::new(&self.name), dimension: Str::new(&self.dimension), blocks: Slice::new(&blocks), biome: Str::new(&self.biome), ..self.desc };
-        unsafe { (host().reg_structure)(self.raw, &desc) }
+        let desc = abi::TemplateDesc { name: Str::new(&self.name), blocks: Slice::new(&blocks) };
+        unsafe { (host().reg_template)(self.raw, &desc) }
     }
 }
 

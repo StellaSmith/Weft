@@ -657,30 +657,40 @@ impl Dim {
         id
     }
 
-    /// The block at `p` starts falling as an entity (sand, gravel, anvils); it is placed again
-    /// where it lands, or drops what it drops if it cannot be.
+    /// The block at `p` starts falling (sand, gravel, anvils): a moving structure of that one
+    /// block, drawn and colliding like any. It is placed again where it lands, or drops what it
+    /// drops if it cannot be.
     pub fn fall_block(&mut self, c: &'static Content, p: IVec3) -> u64 {
         let Some(state) = self.get(p).filter(|&s| s != AIR) else { return 0 };
         self.set(c, p, AIR);
         let id = self.spawn(c, c.game.falling_kind, p.as_dvec3() + DVec3::new(0.5, 0.0, 0.5));
-        if let Some(e) = self.entities.get_mut(id) {
-            e.block = state;
+        if id != 0 {
+            self.structures.insert(id, Box::new(Dim::new_structure(c, self.id, self.seed, self.next_id.clone(), &[(IVec3::ZERO, state)])));
         }
         id
     }
 
-    /// Falling blocks that came down: placed where they landed, else dropped as loot.
+    /// Falling blocks that came down: placed where they landed, else dropped as loot. They rest
+    /// on the ground a few ticks first, the time clients show bodies behind the server, so the
+    /// block appears where the falling one is drawn.
     fn land_falling(&mut self, c: &'static Content) {
+        for e in self.entities.list.iter_mut().filter(|e| e.kind == c.game.falling_kind) {
+            e.rested = if e.on_ground { e.rested.saturating_add(1) } else { 0 };
+        }
+        let structures = &self.structures;
         let landed: Vec<(u64, IVec3, u32, bool)> = self
             .entities
             .list
             .iter()
             // One without its block (loaded from a save mid-fall) just goes.
-            .filter(|e| e.kind == c.game.falling_kind && !e.removed && (e.block == 0 || e.on_ground || e.age > 600))
-            .map(|e| (e.id, e.pos.floor().as_ivec3(), e.block, e.on_ground))
+            .filter(|e| e.kind == c.game.falling_kind && !e.removed)
+            .map(|e| (e, structures.get(&e.id).and_then(|s| s.get(IVec3::ZERO)).unwrap_or(AIR)))
+            .filter(|(e, state)| *state == AIR || e.rested > 2 || e.age > 600)
+            .map(|(e, state)| (e.id, e.pos.floor().as_ivec3(), state, e.on_ground))
             .collect();
         for (id, p, state, ground) in landed {
             self.entities.remove(id);
+            let state = if state == AIR { 0 } else { state };
             if state == 0 {
                 continue;
             }

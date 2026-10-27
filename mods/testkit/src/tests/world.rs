@@ -409,6 +409,10 @@ pub async fn worldgen(t: T) -> R {
     }
 
     t.check(t.op("structure testmod:obelisk 3000").await? != "none", "another mod's obelisks are in the world too");
+    // The same template placed by code.
+    let f = t.feet();
+    t.check_eq(t.op(&format!("place testmod:obelisk {} {} {}", f[0] + 4, f[1] + 10, f[2])).await?, "1".to_string(), "w.place puts a template");
+    t.check_eq(t.block([f[0] + 5, f[1] + 11, f[2] + 1]).await?, "testmod:glow_crystal".to_string(), "its glowing core");
 
     // Testmod puts base's forest on Mars; the engine scatters its trees there like at home.
     static MARS: Dimension = Dimension::named("testmod:mars");

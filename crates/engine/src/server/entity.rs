@@ -49,8 +49,8 @@ pub struct Entity {
     /// Its own box (width, height, eye) and another kind it looks like, set by mods.
     pub size: Option<[f32; 3]>,
     pub look: Option<u32>,
-    /// Falling blocks: the state they carry (0 for everything else).
-    pub block: u32,
+    /// Falling blocks: ticks it has lain on the ground.
+    pub rested: u8,
     /// Crouching players: a 1.5 high box with lower eyes.
     pub crouched: bool,
     /// Where it walks to by itself (`Host::navigate`).
@@ -90,7 +90,7 @@ impl Entity {
             support: None,
             size: None,
             look: None,
-            block: 0,
+            rested: 0,
             crouched: false,
             nav: None,
         }

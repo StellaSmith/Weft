@@ -269,10 +269,7 @@ pub mod comp {
     pub const WEAR_PER_HIT: &str = "wear_per_hit";
     /// Tag of biomes players may start in (the engine's spawn search tries them first).
     pub const SPAWN_BIOME: &str = "spawn_biome";
-    /// Entity kinds: blocks it is built of, a moving structure (`str`): `;`-separated
-    /// `<block> x y z [x2 y2 z2]` boxes in its own coordinates, block (0, 0, 0) centered on the
-    /// entity's position. Players place and break blocks on it like in the world.
-    pub const BLOCKS: &str = "blocks";
+
 }
 
 /// Harvest levels (`tool_level` of a tool, `harvest_level` of a block) of the vanilla tiers.
@@ -662,15 +659,24 @@ pub struct StructureBlock {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct StructureDesc {
-    pub name: Str,
+    /// The template (`Host::reg_template`) it places; the structure is called like it.
+    pub template: Str,
     pub dimension: Str,
-    pub blocks: Slice<StructureBlock>,
     pub spacing: u32,
     pub chance: f32,
     pub biome: Str,
     pub sink: i32,
 }
-defaults!(StructureDesc { name: Str::EMPTY, dimension: Str::EMPTY, blocks: Slice::EMPTY, spacing: 32, chance: 0.5, biome: Str::EMPTY, sink: 0 });
+defaults!(StructureDesc { template: Str::EMPTY, dimension: Str::EMPTY, spacing: 32, chance: 0.5, biome: Str::EMPTY, sink: 0 });
+
+/// A fixed shape of blocks, checked when the game loads: world structures, moving structures
+/// (`EntityDesc::template`) and `Host::world_place` take it.
+#[repr(C)]
+pub struct TemplateDesc {
+    pub name: Str,
+    /// Positions from its lowest corner; `core:air` clears.
+    pub blocks: Slice<StructureBlock>,
+}
 
 // ---------------------------------------------------------------- callback args
 
@@ -855,6 +861,9 @@ pub struct EntityDesc {
     /// Solid bodies: how far above it a rider may be (jumping) and still move with it, keeping
     /// its own motion relative to the body; 0 = only while standing on it.
     pub carry_height: f32,
+    /// A moving structure built of this template (`Host::reg_template`), block (0, 0, 0)
+    /// centered on the entity; its box is what the blocks fill.
+    pub template: Str,
     /// A category by name (`core:misc`, `core:hostile`, `core:passive`, or one from
     /// `Host::reg_entity_category`); empty = `core:misc`.
     pub category_name: Str,
@@ -875,6 +884,7 @@ defaults!(EntityDesc {
     replace: 0,
     components: Slice::EMPTY,
     carry_height: 0.0,
+    template: Str::EMPTY,
     category_name: Str::EMPTY,
 });
 
@@ -1818,6 +1828,10 @@ pub struct Host {
     /// Whether `id` is still walking somewhere.
     pub navigating: unsafe extern "C" fn(world: *mut WorldCtx, id: u64) -> u32,
     pub reg_structure: unsafe extern "C" fn(reg: *mut Registrar, desc: *const StructureDesc),
+    pub reg_template: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TemplateDesc),
+    /// Places template `name` with its lowest corner at `pos`; 0 if it doesn't exist or part of
+    /// it isn't loaded (nothing is placed then).
+    pub world_place: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, pos: *const [i32; 3]) -> u32,
     /// The nearest structure `name` within `radius` blocks of `pos` (whether generated yet or
     /// not): its lowest corner in `out`. Returns 0 if none.
     pub structure_near: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, pos: *const [i32; 3], radius: i32, out: *mut [i32; 3]) -> u32,

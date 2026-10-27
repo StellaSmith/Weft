@@ -348,6 +348,12 @@ pub struct OreDef {
     pub biome: Option<u32>,
 }
 
+/// A template's blocks, checked at freeze: (offset from the lowest corner, state).
+pub struct TemplateDef {
+    pub name: String,
+    pub blocks: Vec<(glam::IVec3, u32)>,
+}
+
 pub struct StructureDef {
     pub name: String,
     /// (offset from the lowest corner, state).
@@ -398,6 +404,8 @@ pub struct Content {
     /// Name and default color of each tint kind, kind 1 first.
     pub tint_kinds: Vec<(String, u32)>,
     pub dims: Vec<DimensionDef>,
+    pub templates: Vec<TemplateDef>,
+    pub template_names: FxHashMap<String, u32>,
     pub components: Components,
     pub ids: Ids,
     /// (`mineable/<class>`, `tools/<class>`) component ids per tool class.
@@ -1636,35 +1644,52 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             dim_defs[d].decorations.push((owner, cb));
         }
     }
-    let mut raw_structures: Vec<crate::registry::RawStructure> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.structures)).collect();
-    raw_structures.sort_by(|a, b| a.name.cmp(&b.name));
-    for s in raw_structures {
-        let Some(&d) = dim_names.get(&s.dimension) else {
-            errors.push(format!("structure {}: unknown dimension {}", s.name, s.dimension));
+    // Templates: block names resolved once, so a typo is a load error, not a missing block later.
+    let mut raw_templates: Vec<crate::registry::RawTemplate> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.templates)).collect();
+    raw_templates.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut templates: Vec<TemplateDef> = Vec::new();
+    for t in raw_templates {
+        if templates.iter().any(|o| o.name == t.name) {
+            errors.push(format!("template {} is registered twice", t.name));
             continue;
-        };
-        let mut blocks = Vec::with_capacity(s.blocks.len());
-        for (p, name) in &s.blocks {
+        }
+        let mut blocks = Vec::with_capacity(t.blocks.len());
+        for (p, name) in &t.blocks {
             // `base:furnace[facing=east]`: that state, other properties at their defaults.
             let state = split_state(name).and_then(|(block, props)| block_defs[*block_names.get(block).ok_or_else(|| format!("unknown block {block}"))? as usize].state_of(&props));
             match state {
                 Ok(st) => blocks.push((glam::IVec3::from_array(*p), st)),
-                Err(e) => errors.push(format!("structure {}: {e}", s.name)),
+                Err(e) => errors.push(format!("template {}: {e}", t.name)),
             }
         }
+        templates.push(TemplateDef { name: t.name, blocks });
+    }
+    let template_names: FxHashMap<String, u32> = templates.iter().enumerate().map(|(i, t)| (t.name.clone(), i as u32)).collect();
+    let mut raw_structures: Vec<crate::registry::RawStructure> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.structures)).collect();
+    raw_structures.sort_by(|a, b| (&a.template, &a.dimension).cmp(&(&b.template, &b.dimension)));
+    for s in raw_structures {
+        let Some(&d) = dim_names.get(&s.dimension) else {
+            errors.push(format!("structure {}: unknown dimension {}", s.template, s.dimension));
+            continue;
+        };
+        let Some(&t) = template_names.get(&s.template) else {
+            errors.push(format!("structure in {}: no template {}", s.dimension, s.template));
+            continue;
+        };
+        let blocks = templates[t as usize].blocks.clone();
         let biome = match s.biome.as_str() {
             "" => None,
             t => match crate::refs::tag(&components, t) {
                 Ok(t) => Some(t),
                 Err(e) => {
-                    errors.push(format!("structure {}: biome: {e}", s.name));
+                    errors.push(format!("structure {}: biome: {e}", s.template));
                     continue;
                 }
             },
         };
         let extent = blocks.iter().fold(glam::IVec3::ZERO, |m, (p, _)| m.max(*p + glam::IVec3::ONE));
-        let salt = s.name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
-        dim_defs[d as usize].structures.push(StructureDef { name: s.name, blocks, extent, spacing: s.spacing.max(1) as i32, chance: s.chance, biome, sink: s.sink, salt });
+        let salt = s.template.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+        dim_defs[d as usize].structures.push(StructureDef { name: s.template, blocks, extent, spacing: s.spacing.max(1) as i32, chance: s.chance, biome, sink: s.sink, salt });
     }
     // Terrains: the owner's description first, then other mods' edits in load order.
     let mut raw_terrain: Vec<crate::server::terrain::RawTerrain> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.terrain)).collect();
@@ -1794,11 +1819,15 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &order_of, &mut errors);
     // A structure's box is what its blocks fill; a set size would only disagree with them.
-    if let Some(comp) = components.id(abi::comp::BLOCKS) {
-        for (k, kind) in game.entities.iter_mut().enumerate() {
-            if let Some((w, h)) = components.text(comps::ENTITY, k as u32, comp).and_then(crate::server::structure::extent) {
-                (kind.width, kind.height, kind.eye) = (w, h, h * crate::registry::EYE);
+    for kind in game.entities.iter_mut().filter(|k| !k.template_name.is_empty()) {
+        match template_names.get(&kind.template_name) {
+            Some(&t) => {
+                kind.template = Some(t);
+                if let Some((w, h)) = crate::server::structure::extent(&templates[t as usize].blocks) {
+                    (kind.width, kind.height, kind.eye) = (w, h, h * crate::registry::EYE);
+                }
             }
+            None => errors.push(format!("entity {}: no template {}", kind.name, kind.template_name)),
         }
     }
     // Items worn in an equipment slot carry its `worn/<slot>` tag.
@@ -1875,6 +1904,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         blocks: block_defs,
         items: item_defs,
         biomes: biome_defs,
+        templates,
+        template_names,
         word_sets,
         tint_kinds,
         dims: dim_defs,

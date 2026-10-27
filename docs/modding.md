@@ -250,7 +250,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `on_interact`: a player right clicked one (after `question::INTERACT_ENTITY`)
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
-`blocks(&[("base:oak_planks", from, to)])` makes a flying structure players can build on; its box is what the blocks fill, no `size` needed.`EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos[1] + st.size[2]` is where its eyes are.
+`blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos[1] + st.size[2]` is where its eyes are.
 
 ### Machines
 `r.machine(&BLOCK, &MENU)` is block + block entity + inventory + menu + screen in one go.\
@@ -271,7 +271,7 @@ Reactions: `r.liquid_reaction("#hot", "#water").source_block("obsidian")`.
 - `r.terrain(dim)` for its terrain, yours or another mod's
 - `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it)
 - `r.scatter(&TREES)` for trees and the like, `r.decorate(f)` for plants, in every dimension
-- `r.structure(dim, name)` with layers
+- `r.template(&T)` (layers and keys, or `fill` boxes) for a shape of blocks, then `r.structure(dim, &T)`, `.blocks(&T)` on an entity or `w.place(&T, pos)`
 - `r.spawn(entity).biome("#animals").light(7, 15)`
 
 The terrain has presets like hills, canyons, dunes, caves, lava lakes if you don't want to write noise by hand.\

@@ -4,7 +4,7 @@
 //! is (placement, support, callbacks, loot, events); what leaves it (dropped items, sounds,
 //! particles) goes to the world it moves in, carried over by `Dim::hand_over`.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use glam::{DVec3, IVec3};
 
@@ -17,56 +17,22 @@ pub fn origin(pos: DVec3) -> DVec3 {
     pos - DVec3::new(0.5, 0.0, 0.5)
 }
 
-/// The box a structure's `blocks` text fills around its entity: (width, height). Block
-/// (0, 0, 0) is centered on the entity, so the box reaches as far as the farthest block.
-pub fn extent(text: &str) -> Option<(f32, f32)> {
+/// The box a structure's blocks fill around its entity: (width, height). Block (0, 0, 0) is
+/// centered on the entity, so the box reaches as far as the farthest block.
+pub fn extent(blocks: &[(IVec3, u32)]) -> Option<(f32, f32)> {
     let mut hw: f32 = 0.0;
     let mut top = i32::MIN;
-    for part in text.split(';').map(str::trim).filter(|p| !p.is_empty()) {
-        let n: Vec<i32> = part.split_whitespace().skip(1).filter_map(|v| v.parse().ok()).collect();
-        for p in n.chunks_exact(3) {
-            hw = hw.max((p[0] as f32 - 0.5).abs()).max((p[0] as f32 + 0.5).abs()).max((p[2] as f32 - 0.5).abs()).max((p[2] as f32 + 0.5).abs());
-            top = top.max(p[1] + 1);
-        }
+    for (p, _) in blocks {
+        hw = hw.max((p.x as f32 - 0.5).abs()).max((p.x as f32 + 0.5).abs()).max((p.z as f32 - 0.5).abs()).max((p.z as f32 + 0.5).abs());
+        top = top.max(p.y + 1);
     }
     (top > i32::MIN).then_some((hw * 2.0, top as f32))
 }
 
-/// The blocks a kind is built of (its `blocks` component), parsed once per kind.
-pub fn template(c: &Content, kind: u32) -> Option<&'static [(IVec3, u32)]> {
-    static ALL: OnceLock<Vec<Option<Vec<(IVec3, u32)>>>> = OnceLock::new();
-    let all = ALL.get_or_init(|| {
-        let comp = c.components.id(weft_abi::comp::BLOCKS);
-        (0..c.game.entities.len() as u32)
-            .map(|k| {
-                let text = comp.and_then(|id| c.components.text(crate::components::ENTITY, k, id))?;
-                let mut out = Vec::new();
-                for part in text.split(';').map(str::trim).filter(|p| !p.is_empty()) {
-                    let w: Vec<&str> = part.split_whitespace().collect();
-                    let n: Vec<i32> = w.iter().skip(1).filter_map(|v| v.parse().ok()).collect();
-                    let state = w.first().and_then(|b| c.state_by_name(b));
-                    let (Some(state), [x, y, z, rest @ ..]) = (state, &n[..]) else {
-                        log::error!("{}: bad `blocks` part '{part}' (block x y z [x2 y2 z2])", c.game.entities[k as usize].name);
-                        continue;
-                    };
-                    let (a, b) = (IVec3::new(*x, *y, *z), match rest {
-                        [x2, y2, z2] => IVec3::new(*x2, *y2, *z2),
-                        _ => IVec3::new(*x, *y, *z),
-                    });
-                    let (lo, hi) = (a.min(b), a.max(b));
-                    for y in lo.y..=hi.y {
-                        for z in lo.z..=hi.z {
-                            for x in lo.x..=hi.x {
-                                out.push((IVec3::new(x, y, z), state));
-                            }
-                        }
-                    }
-                }
-                Some(out)
-            })
-            .collect()
-    });
-    all.get(kind as usize)?.as_deref()
+/// The blocks a kind is built of (its template).
+pub fn template(c: &Content, kind: u32) -> Option<&[(IVec3, u32)]> {
+    let t = c.game.entities.get(kind as usize)?.template?;
+    Some(&c.templates[t as usize].blocks)
 }
 
 impl crate::physics::Blocks for Dim {

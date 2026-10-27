@@ -34,14 +34,15 @@ r.ore(&TIN_ORE).y(-64, 90).veins(5).size(8).replace("#stone_ore_replaceables");
 - `biome("#cave")`: only in biomes with this tag, underground ones included
 
 ## Structures
-A structure is a fixed shape of blocks the engine places on the surface now and then. You draw it in layers from the bottom up: each layer is a list of rows along z, and each character in a row is one block along x. A key says which block a character means, a space leaves whatever is already there, and `air` clears it.
+A structure is a template, a fixed shape of blocks, that the engine places on the surface now and then. You draw a template in layers from the bottom up: each layer is a list of rows along z, and each character in a row is one block along x. A key says which block a character means, a space leaves whatever is already there, and `air` clears it. `fill(block, from, to)` adds a box instead. Its blocks are checked when the game loads, so a typo is an error then, and the same template serves a structure, a moving structure (`.blocks(&TEMPLATE)` on an entity) and code (`w.place(&TEMPLATE, pos)`).
 
 ```rust
-r.structure("base:overworld", "obelisk")
+static OBELISK: Template = Template::named("obelisk");
+r.template(&OBELISK)
     .layer(&["sss", "sss", "sss"])
     .layer(&["   ", " g ", "   "])
-    .key('s', "base:sandstone").key('g', "glow_crystal")
-    .spacing(128).chance(0.5).biome("#dry").buried(1);
+    .key('s', "base:sandstone").key('g', "glow_crystal");
+r.structure(&OVERWORLD, &OBELISK).spacing(128).chance(0.5).biome("#dry").buried(1);
 ```
 That's a sandstone obelisk with a glowing crystal inside, in every dry biome (so deserts) of base's overworld.
 

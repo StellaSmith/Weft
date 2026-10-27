@@ -174,6 +174,8 @@ pub static HOST: Host = Host {
     navigate,
     navigating,
     reg_structure,
+    reg_template,
+    world_place,
     structure_near,
     fall_block,
     reg_attach_value,
@@ -201,13 +203,42 @@ unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> 
     unsafe { dim(w).fall_block(content(), ip(pos)) }
 }
 
+unsafe extern "C" fn reg_template(r: *mut abi::Registrar, d: *const abi::TemplateDesc) {
+    unsafe {
+        let d = &*d;
+        reg(r).game.templates.push(registry::RawTemplate {
+            name: d.name.as_str().to_string(),
+            blocks: d.blocks.as_slice().iter().map(|b| (b.pos, b.block.as_str().to_string())).collect(),
+        });
+    }
+}
+
+unsafe extern "C" fn world_place(w: *mut abi::WorldCtx, name: Str, pos: *const [i32; 3]) -> u32 {
+    unsafe {
+        let c = content();
+        let Some(&t) = c.template_names.get(name.as_str()) else {
+            misuse("place", || format!("no template {}", name.as_str()));
+            return 0;
+        };
+        let d = dim(w);
+        let at = ip(pos);
+        let blocks = &c.templates[t as usize].blocks;
+        if blocks.iter().any(|(p, _)| d.get(at + *p).is_none()) {
+            return 0;
+        }
+        for &(p, state) in blocks {
+            d.set(c, at + p, state);
+        }
+        1
+    }
+}
+
 unsafe extern "C" fn reg_structure(r: *mut abi::Registrar, d: *const abi::StructureDesc) {
     unsafe {
         let d = *d;
         reg(r).game.structures.push(registry::RawStructure {
-            name: d.name.as_str().to_string(),
+            template: d.template.as_str().to_string(),
             dimension: d.dimension.as_str().to_string(),
-            blocks: d.blocks.as_slice().iter().map(|b| (b.pos, b.block.as_str().to_string())).collect(),
             spacing: d.spacing,
             chance: d.chance,
             biome: d.biome.as_str().to_string(),

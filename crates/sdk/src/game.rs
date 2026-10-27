@@ -55,6 +55,11 @@ impl World {
         let mut s = EntityState::default();
         (unsafe { (host().entity_get)(self.raw(), id, &mut s) } != 0).then_some(s)
     }
+    /// Places `template` with its lowest corner at `pos`; false (and nothing placed) when part
+    /// of it isn't loaded.
+    pub fn place(&self, template: &crate::Template, pos: [i32; 3]) -> bool {
+        unsafe { (host().world_place)(self.raw(), Str::new(template.name()), &pos) != 0 }
+    }
     pub fn set_entity(&self, id: u64, s: &EntityState) {
         unsafe { (host().entity_set)(self.raw(), id, s) }
     }
@@ -514,6 +519,7 @@ pub struct EntityBuilder<'a> {
     replace: bool,
     carry_height: f32,
     category_name: String,
+    template: String,
     /// Components (full name, starting value) every entity of this kind gets.
     attached: Vec<(&'static str, Vec<u8>)>,
 }
@@ -669,15 +675,11 @@ impl EntityBuilder<'_> {
         self.components.push(Pending::text(abi::comp::ANIMATIONS, &name));
         self
     }
-    /// A moving structure built of blocks (boxes from `from` to `to`, inclusive, in its own
-    /// coordinates; block (0, 0, 0) is centered on the entity's position). Blocks are placed and
+    /// A moving structure built of `template` (`Registry::template`; block (0, 0, 0) is
+    /// centered on the entity's position, its box is what the blocks fill). Blocks are placed and
     /// broken on it like in the world, and it carries what stands on it; usually `.solid()`.
-    pub fn blocks(mut self, boxes: &[(&str, [i32; 3], [i32; 3])]) -> Self {
-        let text: Vec<String> = boxes
-            .iter()
-            .map(|(b, f, t)| format!("{} {} {} {} {} {} {}", crate::qualify(self.reg.ns, b), f[0], f[1], f[2], t[0], t[1], t[2]))
-            .collect();
-        self.components.push(Pending::text(abi::comp::BLOCKS, &text.join(";")));
+    pub fn blocks(mut self, template: &crate::Template) -> Self {
+        self.template = template.name().to_string();
         self
     }
     /// Shades the model with `shaders/entity/<name>.wgsl` (namespace optional).
@@ -756,6 +758,7 @@ impl Drop for EntityBuilder<'_> {
             components: Slice::new(&values),
             carry_height: self.carry_height,
             category_name: Str::new(&self.category_name),
+            template: Str::new(&self.template),
             ..abi::EntityDesc::DEFAULT
         };
         unsafe { (host().reg_entity)(self.reg.raw, &desc) }
@@ -1075,6 +1078,7 @@ impl Registry {
             replace: false,
             carry_height: 0.0,
             category_name: String::new(),
+            template: String::new(),
             attached: Vec::new(),
         }
     }

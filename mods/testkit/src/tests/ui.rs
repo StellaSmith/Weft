@@ -377,6 +377,39 @@ pub async fn inventory_hotkeys(t: T) -> R {
     Ok(())
 }
 
+/// Rebinding in Controls: the clicked entry waits for a key (Escape cancels and leaves the screen
+/// open), the next key becomes the binding.
+pub async fn rebind(t: T) -> R {
+    t.flat().await?;
+    let bind = async |key: &str| -> R {
+        t.c().open_screen(&screens::CONTROLS);
+        t.screen("core:controls").await?;
+        t.frames(2).await?;
+        t.click_ui("id:bind:core:forward", 0);
+        t.secs(0.2).await?;
+        t.c().key(key, 0.0);
+        t.frames(4).await?;
+        Ok(())
+    };
+    bind("Escape").await?;
+    t.screen("core:controls").await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    bind("KeyK").await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    let before = t.state().pos;
+    t.c().key("KeyK", 0.6);
+    t.secs(0.8).await?;
+    let after = t.state().pos;
+    let moved = (after[0] - before[0]).hypot(after[2] - before[2]);
+    bind("KeyW").await?;
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.check(moved > 1.0, format!("K walks after rebinding forward to it (moved {moved:.2})"));
+    Ok(())
+}
+
 /// A long list shows a scroll bar; clicking low on its track scrolls the list down.
 pub async fn scrollbar(t: T) -> R {
     t.c().open_screen(&screens::CONTROLS);

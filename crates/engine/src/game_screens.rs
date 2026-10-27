@@ -159,6 +159,19 @@ impl Screen for Death {
     }
 }
 
+/// The chat's messages: the last 20 in the open chat, otherwise the last 10 of those under ten
+/// seconds old (the HUD).
+pub fn chat_lines(ui: &mut Ui, client: &crate::client::Client, lang: &crate::ui::lang::Lang, input: &crate::input::Input, open: bool) {
+    let now = std::time::Instant::now();
+    ui.container(Style::default().gap(1.0).pad(2.0).align(crate::ui::Align::Start).self_align(crate::ui::Align::Start), |ui| {
+        for (line, at) in client.chat.iter().rev().take(if open { 20 } else { 10 }).rev() {
+            if open || now.duration_since(*at).as_secs() < 10 {
+                ui.text(line.spans(lang, Some(input)), "chat");
+            }
+        }
+    });
+}
+
 /// Chat input with the recent messages above it and, for commands, completions of the word being
 /// typed. Tab takes the highlighted one and further presses go on through the same list; the arrows
 /// browse sent lines, or the list once Tab started.
@@ -217,11 +230,7 @@ impl Screen for Chat {
         ui.root_style(Style::default().stretch());
         ui.container(Style::default().grow().pad(4.0).gap(1.0).justify(crate::ui::Justify::End).stretch(), |ui| {
             if let Some(client) = cx.client {
-                ui.container(Style::default().gap(1.0).pad(2.0).self_align(crate::ui::Align::Start), |ui| {
-                    for (line, _) in client.chat.iter().rev().take(20).rev() {
-                        ui.text(line.spans(cx.lang, Some(cx.input)), "chat");
-                    }
-                });
+                chat_lines(ui, client, cx.lang, cx.input, true);
             }
             if let Some(comp) = &st.completion {
                 if !comp.suggestions.is_empty() {
@@ -267,7 +276,7 @@ impl Screen for Chat {
         let n = st.completion.as_ref().map_or(0, |c| c.suggestions.len());
         let set = |st: &mut ChatState, text: String, ctx: &mut Ctx| {
             st.update(&text, &players);
-            ctx.requests.push(Request::SetInput("chat".into(), text));
+            ctx.set_input("chat", text);
             ctx.requests.push(Request::Rebuild);
         };
         // Puts the highlighted suggestion of the stem's list into the input, keeping the list.
@@ -276,7 +285,7 @@ impl Screen for Chat {
             let comp = st.completion.as_ref().unwrap();
             let text = format!("{}{}", &stem[..comp.from.min(stem.len())], comp.suggestions[st.selected.min(n - 1)]);
             st.text = text.clone();
-            ctx.requests.push(Request::SetInput("chat".into(), text));
+            ctx.set_input("chat", text);
             ctx.requests.push(Request::Rebuild);
         };
         match key {

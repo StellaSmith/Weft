@@ -29,6 +29,7 @@ pub fn all() -> Vec<TestDef> {
         scene::scene,
         ui::screens,
         ui::scrollbar,
+        ui::rebind,
         ui::f3,
         ui::inventory_crafting,
         ui::creative_inventory,

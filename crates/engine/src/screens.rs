@@ -41,7 +41,7 @@ impl BuildCx<'_> {
     }
 }
 
-pub trait Screen {
+pub trait Screen: std::any::Any {
     fn name(&self) -> &str;
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx);
     /// Single player stops the server tick while this is open.
@@ -52,8 +52,6 @@ pub trait Screen {
     fn key(&mut self, _key: Key, _ctx: &mut Ctx) -> bool {
         false
     }
-    /// List selection forwarded from buttons.
-    fn select(&mut self, _index: usize) {}
     /// Shows the open server menu: its slots take clicks, closing the screen closes the menu.
     fn shows_menu(&self) -> bool {
         false
@@ -656,6 +654,11 @@ impl Screen for Controls {
         true
     }
 
+    /// While waiting for the key to bind, every key is that key, Escape included (it cancels).
+    fn keys_first(&self) -> bool {
+        self.waiting.is_some()
+    }
+
     fn key(&mut self, key: Key, ctx: &mut Ctx) -> bool {
         let Some(action) = self.waiting.take() else { return false };
         if key != Key::Code(winit::keyboard::KeyCode::Escape) {
@@ -689,13 +692,17 @@ impl Screen for Controls {
                         }
                         let a2 = action.clone();
                         let kb = ui.button("button", Style::default().w(70.0).h(20.0), Rc::new(move |c: &mut Ctx| {
-                            c.requests.push(Request::WaitKey(a2.clone()));
+                            if let Some(s) = c.screen::<Controls>() {
+                                s.waiting = Some(a2.clone());
+                            }
+                            c.requests.push(Request::Rebuild);
                         }), |ui| {
                             ui.text(text::plain(&text::display_key(cx.lang, b.key)), "button");
                         });
                         if let Kind::Button { selected, .. } = &mut ui.nodes[kb].kind {
                             *selected = waiting.as_deref() == Some(action.as_str());
                         }
+                        ui.set_id(kb, &format!("bind:{action}"));
                     });
                 }
             });

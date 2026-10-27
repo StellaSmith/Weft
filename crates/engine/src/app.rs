@@ -66,21 +66,16 @@ pub enum Request {
     Close,
     Quit,
     Rebuild,
-    WaitKey(String),
     Rebind(String, Key),
     ResetBinds,
-    SelectWorld(usize),
     StartWorld(WorldMeta),
     /// Without asking about mods that are missing.
     StartWorldAnyway(WorldMeta),
-    CreateWorldFromForm,
     LeaveWorld,
     Host,
     Join(String),
     Respawn,
     SendChat(String),
-    /// Replace the text of the top screen's input with this id (completion, history).
-    SetInput(String, String),
     /// Re-read packs and assets, as the reload key does.
     ReloadAssets,
 }
@@ -93,6 +88,43 @@ pub struct Ctx<'a> {
     pub requests: &'a mut Vec<Request>,
     pub stats: &'a Stats,
     pub debug: bool,
+    /// The top screen and its UI, for what its buttons and keys do to it.
+    pub top: Option<Top<'a>>,
+}
+
+pub struct Top<'a> {
+    /// None while the screen itself handles a key.
+    pub screen: Option<&'a mut dyn Screen>,
+    pub ui: &'a mut Ui,
+}
+
+impl Ctx<'_> {
+    /// The text of the top screen's input `id`.
+    pub fn input_text(&self, id: &str) -> Option<String> {
+        let ui = &self.top.as_ref()?.ui;
+        ui.find(id).and_then(|n| match &ui.nodes[n].kind {
+            Kind::Input { value, .. } => Some(value.clone()),
+            _ => None,
+        })
+    }
+
+    /// Replaces the text of the top screen's input `id` (completion, history).
+    pub fn set_input(&mut self, id: &str, text: String) {
+        let Some(top) = &mut self.top else { return };
+        if let Some(n) = top.ui.find(id)
+            && let Kind::Input { value, caret, .. } = &mut top.ui.nodes[n].kind
+        {
+            *caret = text.chars().count();
+            *value = text;
+            top.ui.dirty = true;
+        }
+    }
+
+    /// The top screen as what it is, for its own buttons.
+    pub fn screen<S: Screen>(&mut self) -> Option<&mut S> {
+        let s: &mut dyn Screen = self.top.as_mut()?.screen.as_deref_mut()?;
+        (s as &mut dyn std::any::Any).downcast_mut::<S>()
+    }
 }
 
 /// Numbers the debug overlay shows, refreshed every frame.
@@ -163,7 +195,6 @@ pub(crate) struct Running {
     fps_timer: Instant,
     fps_frames: u32,
     quads_dirty: bool,
-    waiting_key: Option<String>,
     debug: bool,
     quit: bool,
     mods: Vec<LoadedMod>,
@@ -343,7 +374,6 @@ impl App {
             fps_timer: Instant::now(),
             fps_frames: 0,
             quads_dirty: true,
-            waiting_key: None,
             debug: false,
             quit: false,
             mods,
@@ -590,44 +620,15 @@ impl Running {
                     None => log::warn!("no screen {name}"),
                 },
                 Request::ReloadAssets => self.reload_requested = true,
-                Request::SetInput(id, text) => {
-                    if let Some((_, ui)) = self.screens.last_mut() {
-                        if let Some(n) = ui.find(&id) {
-                            if let Kind::Input { value, caret, .. } = &mut ui.nodes[n].kind {
-                                *caret = text.chars().count();
-                                *value = text;
-                                ui.dirty = true;
-                                self.quads_dirty = true;
-                            }
-                        }
-                    }
-                }
-                Request::WaitKey(a) => {
-                    self.waiting_key = Some(a.clone());
-                    if let Some((s, _)) = self.screens.last_mut() {
-                        *s = Box::new(screens::Controls { waiting: Some(a) });
-                    }
-                    self.rebuild_all();
-                }
                 Request::Rebind(action, key) => {
                     self.input.rebind(&action, key);
                     self.settings.set_bind(&action, key);
-                    self.waiting_key = None;
-                    if let Some((s, _)) = self.screens.last_mut() {
-                        *s = Box::new(screens::Controls { waiting: None });
-                    }
                 }
                 Request::ResetBinds => {
                     let defaults: Vec<(String, Key)> = self.input.binds.iter().map(|b| (b.action.clone(), b.default)).collect();
                     for (a, k) in defaults {
                         self.input.rebind(&a, k);
                         self.settings.set_bind(&a, k);
-                    }
-                    self.rebuild_all();
-                }
-                Request::SelectWorld(i) => {
-                    if let Some((s, _)) = self.screens.last_mut() {
-                        s.select(i);
                     }
                     self.rebuild_all();
                 }
@@ -640,20 +641,6 @@ impl Running {
                     }
                 }
                 Request::StartWorldAnyway(meta) => self.start_world(meta),
-                Request::CreateWorldFromForm => {
-                    let Some((_, ui)) = self.screens.last() else { continue };
-                    let field = |id: &str| {
-                        ui.find(id).and_then(|n| match &ui.nodes[n].kind {
-                            Kind::Input { value, .. } => Some(value.clone()),
-                            _ => None,
-                        })
-                    };
-                    let name = field("name").unwrap_or_default();
-                    let seed = saves::parse_seed(&field("seed").unwrap_or_default());
-                    let name = if name.trim().is_empty() { "World".to_string() } else { name.trim().to_string() };
-                    let meta = saves::create(&self.settings.saves_dir(), &name, seed);
-                    self.start_world(meta);
-                }
                 Request::LeaveWorld => self.leave_world(),
                 Request::Host => {
                     if let Some(Game { server: Some(s), .. }) = &self.game {
@@ -675,16 +662,7 @@ impl Running {
                         }
                     }
                 }
-                Request::Join(ticket) => match {
-                    let typed = self.screens.last().and_then(|(_, ui)| {
-                        ui.find("ticket").and_then(|n| match &ui.nodes[n].kind {
-                            Kind::Input { value, .. } => Some(value.clone()),
-                            _ => None,
-                        })
-                    });
-                    let ticket = if ticket.is_empty() { typed.unwrap_or_default() } else { ticket };
-                    net::join(&ticket, &self.settings)
-                } {
+                Request::Join(ticket) => match net::join(&ticket, &self.settings) {
                     Ok(conn) => {
                         self.leave_world_silent();
                         let key = net::p2p::player_key(&self.settings.run_dir);
@@ -916,6 +894,7 @@ impl Running {
                 }
             }
         }
+        let ran = !actions.is_empty() || slider.is_some() || text_changed.is_some();
         let mut ctx = Ctx {
             settings: &mut self.settings,
             client: self.game.as_mut().map(|g| &mut g.client),
@@ -923,6 +902,7 @@ impl Running {
             requests,
             stats: &self.stats,
             debug: self.debug,
+            top: self.screens.last_mut().map(|(s, ui)| Top { screen: Some(&mut **s), ui }),
         };
         if !actions.is_empty() {
             if let Some(&click) = content().game.sound_names.get("core:ui.click") {
@@ -937,6 +917,9 @@ impl Running {
         }
         if let Some((f, v)) = text_changed {
             f(&mut ctx, &v);
+        }
+        if ran {
+            self.quads_dirty = true;
         }
     }
 
@@ -1110,6 +1093,7 @@ impl Running {
             requests: &mut reqs,
             stats: &self.stats,
             debug: self.debug,
+            top: None,
         };
         let tcx = text::Ctx::new(&self.lang, Some(ctx.input));
         // Each condition is asked once per frame however many texts use it.
@@ -1331,25 +1315,10 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.input.captured = true;
     }
     let mut requests = Vec::new();
-    if r.waiting_key.is_some() {
-        for k in r.input.pressed_list() {
-            let mut ctx = Ctx {
-                settings: &mut r.settings,
-                client: None,
-                input: &r.input,
-                requests: &mut requests,
-                stats: &r.stats,
-                debug: r.debug,
-            };
-            if let Some((s, _)) = r.screens.last_mut() {
-                if s.key(k, &mut ctx) {
-                    r.waiting_key = None;
-                    break;
-                }
-            }
-        }
-    } else if r.screens.last().is_some_and(|(s, _)| s.keys_first()) {
-        // Keys the screen wants first (chat: completion, history); Escape still closes it below.
+    // Keys the top screen wants first (chat: completion, history; controls: the key to bind).
+    // Escape still closes it below unless it took Escape itself.
+    let mut escape_taken = false;
+    if let Some((s, ui)) = r.screens.last_mut().filter(|(s, _)| s.keys_first()) {
         for k in r.input.pressed_list() {
             let mut ctx = Ctx {
                 settings: &mut r.settings,
@@ -1358,13 +1327,17 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 requests: &mut requests,
                 stats: &r.stats,
                 debug: r.debug,
+                top: Some(Top { screen: None, ui: &mut *ui }),
             };
-            if let Some((s, _)) = r.screens.last_mut() {
-                s.key(k, &mut ctx);
+            if s.key(k, &mut ctx) && k == Key::Code(KeyCode::Escape) {
+                escape_taken = true;
             }
         }
+        if ui.dirty {
+            r.quads_dirty = true;
+        }
     }
-    if r.waiting_key.is_none() && r.input.pressed_key(Key::Code(KeyCode::Escape)) {
+    if !escape_taken && r.input.pressed_key(Key::Code(KeyCode::Escape)) {
         if r.screens.last().is_some_and(|(s, _)| !s.escape_closes()) {
         } else if r.screens.len() > 1 || (r.game.is_some() && !r.screens.is_empty()) {
             if r.screens.last().is_some_and(|(s, _)| s.shows_menu()) {

@@ -134,14 +134,9 @@ impl Hud {
         });
         ui.add(Kind::Custom { tag: TAG_CROSSHAIR, data: 0 }, Style::default().size(9.0, 9.0).self_align(Align::Center));
         ui.container(Style::default().h(0.0).grow().justify(Justify::End).align(Align::Stretch).pad(2.0).gap(1.0), |ui| {
-            ui.container(Style::default().gap(1.0).pad(2.0).align(Align::Start).self_align(Align::Start), |ui| {
-                let now = std::time::Instant::now();
-                for (line, at) in client.chat.iter().rev().take(10).rev() {
-                    if chat_visible > 0 && now.duration_since(*at).as_secs() < 10 {
-                        ui.text(line.spans(lang, Some(input)), "chat");
-                    }
-                }
-            });
+            if chat_visible > 0 {
+                crate::game_screens::chat_lines(ui, client, lang, input, false);
+            }
             ui.container(Style::row().align(Align::End), |ui| {
                 ui.container(Style::default().w(0.0).gap(1.0).align(Align::Start), |ui| {
                     for p in at(a::BOTTOM_LEFT, true) {

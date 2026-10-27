@@ -383,7 +383,6 @@ impl Screen for ConfirmDelete {
                         }
                     }
                     c.requests.push(Request::Close);
-                    c.requests.push(Request::SelectWorld(usize::MAX));
                 });
                 button(ui, cx, "menu.cancel", &[], 145.0, |c| c.requests.push(Request::Close));
             });
@@ -422,7 +421,8 @@ impl Screen for MissingMods {
 
 #[derive(Default)]
 pub struct WorldSelect {
-    selected: Option<usize>,
+    /// The world's folder: a deleted one is simply no longer there.
+    selected: Option<PathBuf>,
 }
 
 impl Screen for WorldSelect {
@@ -432,7 +432,7 @@ impl Screen for WorldSelect {
 
     fn build(&mut self, ui: &mut Ui, cx: &BuildCx) {
         let worlds = list(&cx.settings.saves_dir());
-        let selected = self.selected;
+        let selected = worlds.iter().position(|w| self.selected.as_ref() == Some(&w.dir));
         frame(ui, cx, "world.select", |ui| {
             // The list takes whatever height is left and scrolls; the buttons below always show.
             let list = ui.panel("panel", Style::default().pad(8.0).gap(4.0).stretch().w(300.0).h(0.0).grow().min_h(60.0).scroll(), |ui| {
@@ -442,9 +442,12 @@ impl Screen for WorldSelect {
                 for (i, w) in worlds.iter().enumerate() {
                     let when = format_age(now_secs().saturating_sub(w.last_played));
                     let info = cx.t("world.info", &[Arg::Text(w.dir.file_name().unwrap_or_default().to_string_lossy().into()), Arg::Text(when)]);
-                    let name = w.name.clone();
+                    let (name, dir) = (w.name.clone(), w.dir.clone());
                     let b = ui.button("button", Style::default().pad(4.0).stretch().gap(2.0), Rc::new(move |c: &mut Ctx| {
-                        c.requests.push(Request::SelectWorld(i));
+                        if let Some(s) = c.screen::<WorldSelect>() {
+                            s.selected = Some(dir.clone());
+                        }
+                        c.requests.push(Request::Rebuild);
                     }), |ui| {
                         ui.text(text::plain(&name), "button");
                         ui.text(info, "dim");
@@ -486,10 +489,6 @@ impl Screen for WorldSelect {
             });
         });
     }
-
-    fn select(&mut self, i: usize) {
-        self.selected = if i == usize::MAX { None } else { Some(i) };
-    }
 }
 
 fn format_age(s: u64) -> String {
@@ -519,7 +518,12 @@ impl Screen for CreateWorld {
                 ui.set_id(seed, "seed");
             });
             ui.container(Style::row().gap(6.0), |ui| {
-                button(ui, cx, "world.create", &[], 120.0, |c| c.requests.push(Request::CreateWorldFromForm));
+                button(ui, cx, "world.create", &[], 120.0, |c| {
+                    let name = c.input_text("name").unwrap_or_default();
+                    let seed = parse_seed(&c.input_text("seed").unwrap_or_default());
+                    let name = if name.trim().is_empty() { "World".to_string() } else { name.trim().to_string() };
+                    c.requests.push(Request::StartWorldAnyway(create(&c.settings.saves_dir(), &name, seed)));
+                });
                 button(ui, cx, "menu.cancel", &[], 120.0, |c| c.requests.push(Request::Close));
             });
         });

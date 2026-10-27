@@ -46,7 +46,10 @@ impl Screen for Multiplayer {
                 ui.button(
                     "button",
                     Style::default().min_w(120.0).min_h(20.0).pad_xy(6.0, 4.0),
-                    Rc::new(|c: &mut Ctx| c.requests.push(Request::Join(String::new()))),
+                    Rc::new(|c: &mut Ctx| {
+                        let ticket = c.input_text("ticket").unwrap_or_default();
+                        c.requests.push(Request::Join(ticket));
+                    }),
                     |ui| {
                         ui.text(cx.t("multiplayer.join", &[]), "button");
                     },

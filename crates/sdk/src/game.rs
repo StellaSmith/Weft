@@ -1155,17 +1155,18 @@ impl Registry {
         unsafe { (host().reg_attach_value)(self.raw, Str::new(kind.name()), Str::new(component.name()), Slice::new(&bytes)) }
     }
 
-    /// Chat command `/name`; `usage` declares its arguments (`<name:type>`, `[name:type]`,
-    /// literal words, `|` alternatives), which the engine parses, checks and completes.
-    pub fn command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
-        let cb = crate::command::command_cb(f);
+    /// Chat command `/name` run on the server; `usage` declares its arguments (`<name:type>`,
+    /// `[name:type]`, literal words, `|` alternatives), which the engine parses, checks and
+    /// completes. An engine command of that name (`/give`, `/tp` ...) is replaced by it.
+    pub fn command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::ServerCommand) + Send + Sync + 'static) {
+        let cb = crate::command::server_cb(f);
         unsafe { (host().reg_command)(self.raw, Str::new(name), Str::new(usage), cb) }
     }
 
     /// Like `command`, but runs on the client that types it (`cmd.client()`), never on the
     /// server: for what only the player's own game has (views, local settings, debug output).
-    pub fn client_command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
-        let cb = crate::command::command_cb(f);
+    pub fn client_command(&mut self, name: &str, usage: &str, f: impl Fn(&mut crate::ClientCommand) + Send + Sync + 'static) {
+        let cb = crate::command::client_cb(f);
         unsafe { (host().reg_client_command)(self.raw, Str::new(name), Str::new(usage), cb) }
     }
 
@@ -1182,11 +1183,18 @@ impl Registry {
         self.words("core:gizmos", &[group.name()]);
     }
 
-    /// A new branch of an existing command, handled here: `r.command_branch("gizmo", "clear",
-    /// |cmd| ..)` makes `/gizmo clear` this mod's. Earlier alternatives win when both fit.
-    pub fn command_branch(&mut self, command: &str, usage: &str, f: impl Fn(&mut crate::Command) + Send + Sync + 'static) {
-        let cb = crate::command::command_cb(f);
-        unsafe { (host().reg_command_branch)(self.raw, Str::new(command), Str::new(usage), cb) }
+    /// A new branch of an existing server command, handled here: `r.command_branch("time",
+    /// "dawn", |cmd| ..)` makes `/time dawn` this mod's. Earlier alternatives win when both fit.
+    pub fn command_branch(&mut self, command: &str, usage: &str, f: impl Fn(&mut crate::ServerCommand) + Send + Sync + 'static) {
+        let cb = crate::command::server_cb(f);
+        unsafe { (host().reg_command_branch)(self.raw, Str::new(command), Str::new(usage), 0, cb) }
+    }
+
+    /// The same for a client command (`/gizmo`, `/log`, a mod's `client_command`): `r.
+    /// client_command_branch("gizmo", "clear", |cmd| ..)`.
+    pub fn client_command_branch(&mut self, command: &str, usage: &str, f: impl Fn(&mut crate::ClientCommand) + Send + Sync + 'static) {
+        let cb = crate::command::client_cb(f);
+        unsafe { (host().reg_command_branch)(self.raw, Str::new(command), Str::new(usage), 1, cb) }
     }
 
     /// Adds to place `area` of `screen` without replacing the screen: a button in the main menu is

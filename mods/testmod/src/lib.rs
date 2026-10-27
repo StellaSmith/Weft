@@ -282,9 +282,7 @@ fn about_screen(r: &mut Registry) {
         });
     });
     r.client_command("about", "", |c| {
-        if let Some(cl) = c.client() {
-            cl.open_screen(&ABOUT);
-        }
+        c.client().open_screen(&ABOUT);
     });
 }
 
@@ -482,7 +480,7 @@ fn island(g: &mut Gen) {
 }
 
 /// `/tagbench`: what a tag check costs a mod compared with reading a field.
-fn tag_bench(cmd: &mut Command) {
+fn tag_bench(cmd: &mut ServerCommand) {
     static PLANT_SOIL: Tag = Tag::named("plant_soil");
     let n = cmd.int("millions").unwrap_or(10).clamp(1, 1000) as u32 * 1_000_000;
     let states: Vec<u32> = (0..256).map(|i| i * 7 % 120).collect();

@@ -1,6 +1,7 @@
 key.testkit.probe = Тестовая клавиша
 command.testkit.gizmo_probe = проба gizmo {0} от testkit
 command.testkit.probe = проба {0} на {1}
+command.testkit.regions = регионы от testkit
 command.testkit.client = клиенте
 command.testkit.server = сервере
 testkit.drawn = нарисовано testkit

@@ -2,6 +2,7 @@ key.testkit.probe = Test probe
 mod.testkit.name = Test Kit
 command.testkit.gizmo_probe = gizmo probe {0} from testkit
 command.testkit.probe = probe {0} on the {1}
+command.testkit.regions = regions from testkit
 command.testkit.client = client
 command.testkit.server = server
 testkit.drawn = drawn by testkit

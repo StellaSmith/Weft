@@ -1776,7 +1776,7 @@ pub struct Host {
     pub reg_client_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
     /// Adds alternatives (`usage` syntax) to an existing command, handled by `cb` with
     /// `CommandArgs` laid out by this usage; runs where the command runs.
-    pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, cb: Callback),
+    pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, client: u32, cb: Callback),
 
     // ------------------------------------------------ text, shaders, particles
     /// Condition `<ns>:<name>` for `{if:...}` in texts, answered by `cb` (`TextConditionArgs`)

@@ -169,8 +169,6 @@ fn set_block(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     match s.dims[dim as usize].region_at(p) {
         Some(r) => {
             r.set(c, p, state);
-            r.flush_neighbors(c);
-            r.finish_tick(c);
             say("setblock.done", vec![Arg::Name(Name::Block(state))])
         }
         None => say("not_loaded", Vec::new()),

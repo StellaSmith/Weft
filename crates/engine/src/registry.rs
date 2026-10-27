@@ -566,7 +566,8 @@ pub struct SpawnRule {
 
 /// A mod's addition to a command registered elsewhere.
 pub enum CommandExtension {
-    Branch { command: String, usage: String, cb: Callback },
+    /// `client`: the branch was written for a client command (its callback wants a client).
+    Branch { command: String, usage: String, client: bool, cb: Callback },
 }
 
 /// An event mods can subscribe to; `size` is learned from the first value emitted when the

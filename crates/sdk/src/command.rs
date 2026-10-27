@@ -1,5 +1,6 @@
 //! Chat commands. The usage string declares the arguments and the engine parses, checks and
-//! completes them; the callback reads them by name:
+//! completes them; the callback reads them by name. The side is in the type: a `ServerCommand`
+//! has the `world()`, a `ClientCommand` the `client()` that typed it.
 //!
 //! ```ignore
 //! r.command("feed", "[amount:int]", |cmd| {
@@ -8,25 +9,59 @@
 //! });
 //! ```
 
+use std::ops::{Deref, DerefMut};
+
 use crate::abi::{self, Str, command_value as cv};
 use crate::{World, callback, host};
 
+/// What every command gets: its arguments and a way to answer.
 pub struct Command<'a> {
     args: &'a mut abi::CommandArgs,
 }
 
-impl Command<'_> {
-    /// The world it runs in; client commands (`Registry::client_command`) have none, use `client`.
+/// A command run on the server (`Registry::command`).
+pub struct ServerCommand<'a>(Command<'a>);
+
+impl ServerCommand<'_> {
+    /// The world it runs in. What it changes settles when it returns (neighbors, events).
     pub fn world(&self) -> World {
-        assert!(!self.args.world.is_null(), "Command::world() in a client command: client commands have no world, use client()");
-        World::from_raw(self.args.world)
+        World::from_raw(self.0.args.world)
     }
+}
 
-    /// The client that typed a client command.
-    pub fn client(&self) -> Option<crate::Client> {
-        (!self.args.client.is_null()).then(|| crate::Client::from_raw(self.args.client))
+/// A command run on the client that typed it (`Registry::client_command`), never sent.
+pub struct ClientCommand<'a>(Command<'a>);
+
+impl ClientCommand<'_> {
+    pub fn client(&self) -> crate::Client {
+        crate::Client::from_raw(self.0.args.client)
     }
+}
 
+impl<'a> Deref for ServerCommand<'a> {
+    type Target = Command<'a>;
+    fn deref(&self) -> &Command<'a> {
+        &self.0
+    }
+}
+impl DerefMut for ServerCommand<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl<'a> Deref for ClientCommand<'a> {
+    type Target = Command<'a>;
+    fn deref(&self) -> &Command<'a> {
+        &self.0
+    }
+}
+impl DerefMut for ClientCommand<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Command<'_> {
     /// Entity id of the player who ran the command.
     pub fn player(&self) -> u64 {
         self.args.player
@@ -77,6 +112,10 @@ impl Command<'_> {
     }
 }
 
-pub(crate) fn command_cb(f: impl Fn(&mut Command) + Send + Sync + 'static) -> abi::Callback {
-    callback(move |args: &mut abi::CommandArgs| f(&mut Command { args }))
+pub(crate) fn server_cb(f: impl Fn(&mut ServerCommand) + Send + Sync + 'static) -> abi::Callback {
+    callback(move |args: &mut abi::CommandArgs| f(&mut ServerCommand(Command { args })))
+}
+
+pub(crate) fn client_cb(f: impl Fn(&mut ClientCommand) + Send + Sync + 'static) -> abi::Callback {
+    callback(move |args: &mut abi::CommandArgs| f(&mut ClientCommand(Command { args })))
 }

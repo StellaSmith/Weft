@@ -33,7 +33,7 @@ fn init(r: &mut Registry) {
     r.client_packet(&server::GREET, |_, text| *GREETED.lock().unwrap() = text);
     r.key(&runner::PROBE, "F9");
     // A branch of an engine command, handled by this mod (on the client, like /gizmo).
-    r.command_branch("gizmo", "probe <n:int>", |cmd| {
+    r.client_command_branch("gizmo", "probe <n:int>", |cmd| {
         let n = cmd.int("n").unwrap_or(0);
         cmd.reply("command.testkit.gizmo_probe", &[Arg::Int(n as i64)]);
     });
@@ -46,9 +46,12 @@ fn init(r: &mut Registry) {
         }
         e.engine_effects();
     });
+    // An engine command a mod replaces (testkit is never shipped).
+    r.command("regions", "", |cmd| cmd.reply("command.testkit.regions", &[]));
     // A command that never reaches the server: answers from the client it runs on.
     r.client_command("probe", "<what:word(alpha,beta)>", |cmd| {
-        let side = if cmd.client().is_some() { "command.testkit.client" } else { "command.testkit.server" };
+        // A `ClientCommand` only ever runs here; the reply says so.
+        let side = "command.testkit.client";
         let what = cmd.text("what").unwrap_or("").to_string();
         cmd.reply("command.testkit.probe", &[Arg::Text(&what), Arg::Key(side)]);
     });

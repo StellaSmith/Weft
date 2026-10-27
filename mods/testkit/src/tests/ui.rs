@@ -197,6 +197,8 @@ pub async fn chat(t: T) -> R {
     t.check(help.contains("#core:gizmos") && help.contains("probe"), format!("/help gizmo said '{help}'"));
     let reply = t.cmd("/probe beta").await?;
     t.check_eq(reply, "probe beta on the client".into(), "mod client command");
+    let reply = t.cmd("/regions").await?;
+    t.check_eq(reply, "regions from testkit".into(), "a mod's command takes the engine's place");
     // What a player types shows as typed, braces included; it can't format.
     t.c().chat("braces {#ff0000}stay");
     t.until("the chat line", Duration::from_secs(5), |t| t.c().chat_line(0).contains("stay")).await?;

@@ -1727,14 +1727,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let t = crate::server::terrain::build(&def.name, &|m| mods[m.0 as usize].id.clone(), ops, &names, &mut errors);
         dim_defs[d].terrain = Some(Box::new(t));
     }
+    // The engine's commands first, through the same list mods add to (and may replace them in).
     let mut commands: Vec<crate::commands::CommandDef> = Vec::new();
-    for (name, usage, _) in crate::server::BUILTIN_COMMANDS {
+    let engine_commands = crate::server::BUILTIN_COMMANDS.iter().map(|c| (c.0, c.1, false)).chain(crate::app::CLIENT_COMMANDS.iter().map(|c| (c.0, c.1, true)));
+    for (name, usage, client) in engine_commands {
         let alts = crate::commands::parse_usage(usage).expect("engine command usage");
-        commands.push(crate::commands::CommandDef::new(name, usage, alts, None, false));
-    }
-    for (name, usage, _) in crate::app::CLIENT_COMMANDS {
-        let alts = crate::commands::parse_usage(usage).expect("engine command usage");
-        commands.push(crate::commands::CommandDef::new(name, usage, alts, None, true));
+        commands.push(crate::commands::CommandDef::new(name, usage, alts, None, client));
     }
     // Word sets for `word(#set)` parameters: the engine's, then what mods add in load order.
     let mut word_sets: FxHashMap<String, Vec<String>> = FxHashMap::default();
@@ -1751,13 +1749,22 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         .collect();
     mod_commands.sort_by(|a, b| a.1.cmp(&b.1));
     for (owner, name, usage, cb, client) in mod_commands {
-        if commands.iter().any(|d| d.name == name) {
-            errors.push(format!("{}: command /{name} is already taken", mod_name(owner)));
-            continue;
-        }
-        match crate::commands::parse_usage(&usage) {
-            Ok(alts) => commands.push(crate::commands::CommandDef::new(&name, &usage, alts, Some((owner, cb)), client)),
-            Err(e) => errors.push(format!("{}: command /{name}: {e}", mod_name(owner))),
+        let alts = match crate::commands::parse_usage(&usage) {
+            Ok(alts) => alts,
+            Err(e) => {
+                errors.push(format!("{}: command /{name}: {e}", mod_name(owner)));
+                continue;
+            }
+        };
+        let def = crate::commands::CommandDef::new(&name, &usage, alts, Some((owner, cb)), client);
+        match commands.iter_mut().find(|d| d.name == name) {
+            // A mod's command takes the place of the engine's of that name.
+            Some(d) if d.handler.is_none() => {
+                log::info!("{} replaces the engine's command /{name}", mod_name(owner));
+                *d = def;
+            }
+            Some(_) => errors.push(format!("{}: command /{name} is already taken", mod_name(owner))),
+            None => commands.push(def),
         }
     }
     // Other mods extend existing commands, in load order: more completion words, more branches.
@@ -1766,7 +1773,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     for (owner, ext) in extensions {
         let who = mod_name(owner);
         match ext {
-            crate::registry::CommandExtension::Branch { command, usage, cb } => match (commands.iter_mut().find(|d| d.name == command), crate::commands::parse_usage(&usage)) {
+            crate::registry::CommandExtension::Branch { command, usage, client, cb } => match (commands.iter_mut().find(|d| d.name == command), crate::commands::parse_usage(&usage)) {
+                (Some(d), Ok(_)) if d.client != client => {
+                    let (is, use_) = if d.client { ("the client", "client_command_branch") } else { ("the server", "command_branch") };
+                    errors.push(format!("{who}: /{command} runs on {is}: its branches are added with {use_}"));
+                }
                 (Some(d), Ok(alts)) => d.add_branch(alts, (owner, cb)),
                 (None, _) => errors.push(format!("{who}: extends unknown command /{command}")),
                 (_, Err(e)) => errors.push(format!("{who}: branch of /{command}: {e}")),

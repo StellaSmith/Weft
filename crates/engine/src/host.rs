@@ -1563,10 +1563,10 @@ unsafe extern "C" fn reg_words(r: *mut abi::Registrar, set: Str, words: Str) {
     }
 }
 
-unsafe extern "C" fn reg_command_branch(r: *mut abi::Registrar, command: Str, usage: Str, cb: Callback) {
+unsafe extern "C" fn reg_command_branch(r: *mut abi::Registrar, command: Str, usage: Str, client: u32, cb: Callback) {
     unsafe {
         let r = reg(r);
-        let ext = registry::CommandExtension::Branch { command: command.as_str().to_string(), usage: usage.as_str().to_string(), cb };
+        let ext = registry::CommandExtension::Branch { command: command.as_str().to_string(), usage: usage.as_str().to_string(), client: client != 0, cb };
         let owner = r.owner;
         r.game.command_extensions.push((owner, ext));
     }

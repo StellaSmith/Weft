@@ -91,7 +91,7 @@ r.screen(&ABOUT, |ui| {
         ui.text("examplemod.about.title");
     });
 });
-r.client_command("about", "", |c| { if let Some(cl) = c.client() { cl.open_screen(&ABOUT); } });
+r.client_command("about", "", |c| { c.client().open_screen(&ABOUT); });
 ```
 `open_screen(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
 

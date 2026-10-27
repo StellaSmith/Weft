@@ -1283,7 +1283,7 @@ impl Server {
                 _ => None,
             })
             .collect();
-        match handler {
+        let reply = match handler {
             None => self.builtin(c, pi, name, &args, here.pos),
             Some((owner, cb)) => {
                 let Some((r, player)) = self.region(pi) else { return Vec::new() };
@@ -1291,11 +1291,16 @@ impl Server {
                 let mut reply: Vec<Msg> = Vec::new();
                 let reply_ptr = &mut reply as *mut Vec<Msg> as *mut core::ffi::c_void;
                 r.call(owner, cb, |w| abi::CommandArgs { world: w, player, values: values.as_ptr(), count: values.len() as u32, reply: reply_ptr, client: std::ptr::null_mut() });
-                r.flush_neighbors(c);
-                r.finish_tick(c);
                 reply
             }
+        };
+        // What a command changed settles right away, whoever wrote it: neighbors updated,
+        // events delivered.
+        for r in &mut self.dims[dim as usize].regions {
+            r.flush_neighbors(c);
+            r.finish_tick(c);
         }
+        reply
     }
 
     /// Entities a selector picks as (dimension, id), in the order it asks for. `@e` looks in the

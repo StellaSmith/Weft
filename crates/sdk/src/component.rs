@@ -86,6 +86,30 @@ pub trait TextValue: Value {}
 impl TextValue for Text {}
 impl TextValue for BlockRef {}
 impl TextValue for BlockList {}
+impl TextValue for TagRef {}
+impl TextValue for TintRef {}
+
+/// A tag a component names (`#plant_soil`), read back as the tag's component id.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TagRef(pub u32);
+
+unsafe impl Value for TagRef {
+    fn schema() -> String {
+        "tag".into()
+    }
+}
+
+/// A tint kind a component names (`core:grass`), read back as its number.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TintRef(pub u32);
+
+unsafe impl Value for TintRef {
+    fn schema() -> String {
+        "tint".into()
+    }
+}
 
 /// A block (or a state, `base:furnace[lit=true]`) a component names: `set_text(&TREE_LEAVES,
 /// "oak_leaves")`, read back as its state id.
@@ -456,6 +480,15 @@ pub static MINING_SPEED: Component<f32> = Component::named(abi::comp::MINING_SPE
 pub static TOOL_LEVEL: Component<u32> = Component::named(abi::comp::TOOL_LEVEL);
 pub static HARVEST_LEVEL: Component<u32> = Component::named(abi::comp::HARVEST_LEVEL);
 pub static DAMAGE: Component<u32> = Component::named(abi::comp::DAMAGE);
+pub static HARDNESS: Component<f32> = Component::named(abi::comp::HARDNESS);
+pub static FRICTION: Component<f32> = Component::named(abi::comp::FRICTION);
+pub static DRAG: Component<f32> = Component::named(abi::comp::DRAG);
+pub static LIGHT: Component<[u8; 3]> = Component::named(abi::comp::LIGHT);
+pub static TINT: Component<TintRef> = Component::named(abi::comp::TINT);
+pub static TINT_FACES: Component<u8> = Component::named(abi::comp::TINT_FACES);
+pub static SUPPORT_FACE: Component<u8> = Component::named(abi::comp::SUPPORT_FACE);
+pub static SUPPORT: Component<TagRef> = Component::named(abi::comp::SUPPORT);
+pub static SUPPORT_NEAR: Component<TagRef> = Component::named(abi::comp::SUPPORT_NEAR);
 pub static CONDUCTOR: Tag = Tag::named(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::named(abi::comp::ENERGY);
 pub static WORN: Component<abi::Worn> = Component::named(abi::comp::WORN);

@@ -440,11 +440,8 @@ impl Registry {
 #[derive(Clone)]
 struct StateDef {
     flags: u32,
-    light: [u8; 3],
     filter: [u8; 3],
     opacity: u8,
-    tint_faces: u8,
-    tint_name: String,
     layer: Layer,
     level: u8,
     model: Model,
@@ -452,13 +449,17 @@ struct StateDef {
     boxes: Vec<([f32; 3], [f32; 3], [String; 6])>,
     collision: Vec<[f32; 6]>,
     selection: Vec<[f32; 6]>,
-    hardness: f32,
-    friction: f32,
-    drag: f32,
-    support_side: u8,
-    support: String,
-    support_near: String,
     components: Vec<Pending>,
+}
+
+impl StateDef {
+    /// A later value of the same component wins at freeze.
+    fn put<T: Value>(&mut self, comp: &Component<T>, v: T) {
+        self.components.push(comp.raw_value(&v));
+    }
+    fn put_text(&mut self, name: &str, schema: &str, text: &str) {
+        self.components.push(Pending::text_as(name, schema, text));
+    }
 }
 
 impl StateDef {
@@ -466,11 +467,8 @@ impl StateDef {
         let d = abi::StateDesc::DEFAULT;
         StateDef {
             flags: d.flags,
-            light: d.light,
             filter: d.filter,
             opacity: d.opacity,
-            tint_faces: d.tint_faces,
-            tint_name: String::new(),
             layer: d.layer,
             level: d.level,
             model: d.model,
@@ -478,12 +476,6 @@ impl StateDef {
             boxes: Vec::new(),
             collision: Vec::new(),
             selection: Vec::new(),
-            hardness: d.hardness,
-            friction: d.friction,
-            drag: d.drag,
-            support_side: d.support_side,
-            support: String::new(),
-            support_near: String::new(),
             components: Vec::new(),
         }
     }
@@ -509,22 +501,21 @@ pub struct State<'a> {
 
 macro_rules! state_setters {
     () => {
-        /// Seconds to mine by hand.
+        /// Seconds to mine by hand: the `hardness` component, as are the light, friction, drag,
+        /// support and tint setters (other mods change them with `r.set`).
         pub fn hardness(mut self, h: f32) -> Self {
-            self.each(|s, _| s.hardness = h);
+            self.each(|s, _| s.put(&c::HARDNESS, h));
             self
         }
-        pub fn unbreakable(mut self) -> Self {
-            self.each(|s, _| s.hardness = -1.0);
-            self
+        pub fn unbreakable(self) -> Self {
+            self.hardness(-1.0)
         }
         /// White light. 15 is full strength; more is allowed and reaches further.
-        pub fn light(mut self, level: u8) -> Self {
-            self.each(|s, _| s.light = [level; 3]);
-            self
+        pub fn light(self, level: u8) -> Self {
+            self.light_rgb(level, level, level)
         }
         pub fn light_rgb(mut self, r: u8, g: u8, b: u8) -> Self {
-            self.each(|s, _| s.light = [r, g, b]);
+            self.each(|s, _| s.put(&c::LIGHT, [r, g, b]));
             self
         }
         /// Per-channel absorption of passing light (stained glass).
@@ -586,18 +577,18 @@ macro_rules! state_setters {
         /// Needs the neighbor on `face` (-X, +X, -Y, +Y, -Z, +Z) to carry `tag` (`#plant_soil`),
         /// or to be solid if `tag` is empty.
         pub fn needs(mut self, face: u32, tag: &str) -> Self {
-            let tag = tag.to_string();
             self.each(|s, _| {
-                s.support_side = face as u8;
-                s.support = tag.clone();
+                s.put(&c::SUPPORT_FACE, face as u8);
+                if !tag.is_empty() {
+                    s.put_text(abi::comp::SUPPORT, "tag", tag);
+                }
             });
             self
         }
-        /// The supporting block must have a block tagged `tag` beside it (sugar cane: `water`),
+        /// The supporting block must have a block tagged `tag` beside it (sugar cane: `#water`),
         /// unless it is this same block.
         pub fn needs_near_support(mut self, tag: &str) -> Self {
-            let tag = tag.to_string();
-            self.each(|s, _| s.support_near = tag.clone());
+            self.each(|s, _| s.put_text(abi::comp::SUPPORT_NEAR, "tag", tag));
             self
         }
         /// A plant: tagged `plantable`, cross model, no collision, replaced by placing a block.
@@ -607,7 +598,7 @@ macro_rules! state_setters {
                 s.model = Model::Cross;
                 s.layer = Layer::Cutout;
                 s.opacity = 0;
-                s.hardness = 0.0;
+                s.put(&c::HARDNESS, 0.0);
                 s.components.push(Pending::tag("plantable"));
             });
             self
@@ -627,25 +618,23 @@ macro_rules! state_setters {
         /// Colored by the biome it stands in: `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own
         /// kind (`Registry::tint_kind`).
         pub fn tint(mut self, kind: &TintKind) -> Self {
-            let kind = kind.name().to_string();
-            self.each(|s, _| s.tint_name = kind.clone());
+            self.each(|s, _| s.put_text(abi::comp::TINT, "tint", kind.name()));
             self
         }
         /// `tint` on the top face only (grass blocks: the sides carry their own color).
         pub fn tint_top(mut self, kind: &TintKind) -> Self {
-            let kind = kind.name().to_string();
             self.each(|s, _| {
-                s.tint_name = kind.clone();
-                s.tint_faces = 1 << 3;
+                s.put_text(abi::comp::TINT, "tint", kind.name());
+                s.put(&c::TINT_FACES, 1 << 3);
             });
             self
         }
         pub fn friction(mut self, f: f32) -> Self {
-            self.each(|s, _| s.friction = f);
+            self.each(|s, _| s.put(&c::FRICTION, f));
             self
         }
         pub fn drag(mut self, d: f32) -> Self {
-            self.each(|s, _| s.drag = d);
+            self.each(|s, _| s.put(&c::DRAG, d));
             self
         }
         /// Custom model made of boxes in 1/16 units, all faces use `texture`. Collision follows the
@@ -696,8 +685,8 @@ macro_rules! state_setters {
                 s.layer = Layer::Translucent;
                 s.level = level;
                 s.opacity = 2;
-                s.hardness = -1.0;
-                s.drag = 0.5;
+                s.put(&c::HARDNESS, -1.0);
+                s.put(&c::DRAG, 0.5);
             });
             self
         }
@@ -908,8 +897,7 @@ impl<'a> BlockBuilder<'a> {
 
     /// Replaces the block of this name registered by a mod this one depends on. Without
     /// `.states(...)` it keeps that block's states (shapes, textures, support, placement and other
-    /// callbacks it does not set itself), taking only light, hardness, friction and drag from
-    /// this builder.
+    /// callbacks it does not set itself), with the components this builder sets on top.
     pub fn replacing(mut self) -> Self {
         self.replace = true;
         self.item = false;
@@ -1061,10 +1049,8 @@ impl Drop for BlockBuilder<'_> {
             .zip(&state_values)
             .map(|((s, b), v)| abi::StateDesc {
                 flags: s.flags,
-                light: s.light,
                 filter: s.filter,
                 opacity: s.opacity,
-                tint_faces: s.tint_faces,
                 layer: s.layer,
                 level: s.level,
                 model: s.model,
@@ -1072,13 +1058,6 @@ impl Drop for BlockBuilder<'_> {
                 boxes: Slice::new(b),
                 collision: Slice::new(&s.collision),
                 selection: Slice::new(&s.selection),
-                hardness: s.hardness,
-                friction: s.friction,
-                drag: s.drag,
-                support_side: s.support_side,
-                support: Str::new(&s.support),
-                support_near: Str::new(&s.support_near),
-                tint_name: Str::new(&s.tint_name),
                 components: Slice::new(v),
                 ..abi::StateDesc::DEFAULT
             })

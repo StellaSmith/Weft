@@ -237,6 +237,30 @@ pub mod comp {
     /// The block drops its loot only to a fitting tool of at least this level (0 = any tier).
     pub const HARVEST_LEVEL: &str = "harvest_level";
     pub const DAMAGE: &str = "damage";
+    /// Block: seconds to break by hand at speed 1 (`f32`, 1 by default); negative = unbreakable.
+    pub const HARDNESS: &str = "hardness";
+    /// Block: how slippery its top is (`f32`, 0.6 by default; ice 0.98).
+    pub const FRICTION: &str = "friction";
+    /// Block: movement speed multiplier inside it (`f32`, 1 by default; cobweb, liquids).
+    pub const DRAG: &str = "drag";
+    /// Block: emitted light per color channel (`[u8;3]`). 15 is a full-strength source (torch
+    /// 14); higher values reach further.
+    pub const LIGHT: &str = "light";
+    /// Block: a tint kind by name (`tint`: `core:grass`, `core:foliage`, `core:water` or a mod's
+    /// own), colored by the biome.
+    pub const TINT: &str = "tint";
+    /// Block: faces the tint applies to (`u8`, a bit per face in -X, +X, -Y, +Y, -Z, +Z order;
+    /// all by default).
+    pub const TINT_FACES: &str = "tint_faces";
+    /// Block: face (-X, +X, -Y, +Y, -Z, +Z) whose neighbor holds it up (`u8`). Unsupported, it
+    /// cannot be placed and breaks off when the support goes.
+    pub const SUPPORT_FACE: &str = "support_face";
+    /// Block: the tag the supporting block needs (`tag`, `#plant_soil`); without it any solid
+    /// block holds it.
+    pub const SUPPORT: &str = "support";
+    /// Block: the tag one of the supporting block's horizontal neighbors needs (`tag`, sugar
+    /// cane: `#water`), unless the support is the same block.
+    pub const SUPPORT_NEAR: &str = "support_near";
     /// The own name of one stack or block entity (UTF-8), as a player gave it: shown instead of
     /// the item's or block's, and carried from the stack to the placed block and back.
     pub const NAME: &str = "core:name";
@@ -338,15 +362,10 @@ defaults!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6] })
 #[derive(Clone, Copy)]
 pub struct StateDesc {
     pub flags: u32,
-    /// Emitted light per color channel. 15 is a normal full-strength source (torch is 14); higher
-    /// values are allowed and simply reach further (up to 255).
-    pub light: [u8; 3],
     /// Extra per-channel absorption on top of `opacity`, for colored glass.
     pub filter: [u8; 3],
     /// How much light it absorbs per block, 0 for air/glass, 15 or more blocks it fully.
     pub opacity: u8,
-    /// Which faces the tint applies to, bit per face in -X, +X, -Y, +Y, -Z, +Z order.
-    pub tint_faces: u8,
     pub layer: Layer,
     /// Liquid level 0..7 (0 = source), meaningful for `Model::Liquid`.
     pub level: u8,
@@ -358,31 +377,14 @@ pub struct StateDesc {
     /// What the crosshair picks, outlines and cracks, in 1/16 units; empty: the collision boxes,
     /// else the model's boxes, else a plant's cross, else the whole block.
     pub selection: Slice<[f32; 6]>,
-    /// Seconds to break by hand at speed 1; negative = unbreakable.
-    pub hardness: f32,
-    pub friction: f32,
-    /// Movement speed multiplier while inside (cobweb, liquids).
-    pub drag: f32,
-    /// Face (-X, +X, -Y, +Y, -Z, +Z) whose neighbor holds the block up, 255 = none. Unsupported,
-    /// it cannot be placed and breaks off (dropping itself) when the support goes.
-    pub support_side: u8,
-    /// Block tag the supporting block needs; empty = any solid block.
-    pub support: Str,
-    /// Components of this state only, on top of the block's.
+    /// Components of this state only, on top of the block's (hardness, light, support and tint
+    /// are components too, `comp::HARDNESS` ...).
     pub components: Slice<CompValue>,
-    /// Block tag one of the supporting block's four horizontal neighbors needs (sugar cane:
-    /// `water`), unless the support is the same block (a stack); empty = none.
-    pub support_near: Str,
-    /// A tint kind by name (`Host::reg_tint_kind`, or `core:grass`, `core:foliage`, `core:water`);
-    /// empty = none.
-    pub tint_name: Str,
 }
 defaults!(StateDesc {
     flags: block_flags::SOLID | block_flags::OPAQUE,
-    light: [0; 3],
     filter: [0; 3],
     opacity: 15,
-    tint_faces: 0x3F,
     layer: Layer::Opaque,
     level: 0,
     model: Model::Cube,
@@ -390,14 +392,7 @@ defaults!(StateDesc {
     boxes: Slice::EMPTY,
     collision: Slice::EMPTY,
     selection: Slice::EMPTY,
-    hardness: 1.0,
-    friction: 0.6,
-    drag: 1.0,
-    support_side: 255,
-    support: Str::EMPTY,
     components: Slice::EMPTY,
-    support_near: Str::EMPTY,
-    tint_name: Str::EMPTY,
 });
 
 #[repr(C)]

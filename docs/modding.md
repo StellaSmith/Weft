@@ -160,6 +160,7 @@ r.item(&COAL_DUST).set(&FUEL, 800).tag("hot");      // on your own content
 r.set("base:stick", &FUEL, 100);                    // on someone else's
 r.set("#planks/*", &FUEL, 300);                     // on everything with a tag
 r.tag("hot", &["base:lava", "base:magma"]);
+r.set("base:stone", &HARDNESS, 3.0);                // the engine's own block properties too
 
 // Reading
 if let Some(ticks) = FUEL.on_item(stack.item) { /* burn it */ }
@@ -170,6 +171,8 @@ Component and tag names are not things a mod owns, they are a vocabulary.\
 Blocks and items belong to the mod that adds them, but `fuel`, `food`, `sand`, `conductor` or `ores/iron` belong to nobody
 and mean the same in every mod, so they are written as they are, without a namespace.\
 A term that only makes sense for your mod can carry its prefix, `mymod:heat`, so nobody else picks the same word by accident.
+
+Block properties the engine reads are components as well: `HARDNESS`, `FRICTION`, `DRAG`, `LIGHT`, `TINT` (+ `TINT_FACES`), `SUPPORT_FACE` / `SUPPORT` / `SUPPORT_NEAR` and `HARVEST_LEVEL`.`.hardness(1.5)`, `.light(14)`, `.needs_below("#soil")`, `.tint(&tints::GRASS)` on a builder just set them, so another mod changes them with `r.set` and reads them with `HARDNESS.on_block(state)` like any other.
 
 Your own data structures:
 
@@ -293,7 +296,7 @@ and other mods' tables without replacing them: `r.loot_modify(&ZOMBIE).add_pool(
 
 ### Replacing something of another mod
 Register their handle (`Block::named("base:torch")`) with `.replacing()`.\
-Their handle, item and recipes now point at yours. testmod does it with the torch.
+Their handle, item and recipes now point at yours. testmod does it with the torch.Only for a different shape: to change a property (hardness, light ...) `r.set` it.
 
 ## Hooking into the game
 There are four mechanisms, try them in this order:

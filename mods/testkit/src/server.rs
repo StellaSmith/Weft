@@ -60,6 +60,8 @@ pub fn register(r: &mut Registry) {
         }
     });
     r.stack_component(&SECRET, abi::stack_flags::SERVER_ONLY | abi::stack_flags::NO_SAVE);
+    // Block properties are components: another mod's block glows blue (testkit is never shipped).
+    r.set("base:mossy_cobblestone", &LIGHT, [0, 0, 9]);
     // Switches for the tests of the extension mechanisms, off unless a test turns them on.
     r.rule(&PROTECT_GOLD, 0);
     r.rule(&PEACE, 0);

@@ -616,13 +616,8 @@ pub struct RawRegistrar {
 #[derive(Clone)]
 pub struct RawState {
     pub flags: u32,
-    pub light: [u8; 3],
     pub filter: [u8; 3],
     pub opacity: u8,
-    pub tint: u8,
-    pub tint_faces: u8,
-    /// Resolved into `tint` at freeze.
-    pub tint_name: String,
     pub layer: Layer,
     pub level: u8,
     pub model: Model,
@@ -630,12 +625,6 @@ pub struct RawState {
     pub boxes: Vec<([f32; 3], [f32; 3], [String; 6])>,
     pub collision: Vec<[f32; 6]>,
     pub selection: Vec<[f32; 6]>,
-    pub hardness: f32,
-    pub friction: f32,
-    pub drag: f32,
-    pub support_side: u8,
-    pub support: String,
-    pub support_near: String,
     pub components: Vec<RawValue>,
 }
 
@@ -687,9 +676,9 @@ fn cb(c: Callback) -> Option<Callback> {
 }
 
 /// A replacement without states of its own keeps the replaced block's: their shapes, textures
-/// (renamed by `retexture`), flags, support rules and callbacks it does not set, with its own
-/// light, hardness, friction and drag on every state. A sixth state added to the original reaches
-/// the replacement too.
+/// (renamed by `retexture`), flags, components and callbacks it does not set, its own state
+/// components (light, hardness ...) on top on every state. A sixth state added to the original
+/// reaches the replacement too.
 fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
     let own = b.states[0].clone();
     if b.opens.is_empty() {
@@ -706,7 +695,7 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
         .iter()
         .map(|o| {
             let mut s = o.clone();
-            (s.light, s.hardness, s.friction, s.drag) = (own.light, own.hardness, own.friction, own.drag);
+            s.components.extend(own.components.iter().cloned());
             s.textures.iter_mut().for_each(rename);
             for (_, _, t) in &mut s.boxes {
                 t.iter_mut().for_each(rename);
@@ -733,12 +722,8 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
             s.boxes.as_slice().iter().copied().for_each(|b| boxes.push((b.min, b.max, std::array::from_fn(|i| b.textures[i].as_str().to_string()))));
             states.push(RawState {
                 flags: s.flags,
-                light: s.light,
                 filter: s.filter,
                 opacity: s.opacity,
-                tint: 0,
-                tint_faces: s.tint_faces,
-                tint_name: s.tint_name.as_str().to_string(),
                 layer: s.layer,
                 level: s.level,
                 model: s.model,
@@ -746,12 +731,6 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 boxes,
                 collision: s.collision.as_slice().to_vec(),
                 selection: s.selection.as_slice().to_vec(),
-                hardness: s.hardness,
-                friction: s.friction,
-                drag: s.drag,
-                support_side: s.support_side,
-                support: s.support.as_str().to_string(),
-                support_near: s.support_near.as_str().to_string(),
                 components: RawValue::list(s.components),
             })
         });
@@ -1033,7 +1012,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             _ => kept.push((owner, b)),
         }
     }
-    let mut blocks = kept;
+    let blocks = kept;
     if tint_kinds.len() > abi::tint::MAX as usize {
         errors.push(format!("{} tint kinds registered, at most {} fit", tint_kinds.len(), abi::tint::MAX));
     }
@@ -1043,14 +1022,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     let tint_id = |name: &str| tint_kinds.iter().position(|k| k.0 == name).filter(|i| *i < abi::tint::MAX as usize).map(|i| i as u8 + 1);
-    for (_, b) in &mut blocks {
-        for s in b.states.iter_mut().filter(|s| !s.tint_name.is_empty()) {
-            match tint_id(&s.tint_name) {
-                Some(id) => s.tint = id,
-                None => errors.push(format!("block {}: no tint kind {}", b.name, s.tint_name)),
-            }
-        }
-    }
+    let tint_names: Vec<String> = tint_kinds.iter().take(abi::tint::MAX as usize).map(|k| k.0.clone()).collect();
     for (b, ..) in &mut biomes {
         b.tints.extend(tint_kinds.iter().map(|k| k.1));
     }
@@ -1139,8 +1111,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         opens: None,
         cb: BlockCallbacks::default(),
     }];
-    // Per block: (block components, per-state components, support tags) for the component pass.
-    let mut block_values: Vec<(ModId, Vec<RawValue>, Vec<Vec<RawValue>>, Vec<(String, String)>)> = vec![(ModId(u32::MAX), Vec::new(), vec![Vec::new()], vec![(String::new(), String::new())])];
+    // Per block: (block components, per-state components) for the component pass.
+    let mut block_values: Vec<(ModId, Vec<RawValue>, Vec<Vec<RawValue>>)> = vec![(ModId(u32::MAX), Vec::new(), vec![Vec::new()])];
     for (owner, b) in blocks {
         let index = block_defs.len() as u32;
         let first = states.len() as u32;
@@ -1149,7 +1121,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             write_cell(cell, first);
         }
         let mut state_values = Vec::new();
-        let mut supports = Vec::new();
         for s in b.states {
             let mut boxes: Vec<ModelBox> = s
                 .boxes
@@ -1190,11 +1161,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             states.push(StateInfo {
                 block: index,
                 flags: s.flags | random,
-                light: s.light,
+                // Light, tint, hardness, friction, drag and support come from components.
+                light: [0; 3],
                 absorb: std::array::from_fn(|i| s.opacity.saturating_add(s.filter[i])),
                 opacity: s.opacity,
-                tint: s.tint,
-                tint_faces: s.tint_faces,
+                tint: 0,
+                tint_faces: 0x3F,
                 layer: s.layer,
                 level: s.level,
                 model: s.model,
@@ -1207,30 +1179,18 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 boxes,
                 collision,
                 selection,
-                hardness: s.hardness,
-                friction: s.friction,
-                drag: s.drag,
+                hardness: 1.0,
+                friction: 0.6,
+                drag: 1.0,
                 conductor: false,
                 liquid: None,
-                // The tag id is filled in once components are frozen.
-                support: (s.support_side < 6).then_some((s.support_side, None)),
+                support: None,
                 support_near: None,
                 sounds: [u32::MAX; 4],
             });
-            // Support rules name tags (`#plant_soil`); the tag exists by being named here.
-            let mut support_tag = |t: String| -> String {
-                if t.is_empty() {
-                    return t;
-                }
-                crate::refs::tag_name(&t).map(str::to_string).unwrap_or_else(|e| {
-                    errors.push(format!("{}: block {}: support: {e}", mods.get(owner.0 as usize).map_or("engine", |m| m.id.as_str()), b.name));
-                    String::new()
-                })
-            };
-            supports.push((support_tag(s.support), support_tag(s.support_near)));
             state_values.push(s.components);
         }
-        block_values.push((owner, b.components, state_values, supports));
+        block_values.push((owner, b.components, state_values));
         let count = (states.len() as u32) - first;
         let mut props = Vec::new();
         let mut stride = 1;
@@ -1359,46 +1319,46 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     // ------------------------------------------------ components
     let mut cb = comps::Builder::default();
     let who = |m: ModId, entry: &str| format!("{}: {entry}", mods.get(m.0 as usize).map_or("engine", |m| m.id.as_str()));
-    for (i, (owner, bv, sv, supports)) in block_values.iter().enumerate() {
+    for (i, (owner, bv, sv)) in block_values.iter().enumerate() {
         let name = &block_defs[i].name;
         for v in bv.iter().chain(sv.iter().flatten()) {
-            cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| who(*owner, name), &mut errors);
-        }
-        // A support tag nobody else uses still needs an id (nothing will carry it).
-        for t in supports.iter().flat_map(|(a, b)| [a, b]).filter(|t| !t.is_empty()) {
-            cb.declare(t, "", None, &|| who(*owner, name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, name), &mut errors);
         }
     }
     for (i, (owner, v)) in item_values.iter().enumerate() {
         for v in v {
-            cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| who(*owner, &item_defs[i].name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, &item_defs[i].name), &mut errors);
         }
     }
     for (k, (owner, v)) in entities.values.iter().enumerate() {
         for v in v {
-            cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| who(*owner, &entities.kinds[k].name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, &entities.kinds[k].name), &mut errors);
         }
     }
     for (i, v) in biome_values.iter().enumerate() {
         for v in v {
-            cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| format!("biome {}", biome_defs[i].name), &mut errors);
+            cb.declare_value(v, &|| format!("biome {}", biome_defs[i].name), &mut errors);
         }
     }
     for (i, (owner, v)) in dim_values.iter().enumerate() {
         for v in v {
-            cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| who(*owner, &dim_defs[i].name), &mut errors);
+            cb.declare_value(v, &|| who(*owner, &dim_defs[i].name), &mut errors);
         }
     }
     let mut sets: Vec<RawSet> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.sets)).collect();
     // Stable sort keeps registration order within a mod.
     sets.sort_by_key(|s| mods[s.owner.0 as usize].order);
     for s in &sets {
-        cb.declare(&s.value.name, &s.value.schema, (!s.remove && s.value.text.is_none()).then_some(s.value.bytes.len()), &|| who(s.owner, &format!("set on {:?}", s.target)), &mut errors);
+        if s.remove {
+            cb.declare(&s.value.name, &s.value.schema, None, &|| who(s.owner, &format!("set on {:?}", s.target)), &mut errors);
+        } else {
+            cb.declare_value(&s.value, &|| who(s.owner, &format!("set on {:?}", s.target)), &mut errors);
+        }
     }
     for g in &games {
         // Values recipes carry may be on nothing else.
         for v in g.recipes.iter().flat_map(|r| &r.values) {
-            cb.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), &|| format!("a {} recipe", v.name), &mut errors);
+            cb.declare_value(v, &|| format!("a {} recipe", v.name), &mut errors);
         }
         for rc in &g.components {
             cb.declare(&rc.def.name, &rc.schema, Some(rc.def.size as usize), &|| who(rc.owner, "entity component"), &mut errors);
@@ -1434,6 +1394,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         };
         cb.refs = Some(Box::new(move |schema: &str, text: &str| match schema {
             "block" => state(text.trim()).map(|s| s.to_le_bytes().to_vec()),
+            "tint" => tint_names.iter().position(|k| k == text.trim()).map(|i| (i as u32 + 1).to_le_bytes().to_vec()).ok_or_else(|| format!("no tint kind {}", text.trim())),
             _ => {
                 let mut list = Vec::new();
                 for e in text.split_whitespace() {
@@ -1450,7 +1411,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             }
         }));
     }
-    for (i, (_, bv, sv, _)) in block_values.iter().enumerate() {
+    for (i, (_, bv, sv)) in block_values.iter().enumerate() {
         let d = &block_defs[i];
         for (k, values) in sv.iter().enumerate() {
             let state = d.first_state + k as u32;
@@ -1562,13 +1523,28 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         worn_texture: id(abi::comp::WORN_TEXTURE),
         wear_per_hit: id(abi::comp::WEAR_PER_HIT),
     };
+    // What hot code reads per state (physics, light, breaking) goes into flat fields.
+    let get = |state: u32, name: &str| id(name).and_then(|c| components.bytes(comps::BLOCK, state, c));
+    let f32_of = |state: u32, name: &str| get(state, name).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let u32_of = |state: u32, name: &str| get(state, name).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     for (i, s) in states.iter_mut().enumerate() {
-        s.conductor = ids.conductor.is_some_and(|c| components.has(comps::BLOCK, i as u32, c));
-        if let Some((face, _)) = s.support {
-            let b = s.block as usize;
-            let (tag, near) = &block_values[b].3[i - block_defs[b].first_state as usize];
-            s.support = Some((face, (!tag.is_empty()).then(|| components.id(tag).unwrap_or(u32::MAX))));
-            s.support_near = (!near.is_empty()).then(|| components.id(near).unwrap_or(u32::MAX));
+        let st = i as u32;
+        s.conductor = ids.conductor.is_some_and(|c| components.has(comps::BLOCK, st, c));
+        s.hardness = f32_of(st, abi::comp::HARDNESS).unwrap_or(s.hardness);
+        s.friction = f32_of(st, abi::comp::FRICTION).unwrap_or(s.friction);
+        s.drag = f32_of(st, abi::comp::DRAG).unwrap_or(s.drag);
+        if let Some(l) = get(st, abi::comp::LIGHT) {
+            s.light = [l[0], l[1], l[2]];
+        }
+        if let Some(t) = u32_of(st, abi::comp::TINT) {
+            s.tint = t as u8;
+        }
+        if let Some(f) = get(st, abi::comp::TINT_FACES) {
+            s.tint_faces = f[0];
+        }
+        if let Some(face) = get(st, abi::comp::SUPPORT_FACE).map(|f| f[0]).filter(|&f| f < 6) {
+            s.support = Some((face, u32_of(st, abi::comp::SUPPORT)));
+            s.support_near = u32_of(st, abi::comp::SUPPORT_NEAR);
         }
     }
     for (i, d) in item_defs.iter_mut().enumerate() {

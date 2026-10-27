@@ -121,6 +121,18 @@ pub async fn names(t: T) -> R {
     Ok(())
 }
 
+/// Block properties are components: testkit's `r.set` gives base's mossy cobblestone blue light,
+/// and the engine's lighting uses it.
+pub async fn block_properties(t: T) -> R {
+    t.flat().await?;
+    let p = add(t.feet(), [3, 0, 0]);
+    t.set(p, "mossy_cobblestone").await?;
+    t.frames(5).await?;
+    let l: u32 = t.op(&format!("light {}", at(add(p, [0, 1, 0])))).await?.parse().map_err(|e| format!("light: {e}"))?;
+    t.check_eq([(l >> 8) & 255, (l >> 16) & 255, l >> 24], [0, 0, 8], "block light above the overridden block (r, g, b)");
+    Ok(())
+}
+
 /// Typed channels: a `value!` struct and a string go to the server and the answers come back
 /// typed, no bytes handled by hand.
 pub async fn typed_channels(t: T) -> R {

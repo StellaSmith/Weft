@@ -27,6 +27,15 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::TOOL_LEVEL, "u32"),
     (abi::comp::HARVEST_LEVEL, "u32"),
     (abi::comp::DAMAGE, "u32"),
+    (abi::comp::HARDNESS, "f32"),
+    (abi::comp::FRICTION, "f32"),
+    (abi::comp::DRAG, "f32"),
+    (abi::comp::LIGHT, "[u8;3]"),
+    (abi::comp::TINT, "tint"),
+    (abi::comp::TINT_FACES, "u8"),
+    (abi::comp::SUPPORT_FACE, "u8"),
+    (abi::comp::SUPPORT, "tag"),
+    (abi::comp::SUPPORT_NEAR, "tag"),
     (abi::comp::CONDUCTOR, ""),
     (abi::comp::ENERGY, "{stored:i64,capacity:i64,max_in:i64,max_out:i64}"),
     (abi::comp::WORN, "{roles:u32,inflate:f32}"),
@@ -86,9 +95,10 @@ pub struct RawSet {
 }
 
 /// Schemas a mod writes as text: `str` stays text; references (`block`: one block or state,
-/// `blocks`: a weighted list `name[:weight] ..`) are resolved into ids at freeze, with errors.
+/// `blocks`: a weighted list `name[:weight] ..`, `tag`: `#name`, `tint`: a tint kind) are
+/// resolved into ids at freeze, with errors.
 pub fn written_as_text(schema: &str) -> bool {
-    matches!(schema, "str" | "block" | "blocks")
+    matches!(schema, "str" | "block" | "blocks" | "tag" | "tint")
 }
 
 /// Byte size a schema implies, if it is a primitive.
@@ -97,7 +107,7 @@ fn primitive_size(schema: &str) -> Option<usize> {
         "" => 0,
         "u8" | "i8" | "bool" => 1,
         "u16" | "i16" => 2,
-        "u32" | "i32" | "f32" | "block" | "blocks" => 4,
+        "u32" | "i32" | "f32" | "block" | "blocks" | "tag" | "tint" => 4,
         "u64" | "i64" | "f64" => 8,
         "str" => size_of::<Str>(),
         _ => return None,
@@ -242,6 +252,17 @@ impl Builder {
         }
     }
 
+    /// Declares a value's component, and the tag a `tag` value names (it exists by being named).
+    pub fn declare_value(&mut self, v: &RawValue, who: &dyn Fn() -> String, errors: &mut Vec<String>) {
+        self.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), who, errors);
+        if let (Some(t), "tag") = (&v.text, v.schema.as_str()) {
+            match crate::refs::tag_name(t) {
+                Ok(tag) => self.declare(tag, "", None, who, errors),
+                Err(e) => errors.push(format!("{}: {}: {e}", who(), v.name)),
+            }
+        }
+    }
+
     /// Assigns ids and allocates the tables; values go in with `put` afterwards.
     pub fn start(&mut self, entries: [usize; KINDS]) {
         let mut names: Vec<String> = self.decl.keys().cloned().collect();
@@ -271,6 +292,10 @@ impl Builder {
 
     fn encode<'v>(&mut self, v: &'v RawValue) -> Result<std::borrow::Cow<'v, [u8]>, String> {
         match &v.text {
+            Some(t) if v.schema == "tag" => {
+                let tag = crate::refs::tag_name(t)?;
+                self.id(tag).map(|id| id.to_le_bytes().to_vec().into()).ok_or_else(|| format!("unknown tag {tag}"))
+            }
             Some(t) if v.schema != "str" => match &self.refs {
                 Some(resolve) => resolve(&v.schema, t).map(Into::into),
                 None => Err("references resolve only at load".into()),

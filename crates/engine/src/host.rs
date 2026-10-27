@@ -590,7 +590,7 @@ unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, ow
             log::error!("open_menu {}: entity {owner} is not here (removed, or in another region)", def.name);
             return;
         }
-        d.events.push(crate::server::DimEvent::OpenMenu { player, menu, owner })
+        d.events.push(crate::server::DimEvent::OpenMenu { player, menu, owner, block: 0 })
     }
 }
 

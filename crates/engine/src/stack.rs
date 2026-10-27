@@ -82,6 +82,17 @@ pub fn damage(stack: &ItemStack) -> u32 {
     u32_of(stack, crate::content::try_content().and_then(|c| c.ids.damage))
 }
 
+/// The stack's own name, if a player gave it one.
+pub fn name(stack: &ItemStack) -> Option<String> {
+    let c = crate::content::try_content()?;
+    value(stack.data, c.ids.name?).map(|b| String::from_utf8_lossy(b).into_owned())
+}
+
+pub fn with_name(stack: ItemStack, name: Option<&str>) -> ItemStack {
+    let Some(comp) = crate::content::try_content().and_then(|c| c.ids.name) else { return stack };
+    ItemStack { data: with(stack.data, comp, name.filter(|n| !n.is_empty()).map(str::as_bytes)), ..stack }
+}
+
 pub fn with_damage(stack: ItemStack, damage: u32) -> ItemStack {
     let Some(comp) = crate::content::try_content().and_then(|c| c.ids.damage) else { return stack };
     let bytes = damage.to_le_bytes();

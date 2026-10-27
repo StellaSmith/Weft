@@ -1,11 +1,5 @@
 language.name = Русский
-block.testmod.generator = Генератор
-block.testmod.battery = Аккумулятор
-testmod.battery = Аккумулятор
-block.testmod.electric_furnace = Электропечь
-block.testmod.cable = Кабель
-testmod.generator = Генератор
-testmod.electric_furnace = Электропечь
+block.block.block.block.testmod.cable = Кабель
 testmod.energy = {#ffe070}{0}{/} / {1} ЭЕ
 block.testmod.regolith = Реголит
 block.testmod.basalt = Красный базальт

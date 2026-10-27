@@ -61,6 +61,16 @@ pub fn register(r: &mut Registry) {
         }
     });
 
+    // Names the held stack, like an anvil: a chest placed from it is called so.
+    r.command("rename", "[name:text]", |cmd| {
+        let w = cmd.world();
+        let hotbar = w.inventory(cmd.player()).group("hotbar");
+        let slot = w.selected_slot(cmd.player());
+        let s = hotbar.get(slot);
+        if !s.is_empty() {
+            hotbar.set(slot, with_name(s, cmd.text("name")));
+        }
+    });
     r.command("feed", "[food:int]", |cmd| {
         let food = cmd.int("food").unwrap_or(20).clamp(0, 20) as f32;
         if let Some(h) = cmd.world().component_mut(cmd.player(), &HUNGER) {
@@ -104,7 +114,7 @@ pub fn register(r: &mut Registry) {
                     ui.player_model(51.0, 72.0);
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
-                        ui.text("container.crafting");
+                        ui.title();
                         ui.row(S::row().gap(4.0), |ui| {
                             ui.group("grid");
                             ui.recipe_arrow();
@@ -125,7 +135,7 @@ pub fn register(r: &mut Registry) {
         .on_take(consume_grid)
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
-                ui.text("container.crafting");
+                ui.title();
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
                     ui.group("grid");

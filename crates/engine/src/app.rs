@@ -1590,11 +1590,12 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
     // Name of a newly held item above the hotbar, fading out.
     if let Some(g) = r.game.as_ref().filter(|_| r.screens.is_empty()) {
-        let (item, at) = g.client.held_name;
+        let (stack, at) = g.client.held_name;
+        let item = stack.item;
         let age = at.elapsed().as_secs_f32();
         if item != 0 && age < 2.0 {
             let alpha = ((2.0 - age) / 0.5).min(1.0);
-            let name = text::Name::Item(item).spans(&r.lang, Some(&r.input));
+            let name = crate::hud::stack_name(&r.lang, Some(&r.input), stack);
             let (w, h) = r.gpu.surface_size();
             r.ui.label(&name, w as f32 / 2.0, h as f32 - 59.0 * scale, scale * text_unit, (alpha * 255.0) as u32);
         }

@@ -206,3 +206,4 @@ profile.copy = Скопировать ключ
 profile.skin = Скин
 profile.skin_hint = Положите skin.png (64 x 64, как в vanilla) в папку скинов. Все увидят его, когда вы в следующий раз зайдёте в мир.
 profile.skins_folder = Открыть папку скинов
+menu.inventory = Инвентарь

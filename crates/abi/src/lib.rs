@@ -237,6 +237,9 @@ pub mod comp {
     pub const HARVEST_LEVEL: &str = "harvest_level";
     pub const NEEDS_TOOL: &str = "needs_tool";
     pub const DAMAGE: &str = "damage";
+    /// The own name of one stack or block entity (UTF-8), as a player gave it: shown instead of
+    /// the item's or block's, and carried from the stack to the placed block and back.
+    pub const NAME: &str = "core:name";
     /// Blocks connecting energy networks.
     pub const CONDUCTOR: &str = "conductor";
     /// Entity component, layout `Energy`.
@@ -1202,6 +1205,9 @@ pub mod ui_kind {
     pub const PARTS: u32 = 11;
     /// The player's equipment slots of the open menu (`slot_owner::PLAYER_EQUIPMENT`), a column.
     pub const EQUIPMENT: u32 = 13;
+    /// The open menu's title: the own name of what it belongs to (a renamed chest), else the
+    /// name of the block it was opened on, else the translation `menu.<ns>.<name>`.
+    pub const TITLE: u32 = 14;
     /// A progress bar (`bind`, class `arrow` unless given) that opens the open menu's recipe
     /// kinds when clicked, with "Recipes" over it.
     pub const RECIPE_ARROW: u32 = 12;

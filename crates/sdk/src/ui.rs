@@ -314,13 +314,19 @@ impl Ui {
     pub fn player_inventory(&mut self, title: bool) {
         self.column(S::col().gap(2.0), |ui| {
             if title {
-                ui.text("container.inventory");
+                ui.text("menu.inventory");
             }
             ui.column(S::col().gap(4.0), |ui| {
                 ui.group(crate::game::INVENTORY_GROUP);
                 ui.group(crate::game::HOTBAR_GROUP);
             });
         });
+    }
+
+    /// The open menu's title: what a player named the machine or chest, else the name of the
+    /// block it was opened on, else the translation `menu.<ns>.<name>`.
+    pub fn title(&mut self) {
+        self.leaf(node(k::TITLE, S::default()))
     }
 
     /// The player's equipment slots of a menu with `.equipment()`, in a column.

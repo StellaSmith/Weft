@@ -394,13 +394,21 @@ pub fn slot_background(ren: &mut UiRenderer, theme: &Theme, class: &str, r: Rect
 }
 
 
+/// What a stack is called: its own name, else its item's.
+pub fn stack_name(lang: &Lang, input: Option<&crate::input::Input>, stack: weft_abi::ItemStack) -> Vec<text::Span> {
+    match crate::stack::name(&stack) {
+        Some(n) => text::rich(&text::escape(&n), lang, input),
+        None => text::Name::Item(stack.item).spans(lang, input),
+    }
+}
+
 /// The name, then the `<name key>.tooltip` translation in gray (details usually behind
 /// `{on_key:core:sneak}`) and the mods' own lines under it, then durability for damaged tools.
 pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::ItemStack) -> Vec<text::Span> {
     const GRAY: u32 = 0xA8A8A8;
     let cx = text::Ctx::new(lang, Some(input));
     let name = text::Name::Item(stack.item);
-    let mut out = name.spans(lang, Some(input));
+    let mut out = stack_name(lang, Some(input), stack);
     let line = |template: &str, args: &[text::Arg], out: &mut Vec<text::Span>| {
         out.push(text::Span::text("\n", None));
         let start = out.len();

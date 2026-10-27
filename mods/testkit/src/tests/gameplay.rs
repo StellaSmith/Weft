@@ -449,3 +449,43 @@ pub async fn burning(t: T) -> R {
     t.check(later < out, format!("still burning after leaving lava: health {out} -> {later}"));
     Ok(())
 }
+
+/// A machine's window is titled with its block's name; a renamed chest keeps its own name from
+/// the stack to the placed block (its title) and back to the item when broken.
+pub async fn own_names(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let furnace = add(f, [2, 0, 0]);
+    t.set(furnace, "furnace").await?;
+    t.look_at(furnace);
+    t.frames(2).await?;
+    t.press("core:use");
+    t.screen("core:menu").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:Furnace").is_some(), "the furnace window is titled with the block's name");
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.op("put me 0 chest 1").await?;
+    t.c().select(0);
+    t.cmd("/rename Loot Box").await?;
+    t.until("the stack renamed", Duration::from_secs(3), |t| weft_sdk::stack_name(&t.c().inventory_slot(0)).as_deref() == Some("Loot Box")).await?;
+    let chest = add(f, [0, 0, -2]);
+    t.look_at(add(chest, [0, -1, 0]));
+    t.frames(2).await?;
+    t.press("core:use");
+    t.until("the chest placed", Duration::from_secs(3), |t| t.c().inventory_slot(0).is_empty()).await?;
+    t.look_at(chest);
+    // Past the right click delay of the placing click.
+    t.secs(0.4).await?;
+    t.press("core:use");
+    t.screen("core:menu").await?;
+    t.frames(3).await?;
+    t.check(t.c().ui_rect("text:Loot Box").is_some(), "the chest window shows its own name");
+    t.c().close_screen();
+    t.no_screen().await?;
+    t.op(&format!("break {} wood_axe", at(chest))).await?;
+    t.c().teleport([chest[0] as f64 + 0.5, chest[1] as f64, chest[2] as f64 + 0.5]);
+    let back = t.until("the chest picked up", Duration::from_secs(5), |t| (0..36).any(|i| weft_sdk::stack_name(&t.c().inventory_slot(i)).as_deref() == Some("Loot Box"))).await;
+    t.check(back.is_ok(), "the broken chest's item has its name again");
+    Ok(())
+}

@@ -324,6 +324,7 @@ pub struct Ids {
     pub harvest_level: Option<u32>,
     pub needs_tool: Option<u32>,
     pub damage: Option<u32>,
+    pub name: Option<u32>,
     pub conductor: Option<u32>,
     pub worn: Option<u32>,
     pub worn_texture: Option<u32>,
@@ -1322,6 +1323,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), &mut errors);
+    cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), &mut errors);
     for g in &games {
         for (name, schema, _) in &g.stack_components {
             cb.declare(name, schema, None, &|| format!("stack component {name}"), &mut errors);
@@ -1438,6 +1440,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         harvest_level: id(abi::comp::HARVEST_LEVEL),
         needs_tool: id(abi::comp::NEEDS_TOOL),
         damage: id(abi::comp::DAMAGE),
+        name: id(abi::comp::NAME),
         conductor: id(abi::comp::CONDUCTOR),
         worn: id(abi::comp::WORN),
         worn_texture: id(abi::comp::WORN_TEXTURE),

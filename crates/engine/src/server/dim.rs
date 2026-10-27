@@ -25,7 +25,8 @@ const RANDOM_TICK_RADIUS: i32 = 8;
 const ITEM_LIFETIME: u64 = 20 * 60 * 5;
 
 pub enum DimEvent {
-    OpenMenu { player: u64, menu: u32, owner: u64 },
+    /// `block`: the state it was opened on, 0 when opened from code.
+    OpenMenu { player: u64, menu: u32, owner: u64, block: u32 },
     Died { player: u64 },
     Packet { player: u64, channel: u32, data: Vec<u8> },
     /// `dim` u32::MAX = the region's own dimension.
@@ -603,7 +604,7 @@ impl Dim {
             if ground && free && self.supported(c, p, state) {
                 self.set(c, p, state);
             } else {
-                self.drop_block_loot(c, p, state, ItemStack::EMPTY);
+                self.drop_block_loot(c, p, state, ItemStack::EMPTY, None);
             }
         }
     }
@@ -1210,7 +1211,7 @@ impl Dim {
     fn break_off(&mut self, c: &'static Content, p: IVec3, state: u32) {
         self.set(c, p, AIR);
         self.block_dust(c, p, state);
-        self.drop_block_loot(c, p, state, ItemStack::EMPTY);
+        self.drop_block_loot(c, p, state, ItemStack::EMPTY, None);
         self.call_block(c, state, |b| b.on_broken, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
     }
 
@@ -1242,11 +1243,13 @@ impl Dim {
             return false;
         }
         let (_, harvest) = break_time(c, state, tool.item);
+        // The block entity's own name goes back onto the block's item.
+        let name = self.entities.anchors.get(&p).and_then(|id| self.entities.comps.get(&(*id, c.game.name_comp))).map(|b| String::from_utf8_lossy(b).into_owned());
         self.set(c, p, AIR);
         self.block_dust(c, p, state);
         self.sound(c.states[state as usize].sounds[0], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
         if harvest && drops {
-            self.drop_block_loot(c, p, state, tool);
+            self.drop_block_loot(c, p, state, tool, name.as_deref());
         }
         self.call_block(c, state, |b| b.on_broken, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: player });
         self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
@@ -1299,7 +1302,7 @@ impl Dim {
         if let Some(menu) = opens {
             // Its block entity's menu, or one of its own (a crafting table).
             let owner = self.entities.anchors.get(&p).copied().unwrap_or(0);
-            self.events.push(crate::server::DimEvent::OpenMenu { player, menu, owner });
+            self.events.push(crate::server::DimEvent::OpenMenu { player, menu, owner, block: state });
             return true;
         }
         let r = self.call_block(c, state, |b| b.on_use, |w| abi::UseArgs { world: w, pos: p.to_array(), state, face: face as u32, player, handled: 0 });
@@ -1394,9 +1397,12 @@ impl Dim {
     }
 
     /// Spawns what a block's loot table gives for `tool`.
-    pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack) {
-        let name = &c.block_of(state).name;
-        for s in self.roll_loot(c, name, &crate::loot::Ctx { tool, ..Default::default() }) {
+    /// `own_name`: what a renamed block entity was called, given back to the block's item.
+    pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack, own_name: Option<&str>) {
+        let b = c.block_of(state);
+        let own_item = c.items.iter().position(|i| i.block == Some(b.first_state)).map(|i| i as u32);
+        for s in self.roll_loot(c, &b.name, &crate::loot::Ctx { tool, ..Default::default() }) {
+            let s = if Some(s.item) == own_item { crate::stack::with_name(s, own_name) } else { s };
             self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), s);
         }
     }

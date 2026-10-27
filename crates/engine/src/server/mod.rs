@@ -594,9 +594,9 @@ impl Server {
                         }
                     }
                 }
-                DimEvent::OpenMenu { player, menu, owner } => {
+                DimEvent::OpenMenu { player, menu, owner, block } => {
                     if let Some(pi) = self.players.iter().position(|p| p.entity == player) {
-                        self.open_menu(c, pi, menu, owner);
+                        self.open_menu(c, pi, menu, owner, block);
                     }
                 }
                 DimEvent::Died { player } => {
@@ -642,7 +642,7 @@ impl Server {
         }
     }
 
-    fn open_menu(&mut self, c: &'static Content, pi: usize, kind: u32, owner: u64) {
+    fn open_menu(&mut self, c: &'static Content, pi: usize, kind: u32, owner: u64, block: u32) {
         if kind as usize >= c.game.menus.len() {
             return;
         }
@@ -654,7 +654,10 @@ impl Server {
         }
         p.window += 1;
         let m = menu::open(r, c, p.entity, kind, owner);
-        p.conn.send(ToClient::OpenMenu { kind, window: p.window, slots: m.slots.len() as u32, owner });
+        // The title: the owner's own name, else the block it stands on.
+        let name = r.entities.comps.get(&(owner, c.game.name_comp)).map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
+        let block = if block != 0 { block } else { r.entities.get(owner).and_then(|e| e.anchor).and_then(|a| r.get(a)).unwrap_or(0) };
+        p.conn.send(ToClient::OpenMenu { kind, window: p.window, slots: m.slots.len() as u32, owner, block, name });
         p.menu = Some(m);
     }
 
@@ -845,6 +848,10 @@ impl Server {
                     let block_box = crate::physics::Aabb { min: target.as_dvec3(), max: target.as_dvec3() + DVec3::ONE };
                     let solid = c.states[state as usize].flags & abi::block_flags::SOLID != 0;
                     if (!solid || !player_box.shifted(-o).intersects(&block_box)) && d.place(c, target, face, state, look, entity, held.item) {
+                        // A named stack names the block entity it becomes (a renamed chest).
+                        if let (Some(name), Some(&id)) = (crate::stack::name(&held), d.entities.anchors.get(&target)) {
+                            d.entities.comps.insert((id, c.game.name_comp), name.into_bytes().into_boxed_slice());
+                        }
                         Did::Placed
                     } else {
                         Did::Nothing
@@ -952,7 +959,7 @@ impl Server {
             }
             ToServer::OpenInventory => {
                 if let Some(m) = c.game.player_menu {
-                    self.open_menu(c, pi, m, 0);
+                    self.open_menu(c, pi, m, 0, 0);
                 }
             }
             ToServer::Click { slot, button, shift } => {

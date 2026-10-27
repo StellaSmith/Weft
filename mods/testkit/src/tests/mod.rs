@@ -57,6 +57,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::fall_damage,
         gameplay::sneak_edge,
         gameplay::player_box,
+        gameplay::own_names,
         gameplay::food,
         gameplay::drop_and_pickup,
         gameplay::sounds,

@@ -338,6 +338,28 @@ pub(crate) fn pod_bytes<T: Copy>(v: &T) -> Vec<u8> {
 }
 
 /// Stack data (see `ItemStack::data`) beyond what `Component::on_stack` reads.
+/// The stack's own name, if a player gave it one (`with_name`).
+pub fn stack_name(stack: &ItemStack) -> Option<String> {
+    let id = NAME.id();
+    if stack.data == 0 || id == u32::MAX {
+        return None;
+    }
+    let mut len = 0usize;
+    let p = unsafe { (host().stack_get)(stack.data, id, &mut len) };
+    (!p.is_null()).then(|| String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, len) }).into_owned())
+}
+
+/// The stack named `name` (`None` or empty: its item's name again). It shows in its tooltip and
+/// above the hotbar, and a block placed from it keeps the name (a chest's window title) until
+/// it is broken back into an item.
+pub fn with_name(stack: ItemStack, name: Option<&str>) -> ItemStack {
+    let b = name.filter(|n| !n.is_empty()).map(str::as_bytes);
+    let data = unsafe { (host().stack_with)(stack.data, NAME.id(), b.map_or(abi::Slice::EMPTY, abi::Slice::new), b.is_none() as u32) };
+    ItemStack { data, ..stack }
+}
+
+static NAME: Tag = Tag::named(abi::comp::NAME);
+
 pub trait StackData: Sized {
     /// This stack with its own value of `c` set.
     fn with<T: Value>(self, c: &Component<T>, v: T) -> Self;

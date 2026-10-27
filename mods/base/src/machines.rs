@@ -39,7 +39,7 @@ pub fn register(r: &mut Registry) {
         .on_tick(tick_furnaces)
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
-                ui.text("container.furnace");
+                ui.title();
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
                     ui.column(S::col().gap(2.0), |ui| {
@@ -74,7 +74,7 @@ pub fn register(r: &mut Registry) {
         .group("chest", Slots::chest(3))
         .screen(|ui| {
             ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
-                ui.text("container.chest");
+                ui.title();
                 ui.group("chest");
                 ui.player_inventory(true);
             });

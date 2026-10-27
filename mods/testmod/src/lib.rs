@@ -98,7 +98,7 @@ fn init(r: &mut Registry) {
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
         .on_tick(tick_generators)
         .screen(|ui| {
-            machine_screen(ui, "testmod.generator", |ui| {
+            machine_screen(ui, |ui| {
                 ui.column(S::col().gap(2.0).center(), |ui| {
                     ui.group("fuel");
                     ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.burn, m.burn_max)));
@@ -115,7 +115,7 @@ fn init(r: &mut Registry) {
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
         .on_tick(tick_furnaces)
         .screen(|ui| {
-            machine_screen(ui, "testmod.electric_furnace", |ui| {
+            machine_screen(ui, |ui| {
                 ui.group("input");
                 ui.recipe_arrow_bind(|c| c.menu_component(&MACHINE).map_or(0.0, |m| ratio(m.progress, m.progress_max)));
                 ui.group("output");
@@ -127,7 +127,7 @@ fn init(r: &mut Registry) {
     r.machine(&BATTERY, &BATTERY_MENU)
         .block(|b| b.textures("machine_top", "battery", "machine_top").hardness(3.0).mineable("pickaxe").needs_tool(0))
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 100_000, max_in: 400, max_out: 400 })
-        .screen(|ui| machine_screen(ui, "testmod.battery", |_| {}));
+        .screen(|ui| machine_screen(ui, |_| {}));
 
     // The base game's kinds, by name: no code dependency on it.
     use base_api::CRAFTING;
@@ -273,10 +273,10 @@ fn debug_panel(r: &mut Registry) {
     });
 }
 
-fn machine_screen(ui: &mut Ui, title: &'static str, slots: impl FnOnce(&mut Ui)) {
+fn machine_screen(ui: &mut Ui, slots: impl FnOnce(&mut Ui)) {
     // Drawn by the mod's GUI shader (`testmod_panel.shader` in its theme).
     ui.panel("testmod_panel", S::col().pad(7.0).gap(4.0), |ui| {
-        ui.text(title);
+        ui.title();
         ui.row(S::row().gap(8.0), |ui| {
             ui.column(S::col().gap(2.0), |ui| {
                 ui.text_bind(|c, out| {

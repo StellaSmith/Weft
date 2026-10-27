@@ -1,8 +1,5 @@
 language.name = English
-container.crafting = Crafting
-container.inventory = Inventory
-container.furnace = Furnace
-container.chest = Chest
+menu.base.inventory = Crafting
 block.base.stone = Stone
 block.base.cobblestone = Cobblestone
 block.base.mossy_cobblestone = Mossy Cobblestone

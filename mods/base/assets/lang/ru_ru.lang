@@ -1,8 +1,5 @@
 language.name = Русский
-container.crafting = Создание
-container.inventory = Инвентарь
-container.furnace = Печь
-container.chest = Сундук
+menu.base.inventory = Создание
 block.base.stone = Камень
 block.base.cobblestone = Булыжник
 block.base.mossy_cobblestone = Замшелый булыжник

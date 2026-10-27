@@ -220,3 +220,4 @@ profile.copy = Copy Key
 profile.skin = Skin
 profile.skin_hint = Put skin.png (64 x 64, like vanilla) into the skins folder. Everyone sees it from the next time you join a world.
 profile.skins_folder = Open Skins Folder
+menu.inventory = Inventory

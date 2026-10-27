@@ -198,6 +198,9 @@ pub struct ClientMenu {
     pub window: u32,
     /// The entity it belongs to, 0 for none.
     pub owner: u64,
+    /// The block state it was opened on (0: none) and the own name of what it belongs to.
+    pub block: u32,
+    pub name: String,
     pub slots: Vec<ItemStack>,
     pub cursor: ItemStack,
 }
@@ -265,7 +268,7 @@ pub struct Client {
     bob: f32,
     last_smooth: DVec3,
     /// Held item and when it became held: its name shows above the hotbar for a moment.
-    pub held_name: (u32, Instant),
+    pub held_name: (ItemStack, Instant),
     /// Names of the players online, for completion.
     pub players: Vec<String>,
     /// Lines this player sent, oldest first (chat history).
@@ -439,7 +442,7 @@ on: {on}", list.join("
             last_click: None,
             players: Vec::new(),
             sent: Vec::new(),
-            held_name: (0, Instant::now()),
+            held_name: (ItemStack::EMPTY, Instant::now()),
             mode: GameMode::Survival,
             last_jump: None,
             view: 0,
@@ -700,8 +703,8 @@ on: {on}", list.join("
                         self.dead = false;
                     }
                 }
-                ToClient::OpenMenu { kind, window, slots, owner } => {
-                    self.menu = Some(ClientMenu { kind, window, owner, slots: vec![ItemStack::EMPTY; slots as usize], cursor: ItemStack::EMPTY });
+                ToClient::OpenMenu { kind, window, slots, owner, block, name } => {
+                    self.menu = Some(ClientMenu { kind, window, owner, block, name, slots: vec![ItemStack::EMPTY; slots as usize], cursor: ItemStack::EMPTY });
                     self.events.push(ClientEvent::OpenMenu);
                 }
                 ToClient::MenuSlots(list) => {
@@ -833,8 +836,8 @@ on: {on}", list.join("
         if old != self.selected {
             self.conn.send(ToServer::Select(self.selected as u32));
         }
-        let held = self.inventory.get(self.selected).map_or(0, |s| s.item);
-        if held != self.held_name.0 || old != self.selected {
+        let held = self.inventory.get(self.selected).copied().unwrap_or_default();
+        if (held.item, held.data) != (self.held_name.0.item, self.held_name.0.data) || old != self.selected {
             self.held_name = (held, Instant::now());
         }
         // Eye and view widen or drop over a few frames like vanilla, not in one jump.

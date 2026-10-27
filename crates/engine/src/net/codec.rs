@@ -304,11 +304,13 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.bytes(b);
             }
         }
-        ToClient::OpenMenu { kind, window, slots, owner } => {
+        ToClient::OpenMenu { kind, window, slots, owner, block, name } => {
             w.u64(*owner);
             w.u32(*kind);
             w.u32(*window);
             w.u32(*slots);
+            w.u32(*block);
+            w.str(name);
         }
         ToClient::MenuSlots(list) => {
             w.len(list.len());
@@ -487,7 +489,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
         ClientTag::Health => ToClient::Health { health: r.f32()?, max: r.f32()? },
         ClientTag::OpenMenu => {
             let owner = r.u64()?;
-            ToClient::OpenMenu { kind: r.u32()?, window: r.u32()?, slots: r.u32()?, owner }
+            ToClient::OpenMenu { kind: r.u32()?, window: r.u32()?, slots: r.u32()?, owner, block: r.u32()?, name: r.str()? }
         }
         ClientTag::EntityComponents => {
             let n = r.len()?;

@@ -197,6 +197,22 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 let action: crate::ui::Action = Rc::new(move |ctx: &mut Ctx| ctx.requests.push(crate::app::Request::ModCall(owner, cb)));
                 b.ui.open(Kind::Button { class: if class.is_empty() { "button".into() } else { class }, action: Some(action), enabled: true, selected: false }, style)
             }
+            uk::TITLE => {
+                let c = crate::content::content();
+                let menu = b.client.and_then(|cl| cl.menu.as_ref());
+                let spans = match menu {
+                    Some(m) if !m.name.is_empty() => text::rich(&text::escape(&m.name), lang, input),
+                    Some(m) if m.block != 0 => text::Name::Block(m.block).spans(lang, input),
+                    Some(m) => {
+                        let key = c.game.menus.get(m.kind as usize).map(|d| text::lang_key("menu", &d.name)).unwrap_or_default();
+                        text::rich(&format!("{{lang:{key}}}"), lang, input)
+                    }
+                    None => Vec::new(),
+                };
+                let id = b.ui.open(Kind::Container { class: None }, style);
+                b.ui.text(spans, if class.is_empty() { "default" } else { &class });
+                id
+            }
             uk::EQUIPMENT => {
                 // Every equipment slot of the player the menu shows, top to bottom.
                 let c = crate::content::content();

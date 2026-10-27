@@ -92,7 +92,7 @@ which keeps the way it faces.
 ```rust
 .screen(|ui| {
     ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
-        ui.text("container.furnace");
+        ui.title();
         ui.row(S::row().gap(8.0), |ui| {
             ui.group("input");
             ui.recipe_arrow_bind(|c| c.menu_component(&SMELTING).map_or(0.0, |s| ratio(s.cook, s.cook_max)));
@@ -102,6 +102,7 @@ which keeps the way it faces.
     });
 })
 ```
+`ui.title()` is the block's name, so the window says "Furnace" without a translation of its own; a chest a player renamed (`/rename Loot` on the item, the anvil's job) shows that name instead, and keeps it when it's broken and picked up again. A menu opened from code has `menu.<ns>.<name>` as its title.
 The arrow reads the machine's component through `menu_component`, which is why it needs `SYNC_MENU`. The screen belongs to the menu and not to a single block, so every machine of one kind shows the same window. Parts, layout and themes are in the [UI guide](ui.md). Using the block already opens the menu, and `world.open_menu(player, &MENU, owner)` does the same from code.
 
 ## Recipes

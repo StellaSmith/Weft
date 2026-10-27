@@ -335,6 +335,8 @@ pub struct Game {
     pub attr_names: FxHashMap<String, u32>,
     /// The engine component holding entities' attribute modifiers.
     pub modifiers_comp: u32,
+    /// `abi::comp::NAME` as an entity component.
+    pub name_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
     pub watched_comps: Vec<u32>,
     pub menu_comps: Vec<u32>,
@@ -1198,6 +1200,12 @@ pub fn freeze(
         def: ComponentDef { name: MODIFIERS.into(), size: 0, flags: weft_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
         schema: String::new(),
     });
+    // A block entity's own name (a renamed chest).
+    components.push(RawComponent {
+        owner: ENGINE,
+        def: ComponentDef { name: abi::comp::NAME.into(), size: 0, flags: weft_abi::component_flags::SAVE, default: Vec::new(), runtime: true },
+        schema: String::new(),
+    });
     for rc in components {
         let Some(id) = c.id(&rc.def.name) else { continue };
         g.components[id as usize] = ComponentDef { runtime: true, ..rc.def };
@@ -1205,6 +1213,7 @@ pub fn freeze(
     g.component_names = g.components.iter().enumerate().filter(|(_, d)| d.runtime).map(|(i, d)| (d.name.clone(), i as u32)).collect();
     g.energy = g.component_names[abi::comp::ENERGY];
     g.modifiers_comp = g.component_names[MODIFIERS];
+    g.name_comp = g.component_names[abi::comp::NAME];
     let with_flag = |f: u32| g.components.iter().enumerate().filter(|(_, d)| d.runtime && d.flags & f != 0).map(|(i, _)| i as u32).collect::<Vec<u32>>();
     g.watched_comps = with_flag(abi::component_flags::SYNC_WATCHERS);
     g.menu_comps = with_flag(abi::component_flags::SYNC_MENU);

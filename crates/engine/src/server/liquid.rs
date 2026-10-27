@@ -112,7 +112,7 @@ impl Dim {
         self.set(c, p, state);
         if old != AIR {
             // Plants and torches wash away with their drops, like vanilla.
-            self.drop_block_loot(c, p, old, ItemStack::EMPTY);
+            self.drop_block_loot(c, p, old, ItemStack::EMPTY, None);
         }
     }
 

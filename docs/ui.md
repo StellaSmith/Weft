@@ -116,9 +116,14 @@ The main menu takes its logo from the translation `menu.logo` and shows `menu.ne
 |---|---|
 | `TOP_LEFT`, `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT` | the corners of the window |
 | `HOTBAR`, `HOTBAR_LEFT`, `HOTBAR_RIGHT` | over the hotbar, on its left and right (health and hunger live there) |
+| `ABOVE_HOTBAR` | centered above all of that (the held item's name) |
 | `DEBUG_LEFT`, `DEBUG_RIGHT` | a panel of the F3 overlay, titled by the element's name as a translation key |
 
 F3 panels from mods take the key numbers after the engine's five, so the first one is F3+6.
+
+The engine's own parts are elements like these, `core:hotbar` and `core:held_name`, and a player moves any of them with lines in `config/hud.txt`: `core:held_name = top_left` or `base:food = top_right 2` (anchor, then order).
+
+Labels a mod draws (`w.draw_text`, `client.draw_text`, `client.screen_text`) are text like everywhere else, icons and `{mono}` included, with a size: 1 is menu text, 2 twice that.
 
 ## Menus
 A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu(&INVENTORY)` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:

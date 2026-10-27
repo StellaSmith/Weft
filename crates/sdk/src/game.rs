@@ -206,8 +206,10 @@ impl World {
         self.gizmo(group, abi::gizmo_kind::FILL, min, max, color, ticks, "", &[]);
     }
     /// The translation `key` with `args` at `pos`, in each viewer's language.
-    pub fn draw_text(&self, group: &GizmoGroup, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, ticks: u32) {
-        self.gizmo(group, abi::gizmo_kind::LABEL, pos, pos, color, ticks, key, args);
+    /// `size` times as big as menu text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text(&self, group: &GizmoGroup, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, size: f32, ticks: u32) {
+        self.gizmo(group, abi::gizmo_kind::LABEL, pos, [size as f64, 0.0, 0.0], color, ticks, key, args);
     }
     #[allow(clippy::too_many_arguments)]
     fn gizmo(&self, group: &GizmoGroup, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32, key: &str, args: &[crate::Arg]) {

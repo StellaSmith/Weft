@@ -332,7 +332,7 @@ fn energy_gizmos(w: &World, ids: &[u64]) {
     for &id in ids {
         if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
             let args = [Arg::Int(e.stored as i64), Arg::Int(e.capacity as i64)];
-            w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 11);
+            w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 1.0, 11);
         }
     }
 }

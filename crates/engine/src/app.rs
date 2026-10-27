@@ -197,7 +197,7 @@ pub(crate) struct Running {
     mod_gizmos: Vec<crate::net::GizmoShape>,
     /// Sounds of the UI and of mods' client code, played after this frame's world sounds.
     ui_sounds: Vec<crate::audio::Play>,
-    mod_screen_text: Vec<(f32, f32, Msg, u32)>,
+    mod_screen_text: Vec<(f32, f32, Msg, u32, f32)>,
     frame_no: u64,
     frame_dt: f32,
     /// The top screen as of the last frame (stack depth, name) and frames since it changed.
@@ -1668,38 +1668,43 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         for s in &r.mod_gizmos {
             crate::client::gizmo::shape(s, &mut cl.gizmo_lines, &mut cl.gizmo_fills, &mut cl.gizmo_labels);
         }
+    }
+    // Gizmo labels and mods' screen text: text nodes placed at points (GUI pixels), the same
+    // text as anywhere else.
+    let mut labels: Vec<(f32, f32, &crate::ui::text::Msg, u32, f32)> = Vec::new();
+    if let Some(g) = &r.game {
         let cam = g.client.render_camera();
         let view_proj = cam.proj(info.width as f32 / info.height.max(1) as f32) * cam.view();
-        for (pos, text, color) in &g.client.gizmo_labels {
+        for (pos, text, color, size) in &g.client.gizmo_labels {
             let clip = view_proj * (*pos - cam.pos).as_vec3().extend(1.0);
             if clip.w < 0.1 || (*pos - cam.pos).length_squared() > 24.0 * 24.0 {
                 continue;
             }
             let (x, y) = ((clip.x / clip.w * 0.5 + 0.5) * info.width as f32, (0.5 - clip.y / clip.w * 0.5) * info.height as f32);
-            r.ui.label_colored(&text.spans(&r.lang, Some(&r.input)), x, y - 4.0 * scale, scale, *color);
+            labels.push((x / scale, y / scale - 4.0, text, *color, *size));
         }
     }
-    {
-        let (w, h) = r.gpu.surface_size();
-        for (x, y, text, color) in &r.mod_screen_text {
-            r.ui.label_colored(&text.spans(&r.lang, Some(&r.input)), x * w as f32, y * h as f32, scale, *color);
+    let (sw, sh) = r.gpu.surface_size();
+    labels.extend(r.mod_screen_text.iter().map(|(x, y, text, color, size)| (x * sw as f32 / scale, y * sh as f32 / scale, text, *color, *size)));
+    if !labels.is_empty() {
+        let mut o = crate::ui::Ui::new();
+        o.text_unit = text_unit;
+        for (x, y, text, color, size) in labels {
+            let id = o.text(text.spans(&r.lang, Some(&r.input)), "label");
+            o.nodes[id].style = crate::ui::Style::default().at(x, y, [0.5, 0.0]);
+            if let crate::ui::Kind::Text(t) = &mut o.nodes[id].kind {
+                t.wrap = false;
+                t.color = Some(color);
+                t.scale = size;
+            }
         }
+        o.layout(Vec2::new(sw as f32 / scale, sh as f32 / scale), &r.ui.font);
+        let game = crate::content::try_content().map(|c| (c, &r.textures));
+        r.ui.append(&mut *r.gpu, &r.assets, &o, &r.look, scale, game, &mut |_, _, _, _, _, _| {});
     }
     if let Some((_, ui)) = r.screens.last() {
         let game = crate::content::try_content().map(|c| (c, &r.textures));
         r.ui.tooltip(&mut *r.gpu, &r.assets, ui, &r.look, scale, r.input.cursor, game);
-    }
-    // Name of a newly held item above the hotbar, fading out.
-    if let Some(g) = r.game.as_ref().filter(|_| r.screens.is_empty()) {
-        let (stack, at) = g.client.held_name;
-        let item = stack.item;
-        let age = at.elapsed().as_secs_f32();
-        if item != 0 && age < 2.0 {
-            let alpha = ((2.0 - age) / 0.5).min(1.0);
-            let name = crate::hud::stack_name(&r.lang, Some(&r.input), stack);
-            let (w, h) = r.gpu.surface_size();
-            r.ui.label(&name, w as f32 / 2.0, h as f32 - 59.0 * scale, scale * text_unit, (alpha * 255.0) as u32);
-        }
     }
     if let Some(cursor) = r.game.as_ref().and_then(|g| g.client.menu.as_ref()).map(|m| m.cursor).filter(|s| !s.is_empty()) {
         let p = r.input.cursor;

@@ -15,12 +15,20 @@ use crate::ui::look::Look;
 use crate::ui::{Align, Justify, Kind, Rect, Style, Ui};
 
 pub const TAG_HOTBAR: u32 = 1;
+
+/// One element of the HUD: the engine's hotbar or held item name, or a mod's part.
+#[derive(Clone, Copy)]
+enum Part {
+    Hotbar,
+    HeldName,
+    Mod(weft_abi::ModId, weft_abi::Callback),
+}
 pub const TAG_CROSSHAIR: u32 = 2;
 
 #[derive(Default)]
 pub struct Hud {
     pub ui: Ui,
-    key: Option<(bool, usize, usize, bool, u32, u8, bool)>,
+    key: Option<(bool, usize, usize, bool, u32, u8, bool, (u32, u32, u8))>,
     /// Player overrides from `config/hud.txt`: element name -> (anchor, order).
     layout: rustc_hash::FxHashMap<String, (String, i32)>,
 }
@@ -48,36 +56,49 @@ impl Hud {
     /// `groups`: bit per `DEBUG_GROUPS` entry shown with the debug overlay.
     pub fn update(&mut self, client: &Client, debug: bool, groups: u32, chat_open: bool, lang: &Lang, input: &crate::input::Input) -> bool {
         let chat_visible = if chat_open { 0 } else { client.chat.iter().filter(|(_, t)| t.elapsed().as_secs() < 10).count() };
+        // The held item's name shows for two seconds after a change, fading for the last half.
+        let (held, since) = client.held_name;
+        let fade = if held.is_empty() { 0 } else { ((2.0 - since.elapsed().as_secs_f32()) / 0.5 * 16.0).clamp(0.0, 16.0) as u8 };
         // Narrow screens stack the debug panels, so a width change rebuilds.
-        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, self.ui.size.x >= 640.0);
+        let key = (debug, chat_visible, client.chat.len(), client.dead, groups, client.mode as u8, self.ui.size.x >= 640.0, (held.item, held.data, fade));
         if self.key == Some(key) {
             return false;
         }
         self.key = Some(key);
         let c = content();
         // Elements per anchor, mod parts plus the hotbar itself, with the player's overrides.
-        let mut placed: Vec<(String, i32, Option<(weft_abi::ModId, weft_abi::Callback)>)> =
-            vec![("core:hotbar".into(), 0, None)].into_iter().chain(c.game.huds.iter().map(|h| (h.name.clone(), h.order, Some((h.owner, h.cb))))).collect::<Vec<_>>()
-                .into_iter()
-                .map(|(name, order, cb)| {
-                    let default = if cb.is_none() { weft_abi::hud_anchor::HOTBAR.to_string() } else { c.game.huds.iter().find(|h| h.name == name).map(|h| h.anchor.clone()).unwrap_or_default() };
-                    let (anchor, order) = self.layout.get(&name).cloned().unwrap_or((default, order));
-                    (anchor, order, cb)
-                })
-                .collect();
+        // The engine's own elements are placed like the mods': `config/hud.txt` moves them too.
+        let engine = [("core:hotbar", weft_abi::hud_anchor::HOTBAR, Part::Hotbar), ("core:held_name", weft_abi::hud_anchor::ABOVE_HOTBAR, Part::HeldName)];
+        let mut placed: Vec<(String, i32, Part)> = engine
+            .into_iter()
+            .map(|(n, a, p)| (n.to_string(), a.to_string(), 0, p))
+            .chain(c.game.huds.iter().map(|h| (h.name.clone(), h.anchor.clone(), h.order, Part::Mod(h.owner, h.cb))))
+            .map(|(name, anchor, order, part)| {
+                let (anchor, order) = self.layout.get(&name).cloned().unwrap_or((anchor, order));
+                (anchor, order, part)
+            })
+            .collect();
         placed.sort_by_key(|p| p.1);
         let mods_debug = mod_debug_groups();
-        let at = |anchor: &str, upwards: bool| -> Vec<Option<(weft_abi::ModId, weft_abi::Callback)>> {
+        let at = |anchor: &str, upwards: bool| -> Vec<Part> {
             let mut v: Vec<_> = placed.iter().filter(|p| p.0 == anchor).map(|p| p.2).collect();
             if upwards {
                 v.reverse();
             }
             v
         };
-        let draw = |ui: &mut Ui, part: Option<(weft_abi::ModId, weft_abi::Callback)>| match part {
-            Some((owner, cb)) => modui::build(ui, lang, Some(input), owner, cb, Some(client)),
-            None if client.mode == crate::world::GameMode::Spectator => {}
-            None => {
+        let draw = |ui: &mut Ui, part: Part| match part {
+            Part::Mod(owner, cb) => modui::build(ui, lang, Some(input), owner, cb, Some(client)),
+            Part::HeldName if fade > 0 => {
+                let id = ui.text(stack_name(lang, Some(input), held), "label");
+                if let Kind::Text(t) = &mut ui.nodes[id].kind {
+                    t.wrap = false;
+                    t.color = Some(0xFFFFFF00 | (fade as u32 * 255 / 16));
+                }
+            }
+            Part::HeldName => {}
+            Part::Hotbar if client.mode == crate::world::GameMode::Spectator => {}
+            Part::Hotbar => {
                 ui.container(Style::row().gap(0.0), |ui| {
                     for i in 0..content().game.player_layout.hotbar as u64 {
                         ui.add(Kind::Custom { tag: TAG_HOTBAR, data: i }, Style::default().size(20.0, 20.0));
@@ -96,7 +117,7 @@ impl Hud {
             // (the two may overlap on narrow screens, like vanilla's).
             ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::Start), |ui| {
                 if debug {
-                    debug_groups(ui, groups, false, &mods_debug, &|ui, p| draw(ui, Some(p)));
+                    debug_groups(ui, groups, false, &mods_debug, &|ui, (o, cb)| draw(ui, Part::Mod(o, cb)));
                 }
                 for p in at(a::TOP_LEFT, false) {
                     draw(ui, p);
@@ -104,7 +125,7 @@ impl Hud {
             });
             ui.container(Style::default().w(0.0).grow().gap(1.0).align(Align::End), |ui| {
                 if debug {
-                    debug_groups(ui, groups, true, &mods_debug, &|ui, p| draw(ui, Some(p)));
+                    debug_groups(ui, groups, true, &mods_debug, &|ui, (o, cb)| draw(ui, Part::Mod(o, cb)));
                 }
                 for p in at(a::TOP_RIGHT, false) {
                     draw(ui, p);
@@ -129,6 +150,9 @@ impl Hud {
                 });
                 ui.container(Style::default().grow(), |_| {});
                 ui.container(Style::default().gap(1.0).align(Align::Center), |ui| {
+                    for p in at(a::ABOVE_HOTBAR, true) {
+                        draw(ui, p);
+                    }
                     ui.container(Style::row().w(182.0).gap(2.0).align(Align::End), |ui| {
                         ui.container(Style::default().gap(1.0).align(Align::Start), |ui| {
                             for p in at(a::HOTBAR_LEFT, true) {
@@ -332,34 +356,9 @@ pub fn draw_custom(
     }
 }
 
-/// Item icon centered in `r`, with count and durability bar.
+/// A stack in `r` (`UiRenderer::stack_icon`).
 pub fn stack_icon(ren: &mut UiRenderer, textures: &GameTextures, r: Rect, stack: ItemStack, scale: f32, text_unit: f32) {
-    if stack.is_empty() {
-        return;
-    }
-    let c = content();
-    let s = 16.0 * scale;
-    let (x, y) = (r.x + (r.w - s) / 2.0, r.y + (r.h - s) / 2.0);
-    ren.item_icon(c, textures, x, y, s, stack.item);
-    let def = &c.items[stack.item as usize];
-    let damage = crate::stack::damage(&stack);
-    if def.durability > 0 && damage > 0 {
-        let f = 1.0 - damage as f32 / def.durability as f32;
-        let bar = Rect { x: x + scale, y: y + s - 2.0 * scale, w: 14.0 * scale, h: 2.0 * scale };
-        ren.rect(bar, 0x000000FF);
-        let g = (f * 255.0) as u32;
-        let col = ((255 - g) << 24) | (g << 16) | 0xFF;
-        ren.rect(Rect { w: 13.0 * scale * f, h: scale, ..bar }, col);
-    }
-    if stack.count > 1 {
-        let px = scale * text_unit;
-        let spans = text::plain(&stack.count.to_string());
-        let layout = text::layout(&spans, &ren.font, None);
-        let tx = x + s - layout.width * px + scale;
-        let ty = y + s - 16.0 * px + scale;
-        let mut icons = Vec::new();
-        ren.glyph_run(&layout.items, tx, ty, px, 0xFFFFFFFF, Some(0x3F3F3FFF), &mut icons);
-    }
+    ren.stack_icon(content(), textures, r, stack, scale, text_unit);
 }
 
 /// A slot of class `class` (`slot` in menus, `hotbar` on the HUD), with `hotbar_selected` around

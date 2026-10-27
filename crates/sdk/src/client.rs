@@ -295,14 +295,17 @@ impl Client {
         self.draw(group, gk::FILL, min, max, color, "", &[]);
     }
 
-    /// The translation `key` with `args` at a world position.
-    pub fn draw_text(&self, group: Option<&crate::GizmoGroup>, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32) {
-        self.draw(group, gk::LABEL, pos, pos, color, key, args);
+    /// The translation `key` with `args` at a world position, `size` times as big as menu text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text(&self, group: Option<&crate::GizmoGroup>, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, size: f32) {
+        self.draw(group, gk::LABEL, pos, [size as f64, 0.0, 0.0], color, key, args);
     }
 
-    /// The translation `key` with `args`, centered at fractions of the window.
-    pub fn screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32) {
-        self.draw(None, gk::SCREEN_LABEL, [x as f64, y as f64, 0.0], [0.0; 3], color, key, args);
+    /// The translation `key` with `args`, centered at fractions of the window, `size` times as
+    /// big as menu text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32, size: f32) {
+        self.draw(None, gk::SCREEN_LABEL, [x as f64, y as f64, 0.0], [size as f64, 0.0, 0.0], color, key, args);
     }
 
     /// Sends `value` on `channel` to the server.

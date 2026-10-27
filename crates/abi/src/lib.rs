@@ -1960,11 +1960,12 @@ pub mod gizmo_kind {
     pub const LINE: u32 = 0;
     /// Edges of the box `a`..`b`.
     pub const BOX: u32 = 1;
-    /// `text` at `a`.
+    /// `text` at `a`, `b.x` times the size of menu text (0 counts as 1).
     pub const LABEL: u32 = 2;
     /// The box `a`..`b` filled, see-through by the color's alpha.
     pub const FILL: u32 = 3;
-    /// Client only: `text` centered at fractions of the window (`a[0]`, `a[1]`).
+    /// Client only: `text` centered at fractions of the window (`a[0]`, `a[1]`), sized like
+    /// `LABEL`.
     pub const SCREEN_LABEL: u32 = 4;
 }
 
@@ -3039,6 +3040,8 @@ pub mod hud_anchor {
     pub const HOTBAR: &str = "hotbar";
     pub const HOTBAR_LEFT: &str = "hotbar_left";
     pub const HOTBAR_RIGHT: &str = "hotbar_right";
+    /// Centered above the hotbar and what stands on it (the held item's name, `core:held_name`).
+    pub const ABOVE_HOTBAR: &str = "above_hotbar";
     /// A panel of the F3 overlay (left or right side), titled by the element's name as a
     /// translation key; the engine's five groups take F3+1..5, mods' the next numbers up to 9.
     pub const DEBUG_LEFT: &str = "debug_left";

@@ -11,7 +11,7 @@ use super::font::Font;
 use crate::model::{Animation, Prop};
 use super::text::Placed;
 use super::look::Look;
-use super::{Kind, Rect, Ui};
+use super::{Kind, Rect, Style, Ui};
 use crate::assets::{Assets, decode_png};
 use crate::shaders::{Hook, Slots};
 use crate::client::textures::GameTextures;
@@ -110,7 +110,8 @@ pub struct UiRenderer {
     /// Clip of each deferred item icon, in the order they were queued.
     icon_clips: Vec<[f32; 4]>,
     /// Stack counts drawn over queued item icons: (icon number, count, text pixel size).
-    icon_counts: Vec<(usize, u32, f32)>,
+    /// Item nodes of the tree being built: where, what, and their clip.
+    stacks: Vec<(Rect, weft_abi::ItemStack, [f32; 4])>,
     /// Text effects and GUI fills the shader has, and the effect slot by `text::fx_id`.
     fx: Slots,
     gui: Slots,
@@ -168,7 +169,7 @@ impl UiRenderer {
             screen,
             quads: Vec::new(),
             icon_clips: Vec::new(),
-            icon_counts: Vec::new(),
+            stacks: Vec::new(),
             fx,
             gui,
             fx_slots: Vec::new(),
@@ -584,24 +585,39 @@ impl UiRenderer {
         custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool, Option<u32>),
     ) {
         self.quads.clear();
-        self.icon_clips.clear();
-        self.icon_counts.clear();
         self.animated.clear();
+        self.append(gpu, assets, ui, look, scale, game, custom);
+    }
+
+    /// `build` on top of what is there: overlays drawn every frame (labels, the tooltip).
+    #[allow(clippy::too_many_arguments)]
+    pub fn append(
+        &mut self,
+        gpu: &mut dyn Backend,
+        assets: &Assets,
+        ui: &Ui,
+        look: &Look,
+        scale: f32,
+        game: Option<(&Content, &GameTextures)>,
+        custom: &mut dyn FnMut(&mut UiRenderer, u32, u64, Rect, bool, Option<u32>),
+    ) {
+        self.icon_clips.clear();
+        self.stacks.clear();
         let mut icons = Vec::new();
         self.node(gpu, assets, ui, look, 0, scale, &mut icons, custom, None);
         if let Some((c, t)) = game {
             let clips = std::mem::take(&mut self.icon_clips);
-            let counts = std::mem::take(&mut self.icon_counts);
             for (i, (x, y, s, item)) in icons.into_iter().enumerate() {
                 let start = self.quads.len();
                 self.text_icon(c, t, x, y, s, item);
-                // The count over the icon, at its bottom right like in a slot.
-                if let Some(&(_, n, px)) = counts.iter().find(|c| c.0 == i) {
-                    let layout = super::text::layout(&super::text::plain(&n.to_string()), &self.font, None);
-                    let mut none = Vec::new();
-                    self.glyph_run(&layout.items, x + s - layout.width * px + px * 2.0, y + s - 16.0 * px + px * 2.0, px, 0xFFFFFFFF, Some(0x3F3F3FFF), &mut none);
-                }
                 let clip = clips.get(i).copied().unwrap_or_default();
+                for q in &mut self.quads[start..] {
+                    q.clip = clip;
+                }
+            }
+            for (r, stack, clip) in std::mem::take(&mut self.stacks) {
+                let start = self.quads.len();
+                self.stack_icon(c, t, r, stack, scale, ui.text_unit);
                 for q in &mut self.quads[start..] {
                     q.clip = clip;
                 }
@@ -609,30 +625,60 @@ impl UiRenderer {
         }
     }
 
-    /// The hovered node's tooltip next to the mouse (physical pixels), drawn every frame on top.
+    /// A stack the one way slots, the hotbar, item nodes and the held cursor stack show it: the
+    /// icon centered in `r`, the durability bar, the count at the bottom right.
+    pub fn stack_icon(&mut self, c: &Content, textures: &GameTextures, r: Rect, stack: weft_abi::ItemStack, scale: f32, text_unit: f32) {
+        if stack.is_empty() {
+            return;
+        }
+        let s = 16.0 * scale;
+        let (x, y) = (r.x + (r.w - s) / 2.0, r.y + (r.h - s) / 2.0);
+        self.item_icon(c, textures, x, y, s, stack.item);
+        let def = &c.items[stack.item as usize];
+        let damage = crate::stack::damage(&stack);
+        if def.durability > 0 && damage > 0 {
+            let f = 1.0 - damage as f32 / def.durability as f32;
+            let bar = Rect { x: x + scale, y: y + s - 2.0 * scale, w: 14.0 * scale, h: 2.0 * scale };
+            self.rect(bar, 0x000000FF);
+            let g = (f * 255.0) as u32;
+            self.rect(Rect { w: 13.0 * scale * f, h: scale, ..bar }, ((255 - g) << 24) | (g << 16) | 0xFF);
+        }
+        if stack.count > 1 {
+            let px = scale * text_unit;
+            let layout = super::text::layout(&super::text::plain(&stack.count.to_string()), &self.font, None);
+            let mut none = Vec::new();
+            self.glyph_run(&layout.items, x + s - layout.width * px + scale, y + s - 16.0 * px + scale, px, 0xFFFFFFFF, Some(0x3F3F3FFF), &mut none);
+        }
+    }
+
+    /// The hovered node's tooltip next to the mouse (physical pixels), drawn every frame on top:
+    /// a `tooltip` panel with the text in it, like any other part of the UI.
+    #[allow(clippy::too_many_arguments)]
     pub fn tooltip(&mut self, gpu: &mut dyn Backend, assets: &Assets, ui: &Ui, look: &Look, scale: f32, at: glam::Vec2, game: Option<(&Content, &GameTextures)>) {
         let Some(tip) = ui.hovered.and_then(|h| ui.nodes.get(h)).and_then(|n| n.tooltip.as_ref()) else { return };
-        // Vanilla's spacing: lines 10 GUI pixels apart, 3 pixels of padding inside the frame.
-        let px = scale * ui.text_unit;
-        let layout = super::text::layout_spaced(tip, &self.font, Some(320.0), 10.0 * scale / px);
-        let pad = 4.0 * scale;
-        let (w, hgt) = (layout.width * px + 2.0 * pad, layout.height * px + 2.0 * pad);
-        // Like vanilla: right of and slightly above the cursor, flipped to the left near the edge.
-        let mut x = at.x + 12.0 * scale;
-        let y = (at.y - 12.0 * scale).min(ui.size.y * scale - hgt).max(0.0);
-        if x + w > ui.size.x * scale {
-            x = (at.x - w - 12.0 * scale).max(0.0);
-        }
-        let bg = Rect { x, y, w, h: hgt };
-        self.class_background(gpu, assets, look, "tooltip", "", bg, scale);
-        let mut icons = Vec::new();
-        self.load_images(gpu, assets, &layout);
-        self.glyph_run(&layout.items, x + pad, y + pad, px, look.text("tooltip", ""), look.shadow("tooltip"), &mut icons);
-        if let Some((c, t)) = game {
-            for (ix, iy, s, item) in icons {
-                self.text_icon(c, t, ix, iy, s, item);
+        let mut t = Ui::new();
+        t.text_unit = ui.text_unit;
+        let place = |t: &mut Ui, x: f32, y: f32| t.nodes[1].style.at = Some([x, y, 0.0, 0.0]);
+        // Vanilla's spacing: lines 10 GUI pixels apart, padding inside the frame, at most 320 wide.
+        t.panel("tooltip", Style::default().pad(4.0), |t| {
+            let id = t.text(tip.clone(), "tooltip");
+            if let Kind::Text(n) = &mut t.nodes[id].kind {
+                n.line = Some(10.0 / ui.text_unit);
             }
+            t.nodes[id].style.max_w = 320.0;
+        });
+        let cursor = at / scale;
+        place(&mut t, cursor.x + 12.0, cursor.y - 12.0);
+        t.layout(ui.size, &self.font);
+        // Like vanilla: right of and slightly above the cursor, flipped to the left near the edge.
+        let r = t.nodes[1].rect;
+        let x = if r.x + r.w > ui.size.x { (cursor.x - r.w - 12.0).max(0.0) } else { r.x };
+        let y = r.y.min(ui.size.y - r.h).max(0.0);
+        if (x, y) != (r.x, r.y) {
+            place(&mut t, x, y);
+            t.layout(ui.size, &self.font);
         }
+        self.append(gpu, assets, &t, look, scale, game, &mut |_, _, _, _, _, _| {});
     }
 
     /// An icon placed by rich text: an item, or a block state (`{block:..}`).
@@ -642,22 +688,6 @@ impl UiRenderer {
         } else {
             self.item_icon(c, t, x, y, s, icon);
         }
-    }
-
-    /// Text centered on `cx`, by default in one color (`0xRRGGBBAA`), with a shadow.
-    pub fn label_colored(&mut self, spans: &[super::text::Span], cx: f32, y: f32, px: f32, color: u32) {
-        let layout = super::text::layout(spans, &self.font, None);
-        let mut icons = Vec::new();
-        let x = (cx - layout.width * px / 2.0).round();
-        self.glyph_run(&layout.items, x, y.round(), px, color, Some(0x00000000 | (color & 0xFF) / 2), &mut icons);
-    }
-
-    /// One line of text centered on `cx` with its top at `y` (physical pixels); `alpha` fades it.
-    pub fn label(&mut self, spans: &[super::text::Span], cx: f32, y: f32, px: f32, alpha: u32) {
-        let layout = super::text::layout(spans, &self.font, None);
-        let mut icons = Vec::new();
-        let x = (cx - layout.width * px / 2.0).round();
-        self.glyph_run(&layout.items, x, y, px, 0xFFFFFF00 | alpha, Some(0x3F3F3F00 | alpha), &mut icons);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -710,7 +740,8 @@ impl UiRenderer {
                     _ => (class, state),
                 };
                 let default = t.color.unwrap_or_else(|| look.text(class, state));
-                let shadow = if parent_disabled { None } else { look.shadow(class) };
+                // A shadow fades with its text (the held item's name).
+                let shadow = if parent_disabled { None } else { look.shadow(class).map(|s| (s & !0xFF) | (s & 0xFF) * (default & 0xFF) / 255) };
                 let x = if t.center { r.x + (r.w - t.layout.width * px) / 2.0 } else { r.x };
                 self.load_images(gpu, assets, &t.layout);
                 self.glyph_run(&t.layout.items, x, r.y, px, default, shadow, icons);
@@ -722,10 +753,8 @@ impl UiRenderer {
             }
             Kind::Item { last, .. } => {
                 if last.0 != 0 {
-                    if last.1 > 1 {
-                        self.icon_counts.push((icons.len(), last.1, scale * ui.text_unit));
-                    }
-                    icons.push((r.x, r.y, r.w.min(r.h), last.0));
+                    let clip = n.clip.map_or([0.0; 4], |c| [c.x * scale, c.y * scale, (c.x + c.w) * scale, (c.y + c.h) * scale]);
+                    self.stacks.push((r, weft_abi::ItemStack::new(last.0, last.1.max(1)), clip));
                 }
             }
             Kind::Progress { class, value, dir, .. } => {

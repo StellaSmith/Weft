@@ -64,6 +64,9 @@ pub struct Style {
     pub self_align: Option<Align>,
     /// Children scroll inside this node (mouse wheel) and are clipped to it.
     pub scroll: bool,
+    /// Placed at a point instead of in the flow: (x, y) in GUI pixels from the parent's inner
+    /// corner, and which point of the node goes there (0..1 of its width and height).
+    pub at: Option<[f32; 4]>,
 }
 
 impl Default for Style {
@@ -81,11 +84,17 @@ impl Default for Style {
             justify: Justify::Start,
             self_align: None,
             scroll: false,
+            at: None,
         }
     }
 }
 
 impl Style {
+    /// See `at`: `pivot` [0.5, 1.0] puts the node's bottom middle on (x, y).
+    pub fn at(mut self, x: f32, y: f32, pivot: [f32; 2]) -> Self {
+        self.at = Some([x, y, pivot[0], pivot[1]]);
+        self
+    }
     pub fn row() -> Style {
         Style { row: true, align: Align::Center, ..Default::default() }
     }
@@ -199,6 +208,8 @@ pub struct TextNode {
     pub center: bool,
     /// Class for the default color (`ui::look`).
     pub class: String,
+    /// Line height in font units, if not the font's (tooltips: vanilla's 10 GUI pixels).
+    pub line: Option<f32>,
 }
 
 pub enum Kind {
@@ -451,6 +462,7 @@ impl Ui {
                 color: None,
                 center: false,
                 class: class.to_string(),
+                line: None,
             }),
             Style::default(),
         )
@@ -469,6 +481,7 @@ impl Ui {
                 color: None,
                 center: false,
                 class: class.to_string(),
+                line: None,
             }),
             Style::default(),
         )
@@ -539,7 +552,7 @@ impl Ui {
         let unit = self.text_unit;
         let content = if let Kind::Text(t) = &mut self.nodes[id].kind {
             let max = if t.wrap { Some(inner_avail[0].max(8.0) / (t.scale * unit)) } else { None };
-            t.layout = text::layout_with(&t.spans, font, max, font.line_height, t.mono);
+            t.layout = text::layout_with(&t.spans, font, max, t.line.unwrap_or(font.line_height), t.mono);
             [t.layout.width * t.scale * unit, t.layout.height * t.scale * unit]
         } else {
             match &self.nodes[id].kind {
@@ -550,6 +563,12 @@ impl Ui {
                 _ => {
                     let children = self.nodes[id].children.clone();
                     let (mut main, mut cross) = (0.0f32, 0.0f32);
+                    // Nodes placed at a point take no room in the flow.
+                    let placed: Vec<NodeId> = children.iter().copied().filter(|&c| self.nodes[c].style.at.is_some()).collect();
+                    for c in placed {
+                        self.measure(c, avail, font);
+                    }
+                    let children: Vec<NodeId> = children.into_iter().filter(|&c| self.nodes[c].style.at.is_none()).collect();
                     for (i, c) in children.iter().enumerate() {
                         let m = self.measure(*c, inner_avail, font);
                         let (cm, cc) = if style.row { (m[0], m[1]) } else { (m[1], m[0]) };
@@ -580,7 +599,7 @@ impl Ui {
             // Final fit: wrap to the box we actually got, or shrink if wrapping is off.
             if t.layout.width * t.scale * unit > inner.w + 0.5 {
                 if t.wrap {
-                    t.layout = text::layout_with(&t.spans, font, Some(inner.w / (t.scale * unit)), font.line_height, t.mono);
+                    t.layout = text::layout_with(&t.spans, font, Some(inner.w / (t.scale * unit)), t.line.unwrap_or(font.line_height), t.mono);
                 } else if t.layout.width > 0.0 {
                     t.scale = (inner.w / (t.layout.width * unit)).max(0.25);
                 }
@@ -588,6 +607,12 @@ impl Ui {
             return;
         }
         let children = self.nodes[id].children.clone();
+        let placed: Vec<NodeId> = children.iter().copied().filter(|&c| self.nodes[c].style.at.is_some()).collect();
+        for c in placed {
+            let ([x, y, px, py], [w, h]) = (self.nodes[c].style.at.unwrap(), self.nodes[c].measured);
+            self.arrange(c, Rect { x: inner.x + x - px * w, y: inner.y + y - py * h, w, h }, font);
+        }
+        let children: Vec<NodeId> = children.into_iter().filter(|&c| self.nodes[c].style.at.is_none()).collect();
         if children.is_empty() {
             return;
         }

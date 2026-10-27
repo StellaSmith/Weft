@@ -16,7 +16,8 @@ pub const BUILTIN: &[&str] = &["cubes", "hitboxes", "collision", "light", "regio
 pub type Line = (DVec3, DVec3, u32);
 /// A filled box between two corners; its alpha makes it see-through.
 pub type Fill = (DVec3, DVec3, u32);
-pub type Label = (DVec3, crate::ui::text::Msg, u32);
+/// Where, what, its color and its size (1: menu text).
+pub type Label = (DVec3, crate::ui::text::Msg, u32, f32);
 
 #[derive(Default)]
 pub struct Gizmos {
@@ -140,7 +141,7 @@ impl Gizmos {
                         } else {
                             0x60FF60FF
                         };
-                        labels.push((p.as_dvec3() + DVec3::new(0.5, 0.05, 0.5), crate::ui::text::Msg::new("gizmo.value", vec![crate::ui::text::Arg::Int(block as i64)]), color));
+                        labels.push((p.as_dvec3() + DVec3::new(0.5, 0.05, 0.5), crate::ui::text::Msg::new("gizmo.value", vec![crate::ui::text::Arg::Int(block as i64)]), color, 1.0));
                     }
                 }
             }
@@ -155,7 +156,7 @@ pub fn shape(s: &GizmoShape, lines: &mut Vec<Line>, fills: &mut Vec<Fill>, label
         weft_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
         weft_abi::gizmo_kind::BOX => cuboid(lines, s.a.min(s.b), s.a.max(s.b), s.color),
         weft_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
-        _ => labels.push((s.a, s.text.clone(), s.color)),
+        _ => labels.push((s.a, s.text.clone(), s.color, if s.b.x > 0.0 { s.b.x as f32 } else { 1.0 })),
     }
 }
 

@@ -467,14 +467,14 @@ pub async fn client_hooks(t: T) -> R {
     for _ in 0..3 {
         t.c().draw_fill(Some(&DRAWN), [b[0] - 3.0, b[1], b[2]], [b[0] - 2.0, b[1] + 1.0, b[2] + 1.0], 0x20FF20FF);
         t.c().draw_box(None, b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
-        t.c().draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
-        t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF);
+        t.c().draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF, 2.0);
+        t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF, 1.0);
         t.frames(1).await?;
     }
     t.c().draw_fill(Some(&DRAWN), [b[0] - 3.0, b[1], b[2]], [b[0] - 2.0, b[1] + 1.0, b[2] + 1.0], 0x20FF20FF);
     t.c().draw_box(None, b, [b[0] + 1.0, b[1] + 2.0, b[2] + 1.0], 0xFF4040FF);
-    t.c().draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF);
-    t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF);
+    t.c().draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF, 2.0);
+    t.c().screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF, 1.0);
     let shot = t.shot("drawn").await?;
     let hidden = green(&shot);
     t.probe("a shape of a group that is off is not drawn", hidden, hidden < 0.0005);
@@ -494,5 +494,14 @@ pub async fn client_hooks(t: T) -> R {
     t.cmd("/gizmo testkit:drawn").await?;
     let shown = green(&shot);
     t.probe("the same shape once its group is on", shown, shown > 0.001);
+    // Screen text is text like any other: icons of blocks and items show in it.
+    for _ in 0..3 {
+        t.c().screen_text(0.5, 0.7, "testkit.rich_label", &[], 0xFFFFFFFF, 2.0);
+        t.frames(1).await?;
+    }
+    t.c().screen_text(0.5, 0.7, "testkit.rich_label", &[], 0xFFFFFFFF, 2.0);
+    let rich = t.shot("rich_label").await?;
+    let diamond = rich.share(0.35, 0.65, 0.65, 0.8, probe::cyan);
+    t.probe("a block icon in screen text", diamond, diamond > 0.002);
     Ok(())
 }

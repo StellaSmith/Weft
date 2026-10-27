@@ -75,6 +75,9 @@ pub enum Arg<'a> {
     Int(i64),
     Float(f64),
     Item(u32),
+    /// A display name, as `{name:..}` writes it: `"item:base:coal"`, `"mod:base"`,
+    /// `"block:base:furnace"`, `"key:core:jump"`, `"recipe:base:smelting"`.
+    Name(&'a str),
 }
 
 fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
@@ -85,6 +88,7 @@ fn raw_args<'a>(args: &'a [Arg<'a>]) -> Vec<abi::UiArg> {
             Arg::Int(v) => abi::UiArg { kind: abi::ui_arg::INT, num: *v as f64, ..abi::UiArg::DEFAULT },
             Arg::Float(v) => abi::UiArg { kind: abi::ui_arg::FLOAT, num: *v, ..abi::UiArg::DEFAULT },
             Arg::Item(v) => abi::UiArg { kind: abi::ui_arg::ITEM, num: *v as f64, ..abi::UiArg::DEFAULT },
+            Arg::Name(s) => abi::UiArg { kind: abi::ui_arg::NAME, text: Str::new(s), ..abi::UiArg::DEFAULT },
         })
         .collect()
 }

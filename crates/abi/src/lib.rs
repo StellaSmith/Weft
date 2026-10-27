@@ -1766,8 +1766,10 @@ pub mod ui_arg {
     pub const KEY: u32 = 1;
     pub const INT: u32 = 2;
     pub const FLOAT: u32 = 3;
-    /// An item id, shown as its name.
+    /// An item id, shown as its icon.
     pub const ITEM: u32 = 4;
+    /// A display name, `text` like in `{name:..}`: `item:base:coal`, `mod:base`, `key:core:jump`.
+    pub const NAME: u32 = 5;
 }
 
 /// `UiNode::align`.

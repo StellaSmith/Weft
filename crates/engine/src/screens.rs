@@ -27,8 +27,7 @@ pub struct BuildCx<'a> {
 impl BuildCx<'_> {
     pub fn t(&self, key: &str, args: &[Arg]) -> Vec<Span> {
         let mut out = Vec::new();
-        let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
-        let cx = text::Ctx { lang: self.lang, input: Some(self.input), item_name: &items };
+        let cx = text::Ctx::new(self.lang, Some(self.input));
         text::format(self.lang.get(key), args, &cx, &mut out);
         out
     }
@@ -123,9 +122,8 @@ pub fn parts(ui: &mut Ui, cx: &BuildCx, screen: &str, area: &str) {
 }
 
 /// A mod's name as players see it: `mod.<id>.name` from the language files, else its id.
-pub fn mod_name(lang: &Lang, id: &str) -> String {
-    let key = format!("mod.{id}.name");
-    if lang.has(&key) { lang.get(&key).to_string() } else { id.to_string() }
+pub fn mod_name(lang: &Lang, id: &str) -> Vec<text::Span> {
+    text::Name::Mod(id.to_string()).spans(lang, None)
 }
 
 // ---------------------------------------------------------------- mods
@@ -165,7 +163,7 @@ impl Screen for ModList {
                                 Some(t) => drop(ui.add(Kind::Image { texture: t, color: 0xFFFFFFFF }, Style::default().size(16.0, 16.0))),
                                 None => drop(ui.add(Kind::Container { class: None }, Style::default().size(16.0, 16.0))),
                             }
-                            ui.text(text::plain(&mod_name(cx.lang, &m.id)), "button");
+                            ui.text(mod_name(cx.lang, &m.id), "button");
                         });
                         if let Kind::Button { selected, .. } = &mut ui.nodes[b].kind {
                             *selected = i == sel;
@@ -182,7 +180,7 @@ impl Screen for ModList {
                             ui.add(Kind::Image { texture: t, color: 0xFFFFFFFF }, Style::default().size(32.0, 32.0));
                         }
                         ui.container(Style::default().gap(1.0), |ui| {
-                            ui.text(text::plain(&mod_name(cx.lang, &m.id)), "default");
+                            ui.text(mod_name(cx.lang, &m.id), "default");
                             label(ui, cx, "mods.version", &[Arg::Text(m.version.clone()), Arg::Text(m.id.clone())], "dim");
                         });
                     });
@@ -192,7 +190,7 @@ impl Screen for ModList {
                         }
                     }
                     if !m.deps.is_empty() {
-                        let deps: Vec<String> = m.deps.iter().map(|d| mod_name(cx.lang, d)).collect();
+                        let deps: Vec<String> = m.deps.iter().map(|d| text::Name::Mod(d.clone()).text(cx.lang)).collect();
                         label(ui, cx, "mods.deps", &[Arg::Text(deps.join(", "))], "dim");
                     }
                     ui.add(Kind::Container { class: None }, Style::default().h(4.0));
@@ -475,9 +473,9 @@ impl Screen for ModSettings {
                 label(ui, cx, "settings.mods.none", &[], "dim");
             }
             for ns in namespaces {
-                let name = mod_name(cx.lang, ns);
+                let name = Arg::Name(text::Name::Mod(ns.to_string()));
                 let ns = ns.to_string();
-                button(ui, cx, "settings.mods.entry", &[Arg::Text(name)], 220.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: ns.clone(), title: None }))));
+                button(ui, cx, "settings.mods.entry", &[name], 220.0, move |c| c.requests.push(Request::Open(Box::new(ConfigScreen { ns: ns.clone(), title: None }))));
             }
             button(ui, cx, "menu.done", &[], 200.0, |c| c.requests.push(Request::Close));
         });
@@ -505,15 +503,15 @@ impl Screen for ConfigScreen {
         let c = crate::content::content();
         let ns = self.ns.clone();
         let title = self.title.clone().unwrap_or_else(|| "settings.mods.title".into());
-        let mod_name = mod_name(cx.lang, &ns);
+        let mod_name = Arg::Name(text::Name::Mod(ns.clone()));
         frame(ui, cx, &title, |ui| {
             if self.title.is_none() {
-                label(ui, cx, "settings.mods.of", &[Arg::Text(mod_name)], "default");
+                label(ui, cx, "settings.mods.of", &[mod_name], "default");
             }
             let list = ui.panel("panel", Style::default().pad(8.0).gap(6.0).stretch().w(320.0).h(0.0).grow().min_h(40.0).scroll(), |ui| {
                 for (id, d) in c.game.configs.iter().enumerate().filter(|(_, d)| d.name.split_once(':').is_some_and(|x| x.0 == ns)) {
                     let id = id as u32;
-                    let key = format!("config.{}", d.name.replace(':', "."));
+                    let key = text::lang_key("config", &d.name);
                     let locked = d.synced() && cx.remote;
                     let show = |d: &crate::config::ConfigDef, key: &str, v: f64| -> Arg {
                         match d.kind {
@@ -675,21 +673,21 @@ impl Screen for Controls {
         let waiting = self.waiting.clone();
         frame(ui, cx, "controls.title", |ui| {
             if let Some(a) = &waiting {
-                label(ui, cx, "controls.press", &[Arg::Key(format!("key.{}", a.replace(':', ".")))], "default");
+                label(ui, cx, "controls.press", &[Arg::Name(text::Name::Key(a.clone()))], "default");
             }
             let list = ui.panel("panel", Style::default().pad(8.0).gap(3.0).stretch().w(380.0).h(0.0).grow().min_h(60.0).scroll(), |ui| {
                 for b in &cx.input.binds {
                     let action = b.action.clone();
-                    let name_key = format!("key.{}", b.action.replace(':', "."));
+                    let name = text::Name::Key(b.action.clone());
                     let clash: Vec<String> = conflicts
                         .iter()
                         .filter_map(|(x, y)| if *x == b.action { Some(y.clone()) } else if *y == b.action { Some(x.clone()) } else { None })
                         .collect();
                     ui.container(Style::row().gap(6.0).self_align(crate::ui::Align::Stretch), |ui| {
-                        let n = ui.text(cx.t(&name_key, &[]), "default");
+                        let n = ui.text(name.spans(cx.lang, Some(cx.input)), "default");
                         ui.nodes[n].style.grow = 1.0;
                         if !clash.is_empty() {
-                            let names: Vec<String> = clash.iter().map(|c| cx.lang.get(&format!("key.{}", c.replace(':', "."))).to_string()).collect();
+                            let names: Vec<String> = clash.iter().map(|c| text::Name::Key(c.clone()).text(cx.lang)).collect();
                             ui.text(cx.t("controls.conflict", &[Arg::Text(names.join(", "))]), "default");
                         }
                         let a2 = action.clone();

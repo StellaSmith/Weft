@@ -27,12 +27,7 @@ impl MenuScreen {
 }
 
 fn tab_title(cx: &BuildCx, name: &str) -> Vec<Span> {
-    let key = format!("tab.{}", name.replace(':', "."));
-    if cx.lang.has(&key) {
-        return cx.t(&key, &[]);
-    }
-    // Automatic tab of a mod: its display name.
-    text::plain(&crate::screens::mod_name(cx.lang, name.split(':').next().unwrap_or(name)))
+    text::Name::Tab(name.to_string()).spans(cx.lang, Some(cx.input))
 }
 
 /// Tab row, search field and the items of the open tab (or of every tab matching the search) as
@@ -47,7 +42,7 @@ fn creative_panel(ui: &mut Ui, cx: &BuildCx, search: &Rc<RefCell<String>>, tab: 
         c.creative_tabs
             .iter()
             .flat_map(|t| t.items.iter().copied())
-            .filter(|&i| c.items[i as usize].name.to_lowercase().contains(&filter) || crate::hud::item_name(cx.lang, i).to_lowercase().contains(&filter))
+            .filter(|&i| c.items[i as usize].name.to_lowercase().contains(&filter) || text::Name::Item(i).text(cx.lang).to_lowercase().contains(&filter))
             .collect()
     };
     ui.panel("panel", Style::default().pad(7.0).gap(4.0), |ui| {
@@ -387,8 +382,7 @@ fn found_recipes(q: &RecipeQuery) -> Vec<(&'static str, Vec<usize>)> {
 }
 
 fn kind_title(cx: &BuildCx, kind: &str) -> Vec<text::Span> {
-    let key = format!("recipe.{}", kind.replace(':', "."));
-    if cx.lang.has(&key) { cx.t(&key, &[]) } else { text::plain(kind) }
+    text::Name::Recipe(kind.to_string()).spans(cx.lang, Some(cx.input))
 }
 
 /// Item standing for a kind on its tab: its first station, or what its first recipe makes.
@@ -407,8 +401,8 @@ impl Screen for RecipeView {
         let (mut tab, mut page) = self.state.get();
         tab = tab.min(found.len().saturating_sub(1));
         let (title, args) = match &self.query {
-            RecipeQuery::MadeBy(i) => ("recipes.made_by", vec![text::Arg::Text(crate::hud::item_name(cx.lang, *i))]),
-            RecipeQuery::UsedIn(i) => ("recipes.uses", vec![text::Arg::Text(crate::hud::item_name(cx.lang, *i))]),
+            RecipeQuery::MadeBy(i) => ("recipes.made_by", vec![text::Arg::Name(text::Name::Item(*i))]),
+            RecipeQuery::UsedIn(i) => ("recipes.uses", vec![text::Arg::Name(text::Name::Item(*i))]),
             RecipeQuery::Kinds(_) => ("recipes.all", Vec::new()),
         };
         // As many recipes on a page as fit the window.
@@ -604,8 +598,7 @@ pub fn recipe_slot(ui: &mut Ui, lang: &crate::ui::lang::Lang, input: &crate::inp
     use crate::registry::Ingredient;
     let c = content();
     let fmt = |key: &str, args: &[text::Arg]| {
-        let items = |name: &str| c.item_by_ref(name);
-        let tcx = text::Ctx { lang, input: Some(input), item_name: &items };
+        let tcx = text::Ctx::new(lang, Some(input));
         let mut out = Vec::new();
         text::format(lang.get(key), args, &tcx, &mut out);
         out
@@ -625,9 +618,7 @@ pub fn recipe_slot(ui: &mut Ui, lang: &crate::ui::lang::Lang, input: &crate::inp
             let b = ui.button("recipe_slot", size, Rc::new(|_: &mut Ctx| {}), |ui| {
                 ui.add(Kind::Image { texture, color }, Style::default().size(16.0, 16.0));
             });
-            let key = format!("block.{}", name.replace(':', "."));
-            let fluid_name = if lang.has(&key) { lang.get(&key).to_string() } else { name.clone() };
-            tip = text::plain(&fluid_name);
+            tip = text::Name::Liquid(name.clone()).spans(lang, None);
             tip.push(text::Span::text("\n", None));
             tip.extend(fmt("recipes.fluid_amount", &[text::Arg::Int(count as i64)]));
             b

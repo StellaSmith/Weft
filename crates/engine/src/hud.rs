@@ -393,35 +393,14 @@ pub fn slot_background(ren: &mut UiRenderer, theme: &Theme, class: &str, r: Rect
     }
 }
 
-/// Display name of an item: `item.<ns>.<path>`, then `block.<ns>.<path>`, then the raw name.
-fn item_key(lang: &Lang, item: u32) -> Option<String> {
-    let d = content().items.get(item as usize)?;
-    let path = d.name.replace(':', ".");
-    [format!("item.{path}"), format!("block.{path}")].into_iter().find(|k| lang.has(k))
-}
-
-pub fn item_name(lang: &Lang, item: u32) -> String {
-    match item_key(lang, item) {
-        Some(k) => lang.get(&k).to_string(),
-        None => content().items.get(item as usize).map_or(String::new(), |d| d.name.clone()),
-    }
-}
-
-/// The item's name as shown: its translation formatted (a name can have colors and effects).
-pub fn item_name_spans(lang: &Lang, input: Option<&crate::input::Input>, item: u32) -> Vec<text::Span> {
-    match item_key(lang, item) {
-        Some(k) => text::rich(lang.get(&k), lang, input),
-        None => text::plain(content().items.get(item as usize).map_or("", |d| d.name.as_str())),
-    }
-}
 
 /// The name, then the `<name key>.tooltip` translation in gray (details usually behind
 /// `{on_key:core:sneak}`) and the mods' own lines under it, then durability for damaged tools.
 pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::ItemStack) -> Vec<text::Span> {
     const GRAY: u32 = 0xA8A8A8;
-    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
-    let cx = text::Ctx { lang, input: Some(input), item_name: &items };
-    let mut out = item_name_spans(lang, Some(input), stack.item);
+    let cx = text::Ctx::new(lang, Some(input));
+    let name = text::Name::Item(stack.item);
+    let mut out = name.spans(lang, Some(input));
     let line = |template: &str, args: &[text::Arg], out: &mut Vec<text::Span>| {
         out.push(text::Span::text("\n", None));
         let start = out.len();
@@ -430,7 +409,7 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::I
             s.color = s.color.or(Some(GRAY));
         }
     };
-    if let Some(key) = item_key(lang, stack.item).map(|k| format!("{k}.tooltip")) {
+    if let Some(key) = name.key(lang).map(|k| format!("{k}.tooltip")) {
         if lang.has(&key) {
             line(lang.get(&key), &[], &mut out);
         }

@@ -142,6 +142,7 @@ Text can carry colors and effects:
 - `{on_key:core:sneak}This text will appear only when the bound key is pressed{/on_key}`
 - `{if:creative}This text will appear if the player is in creative mode{/if}`
 - `{img:mymod:logo}` (from `gui/`), `{block:base:furnace}` and `{align:center}..{/align}` for pictures, blocks and centered lines
+- `{name:item:base:coal}` for the name of anything players see named (items, blocks, liquids, tabs, mods, recipe kinds, settings, keys), the same name everywhere
 
 All of it works in any text the game shows, chat and command replies included, so there is no second kind of text to learn.
 

@@ -25,6 +25,7 @@ They work in any translation, not only in tooltips:
 | `{align:center}text{/align}` | lays out the lines inside centered (`left`, `right`); a picture alone on such a line is a centered picture |
 | `{key:core:sneak}` | the key the player has bound to that action |
 | `{lang:some.key}` | inserts another translation, so a shared phrase is written once |
+| `{name:item:base:coal}` | the display name of something, colors and all: `item:`, `block:`, `liquid:`, `tab:`, `mod:`, `recipe:`, `config:`, `key:`. Without a translation it shows the raw name. From code it's `Arg::Name("item:base:coal")` |
 | `{on_key:core:sneak}text{/on_key}` | shown only while the key is held; `!` in front inverts it; raw keys work too, but it's recommended to not use them |
 | `{if:creative}text{/if}` | shown while a condition holds, `!` inverts it: `{if:!creative}text{/if}` |
 | `{fx:core:wave}text{/fx}` | animates the text with an effect |

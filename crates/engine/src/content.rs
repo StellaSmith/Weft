@@ -1850,7 +1850,7 @@ mod tests {
     use super::*;
 
     fn meta(id: &str, deps: &[&str]) -> ModMeta {
-        ModMeta { id: id.into(), name: id.into(), version: "1".into(), deps: deps.iter().map(|d| d.to_string()).collect(), order: 0 }
+        ModMeta { id: id.into(), version: "1".into(), deps: deps.iter().map(|d| d.to_string()).collect(), order: 0 }
     }
 
     #[test]

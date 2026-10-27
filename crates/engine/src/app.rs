@@ -1013,8 +1013,7 @@ impl Running {
             stats: &self.stats,
             debug: self.debug,
         };
-        let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
-        let tcx = text::Ctx { lang: &self.lang, input: Some(ctx.input), item_name: &items };
+        let tcx = text::Ctx::new(&self.lang, Some(ctx.input));
         // Each condition is asked once per frame however many texts use it.
         let asked: std::cell::RefCell<Vec<(String, bool)>> = Default::default();
         let dev = self.lang.dev;
@@ -1595,7 +1594,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let age = at.elapsed().as_secs_f32();
         if item != 0 && age < 2.0 {
             let alpha = ((2.0 - age) / 0.5).min(1.0);
-            let name = crate::hud::item_name_spans(&r.lang, Some(&r.input), item);
+            let name = text::Name::Item(item).spans(&r.lang, Some(&r.input));
             let (w, h) = r.gpu.surface_size();
             r.ui.label(&name, w as f32 / 2.0, h as f32 - 59.0 * scale, scale * text_unit, (alpha * 255.0) as u32);
         }

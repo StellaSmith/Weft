@@ -35,6 +35,91 @@ pub enum Arg {
     Int(i64),
     Float(f64, u8),
     Item(u32),
+    /// The display name of something, as rich as its translation.
+    Name(Name),
+}
+
+/// Something with a display name. Each kind looks for its translations in order and shows its
+/// raw name without one; `{name:<kind>:<id>}` in a template is the same.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Name {
+    Item(u32),
+    /// A block state.
+    Block(u32),
+    /// A liquid, by its block's name.
+    Liquid(String),
+    Tab(String),
+    Mod(String),
+    Recipe(String),
+    Config(String),
+    Key(String),
+}
+
+/// `prefix.ns.path` for `ns:path`: how a thing's name becomes its translation key.
+pub fn lang_key(prefix: &str, name: &str) -> String {
+    format!("{prefix}.{}", dotted(name))
+}
+
+/// `ns.path` for `ns:path`, the part of a translation key a name gives.
+pub fn dotted(name: &str) -> String {
+    name.replace(':', ".")
+}
+
+impl Name {
+    /// `{name:item:base:coal}` and the like.
+    pub fn parse(spec: &str) -> Option<Name> {
+        let (kind, id) = spec.split_once(':')?;
+        let c = crate::content::try_content();
+        Some(match kind {
+            "item" => Name::Item(c?.item_by_ref(id)?),
+            "block" => Name::Block(c?.state_by_name(id)?),
+            "liquid" => Name::Liquid(id.to_string()),
+            "tab" => Name::Tab(id.to_string()),
+            "mod" => Name::Mod(id.to_string()),
+            "recipe" => Name::Recipe(id.to_string()),
+            "config" => Name::Config(id.to_string()),
+            "key" => Name::Key(id.to_string()),
+            _ => return None,
+        })
+    }
+
+    /// Translation keys to try, in order, and the text shown when none is there.
+    pub fn keys(&self) -> (Vec<String>, String) {
+        let c = crate::content::try_content();
+        match self {
+            Name::Item(i) => {
+                let n = c.and_then(|c| c.items.get(*i as usize)).map_or(String::new(), |d| d.name.clone());
+                (vec![lang_key("item", &n), lang_key("block", &n)], n)
+            }
+            Name::Block(s) => {
+                let n = c.and_then(|c| c.states.get(*s as usize).map(|_| c.block_of(*s).name.clone())).unwrap_or_default();
+                (vec![lang_key("block", &n), lang_key("item", &n)], n)
+            }
+            Name::Liquid(n) => (vec![lang_key("block", n)], n.clone()),
+            // A mod's own tab, made for items in none, is called like the mod.
+            Name::Tab(n) => (vec![lang_key("tab", n), format!("mod.{}.name", n.split(':').next().unwrap_or(n))], n.clone()),
+            Name::Mod(id) => (vec![format!("mod.{id}.name")], id.clone()),
+            Name::Recipe(n) => (vec![lang_key("recipe", n)], n.clone()),
+            Name::Config(n) => (vec![lang_key("config", n)], n.clone()),
+            Name::Key(n) => (vec![lang_key("key", n)], n.clone()),
+        }
+    }
+
+    /// The translation key that exists, if any.
+    pub fn key(&self, lang: &Lang) -> Option<String> {
+        self.keys().0.into_iter().find(|k| lang.has(k))
+    }
+
+    /// As plain text (searching, sorting).
+    pub fn text(&self, lang: &Lang) -> String {
+        plain_text(&self.spans(lang, None))
+    }
+
+    pub fn spans(&self, lang: &Lang, input: Option<&Input>) -> Vec<Span> {
+        let mut out = Vec::new();
+        format("{0}", &[Arg::Name(self.clone())], &Ctx::new(lang, input), &mut out);
+        out
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -145,10 +230,17 @@ pub fn image_name(id: u16) -> Option<String> {
     IMAGES.lock().unwrap().get(id as usize).cloned()
 }
 
+/// What formatting reads: the language and the keys bound (for `{key:..}` and `{on_key:..}`).
+/// Names of content come from the loaded content.
 pub struct Ctx<'a> {
     pub lang: &'a Lang,
     pub input: Option<&'a Input>,
-    pub item_name: &'a dyn Fn(&str) -> Option<u32>,
+}
+
+impl<'a> Ctx<'a> {
+    pub fn new(lang: &'a Lang, input: Option<&'a Input>) -> Ctx<'a> {
+        Ctx { lang, input }
+    }
 }
 
 pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
@@ -159,10 +251,8 @@ pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
 /// A template without arguments: a translation, a chat line, a pack's description, text a mod
 /// draws. Item names in it resolve against the loaded content.
 pub fn rich(template: &str, lang: &Lang, input: Option<&Input>) -> Vec<Span> {
-    let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
-    let cx = Ctx { lang, input, item_name: &items };
     let mut out = Vec::new();
-    format(template, &[], &cx, &mut out);
+    format(template, &[], &Ctx::new(lang, input), &mut out);
     out
 }
 
@@ -259,8 +349,13 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
             let color = Some(st.color.unwrap_or(0xFFE070));
             out.push(st.span(Piece::Text(format!("[{name}]")), color));
         } else if let Some(item) = tag.strip_prefix("item:") {
-            if let Some(id) = (cx.item_name)(item) {
+            if let Some(id) = crate::content::try_content().and_then(|c| c.item_by_ref(item)) {
                 out.push(st.span(Piece::Icon(id), None));
+            }
+        } else if let Some(spec) = tag.strip_prefix("name:") {
+            match Name::parse(spec) {
+                Some(n) => push_name(&n, cx, out, st, depth),
+                None => push_text(out, spec, st),
             }
         } else if let Some(spec) = tag.strip_prefix("block:") {
             let state = crate::content::try_content().and_then(|c| c.state_by_name(spec));
@@ -311,6 +406,7 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
                 Some(Arg::Int(v)) => push_text(out, &v.to_string(), st),
                 Some(Arg::Float(v, p)) => push_text(out, &format!("{v:.*}", *p as usize), st),
                 Some(Arg::Item(id)) => out.push(st.span(Piece::Icon(*id), None)),
+                Some(Arg::Name(n)) => push_name(n, cx, out, st, depth),
                 Some(Arg::Key(k)) if depth < 4 => {
                     let color = st.color;
                     format_depth(cx.lang.get(k), &[], cx, out, st, color, depth + 1);
@@ -323,6 +419,18 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
         }
     }
     push_text(out, rest, st);
+}
+
+/// A name, formatted from its translation (colors and effects kept) or its raw text.
+fn push_name(n: &Name, cx: &Ctx, out: &mut Vec<Span>, st: &mut State, depth: u32) {
+    match n.key(cx.lang) {
+        Some(k) if depth < 4 => {
+            let color = st.color;
+            format_depth(cx.lang.get(&k), &[], cx, out, st, color, depth + 1);
+            st.color = color;
+        }
+        _ => push_text(out, &n.keys().1, st),
+    }
 }
 
 /// Re-evaluates conditional spans; `test` answers a condition without its `!`. True if anything
@@ -522,6 +630,11 @@ pub fn plain(s: &str) -> Vec<Span> {
     vec![Span::text(s, None)]
 }
 
+/// The text of spans, without icons or formatting.
+pub fn plain_text(spans: &[Span]) -> String {
+    spans.iter().filter_map(|s| if let Piece::Text(t) = &s.piece { Some(t.as_str()) } else { None }).collect()
+}
+
 /// Every inline image a layout draws, for loading their textures before drawing.
 pub fn images(layout: &TextLayout) -> impl Iterator<Item = u16> + '_ {
     layout.items.iter().filter_map(|p| if let Placed::Image { image, .. } = p { Some(*image) } else { None })
@@ -532,9 +645,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn names_fall_back_to_the_raw_name() {
+        let lang = Lang::load(&crate::assets::Assets::new([], Vec::new()), "en_us", false);
+        assert_eq!(Name::parse("mod:base"), Some(Name::Mod("base".into())));
+        assert_eq!(Name::parse("key:core:jump"), Some(Name::Key("core:jump".into())));
+        assert_eq!(Name::Mod("base".into()).text(&lang), "base");
+        let mut spans = Vec::new();
+        format("[{name:recipe:base:smelting}]", &[], &Ctx::new(&lang, None), &mut spans);
+        assert_eq!(plain_text(&spans), "[base:smelting]");
+        assert_eq!(lang_key("config", "mymod:sparks"), "config.mymod.sparks");
+    }
+
+    #[test]
     fn conditions_and_effects() {
         let lang = Lang::load(&crate::assets::Assets::new([], Vec::new()), "en_us", false);
-        let cx = Ctx { lang: &lang, input: None, item_name: &|_| None };
+        let cx = Ctx::new(&lang, None);
         let mut spans = Vec::new();
         format("a{on_key:!core:sneak}b{if:creative}c{/if}{/on_key}{fx:core:wave}d{/fx}e", &[], &cx, &mut spans);
         let text = |s: &Span| match &s.piece {
@@ -557,7 +682,7 @@ mod tests {
     #[test]
     fn images_and_alignment() {
         let lang = Lang::load(&crate::assets::Assets::new([], Vec::new()), "en_us", false);
-        let cx = Ctx { lang: &lang, input: None, item_name: &|_| None };
+        let cx = Ctx::new(&lang, None);
         let mut spans = Vec::new();
         format("{align:center}{img:base:x 16x12}{/align}
 ab", &[], &cx, &mut spans);

@@ -1205,7 +1205,7 @@ unsafe extern "C" fn reg_hud_element(r: *mut abi::Registrar, name: Str, anchor: 
     unsafe {
         let r = reg(r);
         let owner = r.owner;
-        r.game.huds.push(registry::HudElement { name: name.as_str().to_string(), title: name.as_str().replace(':', "."), anchor: anchor.as_str().to_string(), order, owner, cb });
+        r.game.huds.push(registry::HudElement { name: name.as_str().to_string(), title: crate::ui::text::dotted(name.as_str()), anchor: anchor.as_str().to_string(), order, owner, cb });
     }
 }
 

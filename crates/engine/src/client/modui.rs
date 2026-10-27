@@ -104,6 +104,10 @@ fn args(list: abi::Slice<abi::UiArg>) -> Vec<Arg> {
                 abi::ui_arg::INT => Arg::Int(a.num as i64),
                 abi::ui_arg::FLOAT => Arg::Float(a.num, 1),
                 abi::ui_arg::ITEM => Arg::Item(a.num as u32),
+                abi::ui_arg::NAME => match text::Name::parse(a.text.as_str()) {
+                    Some(n) => Arg::Name(n),
+                    None => Arg::Text(a.text.as_str().to_string()),
+                },
                 k => {
                     crate::host::misuse("ui_text", || format!("no argument kind {k}"));
                     Arg::Text(String::new())
@@ -162,8 +166,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             if key.len == 0 {
                 return out;
             }
-            let items = |name: &str| crate::content::try_content().and_then(|c| c.item_by_ref(name));
-            let cx = text::Ctx { lang, input, item_name: &items };
+            let cx = text::Ctx::new(lang, input);
             text::format(lang.get(key.as_str()), &args(a), &cx, &mut out);
             out
         };

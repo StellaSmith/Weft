@@ -198,7 +198,7 @@ fn init(r: &mut Registry) {
         .sky(0xd8a080, 0xe0b090);
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
-    r.liquid(&OIL).texture("oil_still").opacity(4).drag(0.4).flow_delay(15).drop_off(2).slope_find(3).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
+    r.liquid(&OIL).opacity(4).drag(0.4).flow_delay(15).drop_off(2).slope_find(3).tag("oil").bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
 
     // Healing food without touching the base game's eating code: any used item that heals.
     r.set("#cooked_meat/*", &FOOD_HEAL, 2.0);

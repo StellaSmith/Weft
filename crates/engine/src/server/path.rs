@@ -7,7 +7,6 @@ use std::collections::BinaryHeap;
 
 use glam::{DVec3, IVec3};
 use rustc_hash::FxHashMap;
-use weft_abi::block_flags as bf;
 
 use crate::content::Content;
 
@@ -57,9 +56,9 @@ pub fn find(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, from: IVec3, to:
         })
     };
     let room = |p: IVec3| (0..height).all(|k| open(p + IVec3::Y * k));
-    let ground = |p: IVec3| block(p - IVec3::Y).is_some_and(|s| c.states[s as usize].flags & bf::LIQUID != 0 || top(s).is_some_and(|t| t >= 0.5));
+    let ground = |p: IVec3| block(p - IVec3::Y).is_some_and(|s| c.states[s as usize].liquid.is_some() || top(s).is_some_and(|t| t >= 0.5));
     let standable = |p: IVec3| room(p) && ground(p);
-    let wet = |p: IVec3| block(p).is_some_and(|s| c.states[s as usize].flags & bf::LIQUID != 0);
+    let wet = |p: IVec3| block(p).is_some_and(|s| c.states[s as usize].liquid.is_some());
     let h = |p: IVec3| (p - to).as_vec3().length();
 
     let (mut came, mut queue) = SCRATCH.with_borrow_mut(std::mem::take);

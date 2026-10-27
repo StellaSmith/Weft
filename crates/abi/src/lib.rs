@@ -332,8 +332,6 @@ pub enum Model {
     Cube = 1,
     /// Two diagonal quads (plants).
     Cross = 2,
-    /// Cube with height from the state's `level` (0..8), surface faces only against other liquids.
-    Liquid = 3,
     /// `boxes` with their own textures.
     Boxes = 4,
 }
@@ -367,8 +365,6 @@ pub struct StateDesc {
     /// How much light it absorbs per block, 0 for air/glass, 15 or more blocks it fully.
     pub opacity: u8,
     pub layer: Layer,
-    /// Liquid level 0..7 (0 = source), meaningful for `Model::Liquid`.
-    pub level: u8,
     pub model: Model,
     pub textures: [Str; 6],
     pub boxes: Slice<ModelBox>,
@@ -386,7 +382,6 @@ defaults!(StateDesc {
     filter: [0; 3],
     opacity: 15,
     layer: Layer::Opaque,
-    level: 0,
     model: Model::Cube,
     textures: [Str::EMPTY; 6],
     boxes: Slice::EMPTY,

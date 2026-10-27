@@ -443,7 +443,6 @@ struct StateDef {
     filter: [u8; 3],
     opacity: u8,
     layer: Layer,
-    level: u8,
     model: Model,
     textures: [String; 6],
     boxes: Vec<([f32; 3], [f32; 3], [String; 6])>,
@@ -470,7 +469,6 @@ impl StateDef {
             filter: d.filter,
             opacity: d.opacity,
             layer: d.layer,
-            level: d.level,
             model: d.model,
             textures: std::array::from_fn(|_| tex.to_string()),
             boxes: Vec::new(),
@@ -675,19 +673,6 @@ macro_rules! state_setters {
         }
         pub fn collision(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
             self.each(|s, _| s.collision.push([min[0], min[1], min[2], max[0], max[1], max[2]]));
-            self
-        }
-        /// Liquid model with the given level (0 = source, 7 = thinnest).
-        pub fn liquid(mut self, level: u8) -> Self {
-            self.each(|s, _| {
-                s.flags = bf::LIQUID | bf::REPLACEABLE | bf::NOT_TARGETABLE;
-                s.model = Model::Liquid;
-                s.layer = Layer::Translucent;
-                s.level = level;
-                s.opacity = 2;
-                s.put(&c::HARDNESS, -1.0);
-                s.put(&c::DRAG, 0.5);
-            });
             self
         }
         /// Air-like: invisible, no collision, not targetable.
@@ -1052,7 +1037,6 @@ impl Drop for BlockBuilder<'_> {
                 filter: s.filter,
                 opacity: s.opacity,
                 layer: s.layer,
-                level: s.level,
                 model: s.model,
                 textures: std::array::from_fn(|i| Str::new(&s.textures[i])),
                 boxes: Slice::new(b),
@@ -1777,7 +1761,8 @@ impl Drop for LiquidBuilder<'_> {
         let short = self.handle.path().to_string();
         let tex = if self.texture.is_empty() { format!("{short}_still") } else { self.texture.clone() };
         let (tint, light, opacity, drag) = (self.tint, self.light, self.opacity, self.drag);
-        let mut b = self.reg.block(self.handle).texture(&tex).prop("level", 0..=15).states(|p, s| s.liquid(if p.int("level") >= 8 { 0 } else { p.int("level") as u8 })).light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
+        // The engine makes its 16 states liquid (flags, look, level) from `reg_liquid`.
+        let mut b = self.reg.block(self.handle).texture(&tex).prop("level", 0..=15).unbreakable().light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
         if let Some(kind) = tint {
             b = b.tint(kind);
         }

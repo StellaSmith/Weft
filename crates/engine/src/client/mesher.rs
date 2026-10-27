@@ -78,6 +78,10 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                 }
                 let info = &c.states[s as usize];
                 let biome = n.biomes[(z * 16 + x) as usize] as u32;
+                if info.liquid.is_some() {
+                    liquid(c, n, &mut mesh, x, y, z, biome);
+                    continue;
+                }
                 match info.model {
                     Model::None => {}
                     Model::Cube => {
@@ -144,7 +148,6 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                             }
                         }
                     }
-                    Model::Liquid => liquid(c, n, &mut mesh, x, y, z, biome),
                 }
             }
         }

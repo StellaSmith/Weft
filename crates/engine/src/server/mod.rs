@@ -779,7 +779,7 @@ impl Server {
                     p.fall += (-dy) as f32;
                 }
                 let Some((r, entity)) = self.region(pi) else { return };
-                let in_liquid = r.get(pos.floor().as_ivec3()).is_some_and(|s| c.states[s as usize].flags & abi::block_flags::LIQUID != 0);
+                let in_liquid = r.get(pos.floor().as_ivec3()).is_some_and(|s| c.states[s as usize].liquid.is_some());
                 if in_liquid {
                     land = None;
                 }

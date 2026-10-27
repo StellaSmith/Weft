@@ -389,7 +389,7 @@ pub fn raycast(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, origin: DVec3
     while t <= max {
         if let Some(state) = block(p) {
             let s = &c.states[state as usize];
-            if s.flags & bf::NOT_TARGETABLE == 0 || (liquids && s.flags & bf::LIQUID != 0) {
+            if s.flags & bf::NOT_TARGETABLE == 0 || (liquids && s.liquid.is_some()) {
                 let local = origin - p.as_dvec3();
                 let best = s.selection.iter().filter_map(|b| ray_box(local, dir, b, max)).min_by(|a, b| a.0.total_cmp(&b.0));
                 if let Some((dist, face)) = best {
@@ -440,7 +440,7 @@ fn ray_box(o: DVec3, d: DVec3, b: &[f32; 6], max: f64) -> Option<(f64, u8)> {
 /// Whether liquid fills the block `level` above the feet at `pos` (0 the feet, the eye height for
 /// eyes): the one question of "in water", asked at the height the caller means.
 pub fn in_liquid(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, pos: DVec3, level: f64) -> bool {
-    block((pos + DVec3::Y * level).floor().as_ivec3()).is_some_and(|s| c.states[s as usize].flags & bf::LIQUID != 0)
+    block((pos + DVec3::Y * level).floor().as_ivec3()).is_some_and(|s| c.states[s as usize].liquid.is_some())
 }
 
 /// How a walker moves itself this tick, in blocks per tick like vanilla.

@@ -993,12 +993,11 @@ impl Dim {
                 let r = 20.0 + self.rng.float() as f64 * 25.0;
                 let (x, z) = ((p.x + a.cos() * r).floor() as i32, (p.z + a.sin() * r).floor() as i32);
                 // First spot with room for a mob, scanning down from above the player.
-                let flags = |y: i32| self.get(IVec3::new(x, y, z)).map_or(bf::SOLID, |s| c.states[s as usize].flags);
+                // Unloaded counts as solid; liquids are not solid.
+                let state = |y: i32| self.get(IVec3::new(x, y, z)).map(|s| &c.states[s as usize]);
+                let solid = |y: i32| state(y).is_none_or(|s| s.flags & bf::SOLID != 0);
                 let top = p.y.floor() as i32 + 16;
-                let Some(y) = (top - 32..top).rev().find(|&y| {
-                    let below = flags(y - 1);
-                    below & bf::SOLID != 0 && below & bf::LIQUID == 0 && flags(y) & (bf::SOLID | bf::LIQUID) == 0 && flags(y + 1) & bf::SOLID == 0
-                }) else {
+                let Some(y) = (top - 32..top).rev().find(|&y| solid(y - 1) && !solid(y) && state(y).is_some_and(|s| s.liquid.is_none()) && !solid(y + 1)) else {
                     continue;
                 };
                 let spot = IVec3::new(x, y, z);

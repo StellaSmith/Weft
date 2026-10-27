@@ -57,9 +57,11 @@ impl StateInfo {
     /// The block texture an item of this block shows as a flat sprite (vanilla's generated item
     /// models): plants and liquids. Other shapes are drawn as their model.
     pub fn item_sprite(&self) -> Option<u32> {
+        if self.liquid.is_some() {
+            return Some(self.textures[3]);
+        }
         match self.model {
             Model::Cross | Model::None => Some(self.textures[0]),
-            Model::Liquid => Some(self.textures[3]),
             _ => None,
         }
     }
@@ -619,7 +621,6 @@ pub struct RawState {
     pub filter: [u8; 3],
     pub opacity: u8,
     pub layer: Layer,
-    pub level: u8,
     pub model: Model,
     pub textures: [String; 6],
     pub boxes: Vec<([f32; 3], [f32; 3], [String; 6])>,
@@ -725,7 +726,6 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 filter: s.filter,
                 opacity: s.opacity,
                 layer: s.layer,
-                level: s.level,
                 model: s.model,
                 textures: std::array::from_fn(|i| s.textures[i].as_str().to_string()),
                 boxes,
@@ -1168,7 +1168,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 tint: 0,
                 tint_faces: 0x3F,
                 layer: s.layer,
-                level: s.level,
+                level: 0,
                 model: s.model,
                 // Box models carry textures per box; the state-level ones are unused.
                 textures: if matches!(s.model, Model::Boxes | Model::None) {
@@ -1970,8 +1970,13 @@ fn freeze_liquids(
             continue;
         }
         let id = liquids.len() as u16;
+        // States 0..8 are levels (0 the source), 8..16 falling: full height.
         for s in 0..16 {
-            states[(def.first_state + s) as usize].liquid = Some(id);
+            let st = &mut states[(def.first_state + s) as usize];
+            st.liquid = Some(id);
+            st.level = if s < 8 { s as u8 } else { 0 };
+            st.flags = abi::block_flags::LIQUID | abi::block_flags::REPLACEABLE | abi::block_flags::NOT_TARGETABLE | (st.flags & abi::block_flags::RANDOM_TICKS);
+            st.layer = Layer::Translucent;
         }
         liquids.push(LiquidDef {
             name: name.clone(),

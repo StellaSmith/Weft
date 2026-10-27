@@ -165,7 +165,7 @@ fn init(r: &mut Registry) {
         .hardness(2.0)
         .mineable("pickaxe")
         .tab(&BASE_BUILDING);
-    r.block(&REINFORCED_STONE).hardness(4.0).mineable("pickaxe").needs_tool(250).tab(&BASE_BUILDING);
+    r.block(&REINFORCED_STONE).shader("stripes").hardness(4.0).mineable("pickaxe").needs_tool(250).tab(&BASE_BUILDING);
     r.biome(&DUST).surface("regolith", "regolith", 3).tint(&tints::GRASS, 0xb5764a).tint(&tints::FOLIAGE, 0x9a6040).tint(&tints::WATER, 0x8a5a40);
     // The hottest, driest part of base's deserts.
     r.biome(&SCORCHED).temperature(0.4..).humidity(..-0.1).surface("regolith", "regolith", 2).tint(&tints::GRASS, 0xbf8a50).tint(&tints::FOLIAGE, 0xae7a3a).tag("dry").tag("hot");

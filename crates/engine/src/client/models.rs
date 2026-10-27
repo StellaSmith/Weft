@@ -14,47 +14,8 @@ use crate::components::ENTITY;
 use crate::content::content;
 use crate::model::{self, Bound, Motion};
 use crate::registry::Part;
-
-#[repr(C)]
-#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Instance {
-    /// Filled in when queued.
-    pub bones: u32,
-    pub cuboids: u32,
-    pub cuboid_count: u32,
-    pub vertices: u32,
-    pub color: [f32; 3],
-    pub hurt: f32,
-    pub tex: u32,
-    pub inflate: f32,
-    pub tex_size: [f32; 2],
-    pub roles: u32,
-    pub shader: u32,
-    pub glow: u32,
-    pub light: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuCuboid {
-    origin: [f32; 3],
-    bone: u32,
-    size: [f32; 3],
-    inflate: f32,
-    faces: [[f32; 4]; 6],
-    role: u32,
-    _pad: [u32; 3],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuCorner {
-    pos: [f32; 3],
-    bone: u32,
-    uv: [f32; 2],
-    role: u32,
-    _pad: u32,
-}
+pub use crate::gpu_layout::Instance;
+use crate::gpu_layout::{GpuCorner, GpuCuboid};
 
 /// A kind's model and animations.
 pub struct KindModel {
@@ -178,9 +139,9 @@ impl Models {
             for (b, p) in parts.iter().enumerate() {
                 for cu in &p.cuboids {
                     let origin = [p.pivot[0] + cu.origin[0], p.pivot[1] + cu.origin[1], p.pivot[2] + cu.origin[2]];
-                    cuboids.push(GpuCuboid { origin, bone: b as u32, size: cu.size, inflate: cu.inflate, faces: cu.face_rects(), role: p.role, _pad: [0; 3] });
+                    cuboids.push(GpuCuboid { origin, bone: b as u32, size: cu.size, inflate: cu.inflate, faces: cu.face_rects(), role: p.role, pad0: 0, pad1: 0, pad2: 0 });
                 }
-                corners.extend(p.mesh.iter().map(|v| GpuCorner { pos: v.pos, bone: b as u32, uv: v.uv, role: p.role, _pad: 0 }));
+                corners.extend(p.mesh.iter().map(|v| GpuCorner { pos: v.pos, bone: b as u32, uv: v.uv, role: p.role, pad: 0 }));
             }
             let anims: Vec<Bound> = anims.into_iter().map(|a| Bound::new(a, &parts)).collect();
             let find = |n: &str| anims.iter().position(|a| a.anim.name == n);

@@ -2,84 +2,6 @@
 // layer (skin or something worn) is one instance pointing at its bone matrices, posed on the CPU
 // (hierarchy, keyframes, vanilla's limb swing) and uploaded per frame.
 
-struct Instance {
-    // First bone matrix, first box and box count, first mesh corner of its kind.
-    bones: u32,
-    cuboids: u32,
-    cuboid_count: u32,
-    vertices: u32,
-    // Tint (rgb) and hurt flash.
-    color: vec3<f32>,
-    hurt: f32,
-    tex: u32,
-    // Extra model pixels on every side (worn layers).
-    inflate: f32,
-    tex_size: vec2<f32>,
-    // Bit per part role this layer draws.
-    roles: u32,
-    // Entity shader slot (`shaders/entity/<name>.wgsl`, 0 none) and glow mask texture (all ones:
-    // none).
-    shader: u32,
-    glow: u32,
-    // Light as the world stores it, all ones: full light.
-    light: u32,
-}
-
-struct Cuboid {
-    // Corner in model pixels and the bone moving it.
-    origin: vec3<f32>,
-    bone: u32,
-    size: vec3<f32>,
-    inflate: f32,
-    // Texel rectangles of the faces, -X +X -Y +Y -Z +Z.
-    faces: array<vec4<f32>, 6>,
-    role: u32,
-    _p0: u32,
-    _p1: u32,
-    _p2: u32,
-}
-
-struct Corner {
-    pos: vec3<f32>,
-    bone: u32,
-    uv: vec2<f32>,
-    role: u32,
-    _p: u32,
-}
-
-// Model pixels to camera-relative blocks, rows of a 3x4 matrix.
-struct Bone {
-    r0: vec4<f32>,
-    r1: vec4<f32>,
-    r2: vec4<f32>,
-}
-
-struct View {
-    view_proj: mat4x4<f32>,
-    fog_color: vec4<f32>,
-    // x fog start, y fog end, w seconds
-    fog: vec4<f32>,
-    // x daylight, y the dimension's ambient light, z the Brightness setting
-    light: vec4<f32>,
-}
-
-// What an entity shader (`fn shade(p: EntityPixel) -> vec4<f32>`) gets; it returns the lit
-// color, alpha below 0.5 cuts the pixel out.
-struct EntityPixel {
-    uv: vec2<f32>,
-    // Skin texel and the light on it (shading, hurt flash and glow included), linear.
-    albedo: vec4<f32>,
-    light: vec3<f32>,
-    time: f32,
-}
-
-@group(1) @binding(0) var<storage, read> instances: array<Instance>;
-@group(1) @binding(1) var<storage, read> view: View;
-@group(1) @binding(2) var<storage, read> cuboids: array<Cuboid>;
-@group(1) @binding(3) var<storage, read> corners: array<Corner>;
-@group(1) @binding(4) var<storage, read> bones: array<Bone>;
-
-
 struct VOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -93,7 +15,7 @@ struct VOut {
 fn place(bone: u32, p: vec3<f32>) -> vec3<f32> {
     let b = bones[bone];
     let q = vec4(p, 1.0);
-    return vec3(dot(b.r0, q), dot(b.r1, q), dot(b.r2, q));
+    return vec3(dot(b.rows[0], q), dot(b.rows[1], q), dot(b.rows[2], q));
 }
 
 @vertex

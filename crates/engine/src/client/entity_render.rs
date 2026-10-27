@@ -15,17 +15,7 @@ use super::world_render::Camera;
 use crate::assets::{Assets, decode_png};
 use crate::content::content;
 use crate::physics::Hit;
-
-#[repr(C)]
-#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuBox {
-    rows: [[f32; 4]; 3],
-    dims: [f32; 4],
-    uvo: [f32; 4],
-    color: [f32; 4],
-    ids: [u32; 4],
-    ids2: [u32; 4],
-}
+use crate::gpu_layout::{EntityView as View, GpuBox};
 
 /// What the first person view holds: the item (or the bare arm), the swing progress and the
 /// walk distance for bobbing.
@@ -45,17 +35,6 @@ struct Sprite {
     pixels: Vec<(u8, u8, u32)>,
 }
 
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct View {
-    view_proj: [[f32; 4]; 4],
-    fog_color: [f32; 4],
-    fog: [f32; 4],
-    /// Daylight, the dimension's ambient light, the Brightness setting (`lightmap` in
-    /// `common.wgsl`).
-    light: [f32; 4],
-}
 
 pub struct EntityRenderer {
     hand_pipe: PipelineId,

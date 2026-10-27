@@ -348,7 +348,7 @@ impl Client {
     #[allow(clippy::too_many_arguments)]
     pub fn new(gpu: &mut dyn Backend, assets: &crate::assets::Assets, textures: &GameTextures, mut conn: ClientConn, name: &str, key: &str, view_radius: i32, skin: Option<Vec<u8>>) -> Result<Client, String> {
         let c = content();
-        let render = WorldRenderer::new(gpu, c, textures)?;
+        let render = WorldRenderer::new(gpu, c, textures, assets)?;
         let entity_render = EntityRenderer::new(gpu, assets)?;
         let particles = particles::Particles::new(gpu, assets);
         conn.send(ToServer::Join { name: name.to_string(), key: key.to_string() });

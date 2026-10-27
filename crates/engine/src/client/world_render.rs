@@ -11,6 +11,7 @@ use weft_render::*;
 use super::mesher::Mesh;
 use super::textures::GameTextures;
 use crate::content::Content;
+pub use crate::gpu_layout::Globals;
 
 const FACE_WORDS: u32 = 4;
 const QUAD_WORDS: u32 = 8;
@@ -76,20 +77,6 @@ struct GpuMesh {
     face_counts: [[u32; 6]; 3],
     quads: Option<Alloc>,
     quad_counts: [u32; 3],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Globals {
-    pub view_proj: [[f32; 4]; 4],
-    pub cam_frac: [f32; 4],
-    pub sky_color: [f32; 4],
-    pub fog_color: [f32; 4],
-    pub params: [f32; 4],
-    pub ids: [u32; 4],
-    pub look: [f32; 4],
-    pub cam_cube: [i32; 4],
-    pub extra: [u32; 4],
 }
 
 #[derive(Clone, Copy)]
@@ -164,6 +151,8 @@ pub struct WorldRenderer {
     anim: BufferId,
     /// Start of the overlay table in `anim`.
     overlays: u32,
+    /// Block shader slot per texture id (`shader_table`).
+    tex_shader: BufferId,
     /// `GameTextures::glow_buffer`, bound as it is.
     glow: BufferId,
     /// `GameTextures::generation` the tables were built from.
@@ -175,14 +164,52 @@ pub struct WorldRenderer {
     pub faces_drawn: u64,
 }
 
-pub fn world_shader() -> Result<Shader, ShaderError> {
-    crate::packs::shader("world.wgsl", include_str!("../../shaders/world.wgsl"))
+/// Block shaders: `fn shade(p: BlockPixel) -> vec4<f32>` in `shaders/block/<name>.wgsl`, for
+/// blocks with a `shader` component.
+pub const HOOK: crate::shaders::Hook = crate::shaders::Hook {
+    kind: "block",
+    entry: "shade",
+    dispatch: "block_shade",
+    params: "p: BlockPixel",
+    args: "p",
+    ret: "vec4<f32>",
+    fallback: "return vec4(p.albedo.rgb * p.light, p.albedo.a);",
+};
+
+pub fn world_shader(assets: &crate::assets::Assets) -> Result<(Shader, crate::shaders::Slots), ShaderError> {
+    let snippets = crate::shaders::snippets(assets, &HOOK);
+    let (s, mut slots) = crate::packs::compose("world.wgsl", include_str!("../../shaders/world.wgsl"), &[(&HOOK, &snippets)])?;
+    Ok((s, slots.pop().unwrap_or_default()))
+}
+
+/// Block shader slot per texture id: a block's `shader` goes with its textures.
+fn shader_table(gpu: &mut dyn Backend, c: &Content, textures: &GameTextures, slots: &crate::shaders::Slots) -> BufferId {
+    let mut table = vec![0u32; textures.count().max(1)];
+    if let Some(comp) = c.components.id(weft_abi::comp::SHADER) {
+        for (i, s) in c.states.iter().enumerate() {
+            let Some(name) = c.components.text(crate::components::BLOCK, i as u32, comp) else { continue };
+            let slot = slots.slot(name);
+            if slot == 0 {
+                log::warn!("block {}: no block shader {name}", c.block_of(i as u32).name);
+                continue;
+            }
+            for t in s.textures.iter().chain(s.boxes.iter().flat_map(|b| b.textures.iter())) {
+                if let Some(e) = table.get_mut(*t as usize) {
+                    *e = slot;
+                }
+            }
+        }
+    }
+    let buf = gpu.create_buffer((table.len() * 4) as u64, usage::STORAGE, "texture shaders");
+    gpu.write_buffer(buf, 0, bytemuck::cast_slice(&table));
+    buf
 }
 
 impl WorldRenderer {
-    pub fn new(gpu: &mut dyn Backend, c: &Content, textures: &GameTextures) -> Result<WorldRenderer, String> {
-        let shader = world_shader().map_err(|e| e.0)?;
+    pub fn new(gpu: &mut dyn Backend, c: &Content, textures: &GameTextures, assets: &crate::assets::Assets) -> Result<WorldRenderer, String> {
+        let (shader, slots) = world_shader(assets).map_err(|e| e.0)?;
         let (face_pipes, quad_pipes) = Self::pipelines(gpu, &shader)?;
+        let tex_shader = shader_table(gpu, c, textures, &slots);
 
         let (tex_info, anim, overlays) = Self::texture_info(gpu, textures);
 
@@ -221,6 +248,7 @@ impl WorldRenderer {
             anim,
             overlays,
             glow: textures.glow_buffer(),
+            tex_shader,
             tex_generation: textures.generation(),
             quad_index,
             drawn: 0,
@@ -282,14 +310,16 @@ impl WorldRenderer {
     }
 
     /// Recompiles the world shader; keeps the old pipelines when the new source has errors.
-    pub fn reload_shaders(&mut self, gpu: &mut dyn Backend) {
-        match world_shader().map_err(|e| e.0).and_then(|s| Self::pipelines(gpu, &s)) {
-            Ok((f, q)) => {
+    pub fn reload_shaders(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, assets: &crate::assets::Assets) {
+        match world_shader(assets).map_err(|e| e.0).and_then(|(s, slots)| Ok((Self::pipelines(gpu, &s)?, slots))) {
+            Ok(((f, q), slots)) => {
                 for p in self.face_pipes.into_iter().chain(self.quad_pipes) {
                     gpu.destroy_pipeline(p);
                 }
                 self.face_pipes = f;
                 self.quad_pipes = q;
+                gpu.destroy_buffer(self.tex_shader);
+                self.tex_shader = shader_table(gpu, crate::content::content(), textures, &slots);
                 log::info!("world shader reloaded");
             }
             Err(e) => log::error!("world shader: {e}"),
@@ -334,7 +364,7 @@ impl WorldRenderer {
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
-        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index]) {
+        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index, self.tex_shader]) {
             gpu.destroy_buffer(b);
         }
         for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)).chain(self.offsets.drain(..)) {
@@ -561,6 +591,7 @@ impl WorldRenderer {
             list.bind(5, self.anim);
             list.bind(6, fbuf);
             list.bind(7, self.glow);
+            list.bind(8, self.tex_shader);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: k as u64 * 20, count: (end - k) as u32 });
             k = end;
         }

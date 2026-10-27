@@ -1,35 +1,9 @@
 // Screen effects: each active effect is one full screen pass over the previous result.
 
-struct Pass {
-    // Bindless index of the image to read, the effect's slot, its strength and the time.
-    scene: u32,
-    slot: u32,
-    strength: f32,
-    time: f32,
-    size: vec2<f32>,
-    _pad: vec2<f32>,
-}
-
-// What a screen effect (`shaders/post/<name>.wgsl`, `fn apply(p: PostPixel) -> vec4<f32>`) gets.
-struct PostPixel {
-    // 0..1 across the screen, top left first.
-    uv: vec2<f32>,
-    // The image so far at `uv`, linear.
-    color: vec4<f32>,
-    // 0..1 as the mod set it, for fading in and out.
-    strength: f32,
-    time: f32,
-    // Pixels.
-    size: vec2<f32>,
-    scene: u32,
-}
-
 // The image so far anywhere else (blur, waves).
 fn scene_at(p: PostPixel, uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(textures[p.scene], linear_clamp, uv, 0.0);
 }
-
-@group(1) @binding(0) var<storage, read> passes: array<Pass>;
 
 struct VOut {
     @builtin(position) clip: vec4<f32>,

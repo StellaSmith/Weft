@@ -12,6 +12,7 @@ use super::world::ClientWorld;
 use super::world_render::Camera;
 use crate::content::content;
 use crate::shaders::{Hook, Slots};
+use crate::gpu_layout::{GpuParticle, ParticleView as View};
 
 /// Particles a client keeps at most; bursts beyond it are dropped.
 const MAX: usize = 1 << 18;
@@ -42,25 +43,6 @@ struct Particle {
     piece: [u8; 2],
     cell: IVec3,
     light: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuParticle {
-    pos_size: [f32; 4],
-    data: [u32; 4],
-    extra: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct View {
-    view_proj: [[f32; 4]; 4],
-    right: [f32; 4],
-    up: [f32; 4],
-    fog_color: [f32; 4],
-    params: [f32; 4],
-    look: [f32; 4],
 }
 
 pub struct Particles {

@@ -205,6 +205,27 @@ pub async fn broken_shader_pack(t: T) -> R {
     let _ = std::fs::remove_dir_all(&dir);
     t.frames(2).await?;
     t.check(T::differ(&before, &after) < 0.02, format!("the picture stays ({:.1}% differ)", T::differ(&before, &after) * 100.0));
+    // A working pack only writes functions: the engine's own world shader with a sepia ending,
+    // its structs and bindings come from the prelude.
+    let dir = format!("{}/shaderpacks/testkit_sepia", t.c().run_dir());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let world = include_str!("../../../../crates/engine/shaders/world.wgsl");
+    let ending = "    return vec4(mix(lit.rgb, g.fog_color.rgb, fog), lit.a);";
+    t.check(world.contains(ending), "the world shader still ends its shading like this");
+    let sepia = world.replace(ending, "    let y = dot(mix(lit.rgb, g.fog_color.rgb, fog), vec3(0.3, 0.59, 0.11));
+    return vec4(vec3(y * 1.2, y, y * 0.75), lit.a);");
+    std::fs::write(format!("{dir}/world.wgsl"), sepia).map_err(|e| e.to_string())?;
+    weft_sdk::settings::SHADER_PACK.set("testkit_sepia");
+    t.c().reload_assets();
+    t.frames(5).await?;
+    let shot = t.shot("sepia").await?;
+    weft_sdk::settings::SHADER_PACK.set("");
+    t.c().reload_assets();
+    let _ = std::fs::remove_dir_all(&dir);
+    t.frames(2).await?;
+    // The grass floor turns brown: red over green over blue.
+    let brown = shot.share(0.0, 0.7, 1.0, 0.9, |c| c[0] > c[1] && c[1] > c[2]);
+    t.probe("a pack's sepia world shader is used", brown, brown > 0.8);
     Ok(())
 }
 
@@ -220,6 +241,9 @@ pub async fn shaders_and_glow(t: T) -> R {
     t.fill(add(f, [-4, 0, -7]), add(f, [4, 5, 3]), "air").await?;
     let crystal = add(f, [0, 1, -4]);
     t.fill(add(f, [-1, 0, -4]), add(f, [1, 2, -4]), "testmod:glow_crystal").await?;
+    // A block shader (`shaders/block/stripes.wgsl`): magenta bands, lit or not.
+    let striped = add(f, [-3, 1, -4]);
+    t.set(striped, "testmod:reinforced_stone").await?;
     // Off to the side and back a little: it drifts, so it stays small in the picture.
     t.op(&format!("spawn testmod:wisp {} {} {}", f[0] + 3, f[1] + 1, f[2] - 5)).await?;
     t.check(t.count_near("wisp", 8.0).await? == 1, "a wisp floats nearby");
@@ -239,6 +263,11 @@ pub async fn shaders_and_glow(t: T) -> R {
         None => 255.0,
     };
     t.probe("the floor in front of it stays dark (glow is not light)", floor, floor < 60.0);
+    let bands = match t.block_on_screen(striped, [0.0, 0.0, 0.51]) {
+        Some((x, y)) => night.share(x - 0.03, y - 0.05, x + 0.03, y + 0.05, |c| c[0] > 100 && c[2] > 100 && c[1] < 60),
+        None => 0.0,
+    };
+    t.probe("the block shader's magenta bands", bands, bands > 0.2 && bands < 0.9);
     let before = t.grab().await?;
     t.check(t.c().post_effect("testmod:dream", 1.0), "the daydream effect exists");
     t.check(!t.c().post_effect("testmod:nonexistent", 1.0), "an unknown effect is refused");

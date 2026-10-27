@@ -6,6 +6,7 @@ use weft_render::*;
 
 use crate::assets::Assets;
 use crate::shaders::{Hook, Slots};
+use crate::gpu_layout::Pass;
 
 pub const HOOK: Hook = Hook {
     kind: "post",
@@ -16,17 +17,6 @@ pub const HOOK: Hook = Hook {
     ret: "vec4<f32>",
     fallback: "return p.color;",
 };
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Pass {
-    scene: u32,
-    slot: u32,
-    strength: f32,
-    time: f32,
-    size: [f32; 2],
-    _pad: [f32; 2],
-}
 
 pub struct Post {
     pipeline: Option<PipelineId>,
@@ -107,7 +97,7 @@ impl Post {
         let passes: Vec<Pass> = self.active[..n]
             .iter()
             .enumerate()
-            .map(|(i, (name, strength))| Pass { scene: idx[i % 2], slot: self.slots.slot(name), strength: *strength, time, size: [frame.width as f32, frame.height as f32], _pad: [0.0; 2] })
+            .map(|(i, (name, strength))| Pass { scene: idx[i % 2], slot: self.slots.slot(name), strength: *strength, time, size: [frame.width as f32, frame.height as f32], pad: [0.0; 2] })
             .collect();
         let buf = self.params[frame.slot];
         gpu.mapped(buf)[..passes.len() * size_of::<Pass>()].copy_from_slice(bytemuck::cast_slice(&passes));

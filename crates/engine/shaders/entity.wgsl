@@ -1,40 +1,3 @@
-struct Box {
-    // Unit cube -> camera-relative world, rows of a 3x4 matrix.
-    r0: vec4<f32>,
-    r1: vec4<f32>,
-    r2: vec4<f32>,
-    // Box size in texels (w, h, d) for the classic unwrap; block faces: min corner in the block,
-    // w = 1 when set.
-    dims: vec4<f32>,
-    // Texel origin and texture size.
-    uvo: vec4<f32>,
-    // Tint (rgb) and hurt flash (a).
-    color: vec4<f32>,
-    // skin texture, mode (0 skin, 1 block faces, 2 solid color, 3 flames, 4 one texel, 5 filled
-    // box), face textures packed 16 bit.
-    ids: vec4<u32>,
-    // x: last face textures, y: light as the world stores it (all ones: full light); block
-    // faces: z the faces tinted by w (0xRRGGBB)
-    ids2: vec4<u32>,
-}
-
-struct View {
-    view_proj: mat4x4<f32>,
-    fog_color: vec4<f32>,
-    // x fog start, y fog end
-    fog: vec4<f32>,
-    // x daylight, y the dimension's ambient light, z the Brightness setting
-    light: vec4<f32>,
-}
-
-@group(1) @binding(0) var<storage, read> boxes: array<Box>;
-@group(1) @binding(1) var<storage, read> view: View;
-// Glow mask texture per texture index (all ones: none), see `GameTextures::glow_buffer`.
-@group(1) @binding(2) var<storage, read> glow_map: array<u32>;
-// Item models in their own space, kept between frames (`EntityRenderer::item_model`). An item
-// instance is a box in `boxes` whose rows place the model, `ids.z` its first box, `color.a` the
-// hurt flash and `ids2.y` the light.
-@group(1) @binding(3) var<storage, read> item_boxes: array<Box>;
 
 
 struct VOut {
@@ -73,12 +36,12 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 fn item_box(vi: u32, ii: u32) -> Box {
     let inst = boxes[ii];
     var b = item_boxes[inst.ids.z + vi / 36u];
-    let r0 = b.r0;
-    let r1 = b.r1;
-    let r2 = b.r2;
-    b.r0 = inst.r0.x * r0 + inst.r0.y * r1 + inst.r0.z * r2 + vec4(0.0, 0.0, 0.0, inst.r0.w);
-    b.r1 = inst.r1.x * r0 + inst.r1.y * r1 + inst.r1.z * r2 + vec4(0.0, 0.0, 0.0, inst.r1.w);
-    b.r2 = inst.r2.x * r0 + inst.r2.y * r1 + inst.r2.z * r2 + vec4(0.0, 0.0, 0.0, inst.r2.w);
+    let r0 = b.rows[0];
+    let r1 = b.rows[1];
+    let r2 = b.rows[2];
+    b.rows[0] = inst.rows[0].x * r0 + inst.rows[0].y * r1 + inst.rows[0].z * r2 + vec4(0.0, 0.0, 0.0, inst.rows[0].w);
+    b.rows[1] = inst.rows[1].x * r0 + inst.rows[1].y * r1 + inst.rows[1].z * r2 + vec4(0.0, 0.0, 0.0, inst.rows[1].w);
+    b.rows[2] = inst.rows[2].x * r0 + inst.rows[2].y * r1 + inst.rows[2].z * r2 + vec4(0.0, 0.0, 0.0, inst.rows[2].w);
     b.color.a = inst.color.a;
     b.ids2.y = inst.ids2.y;
     return b;
@@ -95,7 +58,7 @@ fn box_vertex(b: Box, v: u32) -> VOut {
     let c = TRI[v % 6u];
     let p = CORNERS[face * 4u + c];
     let local = vec4(p, 1.0);
-    let world = vec3(dot(b.r0, local), dot(b.r1, local), dot(b.r2, local));
+    let world = vec3(dot(b.rows[0], local), dot(b.rows[1], local), dot(b.rows[2], local));
     var out: VOut;
     out.clip = view.view_proj * vec4(world, 1.0);
     out.dist = length(world);

@@ -1,44 +1,5 @@
 // Particles: camera-facing quads, one instance each, all kinds in one draw per blend mode.
 
-struct View {
-    view_proj: mat4x4<f32>,
-    // Camera right and up in world space, for the billboards.
-    right: vec4<f32>,
-    up: vec4<f32>,
-    fog_color: vec4<f32>,
-    // x fog start, y fog end, z daylight 0..1, w seconds since start
-    params: vec4<f32>,
-    // x ambient light 0..1, y brightness setting 0..1
-    look: vec4<f32>,
-}
-
-struct Particle {
-    // Center relative to the camera, and edge length in blocks.
-    pos_size: vec4<f32>,
-    // x color 0xRRGGBBAA, y texture (16 bits) | shader slot << 24,
-    // z uv rectangle as four bytes (u0 v0 u1 v1, /255), w light: sky, red, green, blue bytes
-    // (0..15), all ones = unlit
-    data: vec4<u32>,
-    // x life fraction 0..1
-    extra: vec4<f32>,
-}
-
-// What a particle shader (`shaders/particle/<name>.wgsl`, `fn shade(p: ParticleFrag) -> vec4<f32>`)
-// gets; it returns the color before lighting and fog.
-struct ParticleFrag {
-    // 0..1 across the quad.
-    uv: vec2<f32>,
-    // The texture sample and the kind's color at this age, both linear.
-    albedo: vec4<f32>,
-    color: vec4<f32>,
-    // 0 at birth, 1 at the end of its life.
-    life: f32,
-    time: f32,
-}
-
-@group(1) @binding(0) var<storage, read> particles: array<Particle>;
-@group(1) @binding(1) var<storage, read> view: View;
-
 var<private> CORNER: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
 );

@@ -1,58 +1,3 @@
-struct Quad {
-    // Corner, and the two edge vectors, in physical pixels.
-    p0: vec2<f32>,
-    u: vec2<f32>,
-    v: vec2<f32>,
-    // Text effect slot (font quads, top bit set on shadows) or GUI fill slot (mode 4), and the
-    // glyph's number in its text.
-    fx: u32,
-    index: f32,
-    uv: vec4<f32>,
-    color: u32,
-    tex: u32,
-    layer: u32,
-    // 0 solid color, 1 texture, 2 item icon, 3 font (alpha from red), 4 GUI fill shader
-    mode: u32,
-    // Visible rectangle (x0, y0, x1, y1) in pixels; empty = everywhere.
-    rect: vec4<f32>,
-}
-
-struct Screen {
-    // Pixels, seconds since start, GUI scale.
-    size: vec4<f32>,
-}
-
-// What a text effect (`shaders/fx/<name>.wgsl`, `fn effect(g: Glyph) -> Glyph`) may change.
-struct Glyph {
-    // Added to this corner of the glyph, physical pixels.
-    offset: vec2<f32>,
-    // Linear color and alpha.
-    color: vec4<f32>,
-    time: f32,
-    // Number of the glyph in its text, for waves running along it.
-    index: f32,
-    // Which corner, 0..1 in each axis.
-    corner: vec2<f32>,
-    // Physical pixels per GUI pixel.
-    scale: f32,
-    // The dark copy drawn under the text.
-    shadow: bool,
-}
-
-// A themed panel filled by a shader (`shaders/gui/<name>.wgsl`, `fn fill(p: GuiPixel) -> vec4<f32>`).
-struct GuiPixel {
-    // 0..1 across the panel.
-    uv: vec2<f32>,
-    // Panel size in physical pixels.
-    size: vec2<f32>,
-    // The theme color, linear.
-    color: vec4<f32>,
-    time: f32,
-}
-
-@group(1) @binding(0) var<storage, read> quads: array<Quad>;
-@group(1) @binding(1) var<storage, read> screen: Screen;
-
 var<private> CORNER: array<vec2<f32>, 6> = array<vec2<f32>, 6>(
     vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0),
 );
@@ -91,7 +36,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     out.tex = q.tex;
     out.layer = q.layer;
     out.mode = q.mode;
-    out.rect = q.rect;
+    out.rect = q.clip;
     out.fx = q.fx;
     out.size = vec2(length(q.u), length(q.v));
     return out;

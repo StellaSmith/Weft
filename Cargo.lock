@@ -5053,6 +5053,7 @@ dependencies = [
  "libloading 0.9.0",
  "log",
  "lz4_flex",
+ "naga",
  "parking_lot 0.13.0",
  "png",
  "rayon",

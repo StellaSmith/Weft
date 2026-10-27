@@ -152,6 +152,11 @@ impl GameTextures {
         self.frame(e, n)
     }
 
+    /// Texture ids there are: the content's and the connected texture tiles.
+    pub fn count(&self) -> usize {
+        self.inner.borrow().ids.len()
+    }
+
     /// Frames of texture `id` (1 until it has loaded).
     pub fn frames(&self, id: u32) -> u32 {
         let i = self.inner.borrow();

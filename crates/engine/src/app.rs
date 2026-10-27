@@ -1426,7 +1426,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.lang = Lang::load(&r.assets, &r.settings.language(), r.lang.dev);
         r.textures.reload(&mut *r.gpu, content(), &r.assets);
         if let Some(g) = &mut r.game {
-            g.client.render.reload_shaders(&mut *r.gpu);
+            g.client.render.reload_shaders(&mut *r.gpu, &r.textures, &r.assets);
             g.client.render.set_textures(&mut *r.gpu, &r.textures);
             g.client.entity_render.reload(&mut *r.gpu, &r.assets);
             g.client.particles.reload(&mut *r.gpu, &r.assets);

@@ -83,31 +83,32 @@ fn builtin_source(name: &str, builtin: &str) -> String {
     builtin.to_string()
 }
 
-/// What every engine shader starts with: the lightmap and the like, shared by all of them.
-fn with_common(src: &str) -> String {
-    format!("{}{}\n{src}", crate::gpu_layout::wgsl(), builtin_source("common.wgsl", include_str!("../shaders/common.wgsl")))
+/// What every engine shader starts with: its prelude (structs, bindings, constants) and
+/// `common.wgsl` (the lightmap, fog, the structs snippets get), so a shader only writes functions.
+fn with_common(name: &str, src: &str) -> String {
+    format!("{}{src}", crate::gpu_layout::prelude(name, &builtin_source("common.wgsl", include_str!("../shaders/common.wgsl"))))
 }
 
 /// `name` from the shader pack if it has a valid one, else the engine's.
 pub fn shader(name: &str, builtin: &str) -> Result<Shader, ShaderError> {
     if let Some(src) = pack_source(name) {
-        match Shader::from_wgsl(name, &with_common(&src)) {
+        match Shader::from_wgsl(name, &with_common(name, &src)) {
             Ok(s) => return Ok(s),
             Err(e) => log::error!("shader pack {name}: {}", e.0),
         }
     }
-    Shader::from_wgsl(name, &with_common(&builtin_source(name, builtin)))
+    Shader::from_wgsl(name, &with_common(name, &builtin_source(name, builtin)))
 }
 
 /// `shader` for engine shaders that take mod snippets (`shaders::compose`).
 pub fn compose(name: &str, builtin: &str, parts: &[(&crate::shaders::Hook, &[(String, String)])]) -> Result<(Shader, Vec<crate::shaders::Slots>), ShaderError> {
     if let Some(src) = pack_source(name) {
-        match crate::shaders::compose(name, &with_common(&src), parts) {
+        match crate::shaders::compose(name, &with_common(name, &src), parts) {
             Ok(made) => return Ok(made),
             Err(e) => log::error!("shader pack {name}: {}", e.0),
         }
     }
-    crate::shaders::compose(name, &with_common(&builtin_source(name, builtin)), parts)
+    crate::shaders::compose(name, &with_common(name, &builtin_source(name, builtin)), parts)
 }
 
 pub(crate) fn open_folder(dir: &Path) {

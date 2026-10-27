@@ -840,6 +840,14 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Shades its textures with `shaders/block/<name>.wgsl` (namespace optional): the shader goes
+    /// with the textures, so blocks sharing one share it.
+    pub fn shader(mut self, name: &str) -> Self {
+        let name = crate::asset("", name);
+        self.components.push(Pending::text(abi::comp::SHADER, &name));
+        self
+    }
+
     /// Creative inventory tab of the block's item, see `Registry::creative_tab`.
     pub fn tab(mut self, tab: &CreativeTab) -> Self {
         let tag = format!("tab/{}", tab.name());

@@ -16,25 +16,7 @@ use crate::assets::{Assets, decode_png};
 use crate::shaders::{Hook, Slots};
 use crate::client::textures::GameTextures;
 use crate::content::Content;
-
-#[repr(C)]
-#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Quad {
-    pub p0: [f32; 2],
-    pub u: [f32; 2],
-    pub v: [f32; 2],
-    /// Text effect slot (top bit set on shadows) or GUI fill slot.
-    pub fx: u32,
-    /// Glyph number in its text.
-    pub index: f32,
-    pub uv: [f32; 4],
-    pub color: u32,
-    pub tex: u32,
-    pub layer: u32,
-    pub mode: u32,
-    /// Visible rectangle in physical pixels; empty (all zero) means unclipped.
-    pub clip: [f32; 4],
-}
+pub use crate::gpu_layout::Quad;
 
 /// Quads of a node and its children moved by keyframes every frame: `<class>.animation =
 /// ns:name` in a theme names `animations/<name>.animation.json`, whose `open` animation plays

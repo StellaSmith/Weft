@@ -8,13 +8,14 @@ Examples to copy from, all in `mods/testmod/assets/shaders/`:
 - `fx/glitch.wgsl`: letters that jump sideways
 - `gui/circuit.wgsl`: a panel with pulses running along traces
 - `entity/ghost.wgsl`: a mob that breathes and has holes sweeping across it
+- `block/stripes.wgsl`: magenta bands sliding up a block
 - `particle/twinkle.wgsl`: sparks that flicker and shift color as they age
 - `post/dream.wgsl`: a screen effect that sways and warms the picture
 
 The engine's own text effects are in `crates/engine/assets/shaders/fx/`.
 
 ## Quick links
-[snippets](#snippets) | [text effects](#text-effects) | [panels](#panels) | [entities](#entities) | [particles](#particles) | [screen effects](#screen-effects) | [shader packs](#shader-packs)
+[snippets](#snippets) | [text effects](#text-effects) | [panels](#panels) | [entities](#entities) | [blocks](#blocks) | [particles](#particles) | [screen effects](#screen-effects) | [shader packs](#shader-packs)
 
 ## Snippets
 A snippet is a file `shaders/<kind>/<name>.wgsl` in your mod, holding one function whose name depends on the kind. The engine puts all snippets of a kind into a single shader and picks one by number for each text, panel, mob or particle, so a hundred snippets don't cost a hundred shaders.
@@ -24,6 +25,7 @@ A snippet is a file `shaders/<kind>/<name>.wgsl` in your mod, holding one functi
 | text effects | `shaders/fx/` | `fn effect(g: Glyph) -> Glyph` | `{fx:mymod:name}` in a translation |
 | panels | `shaders/gui/` | `fn fill(p: GuiPixel) -> vec4<f32>` | a theme class: `class.shader = mymod:name` |
 | entities | `shaders/entity/` | `fn shade(p: EntityPixel) -> vec4<f32>` | `r.entity(..).shader("name")` |
+| blocks | `shaders/block/` | `fn shade(p: BlockPixel) -> vec4<f32>` | `r.block(..).shader("name")` |
 | particles | `shaders/particle/` | `fn shade(p: ParticleFrag) -> vec4<f32>` | `r.particle(..).shader("name")` |
 | screen effects | `shaders/post/` | `fn apply(p: PostPixel) -> vec4<f32>` | `client.post_effect("mymod:name", strength)` |
 
@@ -74,6 +76,19 @@ r.entity(&WISP).texture("wisp", 32, 16).model(..).shader("ghost");
 ```
 `EntityPixel` has `uv`, `albedo` (the skin's texel, linear, `a` is its alpha), `light` (a vec3 with shading, the hurt flash and glow already included) and `time`. A returned alpha under 0.5 cuts the pixel out, which is how the wisp gets its holes. The `_e` glow masks of the [textures guide](textures.md#emission) are a separate and simpler way to make parts of a skin shine.
 
+## Blocks
+A block shader colors the pixels of a block's faces and takes over from the normal lighting the same way:
+```wgsl
+fn shade(p: BlockPixel) -> vec4<f32> {
+    let band = step(0.5, fract(p.pos.y * 2.0 - p.time));
+    return vec4(mix(p.albedo.rgb * p.light, vec3(0.8, 0.05, 0.8), band * 0.7), p.albedo.a);
+}
+```
+```rust
+r.block(&REINFORCED_STONE).shader("stripes");
+```
+`BlockPixel` has `uv` (across the face), `albedo` (the texel with its overlay, linear), `light` (shading, AO, the biome tint and glow already in), `pos` (block coordinates of the pixel, handy for patterns that run across blocks) and `time`. Fog goes on top of what it returns. The shader goes with the block's textures, so two blocks sharing a texture share it.
+
 ## Particles
 A particle shader colors a particle before lighting and fog are applied:
 ```wgsl
@@ -117,6 +132,6 @@ Snippets add to the engine's shaders, a shader pack replaces them. It is a folde
 | `post.wgsl` | screen effects |
 | `ui.wgsl` | all screens and text |
 
-A file replaces its shader completely and the ones a pack doesn't have stay as they were, so the easiest start is a copy of the original from `crates/engine/shaders/`, because a replacement has to keep the entry points and bindings. If it doesn't compile, the log says why and the built-in shader is used instead, so a broken pack can't leave anyone with a black screen. Mods' snippets keep working inside a pack's shaders, and an optional `pack.cfg` (`name = ...`, `description = ...`) names the pack in the list.
+A file replaces its shader completely and the ones a pack doesn't have stay as they were, so the easiest start is a copy of the original from `crates/engine/shaders/`. A replacement writes only functions (and its own private structs like `VOut`): the buffer structs, the bindings, the constants and the shared helpers of `common.wgsl` come from the engine's prelude (`crates/engine/src/gpu_layout.rs`), so a pack can't get them wrong and keeps working when they change. It has to keep the entry points. If it doesn't compile, the log says why and the built-in shader is used instead, so a broken pack can't leave anyone with a black screen. Mods' snippets keep working inside a pack's shaders, and an optional `pack.cfg` (`name = ...`, `description = ...`) names the pack in the list.
 
-A shader pack is also how blocks get drawn differently, since a mod itself gets no shader hooks for them. Textures and models stay with resource packs, see the [resource packs guide](resourcepacks.md).
+Textures and models stay with resource packs, see the [resource packs guide](resourcepacks.md).

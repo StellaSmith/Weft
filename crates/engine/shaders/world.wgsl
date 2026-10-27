@@ -1,37 +1,3 @@
-struct Globals {
-    view_proj: mat4x4<f32>,
-    // Camera position inside its cube (0..16) in xyz.
-    cam_frac: vec4<f32>,
-    sky_color: vec4<f32>,
-    fog_color: vec4<f32>,
-    // x daylight 0..1, y fog start, z fog end, w time in seconds
-    params: vec4<f32>,
-    // y ambient light 0..15, z biome count, w blended color tiles
-    ids: vec4<u32>,
-    // x brightness setting 0 (moody) .. 1 (bright)
-    look: vec4<f32>,
-    // Origins are relative to this cube.
-    cam_cube: vec4<i32>,
-    // x: start of the overlay table in `frames` (per texture: overlay texture + 1, or 0),
-    // z: tint kinds
-    extra: vec4<u32>,
-}
-
-@group(1) @binding(0) var<storage, read> g: Globals;
-@group(1) @binding(1) var<storage, read> origins: array<vec4<i32>>;
-@group(1) @binding(2) var<storage, read> records: array<u32>;
-// Per biome a color per tint kind (`g.extra.z` kinds), 0xRRGGBB. Then the blended colors of
-// loaded block columns, 0xFFRRGGBB, in 16x16 tiles addressed by column position modulo g.ids.w.
-@group(1) @binding(3) var<storage, read> biomes: array<u32>;
-// Two words per texture name, see `GameTextures::world_tables`.
-@group(1) @binding(4) var<storage, read> tex_info: array<u32>;
-// Animated frames: texture | ticks << 16; then the overlay table.
-@group(1) @binding(5) var<storage, read> frames: array<u32>;
-// Camera-relative positions of moving structures drawn this frame (0: none, the world's cubes):
-// a cube's `origin.w` picks one, its `origin.xyz` is then the cube in the structure.
-@group(1) @binding(6) var<storage, read> offsets: array<vec4<f32>>;
-// Glow mask texture per bindless texture index, all ones: none.
-@group(1) @binding(7) var<storage, read> glow_map: array<u32>;
 
 var<private> TRI_FLIP: array<u32, 6> = array<u32, 6>(1u, 2u, 3u, 1u, 3u, 0u);
 var<private> AO: array<f32, 4> = array<f32, 4>(0.42, 0.62, 0.8, 1.0);
@@ -52,6 +18,16 @@ struct VOut {
     @location(8) tint: vec3<f32>,
     // Glow mask texture (LabPBR emission), all ones: none.
     @location(9) @interpolate(flat) glow: u32,
+    // Block shader slot of the texture, 0 none, and the block coordinates for it.
+    @location(10) @interpolate(flat) slot: u32,
+    @location(11) pos: vec3<f32>,
+}
+
+fn shader_of(tex: u32) -> u32 {
+    if tex >= arrayLength(&tex_shader) {
+        return 0u;
+    }
+    return tex_shader[tex];
 }
 
 fn glow_of(tex: u32) -> u32 {
@@ -171,6 +147,8 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let l = (lw >> ((c & 1u) * 16u)) & 65535u;
     out.light = unpack_corner_light(l);
     let o = origins[ii] + g.cam_cube;
+    out.slot = shader_of(w1 & FACE_TEX_MASK);
+    out.pos = vec3<f32>(o.xyz * 16) + local;
     let tint = tint_color((w0 >> FACE_TINT_SHIFT) & TINT_MASK, w1 >> FACE_BIOME_SHIFT, o.x * 16 + i32(local.x), o.z * 16 + i32(local.z));
     let ov = frames[g.extra.x + (w1 & FACE_TEX_MASK)];
     if ov != 0u {
@@ -228,6 +206,8 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.glow = glow_of(fr.a);
     out.light = unpack_corner_light(l);
     let o = origins[ii] + g.cam_cube;
+    out.slot = shader_of(w4 & FACE_TEX_MASK);
+    out.pos = vec3<f32>(o.xyz * 16) + local;
     out.tint = tint_color((uvw >> QUAD_TINT_SHIFT) & TINT_MASK, w4 >> FACE_BIOME_SHIFT, o.x * 16 + i32(round(local.x)), o.z * 16 + i32(round(local.z)));
     out.color = out.tint * shade;
     out.overlay = 0u;
@@ -244,10 +224,9 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
     }
     // Shading factors are meant for gamma space like vanilla's; the target is sRGB, so apply them
     // as their linear equivalent or AO and shadows come out washed out.
-    var rgb = albedo.rgb * pow(light, vec3(2.2));
+    let lit = block_shade(in.slot, BlockPixel(in.uv, albedo, pow(light, vec3(2.2)), in.pos, g.params.w));
     let fog = fog_amount(in.dist, g.params.y, g.params.z);
-    rgb = mix(rgb, g.fog_color.rgb, fog);
-    return vec4(rgb, albedo.a);
+    return vec4(mix(lit.rgb, g.fog_color.rgb, fog), lit.a);
 }
 
 // Nearest texels with antialiased borders (vanilla 26.1's sampleNearest): up close each texel

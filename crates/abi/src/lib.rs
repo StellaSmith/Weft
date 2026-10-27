@@ -276,7 +276,8 @@ pub mod comp {
     pub const LIQUID: &str = "liquid";
     /// Item left behind when this one is used up (fuel, crafting, pouring): an item name, `str`.
     pub const REMAINDER: &str = "remainder";
-    /// Entity kinds: their model is shaded by `shaders/entity/<name>.wgsl` (`str`).
+    /// Entity kinds and blocks: shaded by `shaders/entity/<name>.wgsl` or `shaders/block/<name>.wgsl`
+    /// (`str`).
     pub const SHADER: &str = "shader";
     /// Entity kinds: model file (`models/<name>.geo.json`, Bedrock geometry as Blockbench
     /// writes it) used instead of the parts in code; without it `<ns>:<kind name>` is tried.

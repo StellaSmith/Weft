@@ -143,13 +143,16 @@ impl Dim {
     /// Runs `f` on the space blocks at `frame` are in: this region (0) or the structure of
     /// entity `frame`, with where that space's block (0, 0, 0) starts in the world. What leaves
     /// the structure comes over after.
-    pub fn with_space<R>(&mut self, c: &Content, frame: u64, f: impl FnOnce(&mut Dim, DVec3) -> R) -> Option<R> {
+    /// A structure's space settles before what it lets go of is handed over; the world's with
+    /// the rest of the action (`Server::settle`).
+    pub fn with_space<R>(&mut self, c: &'static Content, frame: u64, f: impl FnOnce(&mut Dim, DVec3) -> R) -> Option<R> {
         if frame == 0 {
             return Some(f(self, DVec3::ZERO));
         }
         let o = origin(self.entities.get(frame)?.pos);
         let mut s = self.structures.remove(&frame)?;
         let out = f(&mut s, o);
+        s.settle(c);
         self.structures.insert(frame, s);
         self.hand_over(c, frame);
         Some(out)

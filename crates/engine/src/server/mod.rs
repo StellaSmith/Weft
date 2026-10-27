@@ -549,12 +549,26 @@ impl Server {
         );
     }
 
+    /// Whatever a player's or mod's action changed takes effect at once, wherever it reached:
+    /// neighbor updates, events to their handlers, what regions report to players.
+    fn settle(&mut self, c: &'static Content) {
+        for d in &mut self.dims {
+            for r in &mut d.regions {
+                r.settle(c);
+            }
+        }
+        self.dim_events(c);
+    }
+
     fn dim_events(&mut self, c: &'static Content) {
         let mut events = Vec::new();
         for d in &mut self.dims {
             for r in &mut d.regions {
                 events.append(&mut r.events);
             }
+        }
+        if events.is_empty() {
+            return;
         }
         // Particles and sounds of the whole tick go out as one message of each per player.
         let mut bursts: Vec<Vec<abi::ParticleBurst>> = vec![Vec::new(); self.players.len()];
@@ -721,6 +735,7 @@ impl Server {
         for pi in 0..self.players.len() {
             while let Some(msg) = self.players[pi].conn.recv() {
                 self.handle(c, pi, msg);
+                self.settle(c);
             }
         }
     }
@@ -800,8 +815,6 @@ impl Server {
                     if !done && let Some(state) = d.get(pos) {
                         d.changes.push((pos, state));
                     }
-                    d.flush_neighbors(c);
-                    d.finish_tick(c);
                     done && !free
                 });
                 if worn == Some(true) {
@@ -846,10 +859,7 @@ impl Server {
                     }
                 });
                 match did {
-                    Some(Did::Used) => {
-                        self.dim_events(c);
-                        self.players[pi].conn.send(ToClient::Swing);
-                    }
+                    Some(Did::Used) => self.players[pi].conn.send(ToClient::Swing),
                     Some(Did::Placed) => {
                         if !creative {
                             r.entities.set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
@@ -899,8 +909,6 @@ impl Server {
                 if used {
                     r.emit_engine(c, abi::event::ITEM_USED, &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array(), has_target: target.is_some() as u32 });
                 }
-                r.flush_neighbors(c);
-                r.finish_tick(c);
                 if used {
                     self.players[pi].conn.send(ToClient::Swing);
                 }
@@ -1066,9 +1074,6 @@ impl Server {
                 let Some((r, player)) = self.region(pi) else { return };
                 let slice = abi::Slice::new(&data);
                 r.call(owner, cb, |w| abi::PacketArgs { world: w, player, data: slice });
-                r.flush_neighbors(c);
-                r.finish_tick(c);
-                self.dim_events(c);
             }
             ToServer::Skin(png) => {
                 // Only a skin's size of PNG: everyone else stores and uploads it.
@@ -1278,12 +1283,8 @@ impl Server {
                 reply
             }
         };
-        // What a command changed settles right away, whoever wrote it: neighbors updated,
-        // events delivered.
-        for r in &mut self.dims[dim as usize].regions {
-            r.flush_neighbors(c);
-            r.finish_tick(c);
-        }
+        // Commands also run outside players' messages (the console, scripts).
+        self.settle(c);
         reply
     }
 

@@ -1361,6 +1361,13 @@ impl Dim {
         self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player: 0, pos: p.to_array(), state, item: 0 });
     }
 
+    /// What happened since the last settling takes effect: neighbor updates, then events.
+    /// After every player's or mod's action (`Server::settle`) and at the end of a tick.
+    pub fn settle(&mut self, c: &'static Content) {
+        self.flush_neighbors(c);
+        self.finish_tick(c);
+    }
+
     pub fn finish_tick(&mut self, c: &'static Content) {
         if self.framed {
             self.relight();
@@ -1426,8 +1433,6 @@ impl Dim {
         self.set(c, p, chosen);
         self.sound(c.states[chosen as usize].sounds[1], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
         self.emit_engine(c, abi::event::BLOCK_PLACED, &abi::BlockChange { player, pos: p.to_array(), state: chosen, item });
-        self.flush_neighbors(c);
-        self.finish_tick(c);
         true
     }
 
@@ -1449,8 +1454,6 @@ impl Dim {
             return true;
         }
         let r = self.call_block(c, state, |b| b.on_use, |w| abi::UseArgs { world: w, pos: p.to_array(), state, face: face as u32, player, handled: 0 });
-        self.flush_neighbors(c);
-        self.finish_tick(c);
         r.is_some_and(|a| a.handled != 0)
     }
 

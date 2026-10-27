@@ -66,7 +66,7 @@ pub enum Request {
     Close,
     Quit,
     Rebuild,
-    Rebind(String, Key),
+    Rebind(String, crate::input::Chord),
     ResetBinds,
     StartWorld(WorldMeta),
     /// Without asking about mods that are missing.
@@ -332,7 +332,7 @@ impl App {
         let post = crate::post::Post::new(&mut *gpu, &assets);
         let mut input = Input::default();
         for (action, key) in &content().game.keys {
-            match crate::settings::parse_key(key) {
+            match crate::settings::parse_chord(key) {
                 Some(k) => input.register(action, k),
                 None => log::warn!("key binding {action}: unknown key {key}"),
             }
@@ -625,7 +625,7 @@ impl Running {
                     self.settings.set_bind(&action, key);
                 }
                 Request::ResetBinds => {
-                    let defaults: Vec<(String, Key)> = self.input.binds.iter().map(|b| (b.action.clone(), b.default)).collect();
+                    let defaults: Vec<(String, crate::input::Chord)> = self.input.binds.iter().map(|b| (b.action.clone(), b.default)).collect();
                     for (a, k) in defaults {
                         self.input.rebind(&a, k);
                         self.settings.set_bind(&a, k);
@@ -1333,6 +1333,18 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
                 escape_taken = true;
             }
         }
+        for k in r.input.released_list() {
+            let mut ctx = Ctx {
+                settings: &mut r.settings,
+                client: r.game.as_mut().map(|g| &mut g.client),
+                input: &r.input,
+                requests: &mut requests,
+                stats: &r.stats,
+                debug: r.debug,
+                top: Some(Top { screen: None, ui: &mut *ui }),
+            };
+            s.key_up(k, &mut ctx);
+        }
         if ui.dirty {
             r.quads_dirty = true;
         }
@@ -1351,7 +1363,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         }
     }
     // F3 alone toggles the overlay on release; F3 + digit toggles one group instead.
-    let f3 = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k));
+    let f3 = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k.key));
     if r.input.pressed("core:debug") {
         r.f3_combo = Some(false);
     }
@@ -1474,7 +1486,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     }
     if r.game.is_some() && r.screens.is_empty() {
         let command = r.input.pressed("core:command");
-        let f3_held = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k));
+        let f3_held = r.input.key_of("core:debug").is_some_and(|k| r.input.held_key(k.key));
         if command || (r.input.pressed("core:chat") && !f3_held) {
             r.open(Box::new(crate::game_screens::Chat::new(if command { "/" } else { "" })));
             r.input.typed.clear();

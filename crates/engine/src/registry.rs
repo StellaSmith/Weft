@@ -1137,10 +1137,10 @@ pub fn freeze(
         g.music.push(m);
     }
     // The engine's settings, with a binding per key: the engine's and the mods'.
-    let mut keys: Vec<(String, String)> = crate::input::ENGINE_KEYS.iter().map(|(a, k)| (a.to_string(), crate::settings::key_id(*k))).collect();
+    let mut keys: Vec<(String, String)> = crate::input::ENGINE_KEYS.iter().map(|(a, k)| (a.to_string(), crate::settings::chord_id((*k).into()))).collect();
     for (action, key) in &g.keys {
-        match crate::settings::parse_key(key) {
-            Some(k) => keys.push((action.clone(), crate::settings::key_id(k))),
+        match crate::settings::parse_chord(key) {
+            Some(k) => keys.push((action.clone(), crate::settings::chord_id(k))),
             None => errors.push(format!("key {action}: unknown key {key}")),
         }
     }

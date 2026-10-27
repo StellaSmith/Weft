@@ -378,35 +378,59 @@ pub async fn inventory_hotkeys(t: T) -> R {
 }
 
 /// Rebinding in Controls: the clicked entry waits for a key (Escape cancels and leaves the screen
-/// open), the next key becomes the binding.
+/// open). A key pressed with Ctrl makes a chord that the key alone does not trigger; a modifier
+/// let go of with nothing else pressed is the key itself.
 pub async fn rebind(t: T) -> R {
     t.flat().await?;
-    let bind = async |key: &str| -> R {
+    // `keys`: (key, seconds held, seconds before the next one).
+    let bind = async |keys: &[(&str, f32, f32)]| -> R {
         t.c().open_screen(&screens::CONTROLS);
         t.screen("core:controls").await?;
         t.frames(2).await?;
         t.click_ui("id:bind:core:forward", 0);
         t.secs(0.2).await?;
-        t.c().key(key, 0.0);
+        for &(key, held, after) in keys {
+            t.c().key(key, held);
+            t.secs(after).await?;
+        }
         t.frames(4).await?;
         Ok(())
     };
-    bind("Escape").await?;
+    let walked = async |keys: &[&str]| -> Result<f64, String> {
+        t.c().close_screen();
+        t.no_screen().await?;
+        let before = t.state().pos;
+        for k in keys {
+            t.c().key(k, 0.6);
+        }
+        t.secs(0.8).await?;
+        let after = t.state().pos;
+        Ok((after[0] - before[0]).hypot(after[2] - before[2]))
+    };
+    bind(&[("Escape", 0.0, 0.0)]).await?;
     t.screen("core:controls").await?;
     t.c().close_screen();
     t.no_screen().await?;
-    bind("KeyK").await?;
+    let k = {
+        bind(&[("KeyK", 0.0, 0.0)]).await?;
+        walked(&["KeyK"]).await?
+    };
+    let (alone, chord) = {
+        bind(&[("ControlLeft", 0.5, 0.1), ("KeyK", 0.0, 0.5)]).await?;
+        t.check(t.c().ui_rect("text:Ctrl+K").is_some(), "the entry shows Ctrl+K");
+        t.shot("chord").await?;
+        (walked(&["KeyK"]).await?, walked(&["ControlLeft", "KeyK"]).await?)
+    };
+    let shift = {
+        bind(&[("ShiftRight", 0.1, 0.3)]).await?;
+        walked(&["ShiftRight"]).await?
+    };
+    bind(&[("KeyW", 0.0, 0.0)]).await?;
     t.c().close_screen();
     t.no_screen().await?;
-    let before = t.state().pos;
-    t.c().key("KeyK", 0.6);
-    t.secs(0.8).await?;
-    let after = t.state().pos;
-    let moved = (after[0] - before[0]).hypot(after[2] - before[2]);
-    bind("KeyW").await?;
-    t.c().close_screen();
-    t.no_screen().await?;
-    t.check(moved > 1.0, format!("K walks after rebinding forward to it (moved {moved:.2})"));
+    t.check(k > 1.0, format!("K walks after rebinding forward to it (moved {k:.2})"));
+    t.check(alone < 0.2 && chord > 1.0, format!("bound to Ctrl+K, K alone moved {alone:.2} and Ctrl+K {chord:.2}"));
+    t.check(shift > 1.0, format!("a right Shift let go of alone is the key (moved {shift:.2})"));
     Ok(())
 }
 

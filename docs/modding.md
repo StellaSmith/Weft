@@ -363,7 +363,7 @@ Inside any callback you get a `World` (`w`):
 - Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`
 
 Also:
-- key bindings, one declaration each: `r.key(&DASH, "R").on_press(|c| ..)` on the client, or `.on_press_server(|p| ..)` and the engine carries the press to the server for you. They only act while the world has the input, typing in the chat doesn't trigger them. `c.pressed(&DASH)` / `c.held(&DASH)` read them in a frame hook; the engine's keys are `keys::*`
+- key bindings, one declaration each: `r.key(&DASH, "R").on_press(|c| ..)` on the client (a chord works too: `"ctrl+R"`, `"shift+alt+F6"`; the player rebinds them the same way in Controls), or `.on_press_server(|p| ..)` and the engine carries the press to the server for you. They only act while the world has the input, typing in the chat doesn't trigger them. `c.pressed(&DASH)` / `c.held(&DASH)` read them in a frame hook; the engine's keys are `keys::*`
 - messages both ways on a typed channel: `static BOOST: Channel<Boost> = Channel::named("boost")` with a `value!` struct (or `String`, `Vec<u8>`, `()`), `r.packet(&BOOST, |p, b| ..)` on the server (`p.reply(&OTHER, &v)` answers), `r.client_packet` on the client, `w.send` / `client.send`. Both ends must declare the same type, the engine checks it like event values
 - `client.run_command("/tp ~ ~5 ~")` runs a command as the player and `client.command_reply(id)` gives its answer to your code instead of the chat (testkit drives its server half like this)
 - frame hooks (`r.client_frame`)

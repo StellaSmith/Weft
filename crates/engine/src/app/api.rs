@@ -15,6 +15,7 @@ use super::{Request, Running};
 use crate::client::Client;
 use crate::client::modui::ClientView;
 use crate::input::Key;
+use winit::keyboard::KeyCode;
 use crate::ui::Kind;
 
 static LAUNCH: OnceLock<FxHashMap<String, String>> = OnceLock::new();
@@ -249,7 +250,14 @@ pub unsafe extern "C" fn client_input(c: *mut abi::ClientCtx, op: u32, text: Str
         let text = text.as_str();
         match op {
             ci::ACTION => match r.input.key_of(text) {
-                Some(k) => r.hold(k, x),
+                Some(c) => {
+                    for (bit, k) in [(crate::input::CTRL, KeyCode::ControlLeft), (crate::input::SHIFT, KeyCode::ShiftLeft), (crate::input::ALT, KeyCode::AltLeft)] {
+                        if c.mods & bit != 0 {
+                            r.hold(Key::Code(k), x);
+                        }
+                    }
+                    r.hold(c.key, x)
+                }
                 None => return 0,
             },
             ci::KEY => match crate::settings::parse_key(text) {

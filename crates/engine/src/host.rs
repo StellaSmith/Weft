@@ -1632,7 +1632,7 @@ unsafe extern "C" fn reg_error(r: *mut abi::Registrar, message: Str) {
 unsafe extern "C" fn reg_key(r: *mut abi::Registrar, name: Str, key: Str) {
     unsafe {
         let r = reg(r);
-        if crate::settings::parse_key(key.as_str()).is_none() {
+        if crate::settings::parse_chord(key.as_str()).is_none() {
             r.errors.push(format!("key {}: unknown key name {:?}", name.as_str(), key.as_str()));
         }
         r.game.keys.push((name.as_str().to_string(), key.as_str().to_string()))

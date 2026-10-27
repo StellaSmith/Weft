@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config;
-use crate::input::{Input, Key};
+use crate::input::{Chord, Input, Key};
 
 #[derive(Clone)]
 pub struct Settings {
@@ -96,15 +96,15 @@ impl Settings {
     pub fn apply_binds(&self, input: &mut Input) {
         let actions: Vec<String> = input.binds.iter().map(|b| b.action.clone()).collect();
         for action in actions {
-            match parse_key(&config::text(id(&format!("core:key.{action}")))) {
+            match parse_chord(&config::text(id(&format!("core:key.{action}")))) {
                 Some(k) => input.rebind(&action, k),
                 None => log::warn!("key binding {action}: unknown key {}", config::text(id(&format!("core:key.{action}")))),
             }
         }
     }
 
-    pub fn set_bind(&self, action: &str, key: Key) {
-        config::set_text(id(&format!("core:key.{action}")), &key_id(key));
+    pub fn set_bind(&self, action: &str, key: Chord) {
+        config::set_text(id(&format!("core:key.{action}")), &chord_id(key));
     }
 }
 
@@ -156,6 +156,31 @@ pub fn key_id(k: Key) -> String {
     }
 }
 
+const MODIFIERS: [(u8, &str); 3] = [(crate::input::CTRL, "ctrl"), (crate::input::SHIFT, "shift"), (crate::input::ALT, "alt")];
+
+/// `ctrl+shift+KeyT`: the modifiers, then the key.
+pub fn chord_id(c: Chord) -> String {
+    let mut out = String::new();
+    for (bit, name) in MODIFIERS {
+        if c.mods & bit != 0 {
+            out += name;
+            out.push('+');
+        }
+    }
+    out + &key_id(c.key)
+}
+
+/// A key with modifiers in front (`ctrl+T`, `shift+alt+F6`), or a key alone.
+pub fn parse_chord(s: &str) -> Option<Chord> {
+    let mut parts: Vec<&str> = s.split('+').map(str::trim).collect();
+    let key = parse_key(parts.pop()?)?;
+    let mut mods = 0;
+    for p in parts {
+        mods |= MODIFIERS.iter().find(|m| m.1.eq_ignore_ascii_case(p) || (m.1 == "ctrl" && p.eq_ignore_ascii_case("control")))?.0;
+    }
+    Some(Chord { key, mods })
+}
+
 pub fn parse_key(s: &str) -> Option<Key> {
     if let Some(b) = s.strip_prefix("mouse") {
         return b.parse().ok().map(Key::Mouse);
@@ -205,5 +230,11 @@ mod tests {
         assert_eq!(parse_key("F6"), Some(Key::Code(KeyCode::F6)));
         assert_eq!(parse_key("mouse3"), Some(Key::Mouse(3)));
         assert_eq!(parse_key("Rr"), None);
+        assert_eq!(parse_chord("ctrl+T"), Some(Chord { key: Key::Code(KeyCode::KeyT), mods: crate::input::CTRL }));
+        assert_eq!(parse_chord("Shift + Alt + F6"), Some(Chord { key: Key::Code(KeyCode::F6), mods: crate::input::SHIFT | crate::input::ALT }));
+        assert_eq!(parse_chord("LShift"), Some(Chord { key: Key::Code(KeyCode::ShiftLeft), mods: 0 }));
+        assert_eq!(parse_chord("meta+T"), None);
+        let c = parse_chord("ctrl+shift+R").unwrap();
+        assert_eq!(parse_chord(&chord_id(c)), Some(c));
     }
 }

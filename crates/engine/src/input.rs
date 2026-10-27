@@ -52,10 +52,39 @@ pub enum Key {
     Mouse(u8),
 }
 
+/// Modifier bits of a `Chord`.
+pub const CTRL: u8 = 1;
+pub const SHIFT: u8 = 2;
+pub const ALT: u8 = 4;
+
+/// A key and the modifiers held with it (`ctrl+T`). A modifier key is also a key of its own
+/// (sneak on Shift).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Chord {
+    pub key: Key,
+    pub mods: u8,
+}
+
+impl From<Key> for Chord {
+    fn from(key: Key) -> Chord {
+        Chord { key, mods: 0 }
+    }
+}
+
+/// The `Chord` bit of a modifier key, 0 for others.
+pub fn modifier(k: Key) -> u8 {
+    match k {
+        Key::Code(KeyCode::ControlLeft | KeyCode::ControlRight) => CTRL,
+        Key::Code(KeyCode::ShiftLeft | KeyCode::ShiftRight) => SHIFT,
+        Key::Code(KeyCode::AltLeft | KeyCode::AltRight) => ALT,
+        _ => 0,
+    }
+}
+
 pub struct Bind {
     pub action: String,
-    pub default: Key,
-    pub key: Key,
+    pub default: Chord,
+    pub key: Chord,
 }
 
 pub struct Input {
@@ -67,9 +96,10 @@ pub struct Input {
     pub typed: String,
     held: FxHashSet<Key>,
     pressed: FxHashSet<Key>,
+    released: FxHashSet<Key>,
     repeated: FxHashSet<Key>,
     pub binds: Vec<Bind>,
-    lookup: FxHashMap<String, Key>,
+    lookup: FxHashMap<String, Chord>,
 }
 
 impl Default for Input {
@@ -83,19 +113,20 @@ impl Default for Input {
             typed: String::new(),
             held: FxHashSet::default(),
             pressed: FxHashSet::default(),
+            released: FxHashSet::default(),
             repeated: FxHashSet::default(),
             binds: Vec::new(),
             lookup: FxHashMap::default(),
         };
         for &(name, key) in ENGINE_KEYS {
-            i.register(name, key);
+            i.register(name, key.into());
         }
         i
     }
 }
 
 impl Input {
-    pub fn register(&mut self, action: &str, default: Key) {
+    pub fn register(&mut self, action: &str, default: Chord) {
         if self.lookup.contains_key(action) {
             return;
         }
@@ -103,7 +134,7 @@ impl Input {
         self.lookup.insert(action.to_string(), default);
     }
 
-    pub fn rebind(&mut self, action: &str, key: Key) {
+    pub fn rebind(&mut self, action: &str, key: Chord) {
         if let Some(b) = self.binds.iter_mut().find(|b| b.action == action) {
             b.key = key;
             self.lookup.insert(action.to_string(), key);
@@ -123,16 +154,31 @@ impl Input {
         out
     }
 
-    pub fn key_of(&self, action: &str) -> Option<Key> {
+    pub fn key_of(&self, action: &str) -> Option<Chord> {
         self.lookup.get(action).copied()
     }
 
     pub fn held(&self, action: &str) -> bool {
-        self.lookup.get(action).is_some_and(|k| self.held.contains(k))
+        self.lookup.get(action).is_some_and(|&c| self.active(c, &self.held))
     }
 
     pub fn pressed(&self, action: &str) -> bool {
-        self.lookup.get(action).is_some_and(|k| self.pressed.contains(k))
+        self.lookup.get(action).is_some_and(|&c| self.active(c, &self.pressed))
+    }
+
+    /// Modifiers held now (`Chord` bits).
+    pub fn mods(&self) -> u8 {
+        self.held.iter().fold(0, |m, &k| m | modifier(k))
+    }
+
+    /// The chord is down: its key in `keys`, its modifiers held, and no binding of the same key
+    /// with more modifiers, all held, takes it over (`ctrl+T` rather than `T`).
+    fn active(&self, c: Chord, keys: &FxHashSet<Key>) -> bool {
+        if !keys.contains(&c.key) {
+            return false;
+        }
+        let held = self.mods();
+        held & c.mods == c.mods && !self.binds.iter().any(|b| b.key.key == c.key && b.key.mods != c.mods && b.key.mods & c.mods == c.mods && held & b.key.mods == b.key.mods)
     }
 
     pub fn held_key(&self, k: Key) -> bool {
@@ -145,6 +191,11 @@ impl Input {
 
     pub fn pressed_list(&self) -> Vec<Key> {
         self.pressed.iter().copied().collect()
+    }
+
+    /// Keys let go of this frame.
+    pub fn released_list(&self) -> Vec<Key> {
+        self.released.iter().copied().collect()
     }
 
     pub fn held_button(&self, b: u8) -> bool {
@@ -171,7 +222,9 @@ impl Input {
     }
 
     pub fn key_up(&mut self, k: Key) {
-        self.held.remove(&k);
+        if self.held.remove(&k) {
+            self.released.insert(k);
+        }
     }
 
     pub fn release_all(&mut self) {
@@ -181,6 +234,7 @@ impl Input {
     /// Clears per-frame state after the frame consumed it.
     pub fn end_frame(&mut self) {
         self.pressed.clear();
+        self.released.clear();
         self.repeated.clear();
         self.mouse_delta = Vec2::ZERO;
         self.scroll = 0.0;

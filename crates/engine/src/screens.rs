@@ -52,6 +52,10 @@ pub trait Screen: std::any::Any {
     fn key(&mut self, _key: Key, _ctx: &mut Ctx) -> bool {
         false
     }
+    /// Keys let go of, while it gets keys first.
+    fn key_up(&mut self, _key: Key, _ctx: &mut Ctx) -> bool {
+        false
+    }
     /// Shows the open server menu: its slots take clicks, closing the screen closes the menu.
     fn shows_menu(&self) -> bool {
         false
@@ -88,7 +92,7 @@ pub fn named(name: &str, settings: &Settings) -> Option<Box<dyn Screen>> {
         "core:pause" => Box::new(Pause),
         "core:settings" => Box::new(SettingsScreen),
         "core:language" => Box::new(LanguageScreen),
-        "core:controls" => Box::new(Controls { waiting: None }),
+        "core:controls" => Box::new(Controls::default()),
         "core:mod_settings" => Box::new(ModSettings),
         "core:worlds" => Box::new(crate::saves::WorldSelect::default()),
         "core:create_world" => Box::new(crate::saves::CreateWorld),
@@ -641,8 +645,13 @@ impl Screen for LanguageScreen {
 
 // ---------------------------------------------------------------- controls
 
+#[derive(Default)]
 pub struct Controls {
-    pub waiting: Option<String>,
+    /// The action waiting for its key.
+    waiting: Option<String>,
+    /// A modifier pressed while waiting: with a key it makes a chord (`ctrl+T`), let go alone
+    /// it is the key.
+    modifier: Option<Key>,
 }
 
 impl Screen for Controls {
@@ -660,10 +669,29 @@ impl Screen for Controls {
     }
 
     fn key(&mut self, key: Key, ctx: &mut Ctx) -> bool {
-        let Some(action) = self.waiting.take() else { return false };
-        if key != Key::Code(winit::keyboard::KeyCode::Escape) {
-            ctx.requests.push(Request::Rebind(action, key));
+        if self.waiting.is_none() {
+            return false;
         }
+        if crate::input::modifier(key) != 0 {
+            self.modifier = Some(key);
+            return true;
+        }
+        let action = self.waiting.take().unwrap_or_default();
+        if key != Key::Code(winit::keyboard::KeyCode::Escape) {
+            ctx.requests.push(Request::Rebind(action, crate::input::Chord { key, mods: ctx.input.mods() }));
+        }
+        self.modifier = None;
+        ctx.requests.push(Request::Rebuild);
+        true
+    }
+
+    fn key_up(&mut self, key: Key, ctx: &mut Ctx) -> bool {
+        if self.modifier != Some(key) {
+            return false;
+        }
+        let Some(action) = self.waiting.take() else { return false };
+        self.modifier = None;
+        ctx.requests.push(Request::Rebind(action, key.into()));
         ctx.requests.push(Request::Rebuild);
         true
     }
@@ -691,13 +719,13 @@ impl Screen for Controls {
                             ui.text(cx.t("controls.conflict", &[Arg::Text(names.join(", "))]), "default");
                         }
                         let a2 = action.clone();
-                        let kb = ui.button("button", Style::default().w(70.0).h(20.0), Rc::new(move |c: &mut Ctx| {
+                        let kb = ui.button("button", Style::default().min_w(70.0).h(20.0).pad_xy(4.0, 0.0), Rc::new(move |c: &mut Ctx| {
                             if let Some(s) = c.screen::<Controls>() {
                                 s.waiting = Some(a2.clone());
                             }
                             c.requests.push(Request::Rebuild);
                         }), |ui| {
-                            ui.text(text::plain(&text::display_key(cx.lang, b.key)), "button");
+                            ui.text(text::plain(&text::display_chord(cx.lang, b.key)), "button");
                         });
                         if let Kind::Button { selected, .. } = &mut ui.nodes[kb].kind {
                             *selected = waiting.as_deref() == Some(action.as_str());

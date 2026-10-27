@@ -409,7 +409,7 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
         } else if tag == "/" {
             st.color = base;
         } else if let Some(action) = tag.strip_prefix("key:") {
-            let name = cx.input.and_then(|i| i.key_of(action)).map(|k| display_key(cx.lang, k)).unwrap_or_else(|| "?".into());
+            let name = cx.input.and_then(|i| i.key_of(action)).map(|k| display_chord(cx.lang, k)).unwrap_or_else(|| "?".into());
             let color = st.color.or_else(|| cx.lang.color("color.key").map(|c| c >> 8));
             out.push(st.span(Piece::Text(format!("[{name}]")), color));
         } else if let Some(item) = tag.strip_prefix("item:") {
@@ -693,6 +693,18 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
 }
 
 /// A key's name for players: translated (`keyname.ShiftLeft`) when the language has it.
+/// `Ctrl+T`: the modifiers (`keyname.ctrl` ..., either side's key), then the key.
+pub fn display_chord(lang: &Lang, c: crate::input::Chord) -> String {
+    let mut out = String::new();
+    for (bit, name) in [(crate::input::CTRL, "keyname.ctrl"), (crate::input::SHIFT, "keyname.shift"), (crate::input::ALT, "keyname.alt")] {
+        if c.mods & bit != 0 {
+            out += lang.get(name);
+            out.push('+');
+        }
+    }
+    out + &display_key(lang, c.key)
+}
+
 pub fn display_key(lang: &Lang, k: crate::input::Key) -> String {
     let raw = key_name(k);
     let tr = format!("keyname.{raw}");

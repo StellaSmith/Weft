@@ -210,9 +210,9 @@ pub async fn broken_shader_pack(t: T) -> R {
     let dir = format!("{}/shaderpacks/testkit_sepia", t.c().run_dir());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let world = include_str!("../../../../crates/engine/assets/shaders/world.wgsl");
-    let ending = "    return vec4(mix(lit.rgb, g.fog_color.rgb, fog), lit.a);";
+    let ending = "    return vec4(mix(lit.rgb, scene.fog_color.rgb, fog), lit.a);";
     t.check(world.contains(ending), "the world shader still ends its shading like this");
-    let sepia = world.replace(ending, "    let y = dot(mix(lit.rgb, g.fog_color.rgb, fog), vec3(0.3, 0.59, 0.11));
+    let sepia = world.replace(ending, "    let y = dot(mix(lit.rgb, scene.fog_color.rgb, fog), vec3(0.3, 0.59, 0.11));
     return vec4(vec3(y * 1.2, y, y * 0.75), lit.a);");
     std::fs::write(format!("{dir}/world.wgsl"), sepia).map_err(|e| e.to_string())?;
     weft_sdk::settings::SHADER_PACK.set("testkit_sepia");

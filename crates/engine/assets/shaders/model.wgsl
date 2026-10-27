@@ -56,12 +56,12 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
         let n = normalize(cross(b - a, c2 - a) + vec3(0.0, 1e-6, 0.0));
         shade = n.x * n.x * 0.6 + n.z * n.z * 0.8 + n.y * n.y * select(0.5, 1.0, n.y > 0.0);
     }
-    out.clip = view.view_proj * vec4(world, 1.0);
+    out.clip = scene.view_proj * vec4(world, 1.0);
     out.dist = length(world);
     out.tex = inst.tex;
     var lit = vec3(1.0);
     if inst.light != 0xffffffffu {
-        lit = lightmap(unpack_light(inst.light), view.light.x, view.light.y, view.light.z);
+        lit = lightmap(unpack_light(inst.light), scene.params.z, scene.light.x, scene.light.y);
     }
     out.color = pow(inst.color * lit * shade * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), inst.hurt), vec3(2.2));
     out.shader = inst.shader;
@@ -77,10 +77,10 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         let e = textureSampleLevel(textures[in.glow], nearest_clamp, in.uv, 0.0).r;
         light = max(light, vec3(pow(e, 2.2)));
     }
-    let c = entity_shade(in.shader, EntityPixel(in.uv, albedo, light, view.fog.w));
+    let c = entity_shade(in.shader, EntityPixel(in.uv, albedo, light, scene.params.w));
     if c.a < 0.5 {
         discard;
     }
-    let f = fog_amount(in.dist, view.fog.x, view.fog.y);
-    return vec4(mix(c.rgb, view.fog_color.rgb, f), 1.0);
+    let f = fog_amount(in.dist, scene.params.x, scene.params.y);
+    return vec4(mix(c.rgb, scene.fog_color.rgb, f), 1.0);
 }

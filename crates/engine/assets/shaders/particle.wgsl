@@ -17,9 +17,9 @@ struct VOut {
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     let p = particles[ii];
     let c = CORNER[vi % 6u];
-    let world = p.pos_size.xyz + (view.right.xyz * (c.x - 0.5) + view.up.xyz * (0.5 - c.y)) * p.pos_size.w;
+    let world = p.pos_size.xyz + (scene.right.xyz * (c.x - 0.5) + scene.up.xyz * (0.5 - c.y)) * p.pos_size.w;
     var out: VOut;
-    out.clip = view.view_proj * vec4(world, 1.0);
+    out.clip = scene.view_proj * vec4(world, 1.0);
     let r = vec4<f32>(f32(p.data.z & 255u), f32((p.data.z >> 8u) & 255u), f32((p.data.z >> 16u) & 255u), f32(p.data.z >> 24u)) / 255.0;
     out.uv = mix(r.xy, r.zw, c);
     out.quad = c;
@@ -37,13 +37,13 @@ fn unpack_color(c: u32) -> vec4<f32> {
 fn shade(in: VOut) -> vec4<f32> {
     let albedo = textureSampleLevel(textures[in.data.y & PARTICLE_TEX_MASK], nearest_clamp, in.uv, 0.0);
     var color = unpack_color(in.data.x);
-    color = particle_shade(in.data.y >> PARTICLE_SLOT_SHIFT, ParticleFrag(in.quad, albedo, color, in.life, view.params.w));
+    color = particle_shade(in.data.y >> PARTICLE_SLOT_SHIFT, ParticleFrag(in.quad, albedo, color, in.life, scene.params.w));
     if in.data.w != 0xffffffffu {
-        let light = lightmap(unpack_light(in.data.w), view.params.z, view.look.x, view.look.y);
+        let light = lightmap(unpack_light(in.data.w), scene.params.z, scene.light.x, scene.light.y);
         color = vec4(color.rgb * pow(light, vec3(2.2)), color.a);
     }
-    let fog = fog_amount(in.dist, view.params.x, view.params.y);
-    return vec4(mix(color.rgb, view.fog_color.rgb, fog), color.a);
+    let fog = fog_amount(in.dist, scene.params.x, scene.params.y);
+    return vec4(mix(color.rgb, scene.fog_color.rgb, fog), color.a);
 }
 
 @fragment

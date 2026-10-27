@@ -113,19 +113,31 @@ macro_rules! gpu_struct {
 }
 
 gpu_struct! {
-    /// World shader globals.
-    pub struct Globals as "Globals" {
+    /// What every world pass sees of the frame: camera, fog, light, time. One buffer a frame
+    /// for the world, entities, models and particles; the hand and the inventory figure have
+    /// their own camera.
+    pub struct Scene as "Scene" {
         pub view_proj: [[f32; 4]; 4],
+        /// Camera right and up in world space (particle billboards).
+        pub right: [f32; 4],
+        pub up: [f32; 4],
+        pub fog_color: [f32; 4],
+        /// x fog start, y fog end, z daylight 0..1, w seconds (shader effects).
+        pub params: [f32; 4],
+        /// x the dimension's ambient light 0..1, y the Brightness setting 0 (moody) .. 1
+        /// (bright), z game ticks with the fraction of the current one (animated textures;
+        /// wraps every 2^20).
+        pub light: [f32; 4],
+    }
+}
+
+gpu_struct! {
+    /// What only the world shader needs.
+    pub struct Globals as "Globals" {
         /// Camera position inside its cube (0..16) in xyz.
         pub cam_frac: [f32; 4],
-        pub sky_color: [f32; 4],
-        pub fog_color: [f32; 4],
-        /// x daylight 0..1, y fog start, z fog end, w time in seconds.
-        pub params: [f32; 4],
-        /// y ambient light 0..15, z biome count, w blended color tiles.
+        /// z biome count, w blended color tiles.
         pub ids: [u32; 4],
-        /// x brightness setting 0 (moody) .. 1 (bright).
-        pub look: [f32; 4],
         /// Origins are relative to this cube.
         pub cam_cube: [i32; 4],
         /// x start of the overlay table in `frames` (per texture: overlay texture + 1, or 0),
@@ -152,19 +164,6 @@ gpu_struct! {
         /// x last face textures, y light as the world stores it (all ones: full light); block
         /// faces: z the faces tinted by w (0xRRGGBB).
         pub ids2: [u32; 4],
-    }
-}
-
-gpu_struct! {
-    /// Camera and light of the entity and model passes.
-    pub struct EntityView as "EntityView" {
-        pub view_proj: [[f32; 4]; 4],
-        pub fog_color: [f32; 4],
-        /// x fog start, y fog end, w time.
-        pub fog: [f32; 4],
-        /// Daylight, the dimension's ambient light, the Brightness setting (`lightmap` in
-        /// `common.wgsl`).
-        pub light: [f32; 4],
     }
 }
 
@@ -225,20 +224,6 @@ gpu_struct! {
     /// A bone's transform, three rows.
     pub struct GpuBone as "Bone" {
         pub rows: [[f32; 4]; 3],
-    }
-}
-
-gpu_struct! {
-    pub struct ParticleView as "ParticleView" {
-        pub view_proj: [[f32; 4]; 4],
-        /// Camera right and up in world space, for the billboards.
-        pub right: [f32; 4],
-        pub up: [f32; 4],
-        pub fog_color: [f32; 4],
-        /// x fog start, y fog end, z daylight 0..1, w seconds since start.
-        pub params: [f32; 4],
-        /// x ambient light 0..1, y brightness setting 0..1.
-        pub look: [f32; 4],
     }
 }
 
@@ -321,13 +306,14 @@ fn bindings(shader: &str) -> &'static [(&'static str, &'static str)] {
             ("glow_map", "array<u32>"),
             // Block shader slot (`shaders/block/<name>.wgsl`) per texture id, 0 none.
             ("tex_shader", "array<u32>"),
+            ("scene", "Scene"),
         ],
         // `item_boxes`: item models in their own space, kept between frames
         // (`EntityRenderer::item_model`); an item instance is a box in `boxes` whose rows place
         // the model, `ids.z` its first box, `color.a` the hurt flash and `ids2.y` the light.
-        "entity.wgsl" => &[("boxes", "array<Box>"), ("view", "EntityView"), ("glow_map", "array<u32>"), ("item_boxes", "array<Box>")],
-        "model.wgsl" => &[("instances", "array<Instance>"), ("view", "EntityView"), ("cuboids", "array<Cuboid>"), ("corners", "array<Corner>"), ("bones", "array<Bone>")],
-        "particle.wgsl" => &[("particles", "array<Particle>"), ("view", "ParticleView")],
+        "entity.wgsl" => &[("boxes", "array<Box>"), ("scene", "Scene"), ("glow_map", "array<u32>"), ("item_boxes", "array<Box>")],
+        "model.wgsl" => &[("instances", "array<Instance>"), ("scene", "Scene"), ("cuboids", "array<Cuboid>"), ("corners", "array<Corner>"), ("bones", "array<Bone>")],
+        "particle.wgsl" => &[("particles", "array<Particle>"), ("scene", "Scene")],
         "ui.wgsl" => &[("quads", "array<Quad>"), ("screen", "Screen")],
         "post.wgsl" => &[("passes", "array<Pass>")],
         _ => &[],
@@ -336,7 +322,7 @@ fn bindings(shader: &str) -> &'static [(&'static str, &'static str)] {
 
 /// Every GPU struct as WGSL.
 fn structs() -> String {
-    [Globals::wgsl(), GpuBox::wgsl(), EntityView::wgsl(), Instance::wgsl(), GpuCuboid::wgsl(), GpuCorner::wgsl(), GpuBone::wgsl(), ParticleView::wgsl(), GpuParticle::wgsl(), Quad::wgsl(), Screen::wgsl(), Pass::wgsl()].concat()
+    [Scene::wgsl(), Globals::wgsl(), GpuBox::wgsl(), Instance::wgsl(), GpuCuboid::wgsl(), GpuCorner::wgsl(), GpuBone::wgsl(), GpuParticle::wgsl(), Quad::wgsl(), Screen::wgsl(), Pass::wgsl()].concat()
 }
 
 /// What goes in front of an engine shader (or a pack's replacement of it): the constants, every
@@ -366,14 +352,13 @@ mod tests {
         let mut layouter = naga::proc::Layouter::default();
         layouter.update(module.to_ctx()).unwrap();
         let sizes = [
+            ("Scene", size_of::<Scene>()),
             ("Globals", size_of::<Globals>()),
             ("Box", size_of::<GpuBox>()),
-            ("EntityView", size_of::<EntityView>()),
             ("Instance", size_of::<Instance>()),
             ("Cuboid", size_of::<GpuCuboid>()),
             ("Corner", size_of::<GpuCorner>()),
             ("Bone", size_of::<GpuBone>()),
-            ("ParticleView", size_of::<ParticleView>()),
             ("Particle", size_of::<GpuParticle>()),
             ("Quad", size_of::<Quad>()),
             ("Screen", size_of::<Screen>()),

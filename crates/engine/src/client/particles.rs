@@ -12,7 +12,7 @@ use super::world::ClientWorld;
 use super::world_render::Camera;
 use crate::content::content;
 use crate::shaders::{Hook, Slots};
-use crate::gpu_layout::{GpuParticle, ParticleView as View};
+use crate::gpu_layout::GpuParticle;
 
 /// Particles a client keeps at most; bursts beyond it are dropped.
 const MAX: usize = 1 << 18;
@@ -52,17 +52,7 @@ pub struct Particles {
     /// Shader slot of each kind.
     kind_slots: Vec<u32>,
     instances: Vec<(BufferId, u32)>,
-    views: Vec<BufferId>,
     gpu: Vec<GpuParticle>,
-}
-
-/// Per frame values the shader needs besides the camera.
-pub struct Look {
-    pub fog_color: [f32; 4],
-    pub fog: (f32, f32),
-    pub daylight: f32,
-    pub ambient: f32,
-    pub brightness: f32,
 }
 
 fn shader(assets: &crate::assets::Assets) -> Result<(Shader, Slots), String> {
@@ -73,7 +63,7 @@ fn shader(assets: &crate::assets::Assets) -> Result<(Shader, Slots), String> {
 
 impl Particles {
     pub fn new(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Particles {
-        let mut p = Particles { list: Vec::new(), rng: weft_noise::Rng(0x9E37_79B9_7F4A_7C15), pipes: None, kind_slots: Vec::new(), instances: Vec::new(), views: Vec::new(), gpu: Vec::new() };
+        let mut p = Particles { list: Vec::new(), rng: weft_noise::Rng(0x9E37_79B9_7F4A_7C15), pipes: None, kind_slots: Vec::new(), instances: Vec::new(), gpu: Vec::new() };
         p.reload(gpu, assets);
         p
     }
@@ -107,7 +97,7 @@ impl Particles {
         for p in self.pipes.take().into_iter().flatten() {
             gpu.destroy_pipeline(p);
         }
-        for b in self.instances.drain(..).map(|b| b.0).chain(self.views.drain(..)) {
+        for b in self.instances.drain(..).map(|b| b.0) {
             gpu.destroy_buffer(b);
         }
     }
@@ -210,7 +200,8 @@ impl Particles {
     }
 
     /// Cutout particles into `list`, blended ones into `late` (after translucent blocks).
-    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, late: &mut CommandList, frame: &FrameInfo, cam: &Camera, textures: &GameTextures, look: &Look) {
+    /// `scene`: the frame's `gpu_layout::Scene`.
+    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, late: &mut CommandList, frame: &FrameInfo, cam: &Camera, textures: &GameTextures, scene: BufferId) {
         let Some(pipes) = self.pipes else { return };
         if self.list.is_empty() {
             return;
@@ -253,33 +244,16 @@ impl Particles {
             }
         }
         let n = self.gpu.len() as u32;
-        let frames = gpu.frames_in_flight();
         let stride = size_of::<GpuParticle>() as u64;
-        while self.views.len() < frames {
-            self.views.push(gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "particle view"));
-        }
         let buf = crate::gpu_layout::frame_buffer(gpu, &mut self.instances, frame.slot, n, stride, usage::STORAGE, "particles");
         gpu.mapped(buf)[..self.gpu.len() * stride as usize].copy_from_slice(bytemuck::cast_slice(&self.gpu));
-        let aspect = frame.width as f32 / frame.height.max(1) as f32;
-        let view = cam.view();
-        let inv = view.inverse();
-        let v = View {
-            view_proj: (cam.proj(aspect) * view).to_cols_array_2d(),
-            right: inv.transform_vector3(Vec3::X).extend(0.0).to_array(),
-            up: inv.transform_vector3(Vec3::Y).extend(0.0).to_array(),
-            fog_color: look.fog_color,
-            params: [look.fog.0, look.fog.1, look.daylight, crate::shaders::time()],
-            look: [look.ambient, look.brightness, 0.0, 0.0],
-        };
-        let vb = self.views[frame.slot];
-        gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
         for (pipe, first, count, list) in [(pipes[0], 0, blended_from as u32, &mut *list), (pipes[1], blended_from as u32, n - blended_from as u32, &mut *late)] {
             if count == 0 {
                 continue;
             }
             list.pipeline(pipe);
             list.bind(0, buf);
-            list.bind(1, vb);
+            list.bind(1, scene);
             list.push(Cmd::Draw { vertices: 6, instances: count, first_vertex: 0, first_instance: first });
         }
     }

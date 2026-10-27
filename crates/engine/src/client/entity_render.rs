@@ -15,7 +15,7 @@ use super::world_render::Camera;
 use crate::assets::{Assets, decode_png};
 use crate::content::content;
 use crate::physics::Hit;
-use crate::gpu_layout::{EntityView as View, GpuBox};
+use crate::gpu_layout::{GpuBox, Scene};
 
 /// What the first person view holds: the item (or the bare arm), the swing progress and the
 /// walk distance for bobbing.
@@ -45,8 +45,6 @@ pub struct EntityRenderer {
     preview_pipe: PipelineId,
     pub models: Models,
     buffers: Vec<(BufferId, u32)>,
-    views: Vec<BufferId>,
-    overlay_views: Vec<BufferId>,
     /// The held item's projection: a fixed field of view, like vanilla, so it keeps its shape
     /// whatever the player's setting.
     hand_views: Vec<BufferId>,
@@ -67,8 +65,6 @@ pub struct EntityRenderer {
     /// Shader slot of each entity kind.
     kind_shaders: Vec<u32>,
     sprites: FxHashMap<String, Option<Sprite>>,
-    pub fog: ([f32; 4], f32, f32),
-    pub brightness: f32,
     /// Entities to pose this frame, kept between frames.
     posed: Vec<Posed>,
     /// `preload`'s kinds and items already looked at this frame.
@@ -85,8 +81,6 @@ pub struct EntityRenderer {
     item_generation: u64,
     /// This frame's item instances: (item, instance).
     instances: Vec<(u32, GpuBox)>,
-    /// The dimension's ambient light, 0..1.
-    pub ambient: f32,
 }
 
 fn shader(assets: &Assets) -> Result<Shader, ShaderError> {
@@ -119,10 +113,8 @@ impl EntityRenderer {
         let ([model_pipe, preview_pipe], kind_shaders) = Self::model_pipelines(gpu, assets)?;
         let models = Models::new(gpu, assets);
         let frames = gpu.frames_in_flight();
-        let views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "entity view")).collect();
-        let overlay_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "overlay view")).collect();
-        let hand_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "hand view")).collect();
-        let preview = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "preview view")).collect();
+        let hand_views = (0..frames).map(|_| gpu.create_buffer(size_of::<Scene>() as u64, usage::STORAGE | usage::HOST, "hand scene")).collect();
+        let preview = (0..frames).map(|_| gpu.create_buffer(size_of::<Scene>() as u64, usage::STORAGE | usage::HOST, "preview scene")).collect();
         let hand_pipe = Self::hand_pipeline(gpu, assets)?;
         let (item_pipe, hand_item_pipe) = Self::item_pipelines(gpu, assets)?;
         Ok(EntityRenderer {
@@ -140,8 +132,6 @@ impl EntityRenderer {
             model_pipe,
             models,
             buffers: Vec::new(),
-            views,
-            overlay_views,
             hand_views,
             preview,
             preview_pipe,
@@ -153,11 +143,8 @@ impl EntityRenderer {
             glows: FxHashMap::default(),
             kind_shaders,
             sprites: FxHashMap::default(),
-            fog: ([0.0; 4], 0.0, 1.0),
-            brightness: 0.5,
             posed: Vec::new(),
             seen_kinds: Vec::new(),
-            ambient: 0.0,
         })
     }
 
@@ -330,7 +317,7 @@ impl EntityRenderer {
             gpu.destroy_texture(d);
         }
         let preview: Vec<BufferId> = self.preview.drain(..).collect();
-        for b in self.views.drain(..).chain(self.overlay_views.drain(..)).chain(self.hand_views.drain(..)).chain(preview) {
+        for b in self.hand_views.drain(..).chain(preview) {
             gpu.destroy_buffer(b);
         }
         for t in self.skins.drain().filter_map(|(_, v)| v).map(|v| v.0).chain(self.glows.drain().map(|(_, g)| g.0)) {
@@ -562,8 +549,9 @@ impl EntityRenderer {
         let root = Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
         self.models.add(c.game.player_kind, root, &crate::model::Motion { pitch, swing: 0.0, anims: &[], crouch: false }, layers.0[..layers.1].iter().copied());
         let vb = self.preview[frame.slot];
-        let v = View { view_proj: proj.to_cols_array_2d(), fog_color: [0.0; 4], fog: [1e9, 2e9, 0.0, crate::shaders::time()], light: [1.0, 0.0, 0.0, 0.0] };
-        gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
+        // Full daylight, no fog.
+        let v = Scene { view_proj: proj.to_cols_array_2d(), params: [1e9, 2e9, 1.0, crate::shaders::time()], ..Default::default() };
+        gpu.mapped(vb)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&v));
         list.push(Cmd::BeginPass { color: Some((Target::Texture(col), Some([0.0; 4]))), depth: Some((dep, Some(0.0))) });
         self.models.draw(gpu, list, frame, super::models::Batch::Preview, self.preview_pipe, vb);
         list.push(Cmd::EndPass);
@@ -582,7 +570,8 @@ impl EntityRenderer {
         hand: Option<Hand>,
         textures: &GameTextures,
         light: &impl Fn(IVec3) -> u32,
-        day: f32,
+        scene: &Scene,
+        scene_buf: BufferId,
         target: Option<(Hit, DVec3)>,
         breaking: Option<(IVec3, f32, DVec3)>,
         gizmo_lines: &[super::gizmo::Line],
@@ -591,7 +580,6 @@ impl EntityRenderer {
     ) {
         let c = content();
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
-        let view_proj = cam.proj(aspect) * cam.view();
         let mut boxes: Vec<GpuBox> = Vec::new();
         if textures.generation() != self.item_generation {
             self.item_generation = textures.generation();
@@ -663,10 +651,7 @@ impl EntityRenderer {
             let root = Mat4::from_translation(base) * Mat4::from_rotation_y(e.yaw) * Mat4::from_rotation_z(roll) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
             posed.push(Posed { kind, root, pitch: e.pitch, swing, crouch: e.crouched, anims, anim_count, layers, layer_count });
         }
-        let (fog_color, fog_start, fog_end) = self.fog;
-        let v = View { view_proj: view_proj.to_cols_array_2d(), fog_color, fog: [fog_start, fog_end, 0.0, crate::shaders::time()], light: [day, self.ambient, self.brightness, 0.0] };
-        let vb = self.views[frame.slot];
-        gpu.mapped(vb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&v));
+        let vb = scene_buf;
         self.models.begin();
         self.models.add_many(&posed);
         self.posed = posed;
@@ -707,7 +692,6 @@ impl EntityRenderer {
         }
 
         let overlay_start = boxes.len();
-        let mut overlay_alpha = 0.0;
         // Filled gizmo boxes: see-through by their own alpha (mode 5), slightly grown so they do
         // not fight with the faces of the blocks they cover.
         for &(a, b, color) in gizmo_fills {
@@ -743,7 +727,6 @@ impl EntityRenderer {
                         ids2: [l | l << 16, lit, 0, 0],
                     });
                 }
-                overlay_alpha = 1.0;
             }
         }
         let hand_start = boxes.len();
@@ -790,9 +773,6 @@ impl EntityRenderer {
         let buf = crate::gpu_layout::frame_buffer(gpu, &mut self.buffers, frame.slot, boxes.len() as u32, 128, usage::STORAGE, "entity boxes");
         gpu.mapped(buf)[..boxes.len() * 128].copy_from_slice(bytemuck::cast_slice(&boxes));
         let glow = textures.glow_buffer();
-        let ov = View { fog: [fog_start, fog_end, overlay_alpha, 0.0], ..v };
-        let ob = self.overlay_views[frame.slot];
-        gpu.mapped(ob)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&ov));
 
         if overlay_start > 0 {
             list.pipeline(self.pipeline);
@@ -822,15 +802,15 @@ impl EntityRenderer {
         if hand_start > overlay_start {
             list.pipeline(self.overlay);
             list.bind(0, buf);
-            list.bind(1, ob);
+            list.bind(1, vb);
             list.bind(2, glow);
             list.push(Cmd::Draw { vertices: (hand_start - overlay_start) as u32 * 36, instances: 1, first_vertex: overlay_start as u32 * 36, first_instance: 0 });
         }
         if hand_end > hand_start || hand_item.is_some() {
             let hand_cam = Camera { fov: 70.0, ..*cam };
-            let hv = View { view_proj: (hand_cam.proj(aspect) * cam.view()).to_cols_array_2d(), ..v };
+            let hv = Scene { view_proj: (hand_cam.proj(aspect) * cam.view()).to_cols_array_2d(), ..*scene };
             let hb = self.hand_views[frame.slot];
-            gpu.mapped(hb)[..size_of::<View>()].copy_from_slice(bytemuck::bytes_of(&hv));
+            gpu.mapped(hb)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&hv));
             if hand_end > hand_start {
                 list.pipeline(self.hand_pipe);
                 list.bind(0, buf);

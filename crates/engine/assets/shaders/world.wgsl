@@ -84,7 +84,7 @@ fn texture_frame(name: u32) -> Frame {
     }
     let count = info & 65535u;
     let total = f32((info >> 16u) & 32767u);
-    let ticks = g.params.w * 20.0;
+    let ticks = scene.light.z;
     let t = ticks - floor(ticks / total) * total;
     var acc = 0.0;
     for (var i = 0u; i < count; i++) {
@@ -132,7 +132,7 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let local = vec3<f32>(f32(w0 & 15u), f32((w0 >> 4u) & 15u), f32((w0 >> 8u) & 15u)) + CORNERS[dir * 4u + c];
     let pos = finish(local, origins[ii]);
     var out: VOut;
-    out.clip = g.view_proj * pos;
+    out.clip = scene.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = UVS[c];
     let fr = texture_frame(w1 & FACE_TEX_MASK);
@@ -196,7 +196,7 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     }
     let pos = finish(local, origins[ii]);
     var out: VOut;
-    out.clip = g.view_proj * pos;
+    out.clip = scene.view_proj * pos;
     out.dist = length(pos.xyz);
     out.uv = uvs[c];
     let fr = texture_frame(w4 & FACE_TEX_MASK);
@@ -215,7 +215,7 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 }
 
 fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
-    var light = in.color * lightmap(in.light, g.params.x, f32(g.ids.y) / 15.0, g.look.x);
+    var light = in.color * lightmap(in.light, scene.params.z, scene.light.x, scene.light.y);
     // Glowing texels are lifted towards full brightness by their mask: lit = albedo * max(light,
     // emission), so they stay their own (tinted, unshaded) color in the dark.
     if in.glow != 0xffffffffu {
@@ -224,9 +224,9 @@ fn shade(in: VOut, albedo: vec4<f32>) -> vec4<f32> {
     }
     // Shading factors are meant for gamma space like vanilla's; the target is sRGB, so apply them
     // as their linear equivalent or AO and shadows come out washed out.
-    let lit = block_shade(in.slot, BlockPixel(in.uv, albedo, pow(light, vec3(2.2)), in.pos, g.params.w));
-    let fog = fog_amount(in.dist, g.params.y, g.params.z);
-    return vec4(mix(lit.rgb, g.fog_color.rgb, fog), lit.a);
+    let lit = block_shade(in.slot, BlockPixel(in.uv, albedo, pow(light, vec3(2.2)), in.pos, scene.params.w));
+    let fog = fog_amount(in.dist, scene.params.x, scene.params.y);
+    return vec4(mix(lit.rgb, scene.fog_color.rgb, fog), lit.a);
 }
 
 // Nearest texels with antialiased borders (vanilla 26.1's sampleNearest): up close each texel

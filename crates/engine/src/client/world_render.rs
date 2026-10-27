@@ -107,17 +107,6 @@ impl Camera {
     }
 }
 
-pub struct FrameParams {
-    pub daylight: f32,
-    pub sky_color: Vec3,
-    pub fog_color: Vec3,
-    pub fog_start: f32,
-    pub fog_end: f32,
-    pub time: f32,
-    pub ambient: u32,
-    pub brightness: f32,
-}
-
 /// One indirect draw: kind (0 faces, 1 quads), layer, page, arguments, cube origin (w: offset
 /// index), cube center relative to the camera.
 type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4], Vec3);
@@ -139,9 +128,9 @@ pub struct WorldRenderer {
     /// `draw`'s lists, kept between frames.
     scratch: (Vec<(MeshKey, f32, Vec3, i32)>, Vec<DrawRecord>, Vec<usize>),
     /// Of the last `draw`: where its translucent draws start in `scratch.2`, and the buffers
-    /// they use (globals, origins, indirect, offsets).
+    /// they use (globals, origins, indirect, offsets, the frame's scene).
     translucent: usize,
-    buffers: Option<(BufferId, BufferId, BufferId, BufferId)>,
+    buffers: Option<(BufferId, BufferId, BufferId, BufferId, BufferId)>,
     /// Biome table, then per block column of the loaded area its blended colors: tiles of
     /// 16x16 blocks addressed by column position modulo `tint_tiles`.
     biomes: BufferId,
@@ -419,20 +408,15 @@ impl WorldRenderer {
     }
 
     /// `frames`: structures to draw and where their block (0, 0, 0) is in the world.
-    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, cam: &Camera, p: &FrameParams, frames: &[(u64, DVec3)]) {
+    pub fn draw(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, cam: &Camera, scene: BufferId, frames: &[(u64, DVec3)]) {
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
         let view_proj = cam.proj(aspect) * cam.view();
         let cam_block = cam.pos.floor();
         let cam_cube: IVec3 = cam_block.as_ivec3() >> 4i32;
         let cam_frac = (cam.pos - (cam_cube * 16).as_dvec3()).as_vec3();
         let globals = Globals {
-            view_proj: view_proj.to_cols_array_2d(),
             cam_frac: [cam_frac.x, cam_frac.y, cam_frac.z, 0.0],
-            sky_color: p.sky_color.extend(1.0).to_array(),
-            fog_color: p.fog_color.extend(1.0).to_array(),
-            params: [p.daylight, p.fog_start, p.fog_end, p.time],
-            ids: [0, p.ambient, (self.biome_table.len() / crate::content::content().tint_kinds.len()) as u32, self.tint_tiles],
-            look: [p.brightness, 0.0, 0.0, 0.0],
+            ids: [0, 0, (self.biome_table.len() / crate::content::content().tint_kinds.len()) as u32, self.tint_tiles],
             cam_cube: cam_cube.extend(0).to_array(),
             extra: [self.overlays, 0, crate::content::content().tint_kinds.len() as u32, 0],
         };
@@ -546,7 +530,7 @@ impl WorldRenderer {
             out.copy_from_slice(bytemuck::bytes_of(&a));
         }
 
-        self.buffers = Some((gbuf, obuf, ibuf, fbuf));
+        self.buffers = Some((gbuf, obuf, ibuf, fbuf, scene));
         self.scratch = (visible, draws, sorted);
         self.emit(list, 0..self.translucent);
     }
@@ -560,7 +544,7 @@ impl WorldRenderer {
     }
 
     fn emit(&self, list: &mut CommandList, range: std::ops::Range<usize>) {
-        let Some((gbuf, obuf, ibuf, fbuf)) = self.buffers else { return };
+        let Some((gbuf, obuf, ibuf, fbuf, scene)) = self.buffers else { return };
         let (_, draws, sorted) = &self.scratch;
         if range.is_empty() {
             return;
@@ -592,6 +576,7 @@ impl WorldRenderer {
             list.bind(6, fbuf);
             list.bind(7, self.glow);
             list.bind(8, self.tex_shader);
+            list.bind(9, scene);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: k as u64 * 20, count: (end - k) as u32 });
             k = end;
         }

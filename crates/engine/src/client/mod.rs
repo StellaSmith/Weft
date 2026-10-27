@@ -15,7 +15,8 @@ use std::time::Instant;
 use glam::{DVec3, IVec3, Vec3};
 use rustc_hash::{FxHashMap, FxHashSet};
 use weft_abi::{ItemStack, block_flags as bf};
-use weft_render::{Backend, CommandList, FrameInfo};
+use weft_render::{Backend, BufferId, CommandList, FrameInfo};
+use crate::gpu_layout::Scene;
 
 use crate::content::content;
 use crate::input::Input;
@@ -26,7 +27,7 @@ use crate::ui::text::{Arg, Msg};
 use entity_render::EntityRenderer;
 use textures::GameTextures;
 use world::ClientWorld;
-use world_render::{Camera, FrameParams, WorldRenderer};
+use world_render::{Camera, WorldRenderer};
 
 pub struct LocalPlayer {
     pub pos: DVec3,
@@ -221,6 +222,10 @@ pub struct Client {
     /// Structures whose cubes are uploaded for drawing.
     drawn_frames: FxHashSet<u64>,
     start: Instant,
+    /// Ticks counted since the server last said the time (`Scene` ticks).
+    since_time: u32,
+    /// The frame's `Scene`, one buffer per frame in flight.
+    scene_bufs: Vec<BufferId>,
     pub target: Option<Hit>,
     pub target_entity: Option<u64>,
     pub selected: usize,
@@ -400,6 +405,8 @@ impl Client {
             offset_target: 0.0,
             drawn_frames: FxHashSet::default(),
             start: Instant::now(),
+            since_time: 0,
+            scene_bufs: Vec::new(),
             target: None,
             target_entity: None,
             selected: 0,
@@ -489,7 +496,10 @@ impl Client {
                         self.world.set_block(p, s);
                     }
                 }
-                ToClient::Time { dim, time } if dim == self.world.dim => self.world.time = time,
+                ToClient::Time { dim, time } if dim == self.world.dim => {
+                    self.world.time = time;
+                    self.since_time = 0;
+                }
                 ToClient::Teleport { dim, pos, frame } => {
                     if dim != self.world.dim {
                         self.world.clear();
@@ -836,6 +846,7 @@ impl Client {
             self.accum += dt.min(0.25);
             while self.accum >= STEP {
                 self.accum -= STEP;
+                self.since_time = (self.since_time + 1).min(20);
                 // A rider is where it is on its body: if moves arrived late and the body's past
                 // changed, the rider moves with it, not over the deck.
                 if let Some(e) = self.player.riding.and_then(|(b, _, now)| self.entities.get(&b).map(|e| e.pose(self.body_tick(self.body_clock)) + now)) {
@@ -1393,6 +1404,9 @@ impl Client {
     }
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
+        for b in self.scene_bufs.drain(..) {
+            gpu.destroy_buffer(b);
+        }
         self.render.destroy(gpu);
         self.entity_render.destroy(gpu);
         self.particles.destroy(gpu);
@@ -1403,45 +1417,53 @@ impl Client {
         content().dims[self.world.dim as usize].daylight(self.world.time)
     }
 
-    /// Fog and sky colors (linear), dimmed towards night.
-    fn sky_colors(&self) -> (Vec3, Vec3) {
-        let def = &content().dims[self.world.dim as usize];
+    /// Fog color (linear), dimmed towards night.
+    fn fog_linear(&self) -> Vec3 {
+        let c = content().dims[self.world.dim as usize].fog_color;
         let dim = (self.daylight().powi(2)).max(0.02);
-        let lin = |c: u32| (Vec3::new(((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32) / 255.0).powf(2.2) * dim;
-        (lin(def.fog_color), lin(def.sky_color))
+        (Vec3::new(((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32) / 255.0).powf(2.2) * dim
+    }
+
+    /// The frame as every world pass sees it (`gpu_layout::Scene`).
+    fn scene(&self, cam: &Camera, frame: &FrameInfo) -> Scene {
+        let view_distance = self.view_radius as f32 * 16.0;
+        let aspect = frame.width as f32 / frame.height.max(1) as f32;
+        let view = cam.view();
+        let inv = view.inverse();
+        // Animated textures follow the game's ticks: between two from the server the client
+        // counts on for a second at most, so they stop with the game.
+        let fraction = if self.since_time < 20 { (self.accum / STEP).clamp(0.0, 1.0) as f32 } else { 0.0 };
+        let ticks = ((self.world.time + self.since_time as u64) % (1 << 20)) as f32 + fraction;
+        Scene {
+            view_proj: (cam.proj(aspect) * view).to_cols_array_2d(),
+            right: inv.transform_vector3(Vec3::X).extend(0.0).to_array(),
+            up: inv.transform_vector3(Vec3::Y).extend(0.0).to_array(),
+            fog_color: self.fog_color(),
+            params: [view_distance * 0.6, view_distance, self.daylight(), crate::shaders::time()],
+            light: [content().dims[self.world.dim as usize].ambient as f32 / 15.0, self.brightness, ticks, 0.0],
+        }
     }
 
     pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, textures: &GameTextures) {
-        let view_distance = self.view_radius as f32 * 16.0;
-        let def = &content().dims[self.world.dim as usize];
-        let day = self.daylight();
-        let (fog, sky) = self.sky_colors();
-        let params = FrameParams {
-            daylight: day,
-            sky_color: sky,
-            fog_color: fog,
-            fog_start: view_distance * 0.6,
-            fog_end: view_distance,
-            time: self.start.elapsed().as_secs_f32(),
-            ambient: def.ambient as u32,
-            brightness: self.brightness,
-        };
-        self.entity_render.brightness = self.brightness;
         self.entity_render.local = self.player_id;
         for (entity, png) in std::mem::take(&mut self.entity_render.skin_pending) {
             self.entity_render.set_skin(gpu, entity, &png);
         }
-        self.entity_render.ambient = def.ambient as f32 / 15.0;
         let cam = self.render_camera();
+        let scene = self.scene(&cam, frame);
+        while self.scene_bufs.len() < gpu.frames_in_flight() {
+            self.scene_bufs.push(gpu.create_buffer(size_of::<Scene>() as u64, weft_render::usage::STORAGE | weft_render::usage::HOST, "scene"));
+        }
+        let scene_buf = self.scene_bufs[frame.slot];
+        gpu.mapped(scene_buf)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&scene));
         // Opaque blocks, then entities and cutout particles, then what is seen through:
         // translucent blocks, cracks and gizmo fills, blended particles, and the hand.
         let frames: Vec<(u64, DVec3)> = self.entities.iter().filter(|(_, e)| e.structure.is_some()).map(|(&id, e)| (id, crate::server::structure_origin(e.pos))).collect();
-        self.render.draw(gpu, list, frame, &cam, &params, &frames);
+        self.render.draw(gpu, list, frame, &cam, scene_buf, &frames);
         list.push(weft_render::Cmd::Mark);
         let mut late = std::mem::take(&mut self.late);
         late.clear();
         self.render.draw_translucent(&mut late);
-        self.entity_render.fog = (params.fog_color.extend(1.0).to_array(), params.fog_start, params.fog_end);
         let me = (self.view != 0 && !self.dead && self.mode != GameMode::Spectator).then(|| self.self_entity());
         let hand = (self.view == 0 && !self.dead && self.mode != GameMode::Spectator).then(|| entity_render::Hand {
             stack: self.held(),
@@ -1451,11 +1473,10 @@ impl Client {
         });
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
-        let look = particles::Look { fog_color: params.fog_color.extend(1.0).to_array(), fog: (params.fog_start, params.fog_end), daylight: day, ambient: def.ambient as f32 / 15.0, brightness: self.brightness };
         let mut hand_late = std::mem::take(&mut self.hand_late);
         hand_late.clear();
-        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, day, self.target.map(|h| (h, self.frame_origin(h.frame))), self.breaking.map(|(f, p, v)| (p, v, self.frame_origin(f))), &self.gizmo_lines, &self.gizmo_fills, &mut hand_late);
-        self.particles.draw(gpu, list, &mut late, frame, &cam, textures, &look);
+        self.entity_render.draw(gpu, list, frame, &cam, &self.entities, me.as_ref(), hand, textures, &light, &scene, scene_buf, self.target.map(|h| (h, self.frame_origin(h.frame))), self.breaking.map(|(f, p, v)| (p, v, self.frame_origin(f))), &self.gizmo_lines, &self.gizmo_fills, &mut hand_late);
+        self.particles.draw(gpu, list, &mut late, frame, &cam, textures, scene_buf);
         list.append(&mut late);
         list.append(&mut hand_late);
         (self.late, self.hand_late) = (late, hand_late);
@@ -1463,7 +1484,7 @@ impl Client {
     }
 
     pub fn fog_color(&self) -> [f32; 4] {
-        self.sky_colors().0.extend(1.0).to_array()
+        self.fog_linear().extend(1.0).to_array()
     }
 }
 

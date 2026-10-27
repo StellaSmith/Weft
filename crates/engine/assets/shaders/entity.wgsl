@@ -60,7 +60,7 @@ fn box_vertex(b: Box, v: u32) -> VOut {
     let local = vec4(p, 1.0);
     let world = vec3(dot(b.rows[0], local), dot(b.rows[1], local), dot(b.rows[2], local));
     var out: VOut;
-    out.clip = view.view_proj * vec4(world, 1.0);
+    out.clip = scene.view_proj * vec4(world, 1.0);
     out.dist = length(world);
     let uv = UVS[c];
     out.mode = b.ids.y;
@@ -118,7 +118,7 @@ fn box_vertex(b: Box, v: u32) -> VOut {
     out.tint = pow(tint, vec3(2.2));
     var lit = vec3(1.0);
     if b.ids.y != BOX_MODE_SOLID && b.ids.y != BOX_MODE_FILLED && b.ids2.y != 0xffffffffu {
-        lit = lightmap(unpack_light(b.ids2.y), view.light.x, view.light.y, view.light.z);
+        lit = lightmap(unpack_light(b.ids2.y), scene.params.z, scene.light.x, scene.light.y);
     }
     // Gamma-space shading applied in linear space, as in the world shader.
     out.color = vec4(pow(tint * lit * SHADE[face] * mix(vec3(1.0), vec3(1.0, 0.4, 0.4), hurt), vec3(2.2)), 1.0);
@@ -142,8 +142,8 @@ fn vs_hand_item(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32
 }
 
 fn fog(in: VOut, rgb: vec3<f32>) -> vec3<f32> {
-    let f = fog_amount(in.dist, view.fog.x, view.fog.y);
-    return mix(rgb, view.fog_color.rgb, f);
+    let f = fog_amount(in.dist, scene.params.x, scene.params.y);
+    return mix(rgb, scene.fog_color.rgb, f);
 }
 
 @fragment
@@ -182,10 +182,10 @@ fn fs_overlay(in: VOut) -> @location(0) vec4<f32> {
         if t.a < 0.1 {
             discard;
         }
-        return vec4(t.rgb * in.color.rgb, t.a * view.fog.z);
+        return vec4(t.rgb * in.color.rgb, t.a);
     }
     if in.mode == BOX_MODE_FILLED {
         return vec4(in.color.rgb, bitcast<f32>(in.layer));
     }
-    return vec4(in.color.rgb, view.fog.z);
+    return vec4(in.color.rgb, 1.0);
 }

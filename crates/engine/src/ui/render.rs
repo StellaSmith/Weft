@@ -77,8 +77,8 @@ pub fn animate(quads: &mut [Quad], list: &[Animated]) {
 
 /// How a GUI texture fills a rectangle of another size. Set by the texture itself: a `.gui` file
 /// next to it (`scaling = nine_slice | tile | stretch`, `border = 3` or `border = l t r b`,
-/// `size = w h` when the image is a higher resolution than the GUI pixels it stands for), or
-/// vanilla's `.png.mcmeta` with `gui.scaling`. Themes only give a fallback for bare images.
+/// `size = w h` when the image is a higher resolution than the GUI pixels it stands for). Themes
+/// only give a fallback for bare images.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Slicing {
     /// Corners keep their size, edges and center stretch; borders left, top, right, bottom in GUI
@@ -86,31 +86,6 @@ pub enum Slicing {
     Nine { size: [f32; 2], border: [f32; 4] },
     Tile { size: [f32; 2] },
     Stretch,
-}
-
-/// The number after `"key":` in a JSON text, without a full parser.
-fn json_num(src: &str, key: &str) -> Option<f32> {
-    let i = src.find(&format!("\"{key}\""))?;
-    let rest = src[i + key.len() + 2..].trim_start().strip_prefix(':')?.trim_start();
-    let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
-
-fn parse_mcmeta(src: &str) -> Option<Slicing> {
-    let s = &src[src.find("\"scaling\"")?..];
-    let kind = s.find("\"type\"").map(|i| &s[i + 6..]).and_then(|r| r.split('"').nth(1)).unwrap_or("stretch");
-    let size = [json_num(s, "width")?, json_num(s, "height")?];
-    Some(match kind {
-        "nine_slice" => {
-            let border = match json_num(s, "border") {
-                Some(b) => [b; 4],
-                None => [json_num(s, "left")?, json_num(s, "top")?, json_num(s, "right")?, json_num(s, "bottom")?],
-            };
-            Slicing::Nine { size, border }
-        }
-        "tile" => Slicing::Tile { size },
-        _ => Slicing::Stretch,
-    })
 }
 
 fn parse_gui(src: &str, pixels: [f32; 2]) -> Slicing {
@@ -332,7 +307,7 @@ impl UiRenderer {
             crate::kv::pairs(src).find(|p| p.1 == "outset").and_then(|(line, k, v)| crate::kv::number(name, line, k, v))
         });
         self.outset.insert(name.to_string(), outset.unwrap_or(0.0));
-        let s = gui.map(|src| parse_gui(&src, pixels)).or_else(|| read("png.mcmeta").and_then(|src| parse_mcmeta(&src)));
+        let s = gui.map(|src| parse_gui(&src, pixels));
         self.slicing.insert(name.to_string(), s);
         s
     }
@@ -923,15 +898,6 @@ fn theme_slicing(theme: &Theme, class: &str) -> Slicing {
 #[cfg(test)]
 mod slicing_tests {
     use super::*;
-
-    #[test]
-    fn vanilla_mcmeta() {
-        let s = r#"{"gui": {"scaling": {"type": "nine_slice", "width": 200, "height": 20, "border": 3}}}"#;
-        assert_eq!(parse_mcmeta(s), Some(Slicing::Nine { size: [200.0, 20.0], border: [3.0; 4] }));
-        let s = r#"{"gui":{"scaling":{"type":"nine_slice","width":32,"height":32,"border":{"left":4,"top":5,"right":6,"bottom":7}}}}"#;
-        assert_eq!(parse_mcmeta(s), Some(Slicing::Nine { size: [32.0, 32.0], border: [4.0, 5.0, 6.0, 7.0] }));
-        assert_eq!(parse_mcmeta(r#"{"gui":{"scaling":{"type":"tile","width":16,"height":16}}}"#), Some(Slicing::Tile { size: [16.0, 16.0] }));
-    }
 
     #[test]
     fn gui_sidecar() {

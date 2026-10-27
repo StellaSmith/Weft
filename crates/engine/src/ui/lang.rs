@@ -22,24 +22,8 @@ pub struct Lang {
 }
 
 fn parse(src: &str, into: &mut FxHashMap<String, String>) {
-    let mut last: Option<String> = None;
-    for line in src.lines() {
-        let line = line.trim_start_matches('\u{feff}');
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') || trimmed.is_empty() {
-            continue;
-        }
-        if line.starts_with([' ', '\t']) {
-            if let Some(v) = last.as_ref().and_then(|k| into.get_mut(k)) {
-                v.push('\n');
-                v.push_str(&trimmed.replace("\\n", "\n"));
-            }
-            continue;
-        }
-        if let Some((k, v)) = line.split_once('=') {
-            into.insert(k.trim().to_string(), v.trim().replace("\\n", "\n"));
-            last = Some(k.trim().to_string());
-        }
+    for (_, k, v) in crate::kv::long_pairs(src) {
+        into.insert(k.to_string(), v.replace("\\n", "\n"));
     }
 }
 

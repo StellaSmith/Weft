@@ -204,19 +204,8 @@ pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
     for (tex, name) in c.block_textures.iter().enumerate() {
         let Some(src) = assets.read(name, "textures", "ctm").map(|b| String::from_utf8_lossy(&b).into_owned()) else { continue };
         let start = ctm.rules.len() as u32;
-        for section in src.split('\n').fold(vec![String::new()], |mut v, line| {
-            if line.trim_start().starts_with('[') {
-                v.push(String::new());
-            } else {
-                v.last_mut().unwrap().push_str(line);
-                v.last_mut().unwrap().push('\n');
-            }
-            v
-        }) {
-            let mut kv: FxHashMap<&str, &str> = FxHashMap::default();
-            for (_, k, v) in crate::kv::pairs(&section) {
-                kv.insert(k, v);
-            }
+        for section in crate::kv::sections(&src) {
+            let kv: FxHashMap<&str, &str> = section.iter().map(|p| (p.1, p.2)).collect();
             if kv.is_empty() {
                 continue;
             }

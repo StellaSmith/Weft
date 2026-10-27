@@ -184,7 +184,7 @@ A texture used as a background has to be stretched over parts of any size, and a
 scaling = nine_slice
 border = 4
 ```
-`scaling` is `nine_slice` (the corners keep their size, the edges and middle stretch), `tile` or `stretch`. `border` is one number for all sides or `left top right bottom`, in GUI pixels. Two more keys exist for special cases: `size = w h` for an image with more pixels than the GUI pixels it stands for, and `outset = n` for textures that reach outside their box, like shadows. Vanilla's `.png.mcmeta` with `gui.scaling` is understood too, so vanilla packs keep their slicing, and an image with neither is simply stretched.
+`scaling` is `nine_slice` (the corners keep their size, the edges and middle stretch), `tile` or `stretch`. `border` is one number for all sides or `left top right bottom`, in GUI pixels. Two more keys exist for special cases: `size = w h` for an image with more pixels than the GUI pixels it stands for, and `outset = n` for textures that reach outside their box, like shadows. An image without one is simply stretched.
 
 ## Shaders and animations
 A theme class can have `shader = <name>`, and the panel is then filled by `shaders/gui/<name>.wgsl` instead of a texture:

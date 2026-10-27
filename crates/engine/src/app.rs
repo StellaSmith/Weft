@@ -292,7 +292,6 @@ impl App {
         roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
         let packs = crate::packs::enabled(&self.opts.run_dir, &settings.resource_packs());
         crate::packs::set_shader_pack(settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&self.opts.run_dir).join(p)));
-        crate::packs::set_dev(self.opts.dev);
         let assets = Assets::new(roots, packs);
         crate::assets::set_current(&assets);
         let lang = Lang::load(&assets, &settings.language(), self.opts.dev);

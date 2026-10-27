@@ -143,7 +143,7 @@ pub const GUI: Hook = Hook {
 
 fn load_shader(assets: &Assets) -> Result<(Shader, Slots, Slots), ShaderError> {
     let (fx, gui) = (crate::shaders::snippets(assets, &FX), crate::shaders::snippets(assets, &GUI));
-    let (shader, mut slots) = crate::packs::compose("ui.wgsl", include_str!("../../shaders/ui.wgsl"), &[(&FX, &fx), (&GUI, &gui)])?;
+    let (shader, mut slots) = crate::packs::compose(assets, "ui.wgsl", &[(&FX, &fx), (&GUI, &gui)])?;
     let gui = slots.pop().unwrap_or_default();
     let fx = slots.pop().unwrap_or_default();
     Ok((shader, fx, gui))

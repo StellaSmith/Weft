@@ -736,7 +736,7 @@ impl<T> ColumnCache<T> {
     }
 
     fn shard(&self, x: i32, z: i32) -> &Mutex<FxHashMap<(u64, i32, i32), Arc<T>>> {
-        let h = (x as u32).wrapping_mul(0x9E37_79B9) ^ (z as u32).wrapping_mul(0x85EB_CA6B);
+        let h = weft_noise::hash(0, x as i64, 0, z as i64) as u32;
         &self.shards[(h >> 27) as usize % SHARDS]
     }
 

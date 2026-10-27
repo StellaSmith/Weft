@@ -87,19 +87,7 @@ impl Dim {
     }
 
     fn scan_bounds(&self) -> Option<(IVec3, IVec3)> {
-        let mut out: Option<(IVec3, IVec3)> = None;
-        for (&cp, cube) in &self.cubes {
-            if cube.uniform_state() == Some(AIR) {
-                continue;
-            }
-            for i in 0..crate::world::cube::VOLUME {
-                if cube.get(i) != AIR {
-                    let p = cp * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
-                    out = Some(out.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
-                }
-            }
-        }
-        out
+        crate::world::block_bounds(self.cubes.iter().map(|(p, c)| (p, &**c)))
     }
 
     /// Structures light each of their cubes as open to the sky above (they move under the sky

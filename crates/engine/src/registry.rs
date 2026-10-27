@@ -711,15 +711,18 @@ pub struct AttrDef {
 }
 
 /// Events the engine emits, with the schemas of their `abi` structs.
-pub const ENGINE_EVENTS: &[(&str, &str, u32)] = &[
-    (abi::event::BLOCK_BROKEN, "{player:u64,pos:[i32;3],state:u32,item:u32}", size_of::<abi::BlockChange>() as u32),
-    (abi::event::BLOCK_PLACED, "{player:u64,pos:[i32;3],state:u32,item:u32}", size_of::<abi::BlockChange>() as u32),
-    (abi::event::ENTITY_DIED, "{entity:u64,killer:u64,kind:u32,cause:u32,pos:[f64;3]}", size_of::<abi::Death>() as u32),
-    (abi::event::PLAYER_JOINED, "{player:u64}", size_of::<abi::PlayerEvent>() as u32),
-    (abi::event::ITEM_PICKED_UP, "{player:u64,stack:{item:u32,count:u32,data:u32}}", size_of::<abi::Pickup>() as u32),
-    (abi::event::ENTITY_HURT, "{entity:u64,source:u64,amount:f32,cause:u32}", size_of::<abi::Hurt>() as u32),
-    (abi::event::ITEM_USED, "{player:u64,stack:{item:u32,count:u32,data:u32},pos:[i32;3],has_target:u32}", size_of::<abi::ItemUsed>() as u32),
-];
+pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
+    use abi::Schema;
+    &[
+        (abi::event::BLOCK_BROKEN, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
+        (abi::event::BLOCK_PLACED, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
+        (abi::event::ENTITY_DIED, abi::Death::SCHEMA, size_of::<abi::Death>() as u32),
+        (abi::event::PLAYER_JOINED, abi::PlayerEvent::SCHEMA, size_of::<abi::PlayerEvent>() as u32),
+        (abi::event::ITEM_PICKED_UP, abi::Pickup::SCHEMA, size_of::<abi::Pickup>() as u32),
+        (abi::event::ENTITY_HURT, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
+        (abi::event::ITEM_USED, abi::ItemUsed::SCHEMA, size_of::<abi::ItemUsed>() as u32),
+    ]
+};
 
 /// FNV-1a, for names stored in saves.
 pub fn name_hash(s: &str) -> u64 {

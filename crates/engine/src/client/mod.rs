@@ -275,7 +275,7 @@ pub struct Client {
     pub sounds: Vec<crate::audio::Play>,
     /// Own walk distance at which the next step sounds.
     next_step: f32,
-    rng: u64,
+    rng: weft_noise::Rng,
     pub dead: bool,
     pub components: FxHashMap<u32, Vec<u8>>,
     pub menu: Option<ClientMenu>,
@@ -418,7 +418,7 @@ impl Client {
             hit_sound: 0.0,
             sounds: Vec::new(),
             next_step: 0.0,
-            rng: 0x9E37_79B9_7F4A_7C15,
+            rng: weft_noise::Rng(0x9E37_79B9_7F4A_7C15),
             drag: None,
             sweep: Vec::new(),
             last_click: None,
@@ -1170,10 +1170,7 @@ impl Client {
     }
 
     fn chance(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 40) as f32 / (1u64 << 24) as f32
+        self.rng.float()
     }
 
     /// The engine's cosmetics of one entity, its kind's client tick unless a mod gave it one:

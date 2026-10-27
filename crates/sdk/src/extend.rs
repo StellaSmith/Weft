@@ -101,41 +101,16 @@ impl<T: Value> Event<T> {
     }
 }
 
-unsafe impl Value for ItemStack {
-    fn schema() -> String {
-        "{item:u32,count:u32,data:u32}".into()
-    }
+macro_rules! schema_values {
+    ($($t:ty),*) => {$(
+        unsafe impl Value for $t {
+            fn schema() -> String {
+                <$t as abi::Schema>::SCHEMA.into()
+            }
+        }
+    )*};
 }
-unsafe impl Value for abi::BlockChange {
-    fn schema() -> String {
-        "{player:u64,pos:[i32;3],state:u32,item:u32}".into()
-    }
-}
-unsafe impl Value for abi::Death {
-    fn schema() -> String {
-        "{entity:u64,killer:u64,kind:u32,cause:u32,pos:[f64;3]}".into()
-    }
-}
-unsafe impl Value for abi::Hurt {
-    fn schema() -> String {
-        "{entity:u64,source:u64,amount:f32,cause:u32}".into()
-    }
-}
-unsafe impl Value for abi::PlayerEvent {
-    fn schema() -> String {
-        "{player:u64}".into()
-    }
-}
-unsafe impl Value for abi::Pickup {
-    fn schema() -> String {
-        "{player:u64,stack:{item:u32,count:u32,data:u32}}".into()
-    }
-}
-unsafe impl Value for abi::ItemUsed {
-    fn schema() -> String {
-        "{player:u64,stack:{item:u32,count:u32,data:u32},pos:[i32;3],has_target:u32}".into()
-    }
-}
+schema_values!(ItemStack, abi::BlockChange, abi::Death, abi::Hurt, abi::PlayerEvent, abi::Pickup, abi::ItemUsed);
 
 /// The engine's events.
 pub static BLOCK_BROKEN: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_BROKEN);

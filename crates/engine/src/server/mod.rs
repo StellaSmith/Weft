@@ -1340,12 +1340,9 @@ impl Server {
             "nearest" => found.sort_by(|a, b| a.2.total_cmp(&b.2)),
             "furthest" => found.sort_by(|a, b| b.2.total_cmp(&a.2)),
             "random" => {
-                let mut seed = self.tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                let mut rng = weft_noise::Rng(self.tick);
                 for i in (1..found.len()).rev() {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 7;
-                    seed ^= seed << 17;
-                    found.swap(i, (seed % (i as u64 + 1)) as usize);
+                    found.swap(i, rng.below(i as u64 + 1) as usize);
                 }
             }
             _ => {}

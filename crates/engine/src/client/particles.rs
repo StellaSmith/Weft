@@ -47,7 +47,7 @@ struct Particle {
 
 pub struct Particles {
     list: Vec<Particle>,
-    rng: u64,
+    rng: weft_noise::Rng,
     pipes: Option<[PipelineId; 2]>,
     /// Shader slot of each kind.
     kind_slots: Vec<u32>,
@@ -67,13 +67,13 @@ pub struct Look {
 
 fn shader(assets: &crate::assets::Assets) -> Result<(Shader, Slots), String> {
     let snippets = crate::shaders::snippets(assets, &HOOK);
-    let (s, mut slots) = crate::packs::compose("particle.wgsl", include_str!("../../shaders/particle.wgsl"), &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
+    let (s, mut slots) = crate::packs::compose(assets, "particle.wgsl", &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
     Ok((s, slots.pop().unwrap_or_default()))
 }
 
 impl Particles {
     pub fn new(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Particles {
-        let mut p = Particles { list: Vec::new(), rng: 0x9E37_79B9_7F4A_7C15, pipes: None, kind_slots: Vec::new(), instances: Vec::new(), views: Vec::new(), gpu: Vec::new() };
+        let mut p = Particles { list: Vec::new(), rng: weft_noise::Rng(0x9E37_79B9_7F4A_7C15), pipes: None, kind_slots: Vec::new(), instances: Vec::new(), views: Vec::new(), gpu: Vec::new() };
         p.reload(gpu, assets);
         p
     }
@@ -117,10 +117,7 @@ impl Particles {
     }
 
     fn random(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 40) as f32 / (1u64 << 24) as f32
+        self.rng.float()
     }
 
     pub fn spawn(&mut self, b: &ParticleBurst) {

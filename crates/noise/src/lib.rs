@@ -12,6 +12,38 @@ pub fn hash(seed: u64, x: i64, y: i64, z: i64) -> u64 {
     h ^ (h >> 31)
 }
 
+/// SplitMix64's finalizer: a well mixed value from any input.
+#[inline]
+pub fn mix(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E3779B97F4A7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+/// A small deterministic random stream (SplitMix64); the engine's only source of randomness
+/// besides `hash` of positions.
+#[derive(Clone, Debug)]
+pub struct Rng(pub u64);
+
+impl Rng {
+    #[inline]
+    pub fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+        mix(self.0)
+    }
+
+    /// Uniform in [0, 1).
+    pub fn float(&mut self) -> f32 {
+        (self.next() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    /// Uniform in 0..n (0 for n = 0).
+    pub fn below(&mut self, n: u64) -> u64 {
+        if n == 0 { 0 } else { self.next() % n }
+    }
+}
+
 /// Uniform in [0, 1).
 #[inline]
 pub fn unit(h: u64) -> f64 {

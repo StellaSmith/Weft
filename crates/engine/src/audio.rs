@@ -57,7 +57,7 @@ pub struct Audio {
     state: (bool, bool),
     /// Per category, then the master volume.
     volumes: Vec<f64>,
-    rng: u64,
+    rng: weft_noise::Rng,
     /// Sounds started so far.
     pub played: u32,
     /// Automated runs (tests, scripts): everything plays and counts, silently.
@@ -105,7 +105,7 @@ impl Audio {
                 next_music: Instant::now() + Duration::from_secs(20),
                 state: (false, false),
                 volumes: Vec::new(),
-                rng: 0x2545_F491_4F6C_DD1D,
+                rng: weft_noise::Rng(0x2545_F491_4F6C_DD1D),
                 played: 0,
                 muted: false,
                 volume_ids: None,
@@ -121,10 +121,7 @@ impl Audio {
     }
 
     fn random(&mut self) -> f32 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        (self.rng >> 40) as f32 / (1u64 << 24) as f32
+        self.rng.float()
     }
 
     /// Decoded once, on first use: a file is a few kilobytes and decodes in well under a

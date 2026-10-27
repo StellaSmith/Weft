@@ -334,13 +334,7 @@ pub fn load(assets: &Assets, c: &Content) -> (Ctm, Extra) {
 }
 
 fn hash(x: i32, y: i32, z: i32, f: u32) -> u64 {
-    let mut h = (x as u32 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ (y as u32 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
-        ^ (z as u32 as u64).wrapping_mul(0x1656_67B1_9E37_79F9)
-        ^ (f as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93);
-    h ^= h >> 32;
-    h = h.wrapping_mul(0xD6E8_FEB8_6659_FD93);
-    h ^ (h >> 29)
+    weft_noise::hash(f as u64, x as i64, y as i64, z as i64)
 }
 
 impl Ctm {

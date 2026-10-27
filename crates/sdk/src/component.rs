@@ -48,13 +48,13 @@ unsafe impl<T: Value, const N: usize> Value for [T; N] {
 
 unsafe impl Value for abi::Worn {
     fn schema() -> String {
-        "{roles:u32,inflate:f32}".into()
+        <abi::Worn as abi::Schema>::SCHEMA.into()
     }
 }
 
 unsafe impl Value for abi::Energy {
     fn schema() -> String {
-        "{stored:i64,capacity:i64,max_in:i64,max_out:i64}".into()
+        <abi::Energy as abi::Schema>::SCHEMA.into()
     }
 }
 

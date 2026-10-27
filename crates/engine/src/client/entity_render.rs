@@ -89,8 +89,8 @@ pub struct EntityRenderer {
     pub ambient: f32,
 }
 
-fn shader() -> Result<Shader, ShaderError> {
-    crate::packs::shader("entity.wgsl", include_str!("../../shaders/entity.wgsl"))
+fn shader(assets: &Assets) -> Result<Shader, ShaderError> {
+    crate::packs::shader(assets, "entity.wgsl")
 }
 
 pub const HOOK: crate::shaders::Hook = crate::shaders::Hook {
@@ -115,7 +115,7 @@ fn light_boxes(boxes: &mut [GpuBox], from: usize, light: u32) {
 
 impl EntityRenderer {
     pub fn new(gpu: &mut dyn Backend, assets: &Assets) -> Result<EntityRenderer, String> {
-        let (pipeline, overlay) = Self::pipelines(gpu)?;
+        let (pipeline, overlay) = Self::pipelines(gpu, assets)?;
         let ([model_pipe, preview_pipe], kind_shaders) = Self::model_pipelines(gpu, assets)?;
         let models = Models::new(gpu, assets);
         let frames = gpu.frames_in_flight();
@@ -123,8 +123,8 @@ impl EntityRenderer {
         let overlay_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "overlay view")).collect();
         let hand_views = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "hand view")).collect();
         let preview = (0..frames).map(|_| gpu.create_buffer(size_of::<View>() as u64, usage::STORAGE | usage::HOST, "preview view")).collect();
-        let hand_pipe = Self::hand_pipeline(gpu)?;
-        let (item_pipe, hand_item_pipe) = Self::item_pipelines(gpu)?;
+        let hand_pipe = Self::hand_pipeline(gpu, assets)?;
+        let (item_pipe, hand_item_pipe) = Self::item_pipelines(gpu, assets)?;
         Ok(EntityRenderer {
             item_pipe,
             hand_item_pipe,
@@ -163,8 +163,8 @@ impl EntityRenderer {
 
     /// The first person hand: drawn last with its depth squeezed to the front, so it never sinks
     /// into walls.
-    fn hand_pipeline(gpu: &mut dyn Backend) -> Result<PipelineId, String> {
-        let s = shader().map_err(|e| e.0)?;
+    fn hand_pipeline(gpu: &mut dyn Backend, assets: &Assets) -> Result<PipelineId, String> {
+        let s = shader(assets).map_err(|e| e.0)?;
         gpu.create_pipeline(&PipelineDesc {
             label: "hand",
             shader: &s,
@@ -180,8 +180,8 @@ impl EntityRenderer {
     }
 
     /// Item models instanced in the world and in the hand.
-    fn item_pipelines(gpu: &mut dyn Backend) -> Result<(PipelineId, PipelineId), String> {
-        let s = shader().map_err(|e| e.0)?;
+    fn item_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<(PipelineId, PipelineId), String> {
+        let s = shader(assets).map_err(|e| e.0)?;
         let mut pipe = |label, vertex| {
             gpu.create_pipeline(&PipelineDesc {
                 label,
@@ -199,8 +199,8 @@ impl EntityRenderer {
         Ok((pipe("items", "vs_item")?, pipe("hand item", "vs_hand_item")?))
     }
 
-    fn pipelines(gpu: &mut dyn Backend) -> Result<(PipelineId, PipelineId), String> {
-        let s = shader().map_err(|e| e.0)?;
+    fn pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<(PipelineId, PipelineId), String> {
+        let s = shader(assets).map_err(|e| e.0)?;
         let main = gpu
             .create_pipeline(&PipelineDesc {
                 label: "entities",
@@ -234,7 +234,7 @@ impl EntityRenderer {
     /// and each kind's slot.
     fn model_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<([PipelineId; 2], Vec<u32>), String> {
         let snippets = crate::shaders::snippets(assets, &HOOK);
-        let (s, mut slots) = crate::packs::compose("model.wgsl", include_str!("../../shaders/model.wgsl"), &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
+        let (s, mut slots) = crate::packs::compose(assets, "model.wgsl", &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
         let slots = slots.pop().unwrap_or_default();
         let c = content();
         let comp = c.components.id(weft_abi::comp::SHADER);
@@ -280,11 +280,11 @@ impl EntityRenderer {
         for t in self.skins.drain().filter_map(|(_, v)| v).map(|v| v.0).chain(self.glows.drain().map(|(_, g)| g.0)) {
             gpu.destroy_texture(t);
         }
-        if let Ok(h) = Self::hand_pipeline(gpu) {
+        if let Ok(h) = Self::hand_pipeline(gpu, assets) {
             gpu.destroy_pipeline(self.hand_pipe);
             self.hand_pipe = h;
         }
-        if let Ok((a, b)) = Self::item_pipelines(gpu) {
+        if let Ok((a, b)) = Self::item_pipelines(gpu, assets) {
             gpu.destroy_pipeline(self.item_pipe);
             gpu.destroy_pipeline(self.hand_item_pipe);
             (self.item_pipe, self.hand_item_pipe) = (a, b);
@@ -293,7 +293,7 @@ impl EntityRenderer {
         self.sprites.clear();
         self.item_models.clear();
         self.item_boxes.clear();
-        match Self::pipelines(gpu) {
+        match Self::pipelines(gpu, assets) {
             Ok((a, b)) => {
                 gpu.destroy_pipeline(self.pipeline);
                 gpu.destroy_pipeline(self.overlay);

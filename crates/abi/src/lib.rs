@@ -346,6 +346,12 @@ pub enum Layer {
     Translucent = 2,
 }
 
+/// How a struct shared as a component or event value is laid out, written next to it so the
+/// engine and every mod compare the same text (`"{field:type,...}"`).
+pub trait Schema {
+    const SCHEMA: &'static str;
+}
+
 /// Faces in order: -X, +X, -Y, +Y, -Z, +Z.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -724,6 +730,9 @@ pub struct ItemStack {
     pub item: u32,
     pub count: u32,
     pub data: u32,
+}
+impl Schema for ItemStack {
+    const SCHEMA: &'static str = "{item:u32,count:u32,data:u32}";
 }
 
 impl ItemStack {
@@ -1205,6 +1214,9 @@ pub struct Worn {
     pub roles: u32,
     /// Model pixels added on every side, so layers sit above the skin and each other.
     pub inflate: f32,
+}
+impl Schema for Worn {
+    const SCHEMA: &'static str = "{roles:u32,inflate:f32}";
 }
 
 /// Regions of a model by its bone names: the head, the body (and any bone not named as a limb),
@@ -2193,6 +2205,9 @@ pub struct ItemUsed {
     /// 1 when used on the block at `pos`.
     pub has_target: u32,
 }
+impl Schema for ItemUsed {
+    const SCHEMA: &'static str = "{player:u64,stack:{item:u32,count:u32,data:u32},pos:[i32;3],has_target:u32}";
+}
 
 #[repr(C)]
 pub struct WorldTickArgs {
@@ -2207,6 +2222,9 @@ pub struct Hurt {
     pub amount: f32,
     pub cause: u32,
 }
+impl Schema for Hurt {
+    const SCHEMA: &'static str = "{entity:u64,source:u64,amount:f32,cause:u32}";
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2215,6 +2233,9 @@ pub struct BlockChange {
     pub pos: [i32; 3],
     pub state: u32,
     pub item: u32,
+}
+impl Schema for BlockChange {
+    const SCHEMA: &'static str = "{player:u64,pos:[i32;3],state:u32,item:u32}";
 }
 
 #[repr(C)]
@@ -2226,11 +2247,17 @@ pub struct Death {
     pub cause: u32,
     pub pos: [f64; 3],
 }
+impl Schema for Death {
+    const SCHEMA: &'static str = "{entity:u64,killer:u64,kind:u32,cause:u32,pos:[f64;3]}";
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerEvent {
     pub player: u64,
+}
+impl Schema for PlayerEvent {
+    const SCHEMA: &'static str = "{player:u64}";
 }
 
 #[repr(C)]
@@ -2238,6 +2265,9 @@ pub struct PlayerEvent {
 pub struct Pickup {
     pub player: u64,
     pub stack: ItemStack,
+}
+impl Schema for Pickup {
+    const SCHEMA: &'static str = "{player:u64,stack:{item:u32,count:u32,data:u32}}";
 }
 
 #[repr(C)]
@@ -3059,4 +3089,7 @@ pub struct Energy {
     /// with `max_in > 0`.
     pub max_in: i64,
     pub max_out: i64,
+}
+impl Schema for Energy {
+    const SCHEMA: &'static str = "{stored:i64,capacity:i64,max_in:i64,max_out:i64}";
 }

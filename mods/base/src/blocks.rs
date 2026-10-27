@@ -112,14 +112,6 @@ fn plant(r: &mut Registry, handle: &'static Block, tex: &str) {
 }
 
 /// Sand and gravel: with nothing under them they fall as an entity and land as a block.
-fn fall_tick(e: &mut BlockEvent) {
-    let w = e.world();
-    let p = e.pos();
-    if state_flags(w.get([p[0], p[1] - 1, p[2]])) & bf::REPLACEABLE != 0 {
-        w.fall(p);
-    }
-}
-
 pub fn register(r: &mut Registry) {
     r.block(&STONE).sound_group("stone").hardness(1.5).mineable("pickaxe").needs_tool(0).drops("cobblestone", 1).tag("stone").tag("stone_ore_replaceables").tab(&crate::tabs::BUILDING);
     r.block(&COBBLESTONE).sound_group("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tag("stone").tag("materials/stone").tab(&crate::tabs::BUILDING);
@@ -134,8 +126,8 @@ pub fn register(r: &mut Registry) {
         .tag("dirt")
         .on_random_tick(grass_tick).tab(&crate::tabs::NATURAL);
     r.block(&SNOWY_GRASS).sound_group("grass").textures("snow", "grass_snow_side", "dirt").hardness(0.6).mineable("shovel").drops("dirt", 1).tag("dirt").tab(&crate::tabs::NATURAL);
-    r.block(&SAND).sound_group("sand").hardness(0.5).mineable("shovel").tag("sand").on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(fall_tick).tab(&crate::tabs::NATURAL);
-    r.block(&GRAVEL).sound_group("gravel").hardness(0.6).mineable("shovel").on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(fall_tick).tab(&crate::tabs::NATURAL);
+    r.block(&SAND).sound_group("sand").hardness(0.5).mineable("shovel").tag("sand").falling().tab(&crate::tabs::NATURAL);
+    r.block(&GRAVEL).sound_group("gravel").hardness(0.6).mineable("shovel").falling().tab(&crate::tabs::NATURAL);
     r.block(&CLAY).sound_group("gravel").hardness(0.6).mineable("shovel").tab(&crate::tabs::NATURAL);
     r.block(&SANDSTONE).sound_group("stone").textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).mineable("pickaxe").needs_tool(0).tab(&crate::tabs::BUILDING);
     r.block(&SNOW).sound_group("sand").hardness(0.2).mineable("shovel").tab(&crate::tabs::NATURAL);

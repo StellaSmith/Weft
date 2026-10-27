@@ -178,7 +178,7 @@ pub const HOOK: crate::shaders::Hook = crate::shaders::Hook {
 
 pub fn world_shader(assets: &crate::assets::Assets) -> Result<(Shader, crate::shaders::Slots), ShaderError> {
     let snippets = crate::shaders::snippets(assets, &HOOK);
-    let (s, mut slots) = crate::packs::compose("world.wgsl", include_str!("../../shaders/world.wgsl"), &[(&HOOK, &snippets)])?;
+    let (s, mut slots) = crate::packs::compose(assets, "world.wgsl", &[(&HOOK, &snippets)])?;
     Ok((s, slots.pop().unwrap_or_default()))
 }
 

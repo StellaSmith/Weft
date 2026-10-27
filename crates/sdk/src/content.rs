@@ -954,6 +954,17 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Falls like sand when nothing holds it up: a block next to it changing checks two ticks
+    /// later whether below is free, and if so it drops as a moving block (`World::fall`).
+    pub fn falling(self) -> Self {
+        self.on_neighbor(|e| e.world().schedule(e.pos(), 2)).on_scheduled(|e| {
+            let (w, p) = (e.world(), e.pos());
+            if w.flags([p[0], p[1] - 1, p[2]]) & abi::block_flags::REPLACEABLE != 0 {
+                w.fall(p);
+            }
+        })
+    }
+
     /// Using it opens `menu`, on the block's block entity if it has one (machines), else a menu
     /// of its own (a crafting table). A menu with `.recipes(..)` makes the block a station of
     /// those recipes in the recipe viewer.

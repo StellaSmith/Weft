@@ -21,7 +21,7 @@ impl<T> ColumnCache<T> {
     /// on a miss. Two threads missing together may both compute; the result is the same.
     pub fn get(&self, seed: u64, x: i32, z: i32, make: impl FnOnce() -> T) -> Arc<T> {
         let key = (seed, x, z);
-        let h = (x as u32).wrapping_mul(0x9E37_79B9) ^ (z as u32).wrapping_mul(0x85EB_CA6B);
+        let h = weft_noise::hash(0, x as i64, 0, z as i64) as u32;
         let shard = &self.shards[(h >> 27) as usize % SHARDS];
         if let Some(v) = shard.lock().unwrap().get(&key) {
             return v.clone();

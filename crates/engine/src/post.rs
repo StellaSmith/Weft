@@ -40,7 +40,7 @@ impl Post {
 
     pub fn reload(&mut self, gpu: &mut dyn Backend, assets: &Assets) {
         let snippets = crate::shaders::snippets(assets, &HOOK);
-        let made = crate::packs::compose("post.wgsl", include_str!("../shaders/post.wgsl"), &[(&HOOK, &snippets)]).map_err(|e| e.0).and_then(|(s, mut slots)| {
+        let made = crate::packs::compose(assets, "post.wgsl", &[(&HOOK, &snippets)]).map_err(|e| e.0).and_then(|(s, mut slots)| {
             let p = gpu
                 .create_pipeline(&PipelineDesc { label: "post", shader: &s, vertex: "vs", fragment: Some("fs"), color: Some(Format::Surface), depth: None, blend: Blend::None, cull_back: false, topology: Topology::Triangles })
                 .map_err(|e| e.0)?;

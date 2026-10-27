@@ -160,14 +160,7 @@ pub fn generate(c: &Content, dim: u32, seed: u64, pos: IVec3) -> Cube {
     cube
 }
 
-fn hash(seed: u64, x: i64, y: i64, z: i64) -> u64 {
-    let mut h = seed ^ (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    h ^= (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
-    h ^= (z as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
-    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    h ^ (h >> 31)
-}
+use weft_noise::hash;
 
 /// Veins start in this and the 26 neighboring cubes and wander a block per step, so the result
 /// does not depend on which cube is generated first.
@@ -1494,7 +1487,7 @@ impl Dim {
 
     /// Uniform in 0..1 from the same stream.
     pub fn random_unit(&mut self) -> f32 {
-        (self.rng.next() >> 40) as f32 / (1u64 << 24) as f32
+        self.rng.float()
     }
 
     /// Sound event `sound` (`u32::MAX`: nothing) for players in its range.

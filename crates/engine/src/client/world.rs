@@ -97,19 +97,7 @@ impl ClientWorld {
 
     /// Recomputes `bounds` from the blocks (structures, after their cubes changed).
     pub fn scan_bounds(&mut self) {
-        let mut out: Option<(IVec3, IVec3)> = None;
-        for (&cp, cube) in &self.cubes {
-            if cube.uniform_state() == Some(AIR) {
-                continue;
-            }
-            for i in 0..crate::world::cube::VOLUME {
-                if cube.get(i) != AIR {
-                    let p = cp * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
-                    out = Some(out.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
-                }
-            }
-        }
-        self.bounds = out;
+        self.bounds = crate::world::block_bounds(self.cubes.iter().map(|(p, c)| (p, &**c)));
     }
 
     /// Whether the neighbor of `p` in direction `d` is present or never coming.

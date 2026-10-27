@@ -397,6 +397,24 @@ pub async fn worldgen(t: T) -> R {
     }
 
     t.check(t.op("structure testmod:obelisk 3000").await? != "none", "another mod's obelisks are in the world too");
+
+    // Testmod puts base's forest on Mars; the engine scatters its trees there like at home.
+    static MARS: Dimension = Dimension::named("testmod:mars");
+    let seed = 5;
+    let forest = |x: i32, z: i32| name_of(ek::BIOME, MARS.column(seed, x, z).biome) == "base:forest";
+    let spot = (-60..60).flat_map(|i| (-60..60).map(move |j| (i * 32, j * 32))).find(|&(x, z)| [(0, 0), (20, 0), (-20, 0), (0, 20), (0, -20)].iter().all(|&(dx, dz)| forest(x + dx, z + dz)));
+    let (x, z) = spot.ok_or("no forest on Mars")?;
+    let h = MARS.column(seed, x, z).height;
+    t.cmd("/dim testmod:mars").await?;
+    t.until("on Mars", Duration::from_secs(20), |t| t.state().dim == MARS.id()).await?;
+    t.cmd(&format!("/tp {x} {} {z}", h + 3)).await?;
+    t.secs(0.5).await?;
+    t.loaded().await?;
+    let census = t.op("census 20 base:oak_log,base:birch_log,base:grass").await?;
+    t.note(format!("Mars forest at {x} {z}: {census}"));
+    let n: Vec<u32> = census.split_whitespace().filter_map(|e| e.rsplit_once('=')?.1.parse().ok()).collect();
+    t.check(n[0] + n[1] > 0, "trees grow in base's forest on Mars");
+    t.check(n[2] > 0, "the forest brings its grass to Mars");
     Ok(())
 }
 

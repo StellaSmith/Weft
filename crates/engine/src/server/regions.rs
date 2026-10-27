@@ -192,6 +192,8 @@ impl DimSet {
             let mut args = abi::SpawnArgs { seed: self.seed, pos };
             host::invoke(def.owner, cb, &mut args);
             pos = args.pos;
+        } else if let Some(p) = search_spawn(c, def, self.seed) {
+            pos = p;
         }
         DVec3::new(pos[0] as f64 + 0.5, pos[1] as f64 + 1.0, pos[2] as f64 + 0.5)
     }
@@ -327,4 +329,30 @@ impl DimSet {
             }
         }
     }
+}
+
+/// Open ground near 0, 0 on the dimension's columns: biomes tagged `spawn_biome` first, then
+/// any land above the sea, never where caves took the ground or in a scattered thing (trees).
+fn search_spawn(c: &Content, def: &crate::content::DimensionDef, seed: u64) -> Option<[i32; 3]> {
+    def.column(seed, 0, 0)?;
+    let sea = def.sea_level().unwrap_or(i32::MIN + 2);
+    let preferred = c.components.id(abi::comp::SPAWN_BIOME);
+    let good = |x: i32, z: i32, prefer: bool| {
+        let col = def.column(seed, x, z)?;
+        let biome_ok = !prefer || preferred.is_some_and(|t| c.components.has(crate::components::BIOME, col.biome, t));
+        (col.height != i32::MIN && col.height > sea + 1 && biome_ok && !def.carved(seed, x, z) && !super::dim::scattered_near(def, c, seed, x, z)).then_some([x, col.height, z])
+    };
+    for prefer in [true, false] {
+        for r in 0..200 {
+            for k in 0..8 {
+                let a = k as f64 / 8.0 * std::f64::consts::TAU;
+                let (x, z) = ((r as f64 * 16.0 * a.cos()) as i32, (r as f64 * 16.0 * a.sin()) as i32);
+                if let Some(p) = good(x, z, prefer) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    let col = def.column(seed, 0, 0)?;
+    Some([0, col.height.max(def.sea_level().unwrap_or(col.height)), 0])
 }

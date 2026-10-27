@@ -61,7 +61,7 @@ pub fn register(r: &mut Registry) {
     }
     obelisk.key('s', "base:sandstone").key('g', "glow_crystal").spacing(128).chance(0.5).biome("#dry").buried(1);
     // Glow crystals grow only in the overworld's deep caves (an underground biome).
-    r.ore(&crate::OVERWORLD, &GLOW_CRYSTAL).veins(3).size(6).replace("#stone_ore_replaceables").biome("#cave");
+    r.ore(&GLOW_CRYSTAL).veins(3).size(6).replace("#stone_ore_replaceables").biome("#cave");
     // A 64x64 texture among 16x16 ones: every texture keeps its own size.
     r.block(&MOSAIC).hardness(1.5).mineable("pickaxe");
     // A tint kind of the mod's own: violet by default (and on the item), teal in plains.

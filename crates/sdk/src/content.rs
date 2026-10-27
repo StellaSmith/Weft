@@ -31,7 +31,7 @@ pub mod kind {
             })*
         };
     }
-    named_kinds!(Key, Channel, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot);
+    named_kinds!(Key, Channel, Screen, HudElement, GizmoGroup, TintKind, EntityCategory, SoundCategory, CreativeTab, Question, Chain, Attribute, Rule, RecipeKind, LootTable, TextCondition, Music, EquipmentSlot, Scatter);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -152,6 +152,7 @@ pub type Screen = Handle<kind::Screen>;
 pub type HudElement = Handle<kind::HudElement>;
 pub type GizmoGroup = Handle<kind::GizmoGroup>;
 pub type TintKind = Handle<kind::TintKind>;
+pub type Scatter = Handle<kind::Scatter>;
 
 /// The engine's tint kinds; biomes color them with `.tint(&GRASS, 0x..)`.
 pub mod tints {
@@ -336,11 +337,12 @@ impl Registry {
 
     /// Ore veins of `block` in any mod's dimension, e.g.
     /// `r.ore(&OVERWORLD, &TIN_ORE).y(0, 64).veins(6).size(8).replace("#stone")`.
-    pub fn ore<'a>(&'a mut self, dimension: &Dimension, block: &Block) -> OreBuilder<'a> {
+    /// An ore, in every dimension whose ground it may `replace` (`.dimension(..)` limits it).
+    pub fn ore<'a>(&'a mut self, block: &Block) -> OreBuilder<'a> {
         OreBuilder {
             raw: self.raw,
             ns: self.ns,
-            dimension: dimension.name().to_string(),
+            dimensions: String::new(),
             block: block.name().to_string(),
             replace: String::new(),
             biome: String::new(),
@@ -1266,7 +1268,9 @@ impl DimensionBuilder<'_> {
         self.desc.generator = callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a)));
         self
     }
-    /// The block a player starts on top of in this dimension, for a seed.
+    /// The block a player starts on top of in this dimension, for a seed. Without one the engine
+    /// finds open ground near 0, 0 on the dimension's columns (biomes tagged `spawn_biome`
+    /// first), out of caves and trees.
     pub fn spawn(mut self, f: impl Fn(u64) -> [i32; 3] + Send + Sync + 'static) -> Self {
         self.desc.spawn = callback(move |a: &mut abi::SpawnArgs| a.pos = f(a.seed));
         self
@@ -1282,8 +1286,15 @@ impl DimensionBuilder<'_> {
         self.desc.flags |= abi::dim_flags::NO_BLOCK_UPDATES;
         self
     }
-    /// Surface height and biome id of column (x, z) for (seed, x, z), without generating it:
-    /// structures stand on it. Must agree with the generator.
+    /// Only what names it: ores, scatters and decorations meant for every dimension stay out
+    /// (a superflat test world).
+    pub fn bare(mut self) -> Self {
+        self.desc.flags |= abi::dim_flags::BARE;
+        self
+    }
+    /// Surface height and biome id of column (x, z) for (seed, x, z), for a dimension without a
+    /// terrain. The generator reads them from `g.columns()` instead of working them out again,
+    /// and structures, scatters (trees) and the spawn search stand on them.
     pub fn column(mut self, f: impl Fn(u64, i32, i32) -> (i32, u32) + Send + Sync + 'static) -> Self {
         self.desc.column = callback(move |a: &mut abi::ColumnArgs| (a.height, a.biome) = f(a.seed, a.x, a.z));
         self
@@ -1417,7 +1428,7 @@ impl Drop for StructureBuilder<'_> {
 pub struct OreBuilder<'a> {
     raw: *mut abi::Registrar,
     ns: &'static str,
-    dimension: String,
+    dimensions: String,
     block: String,
     replace: String,
     biome: String,
@@ -1426,6 +1437,11 @@ pub struct OreBuilder<'a> {
 }
 
 impl OreBuilder<'_> {
+    /// Only in this dimension (call again for more). Without, in every dimension but bare ones.
+    pub fn dimension(mut self, dimension: &Dimension) -> Self {
+        self.dimensions = format!("{} {}", self.dimensions, dimension.name());
+        self
+    }
     /// Only in biomes with this tag (underground ones too: `cave`).
     pub fn biome(mut self, tag: &str) -> Self {
         self.biome = tag.to_string();
@@ -1459,7 +1475,7 @@ impl Drop for OreBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let desc = abi::OreDesc { dimension: Str::new(&self.dimension), block: Str::new(&self.block), replace: Str::new(&self.replace), biome: Str::new(&self.biome), ..self.desc };
+        let desc = abi::OreDesc { dimensions: Str::new(&self.dimensions), block: Str::new(&self.block), replace: Str::new(&self.replace), biome: Str::new(&self.biome), ..self.desc };
         unsafe { (host().reg_ore)(self.raw, &desc) }
     }
 }

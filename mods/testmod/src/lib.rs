@@ -165,10 +165,10 @@ fn init(r: &mut Registry) {
     // from a feature of this mod's own, and boulders on the new biome.
     r.terrain(&OVERWORLD)
         .biome_before("base:desert", BiomeRule::new("scorched"))
-        .feature(Feature::new(|_, x, z| if (x - NEEDLE[0]).abs().max((z - NEEDLE[1]).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"))
-        .decorate(boulders);
-    r.ore(&OVERWORLD, &TIN_ORE).y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
-    r.ore(&MARS, &TIN_ORE).y(-64, 90).veins(6).size(8).replace("#stone_ore_replaceables");
+        .feature(Feature::new(|_, x, z| if (x - NEEDLE[0]).abs().max((z - NEEDLE[1]).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"));
+    r.decorate(boulders).dimension(&OVERWORLD);
+    // One ore for every dimension: base's stone and Mars' basalt both take it.
+    r.ore(&TIN_ORE).y(-64, 90).veins(5).size(8).replace("#stone_ore_replaceables");
     r.terrain(&MARS)
         .stone("basalt")
         .base_height(60.0)
@@ -177,6 +177,9 @@ fn init(r: &mut Registry) {
         .feature(preset::canyons(26.0, 9.0).mask(Mask::noise(1200.0, -0.2, 0.1)))
         .feature(preset::craters(32.0, 16.0, 150.0))
         .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
+        // Base's forest in the cold parts of Mars (any humidity, unlike at home): it brings its
+        // grass, and the engine grows its trees here like in base's overworld.
+        .biome(BiomeRule::new("base:forest").temperature(..-0.3).humidity(..))
         .biome(BiomeRule::new("dust"));
     r.dimension(&MARS)
         .spawn(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])

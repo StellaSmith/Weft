@@ -479,6 +479,9 @@ pub struct RawGame {
     /// (kind, component, its starting value on that kind).
     pub attach: Vec<(String, String, Option<Vec<u8>>)>,
     pub ores: Vec<RawOre>,
+    pub scatters: Vec<RawScatter>,
+    /// (owner, dimensions (empty: every dimension but bare ones), callback).
+    pub decorations: Vec<(ModId, Vec<String>, Callback)>,
     pub terrain: Vec<crate::server::terrain::RawTerrain>,
     pub structures: Vec<RawStructure>,
     /// (name, icon item) in registration order.
@@ -707,7 +710,8 @@ pub fn name_hash(s: &str) -> u64 {
 }
 
 pub struct RawOre {
-    pub dimension: String,
+    /// Empty: every dimension but bare ones.
+    pub dimensions: Vec<String>,
     pub block: String,
     pub replace: Vec<String>,
     pub min_y: i32,
@@ -715,6 +719,16 @@ pub struct RawOre {
     pub veins: u32,
     pub size: u32,
     pub biome: String,
+}
+
+pub struct RawScatter {
+    pub owner: ModId,
+    pub name: String,
+    pub dimensions: Vec<String>,
+    pub cell: i32,
+    pub reach: i32,
+    pub density: String,
+    pub shape: Callback,
 }
 
 pub struct RawStructure {

@@ -264,9 +264,63 @@ pub struct DimensionDef {
     pub structures: Vec<StructureDef>,
     /// Described with `Host::reg_terrain`: fills cubes before `generator` runs.
     pub terrain: Option<Box<crate::server::terrain::Terrain>>,
+    /// `dim_flags::BARE`: only ores, scatters and decorations that name it.
+    pub bare: bool,
+    /// In name order, placed after `generator`.
+    pub scatters: Vec<ScatterDef>,
+    /// (mod, callback) run after the generator and scatters, in load order.
+    pub decorations: Vec<(ModId, Callback)>,
+    /// Columns from `column`, for a dimension without a terrain.
+    pub column_cache: crate::server::terrain::ColumnCache<[abi::TerrainColumn; 256]>,
+}
+
+pub struct ScatterDef {
+    pub owner: ModId,
+    pub name: String,
+    pub cell: i32,
+    pub reach: i32,
+    /// Biome component (f32) with the chance of a site per cell.
+    pub density: Option<u32>,
+    pub salt: u64,
+    pub shape: Callback,
 }
 
 impl DimensionDef {
+    /// The 256 columns of cube column (`cx`, `cz`), index z * 16 + x: its terrain's or its
+    /// `column` callback's. None for a dimension with neither.
+    pub fn columns(&self, seed: u64, cx: i32, cz: i32) -> Option<std::sync::Arc<[abi::TerrainColumn; 256]>> {
+        if let Some(t) = &self.terrain {
+            return Some(std::sync::Arc::new(t.columns(seed, cx, cz).cols));
+        }
+        let cb = self.column?;
+        Some(self.column_cache.get(seed, cx, cz, || {
+            std::array::from_fn(|i| {
+                let mut a = abi::ColumnArgs { seed, x: cx * 16 + (i % 16) as i32, z: cz * 16 + (i / 16) as i32, height: i32::MIN, biome: 0 };
+                crate::host::invoke(self.owner, cb, &mut a);
+                abi::TerrainColumn { height: a.height, biome: a.biome }
+            })
+        }))
+    }
+
+    /// Height and biome of column (`x`, `z`), generated or not.
+    pub fn column(&self, seed: u64, x: i32, z: i32) -> Option<abi::TerrainColumn> {
+        if let Some(t) = &self.terrain {
+            return Some(t.column(seed, x, z));
+        }
+        let cols = self.columns(seed, x.div_euclid(16), z.div_euclid(16))?;
+        Some(cols[(z.rem_euclid(16) * 16 + x.rem_euclid(16)) as usize])
+    }
+
+    /// Whether caves took the surface block of column (`x`, `z`).
+    pub fn carved(&self, seed: u64, x: i32, z: i32) -> bool {
+        self.terrain.as_ref().is_some_and(|t| t.surface_carved(seed, x, z))
+    }
+
+    /// The terrain's sea level, if it has a sea.
+    pub fn sea_level(&self) -> Option<i32> {
+        self.terrain.as_ref().and_then(|t| t.sea_level())
+    }
+
     /// Fraction of full daylight (0..1) at world time `time`: a sine over the day, flat at night.
     pub fn daylight(&self, time: u64) -> f32 {
         if !self.sky_light {
@@ -278,6 +332,7 @@ impl DimensionDef {
     }
 }
 
+#[derive(Clone)]
 pub struct OreDef {
     pub state: u32,
     /// Block ids it may replace, sorted.
@@ -748,6 +803,10 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 ores: Vec::new(),
                 structures: Vec::new(),
                 terrain: None,
+                bare: d.flags & abi::dim_flags::BARE != 0,
+                scatters: Vec::new(),
+                decorations: Vec::new(),
+                column_cache: crate::server::terrain::ColumnCache::new(4096),
             },
             d.cell as usize,
             RawValue::list(d.components),
@@ -783,6 +842,10 @@ fn void_dimension() -> DimensionDef {
         ores: Vec::new(),
         structures: Vec::new(),
         terrain: None,
+        bare: true,
+        scatters: Vec::new(),
+        decorations: Vec::new(),
+        column_cache: crate::server::terrain::ColumnCache::new(1),
     }
 }
 
@@ -1471,18 +1534,37 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         .collect();
 
     let mut dim_defs = dim_defs;
+    // Ores, scatters and decorations go into the dimensions they name, or every one but bare ones.
+    let not_bare: Vec<usize> = (0..dim_defs.len()).filter(|&d| !dim_defs[d].bare).collect();
+    let targets = |what: &str, names: &[String], errors: &mut Vec<String>| -> Vec<usize> {
+        if names.is_empty() {
+            return not_bare.clone();
+        }
+        names
+            .iter()
+            .filter_map(|n| {
+                let d = dim_names.get(n).map(|&d| d as usize);
+                if d.is_none() {
+                    errors.push(format!("{what}: unknown dimension {n}"));
+                }
+                d
+            })
+            .collect()
+    };
     let mut raw_ores: Vec<crate::registry::RawOre> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.ores)).collect();
-    raw_ores.sort_by(|a, b| (&a.dimension, &a.block).cmp(&(&b.dimension, &b.block)));
+    raw_ores.sort_by(|a, b| a.block.cmp(&b.block));
+    let mut ore_defs: Vec<(Vec<usize>, OreDef)> = Vec::new();
     for o in raw_ores {
-        let (Some(&d), Some(&b)) = (dim_names.get(&o.dimension), block_names.get(&o.block)) else {
-            errors.push(format!("ore {} in {}: unknown block or dimension", o.block, o.dimension));
+        let Some(&b) = block_names.get(&o.block) else {
+            errors.push(format!("ore {}: unknown block", o.block));
             continue;
         };
+        let dims = targets(&format!("ore {}", o.block), &o.dimensions, &mut errors);
         let mut replace: Vec<u32> = Vec::new();
         for r in &o.replace {
             match crate::refs::Ref::parse(r).and_then(|r| crate::refs::blocks(&r, &block_names, &block_defs, &components, states.len() as u32)) {
                 Ok(b) => replace.extend(b),
-                Err(e) => errors.push(format!("ore {} in {}: replace: {e}", o.block, o.dimension)),
+                Err(e) => errors.push(format!("ore {}: replace: {e}", o.block)),
             }
         }
         replace.sort_unstable();
@@ -1493,12 +1575,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             t => match crate::refs::tag(&components, t) {
                 Ok(t) => Some(t),
                 Err(e) => {
-                    errors.push(format!("ore {} in {}: biome: {e}", o.block, o.dimension));
+                    errors.push(format!("ore {}: biome: {e}", o.block));
                     continue;
                 }
             },
         };
-        dim_defs[d as usize].ores.push(OreDef {
+        ore_defs.push((dims, OreDef {
             state: block_defs[b as usize].first_state,
             replace,
             min_y: o.min_y,
@@ -1507,7 +1589,35 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             size: o.size,
             salt,
             biome,
-        });
+        }));
+    }
+    for (dims, o) in ore_defs {
+        for d in dims {
+            dim_defs[d].ores.push(o.clone());
+        }
+    }
+    let mut raw_scatters: Vec<crate::registry::RawScatter> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.scatters)).collect();
+    raw_scatters.sort_by(|a, b| a.name.cmp(&b.name));
+    for s in raw_scatters {
+        let what = format!("scatter {}", s.name);
+        let density = (!s.density.is_empty()).then(|| components.id(&s.density)).flatten();
+        if density.is_none() {
+            errors.push(format!("{what}: density component {:?} is not set on any biome", s.density));
+        }
+        if s.cell < 1 || s.reach < 0 {
+            errors.push(format!("{what}: cell {} and reach {} (cell at least 1)", s.cell, s.reach));
+            continue;
+        }
+        for d in targets(&what, &s.dimensions, &mut errors) {
+            dim_defs[d].scatters.push(ScatterDef { owner: s.owner, name: s.name.clone(), cell: s.cell, reach: s.reach, density, salt: crate::registry::name_hash(&s.name), shape: s.shape });
+        }
+    }
+    let mut raw_decorations: Vec<(ModId, Vec<String>, Callback)> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.decorations)).collect();
+    raw_decorations.sort_by_key(|d| mods[d.0.0 as usize].order);
+    for (owner, dims, cb) in raw_decorations {
+        for d in targets(&format!("decoration of {}", mods[owner.0 as usize].id), &dims, &mut errors) {
+            dim_defs[d].decorations.push((owner, cb));
+        }
     }
     let mut raw_structures: Vec<crate::registry::RawStructure> = games.iter_mut().flat_map(|g| std::mem::take(&mut g.structures)).collect();
     raw_structures.sort_by(|a, b| a.name.cmp(&b.name));

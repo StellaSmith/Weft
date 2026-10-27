@@ -40,13 +40,13 @@ fn init(r: &mut Registry) {
     worldgen::register(r);
     // Its terrain is described in `worldgen`.
     r.dimension(&OVERWORLD)
-        .spawn(worldgen::spawn)
         .player_spawn()
         .sky_above(16)
         .day_length(24000);
     // Second dimension on purpose: nothing in the engine may assume there is only one world.
     r.dimension(&FLATLANDS)
         .generator(worldgen::flat)
+        .bare()
         .spawn(|_| [0, 3, 0])
         .height(-2, 8)
         .sky_above(1)

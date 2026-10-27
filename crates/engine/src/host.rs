@@ -31,6 +31,8 @@ pub static HOST: Host = Host {
     reg_hud_element,
     reg_command,
     reg_ore,
+    reg_scatter,
+    reg_decoration,
     reg_creative_tab,
     reg_set,
     find,
@@ -187,8 +189,8 @@ pub static HOST: Host = Host {
     set_structure_block,
     reg_terrain,
     reg_screen_part,
-    terrain_column,
-    terrain_carved,
+    dim_column,
+    dim_carved,
 };
 
 unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const [i32; 3]) -> u64 {
@@ -1141,6 +1143,29 @@ unsafe extern "C" fn reg_screen_part(r: *mut abi::Registrar, screen: Str, area: 
     }
 }
 
+unsafe extern "C" fn reg_scatter(r: *mut abi::Registrar, d: *const abi::ScatterDesc) {
+    unsafe {
+        let r = reg(r);
+        let d = &*d;
+        r.game.scatters.push(registry::RawScatter {
+            owner: r.owner,
+            name: d.name.as_str().to_string(),
+            dimensions: d.dimensions.as_str().split_whitespace().map(str::to_string).collect(),
+            cell: d.cell,
+            reach: d.reach,
+            density: d.density.as_str().to_string(),
+            shape: d.shape,
+        });
+    }
+}
+
+unsafe extern "C" fn reg_decoration(r: *mut abi::Registrar, dimensions: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        r.game.decorations.push((r.owner, dimensions.as_str().split_whitespace().map(str::to_string).collect(), cb));
+    }
+}
+
 unsafe extern "C" fn reg_terrain(r: *mut abi::Registrar, d: *const abi::TerrainDesc) {
     unsafe {
         let r = reg(r);
@@ -1149,18 +1174,14 @@ unsafe extern "C" fn reg_terrain(r: *mut abi::Registrar, d: *const abi::TerrainD
     }
 }
 
-fn terrain_of(dim: u32) -> Option<&'static crate::server::terrain::Terrain> {
-    content().dims.get(dim as usize)?.terrain.as_deref()
-}
-
-unsafe extern "C" fn terrain_column(dim: u32, seed: u64, x: i32, z: i32, out: *mut abi::TerrainColumn) -> u32 {
-    let Some(t) = terrain_of(dim) else { return 0 };
-    unsafe { *out = t.column(seed, x, z) };
+unsafe extern "C" fn dim_column(dim: u32, seed: u64, x: i32, z: i32, out: *mut abi::TerrainColumn) -> u32 {
+    let Some(col) = content().dims.get(dim as usize).and_then(|d| d.column(seed, x, z)) else { return 0 };
+    unsafe { *out = col };
     1
 }
 
-unsafe extern "C" fn terrain_carved(dim: u32, seed: u64, x: i32, z: i32) -> u32 {
-    terrain_of(dim).is_some_and(|t| t.surface_carved(seed, x, z)) as u32
+unsafe extern "C" fn dim_carved(dim: u32, seed: u64, x: i32, z: i32) -> u32 {
+    content().dims.get(dim as usize).is_some_and(|d| d.carved(seed, x, z)) as u32
 }
 
 unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
@@ -1168,7 +1189,7 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
         let r = reg(r);
         let d = &*d;
         r.game.ores.push(registry::RawOre {
-            dimension: d.dimension.as_str().to_string(),
+            dimensions: d.dimensions.as_str().split_whitespace().map(str::to_string).collect(),
             block: d.block.as_str().to_string(),
             replace: d.replace.as_str().split_whitespace().map(str::to_string).collect(),
             min_y: d.min_y,

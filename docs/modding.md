@@ -58,13 +58,12 @@ declare_mod!(deps: ["base"], init: init);
 
 pub static RUBY: Item = Item::named("ruby");
 pub static RUBY_ORE: Block = Block::named("ruby_ore");
-static OVERWORLD: Dimension = Dimension::named("base:overworld");
 static INGREDIENTS: CreativeTab = CreativeTab::named("base:ingredients");
 
 fn init(r: &mut Registry) {
     r.block(&RUBY_ORE).hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::IRON).drops("ruby", 1);
     r.item(&RUBY).tag("gems/ruby").tab(&INGREDIENTS);
-    r.ore(&OVERWORLD, &RUBY_ORE).y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
+    r.ore(&RUBY_ORE).y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
 }
 ```
 
@@ -265,9 +264,10 @@ Reactions: `r.liquid_reaction("#hot", "#water").source_block("obsidian")`.
 
 ### World
 - `r.biome(..)` with its climate, surface and tints (`.temperature(0.35..).surface(..).tint(&tints::GRASS, ..)`); terrain rules inherit them
-- `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, or `generator` + `column` to fill it in code)
+- `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, `bare`, or `generator` + `column` to fill it in code)
 - `r.terrain(dim)` for its terrain, yours or another mod's
-- `r.ore(dim, block)`
+- `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it)
+- `r.scatter(&TREES)` for trees and the like, `r.decorate(f)` for plants, in every dimension
 - `r.structure(dim, name)` with layers
 - `r.spawn(entity).biome("#animals").light(7, 15)`
 

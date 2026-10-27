@@ -1,10 +1,8 @@
-//! Stateless overworld generator: every block of a cube is a function of (seed, position). Trees and
-//! ore veins are anchored to grid cells; a cube asks every nearby cell what it would place, so the
-//! result does not depend on generation order and cubes can be generated in parallel.
+//! Base's worldgen as data: biomes, the overworld's terrain, ores, trees (a scatter the engine
+//! places in every dimension whose biomes ask for them) and plants (a decoration).
 
 use weft_sdk::*;
 
-use crate::OVERWORLD;
 use crate::blocks::*;
 
 use weft_sdk::noise::*;
@@ -45,7 +43,7 @@ pub static DEEP_CAVES: Biome = Biome::named("deep_caves");
 pub fn register(r: &mut Registry) {
     // Tags say what a biome is (spawning, decoration and mods ask these, not names).
     let (grass, foliage, water) = (&tints::GRASS, &tints::FOLIAGE, &tints::WATER);
-    r.biome(&PLAINS).surface("grass", "dirt", 3).tag("animals").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
+    r.biome(&PLAINS).surface("grass", "dirt", 3).tag("animals").tag("spawn_biome").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
     r.biome(&FOREST).humidity(0.25..).surface("grass", "dirt", 3).tint(grass, 0x79c05a).tint(foliage, 0x59ae30).tag("forest").tag("animals").set(&TREES, 0.4).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log:1 base:oak_log:4");
     r.biome(&BIRCH_FOREST).temperature(..0.1).humidity(0.05..).surface("grass", "dirt", 3).tint(grass, 0x88bb67).tint(foliage, 0x6ba941).tag("forest").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log");
     r.biome(&TAIGA).temperature(..-0.15).surface("grass", "dirt", 3).tint(grass, 0x86b783).tint(foliage, 0x68a464).tint(water, 0x3d57d6).tag("forest").tag("cold").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.08).set_text(&TREE_KINDS, "base:spruce_log");
@@ -58,7 +56,7 @@ pub fn register(r: &mut Registry) {
     r.biome(&DEEP_CAVES).tag("cave").tag("dark");
 
     for (ore, max_y, veins, size) in [(&COAL_ORE, 128, 8, 12), (&IRON_ORE, 64, 6, 8), (&GOLD_ORE, 32, 2, 7), (&DIAMOND_ORE, 16, 1, 6)] {
-        r.ore(&crate::OVERWORLD, ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
+        r.ore(ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
     }
 
     // The overworld's shape. Other mods add to it by these names (`base:desert`, `base:mountains`).
@@ -84,11 +82,19 @@ pub fn register(r: &mut Registry) {
         .biome(BiomeRule::new("birch_forest"))
         .biome(BiomeRule::new("plains"))
         .cave_biome("deep_caves", 24, 96.0, 0.25)
-        .caves(Caves::new("lava", i32::MIN, 11))
-        .decorate(decorate);
+        .caves(Caves::new("lava", i32::MIN, 11));
+
+    // Trees wherever a biome asks for them, in any dimension.
+    r.scatter(&TREE_SITES).cell(5).reach(3).density(&TREES).shape(|s| {
+        let [x, y, z] = s.pos();
+        let Some(log) = pick(TREE_KINDS.on_biome(s.biome()).map_or("base:oak_log", |t| t.as_str()), s.random() >> 40) else { return };
+        let Some(t) = tree_at(log, x, y, z, s.random() >> 32) else { return };
+        tree_blocks(&t, |x, y, z, state, force| if force { s.force([x, y, z], state) } else { s.put([x, y, z], state) });
+    });
+    r.decorate(decorate);
 }
 
-const TREE_CELL: i32 = 5;
+static TREE_SITES: Scatter = Scatter::named("trees");
 
 struct TreeAt {
     x: i32,
@@ -127,20 +133,7 @@ fn tree_at(log: u32, x: i32, y: i32, z: i32, h: u64) -> Option<TreeAt> {
     Some(TreeAt { x, y, z, log, leaves: Block::lookup(leaves.trim())?, cone, height })
 }
 
-fn tree_in_cell(seed: u64, cx: i32, cz: i32) -> Option<TreeAt> {
-    let h = hash(seed ^ 0x7733, cx as i64, 0, cz as i64);
-    let x = cx * TREE_CELL + (h % TREE_CELL as u64) as i32;
-    let z = cz * TREE_CELL + ((h >> 8) % TREE_CELL as u64) as i32;
-    let col = OVERWORLD.column(seed, x, z);
-    let b = col.biome;
-    if col.height < SEA || unit(h.rotate_left(17)) >= TREES.on_biome(b).unwrap_or(0.0) as f64 || OVERWORLD.surface_carved(seed, x, z) {
-        return None;
-    }
-    let log = pick(TREE_KINDS.on_biome(b).map_or("base:oak_log", |t| t.as_str()), h >> 40)?;
-    tree_at(log, x, col.height + 1, z, h >> 32)
-}
-
-/// Calls `put(x, y, z, state, overwrite)` for every block of the tree.
+/// Calls `put(x, y, z, state, force)` for every block of the tree.
 fn tree_blocks(t: &TreeAt, mut put: impl FnMut(i32, i32, i32, u32, bool)) {
     let (log, leaves) = (t.log, t.leaves);
     let top = t.y + t.height;
@@ -195,7 +188,7 @@ pub fn grow_tree(w: World, p: [i32; 3]) {
     });
 }
 
-/// Trees and plants, after the terrain filled the cube.
+/// Plants, after the terrain and trees filled the cube.
 fn decorate(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
     let seed = g.seed();
@@ -206,25 +199,6 @@ fn decorate(g: &mut Gen) {
     // Surface decoration only near the surface.
     if oy > max_h + 16 || oy + 15 < min_h - 1 {
         return;
-    }
-    let tc0x = (ox - 3).div_euclid(TREE_CELL);
-    let tc1x = (ox + 18).div_euclid(TREE_CELL);
-    let tc0z = (oz - 3).div_euclid(TREE_CELL);
-    let tc1z = (oz + 18).div_euclid(TREE_CELL);
-    for tcz in tc0z..=tc1z {
-        for tcx in tc0x..=tc1x {
-            let Some(t) = tree_in_cell(seed, tcx, tcz) else { continue };
-            tree_blocks(&t, |x, y, z, s, overwrite| {
-                let (lx, ly, lz) = (x - ox, y - oy, z - oz);
-                if (0..16).contains(&lx) && (0..16).contains(&ly) && (0..16).contains(&lz) {
-                    let (lx, ly, lz) = (lx as usize, ly as usize, lz as usize);
-                    let cur = g.get(lx, ly, lz);
-                    if overwrite || cur == 0 {
-                        g.set(lx, ly, lz, s);
-                    }
-                }
-            });
-        }
     }
     for z in 0..16usize {
         for x in 0..16usize {
@@ -267,48 +241,6 @@ fn decorate(g: &mut Gen) {
             }
         }
     }
-}
-
-pub fn spawn(seed: u64) -> [i32; 3] {
-    // Open land first: spawning inside a dense forest is dark and confusing.
-    for r in 0..200 {
-        for k in 0..8 {
-            let a = k as f64 / 8.0 * std::f64::consts::TAU;
-            let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
-            let c = OVERWORLD.column(seed, x, z);
-            if c.height > SEA + 1 && c.biome == PLAINS.id() && tree_free(seed, x, z) && !OVERWORLD.surface_carved(seed, x, z) {
-                return [x, c.height, z];
-            }
-        }
-    }
-    for r in 0..200 {
-        for k in 0..8 {
-            let a = k as f64 / 8.0 * std::f64::consts::TAU;
-            let (x, z) = ((r as f64 * 16.0 * cos_approx(a)) as i32, (r as f64 * 16.0 * sin_approx(a)) as i32);
-            let c = OVERWORLD.column(seed, x, z);
-            if c.height > SEA + 1 && [&OCEAN, &BEACH, &MOUNTAINS].iter().all(|b| c.biome != b.id()) && tree_free(seed, x, z) && !OVERWORLD.surface_carved(seed, x, z) {
-                return [x, c.height, z];
-            }
-        }
-    }
-    [0, OVERWORLD.column(seed, 0, 0).height.max(SEA), 0]
-}
-
-fn tree_free(seed: u64, x: i32, z: i32) -> bool {
-    let (cx, cz) = (x.div_euclid(TREE_CELL), z.div_euclid(TREE_CELL));
-    tree_in_cell(seed, cx, cz).is_none_or(|t| (t.x - x).abs() > 2 || (t.z - z).abs() > 2)
-}
-
-// Spawn search only needs rough directions; avoids platform-dependent libm results.
-fn cos_approx(a: f64) -> f64 {
-    sin_approx(a + std::f64::consts::FRAC_PI_2)
-}
-
-fn sin_approx(a: f64) -> f64 {
-    let x = (a / std::f64::consts::TAU).fract() * std::f64::consts::TAU - std::f64::consts::PI;
-    // Bhaskara-like polynomial for sin on [-pi, pi], negated because of the shift.
-    let y = 4.0 / std::f64::consts::PI * x - 4.0 / (std::f64::consts::PI * std::f64::consts::PI) * x * x.abs();
-    -y
 }
 
 /// The test dimension: flat, bounded in height, nothing else.

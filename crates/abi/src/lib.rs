@@ -267,6 +267,8 @@ pub mod comp {
     /// Items: durability lost per hit on a mob (`u32`); without it tools lose 2, like vanilla's
     /// tools made for blocks (swords set 1).
     pub const WEAR_PER_HIT: &str = "wear_per_hit";
+    /// Tag of biomes players may start in (the engine's spawn search tries them first).
+    pub const SPAWN_BIOME: &str = "spawn_biome";
     /// Entity kinds: blocks it is built of, a moving structure (`str`): `;`-separated
     /// `<block> x y z [x2 y2 z2]` boxes in its own coordinates, block (0, 0, 0) centered on the
     /// entity's position. Players place and break blocks on it like in the world.
@@ -513,9 +515,54 @@ pub struct GenArgs {
     pub biomes: *mut u16,
     /// The dimension being generated.
     pub dim: u32,
-    /// With a terrain (`Host::reg_terrain`): its 256 columns of this cube, index = z * 16 + x,
-    /// already filled in. Null otherwise.
+    /// The dimension's 256 columns of this cube (from its terrain or `DimensionDesc::column`),
+    /// index = z * 16 + x. Null for a dimension without either.
     pub columns: *const TerrainColumn,
+}
+
+/// Something scattered over the ground on a grid (trees), in every dimension where its
+/// biomes stand. One site per `cell` x `cell` square at a seeded spot, kept with the chance
+/// the biome's `density` component gives; not under the terrain's sea, not where caves took
+/// the ground.
+#[repr(C)]
+pub struct ScatterDesc {
+    pub name: Str,
+    /// Space separated full dimension names, empty: every dimension (`dim_flags::BARE` ones
+    /// only when named).
+    pub dimensions: Str,
+    pub cell: i32,
+    /// How far blocks reach sideways from the site, so cubes next to it get their part.
+    pub reach: i32,
+    /// A biome component (`f32`, 0..1): the chance of a site per cell. No value: none there.
+    pub density: Str,
+    /// `ScatterArgs`. Pure: called once for each cube the site reaches.
+    pub shape: Callback,
+}
+defaults!(ScatterDesc { name: Str::EMPTY, dimensions: Str::EMPTY, cell: 8, reach: 0, density: Str::EMPTY, shape: Callback::NONE });
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScatterBlock {
+    /// From `ScatterArgs::pos`.
+    pub offset: [i32; 3],
+    pub state: u32,
+    /// 1: replaces anything; 0: only air.
+    pub force: u32,
+}
+
+#[repr(C)]
+pub struct ScatterArgs {
+    pub seed: u64,
+    pub dim: u32,
+    /// The block above the ground at the site.
+    pub pos: [i32; 3],
+    pub biome: u32,
+    /// Random bits of this site.
+    pub random: u64,
+    /// Output: up to `cap` blocks, `len` written.
+    pub out: *mut ScatterBlock,
+    pub cap: u32,
+    pub len: u32,
 }
 
 #[repr(C)]
@@ -532,7 +579,8 @@ pub struct DimensionDesc {
     pub cell: *const AtomicU32,
     /// `GenArgs`, called in parallel from worker threads, must be a pure function of its args.
     pub generator: Callback,
-    /// `SpawnArgs`.
+    /// `SpawnArgs`. Without one, the engine looks for open ground near 0, 0 (biomes tagged
+    /// `spawn_biome` first) on the dimension's columns, away from scattered things.
     pub spawn: Callback,
     /// Inclusive cube-y bounds, `i32::MIN`/`i32::MAX` for unbounded.
     pub min_cube_y: i32,
@@ -550,8 +598,9 @@ pub struct DimensionDesc {
     /// Light level everything gets at least, 0..15.
     pub ambient: u32,
     pub components: Slice<CompValue>,
-    /// `ColumnArgs`: surface height and biome of a column without generating it (structures
-    /// stand on it). Pure like the generator.
+    /// `ColumnArgs`: surface height and biome of a column, for a dimension without a terrain.
+    /// The one source of its columns: the generator reads them (`GenArgs::columns`), and
+    /// structures, scatters and the spawn search stand on them. Pure like the generator.
     pub column: Callback,
     /// `dim_flags`.
     pub flags: u32,
@@ -582,6 +631,9 @@ pub mod dim_flags {
     /// Blocks never update: no neighbor updates (support, liquids), scheduled, random or
     /// growth ticks. For showcases like the engine's `core:debug_blocks`.
     pub const NO_BLOCK_UPDATES: u32 = 2;
+    /// Only what names it: ores, scatters and decorations meant for every dimension skip it
+    /// (a superflat test world).
+    pub const BARE: u32 = 4;
 }
 
 #[repr(C)]
@@ -1341,6 +1393,10 @@ pub struct Host {
     /// `cb` gets `CommandArgs` with one value per named parameter.
     pub reg_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, cb: Callback),
     pub reg_ore: unsafe extern "C" fn(reg: *mut Registrar, desc: *const OreDesc),
+    pub reg_scatter: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ScatterDesc),
+    /// `cb` (`GenArgs`) runs after a cube was generated, in the dimensions named (space
+    /// separated; empty: every dimension but `dim_flags::BARE` ones). Pure like a generator.
+    pub reg_decoration: unsafe extern "C" fn(reg: *mut Registrar, dimensions: Str, cb: Callback),
     /// Creative inventory tab shown with `icon` (an item name); items join it with the tag
     /// `tab/<name>`. Tabs appear in mod load order, then registration order.
     pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
@@ -1707,11 +1763,11 @@ pub struct Host {
     pub reg_screen_part: unsafe extern "C" fn(reg: *mut Registrar, screen: Str, area: Str, order: i32, cb: Callback),
     /// Describes or edits the terrain of a dimension, see `TerrainDesc`.
     pub reg_terrain: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TerrainDesc),
-    /// Column (`x`, `z`) of the terrain of dimension `dim` for `seed`, generated or not. Returns
-    /// 0 if the dimension has no terrain.
-    pub terrain_column: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32, out: *mut TerrainColumn) -> u32,
+    /// Column (`x`, `z`) of dimension `dim` for `seed` (its terrain's or `DimensionDesc::column`),
+    /// generated or not. Returns 0 if the dimension has neither.
+    pub dim_column: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32, out: *mut TerrainColumn) -> u32,
     /// 1 if caves took the surface block of column (`x`, `z`), so nothing should stand there.
-    pub terrain_carved: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32) -> u32,
+    pub dim_carved: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32) -> u32,
 }
 
 /// Natural spawning around players (`Host::reg_spawn`). Every two seconds the engine tries a few
@@ -2542,8 +2598,9 @@ pub mod client_text {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OreDesc {
-    /// Full dimension name.
-    pub dimension: Str,
+    /// Space separated full dimension names, empty: every dimension whose blocks it may
+    /// replace (`dim_flags::BARE` ones only when named).
+    pub dimensions: Str,
     pub block: Str,
     /// Space separated block names or `#tags` the ore may replace.
     pub replace: Str,
@@ -2556,7 +2613,7 @@ pub struct OreDesc {
     /// Only in biomes with this tag (the block's own column of its cube), empty: anywhere.
     pub biome: Str,
 }
-defaults!(OreDesc { dimension: Str::EMPTY, block: Str::EMPTY, replace: Str::EMPTY, min_y: i32::MIN, max_y: i32::MAX, veins: 4, blocks: 8, biome: Str::EMPTY });
+defaults!(OreDesc { dimensions: Str::EMPTY, block: Str::EMPTY, replace: Str::EMPTY, min_y: i32::MIN, max_y: i32::MAX, veins: 4, blocks: 8, biome: Str::EMPTY });
 
 /// Surface height and biome of one column of a terrain.
 #[repr(C)]
@@ -2733,8 +2790,6 @@ pub mod terrain_op {
     pub const CAVE_BIOME: u32 = 13;
     /// The cave biome `anchor` goes away.
     pub const REMOVE_CAVE_BIOME: u32 = 14;
-    /// `decorate` (`GenArgs`) runs after the terrain filled a cube, in every cube.
-    pub const DECORATE: u32 = 15;
 }
 
 /// One part of a dimension's terrain (`Host::reg_terrain`). The mod that owns the dimension
@@ -2755,7 +2810,6 @@ pub struct TerrainDesc {
     pub size: f64,
     pub feature: FeatureDesc,
     pub rule: BiomeRuleDesc,
-    pub decorate: Callback,
 }
 defaults!(TerrainDesc {
     dimension: Str::EMPTY,
@@ -2767,8 +2821,7 @@ defaults!(TerrainDesc {
     value: 0.0,
     size: 0.0,
     feature: FeatureDesc::DEFAULT,
-    rule: BiomeRuleDesc::DEFAULT,
-    decorate: Callback::NONE
+    rule: BiomeRuleDesc::DEFAULT
 });
 
 /// One command argument; kinds in `command_value`.

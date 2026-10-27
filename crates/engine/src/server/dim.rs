@@ -125,13 +125,18 @@ pub fn generate(c: &Content, dim: u32, seed: u64, pos: IVec3) -> Cube {
         (Some(f), _, _) => f(c, pos, &mut blocks),
         (None, None, None) => return Cube::uniform(AIR, 0),
         (None, terrain, generator) => {
-            let cols = terrain.as_ref().map(|t| t.generate(seed, pos.to_array(), &mut blocks, &mut biomes));
-            let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.cols.as_ptr());
+            let cols = match terrain {
+                Some(t) => Some(Arc::new(t.generate(seed, pos.to_array(), &mut blocks, &mut biomes).cols)),
+                None => def.columns(seed, pos.x, pos.z),
+            };
+            let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
             let mut args = abi::GenArgs { seed, cube: pos.to_array(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
             if let Some(cb) = generator {
                 host::invoke(def.owner, cb, &mut args);
             }
-            for &(owner, cb) in terrain.iter().flat_map(|t| &t.decorations) {
+            place_scatters(c, def, dim, seed, pos, &mut blocks);
+            let mut args = abi::GenArgs { blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), ..args };
+            for &(owner, cb) in &def.decorations {
                 host::invoke(owner, cb, &mut args);
             }
         }
@@ -211,22 +216,74 @@ pub fn structure_in(def: &crate::content::DimensionDef, c: &Content, s: &crate::
     }
     let room = (s.spacing - s.extent.x.max(s.extent.z)).max(1) as u64;
     let (x, z) = (cell.0 * s.spacing + ((h >> 3) % room) as i32, cell.1 * s.spacing + ((h >> 29) % room) as i32);
-    let (cx, cz) = (x + s.extent.x / 2, z + s.extent.z / 2);
-    let (height, biome) = match &def.terrain {
-        Some(t) => {
-            let col = t.column(seed, cx, cz);
-            (col.height, col.biome)
-        }
-        None => {
-            let mut args = abi::ColumnArgs { seed, x: cx, z: cz, height: 0, biome: 0 };
-            host::invoke(def.owner, def.column?, &mut args);
-            (args.height, args.biome)
-        }
-    };
-    if s.biome.is_some_and(|t| !c.components.has(comps::BIOME, biome, t)) {
+    let col = def.column(seed, x + s.extent.x / 2, z + s.extent.z / 2)?;
+    if s.biome.is_some_and(|t| !c.components.has(comps::BIOME, col.biome, t)) {
         return None;
     }
-    Some(IVec3::new(x, height + 1 - s.sink, z))
+    Some(IVec3::new(x, col.height + 1 - s.sink, z))
+}
+
+/// The site of scatter `s` in its grid cell, if it has one there: the block above the ground,
+/// the biome and the site's random bits. Depends only on the seed and the columns.
+pub fn scatter_site(def: &crate::content::DimensionDef, c: &Content, s: &crate::content::ScatterDef, seed: u64, cell: (i32, i32)) -> Option<(IVec3, u32, u64)> {
+    let h = hash(seed ^ s.salt, cell.0 as i64, 0, cell.1 as i64);
+    let (x, z) = (cell.0 * s.cell + (h % s.cell as u64) as i32, cell.1 * s.cell + ((h >> 8) % s.cell as u64) as i32);
+    let col = def.column(seed, x, z)?;
+    if col.height == i32::MIN || def.sea_level().is_some_and(|l| col.height < l) {
+        return None;
+    }
+    let density = s.density.and_then(|d| c.components.get::<f32>(comps::BIOME, col.biome, d)).unwrap_or(0.0);
+    if ((h.rotate_left(17) >> 11) as f64 / (1u64 << 53) as f64) >= density as f64 || def.carved(seed, x, z) {
+        return None;
+    }
+    Some((IVec3::new(x, col.height + 1, z), col.biome, hash(h, 1, 2, 3)))
+}
+
+/// How far above and below its site a scattered thing may put blocks.
+const SCATTER_UP: i32 = 32;
+const SCATTER_DOWN: i32 = 16;
+
+/// The parts of scattered things (trees) that fall into this cube, from sites in this and
+/// neighboring cells.
+fn place_scatters(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed: u64, pos: IVec3, blocks: &mut [u32]) {
+    if def.scatters.is_empty() {
+        return;
+    }
+    let o = pos * 16;
+    let mut out = vec![abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
+    let states = c.states.len() as u32;
+    for s in &def.scatters {
+        let cells = |lo: i32| (lo - s.reach).div_euclid(s.cell)..=(lo + 15 + s.reach).div_euclid(s.cell);
+        for cz in cells(o.z) {
+            for cx in cells(o.x) {
+                let Some((p, biome, random)) = scatter_site(def, c, s, seed, (cx, cz)) else { continue };
+                if p.y - SCATTER_DOWN > o.y + 15 || p.y + SCATTER_UP < o.y {
+                    continue;
+                }
+                let mut args = abi::ScatterArgs { seed, dim, pos: p.to_array(), biome, random, out: out.as_mut_ptr(), cap: out.len() as u32, len: 0 };
+                host::invoke(s.owner, s.shape, &mut args);
+                for b in &out[..(args.len as usize).min(out.len())] {
+                    let l = p + IVec3::from_array(b.offset) - o;
+                    if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() && b.state < states {
+                        let i = (l.y * 256 + l.z * 16 + l.x) as usize;
+                        if b.force != 0 || blocks[i] == AIR {
+                            blocks[i] = b.state;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whether a scattered thing stands within its reach of column (`x`, `z`): spawn search keeps
+/// players out of trees.
+pub fn scattered_near(def: &crate::content::DimensionDef, c: &Content, seed: u64, x: i32, z: i32) -> bool {
+    def.scatters.iter().any(|s| {
+        let r = s.reach.max(1);
+        let cells = |v: i32| (v - r).div_euclid(s.cell)..=(v + r).div_euclid(s.cell);
+        cells(z).any(|cz| cells(x).any(|cx| scatter_site(def, c, s, seed, (cx, cz)).is_some_and(|(p, ..)| (p.x - x).abs() <= r && (p.z - z).abs() <= r)))
+    })
 }
 
 /// Structure blocks that fall into this cube.

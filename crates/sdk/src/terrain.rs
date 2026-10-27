@@ -20,7 +20,7 @@ use std::marker::PhantomData;
 use std::ops::{Bound, RangeBounds};
 
 use crate::abi::{self, Slice, Str, rule_field as rf, terrain_op as op};
-use crate::{Dimension, Gen, Registry, callback, host, qualify};
+use crate::{Dimension, Gen, Registry, Scatter, callback, host, qualify};
 
 pub use crate::noise::Fields;
 
@@ -368,12 +368,11 @@ struct Op {
     size: f64,
     feature: Option<Feature>,
     rule: Option<BiomeRule>,
-    decorate: abi::Callback,
 }
 
 impl Op {
     fn new(op: u32) -> Op {
-        Op { op, anchor: String::new(), block: String::new(), level: 0, to: 0, value: 0.0, size: 0.0, feature: None, rule: None, decorate: abi::Callback::NONE }
+        Op { op, anchor: String::new(), block: String::new(), level: 0, to: 0, value: 0.0, size: 0.0, feature: None, rule: None }
     }
 }
 
@@ -404,7 +403,6 @@ impl TerrainBuilder<'_> {
             size: o.size,
             feature,
             rule,
-            decorate: o.decorate,
         };
         unsafe { (host().reg_terrain)(self.raw, &desc) }
         self
@@ -466,28 +464,162 @@ impl TerrainBuilder<'_> {
     pub fn remove_cave_biome(self, biome: &str) -> Self {
         self.send(Op { anchor: biome.to_string(), ..Op::new(op::REMOVE_CAVE_BIOME) })
     }
-    /// Runs after the terrain filled a cube (and after the owner's decorations): trees, plants,
-    /// anything placed on the ground. `g.columns()` has the surface of every column. Pure, like
-    /// a generator.
-    pub fn decorate(self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> Self {
-        let cb = callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a)));
-        self.send(Op { decorate: cb, ..Op::new(op::DECORATE) })
-    }
 }
 
 impl Dimension {
-    /// Height and biome of the terrain's column (`x`, `z`) for `seed`, generated or not. A
-    /// dimension without a terrain gives height `i32::MIN`.
+    /// Height and biome of column (`x`, `z`) for `seed`, generated or not: from the terrain or
+    /// the dimension's `column`. A dimension with neither gives height `i32::MIN`.
     pub fn column(&self, seed: u64, x: i32, z: i32) -> Column {
         let mut out = Column { height: i32::MIN, biome: 0 };
-        unsafe { (host().terrain_column)(self.id(), seed, x, z, &mut out) };
+        unsafe { (host().dim_column)(self.id(), seed, x, z, &mut out) };
         out
     }
 
-    /// Whether caves took the surface block of column (`x`, `z`): decorations placed from
-    /// outside the cube (trees) and spawn search check it so they don't float over pits.
+    /// Whether caves took the surface block of column (`x`, `z`), so nothing should stand there.
     pub fn surface_carved(&self, seed: u64, x: i32, z: i32) -> bool {
-        unsafe { (host().terrain_carved)(self.id(), seed, x, z) != 0 }
+        unsafe { (host().dim_carved)(self.id(), seed, x, z) != 0 }
+    }
+}
+
+impl Registry {
+    /// Something scattered over the ground (trees): one site per `cell` x `cell` square at a
+    /// seeded spot, kept with the chance the biome's `density` component gives, in every
+    /// dimension where such biomes stand. The engine skips sites under the sea and where caves
+    /// took the ground, fits the parts that reach into neighboring cubes, and keeps players
+    /// from spawning in one.
+    ///
+    /// ```ignore
+    /// static TREES: Scatter = Scatter::named("trees");
+    /// r.scatter(&TREES).cell(5).reach(2).density(&TREE_DENSITY).shape(|s| {
+    ///     let [x, y, z] = s.pos();
+    ///     for dy in 0..5 { s.force([x, y + dy, z], LOG.id()); }
+    /// });
+    /// ```
+    pub fn scatter<'a>(&'a mut self, scatter: &Scatter) -> ScatterBuilder<'a> {
+        ScatterBuilder { raw: self.raw, name: scatter.name().to_string(), dimensions: String::new(), density: String::new(), desc: abi::ScatterDesc::DEFAULT, _p: PhantomData }
+    }
+
+    /// Runs `f` on every generated cube after the generator and scatters (grass, flowers,
+    /// boulders), in every dimension but bare ones unless `.dimension(..)` limits it.
+    /// `g.columns()` has the surface of every column. Pure, like a generator.
+    pub fn decorate<'a>(&'a mut self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> DecorationBuilder<'a> {
+        DecorationBuilder { raw: self.raw, dimensions: String::new(), cb: callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a))), _p: PhantomData }
+    }
+}
+
+pub struct ScatterBuilder<'a> {
+    raw: *mut abi::Registrar,
+    name: String,
+    dimensions: String,
+    density: String,
+    desc: abi::ScatterDesc,
+    _p: PhantomData<&'a mut Registry>,
+}
+
+impl ScatterBuilder<'_> {
+    /// Grid cell size in blocks (8 by default): at most one site per cell.
+    pub fn cell(mut self, blocks: i32) -> Self {
+        self.desc.cell = blocks;
+        self
+    }
+    /// How far the shape puts blocks sideways from its site. Up and down it may go 32 and 16.
+    pub fn reach(mut self, blocks: i32) -> Self {
+        self.desc.reach = blocks;
+        self
+    }
+    /// The biome component (0..1) that is the chance of a site per cell; biomes without it get
+    /// none.
+    pub fn density(mut self, component: &crate::Component<f32>) -> Self {
+        self.density = component.name().to_string();
+        self
+    }
+    /// Only in this dimension (call again for more).
+    pub fn dimension(mut self, dimension: &Dimension) -> Self {
+        self.dimensions = format!("{} {}", self.dimensions, dimension.name());
+        self
+    }
+    /// The blocks of one site. Pure: it runs again for each cube the site reaches.
+    pub fn shape(mut self, f: impl Fn(&mut Site) + Send + Sync + 'static) -> Self {
+        self.desc.shape = callback(move |a: &mut abi::ScatterArgs| f(Site::wrap(a)));
+        self
+    }
+}
+
+impl Drop for ScatterBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let desc = abi::ScatterDesc { name: Str::new(&self.name), dimensions: Str::new(&self.dimensions), density: Str::new(&self.density), ..self.desc };
+        unsafe { (host().reg_scatter)(self.raw, &desc) }
+    }
+}
+
+/// One site of a scatter: where it stands and where its blocks go (world coordinates).
+pub struct Site {
+    args: abi::ScatterArgs,
+}
+
+impl Site {
+    fn wrap(a: &mut abi::ScatterArgs) -> &mut Site {
+        unsafe { &mut *(a as *mut abi::ScatterArgs as *mut Site) }
+    }
+    /// The block above the ground.
+    pub fn pos(&self) -> [i32; 3] {
+        self.args.pos
+    }
+    pub fn biome(&self) -> u32 {
+        self.args.biome
+    }
+    pub fn dimension(&self) -> u32 {
+        self.args.dim
+    }
+    pub fn seed(&self) -> u64 {
+        self.args.seed
+    }
+    /// Random bits of this site, the same every time it is shaped.
+    pub fn random(&self) -> u64 {
+        self.args.random
+    }
+    /// `state` at `pos` where there is air.
+    pub fn put(&mut self, pos: [i32; 3], state: u32) {
+        self.push(pos, state, 0);
+    }
+    /// `state` at `pos` whatever is there (a trunk through another tree's leaves).
+    pub fn force(&mut self, pos: [i32; 3], state: u32) {
+        self.push(pos, state, 1);
+    }
+    fn push(&mut self, pos: [i32; 3], state: u32, force: u32) {
+        let a = &mut self.args;
+        if a.len < a.cap {
+            let offset = [pos[0] - a.pos[0], pos[1] - a.pos[1], pos[2] - a.pos[2]];
+            unsafe { *a.out.add(a.len as usize) = abi::ScatterBlock { offset, state, force } };
+            a.len += 1;
+        }
+    }
+}
+
+pub struct DecorationBuilder<'a> {
+    raw: *mut abi::Registrar,
+    dimensions: String,
+    cb: abi::Callback,
+    _p: PhantomData<&'a mut Registry>,
+}
+
+impl DecorationBuilder<'_> {
+    /// Only in this dimension (call again for more).
+    pub fn dimension(mut self, dimension: &Dimension) -> Self {
+        self.dimensions = format!("{} {}", self.dimensions, dimension.name());
+        self
+    }
+}
+
+impl Drop for DecorationBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        unsafe { (host().reg_decoration)(self.raw, Str::new(&self.dimensions), self.cb) }
     }
 }
 
@@ -497,20 +629,21 @@ impl Gen {
         self.args.dim
     }
 
-    /// With a terrain: the surface of the cube's 256 columns, index `z * 16 + x`.
+    /// The surface of the cube's 256 columns, index `z * 16 + x`: from the terrain or the
+    /// dimension's `column`. None for a dimension with neither.
     pub fn columns(&self) -> Option<&[Column; 256]> {
         unsafe { self.args.columns.cast::<[Column; 256]>().as_ref() }
     }
 
-    /// Any column of this dimension's terrain, in world coordinates.
+    /// Any column of this dimension, in world coordinates.
     pub fn column(&self, x: i32, z: i32) -> Column {
         let mut out = Column { height: i32::MIN, biome: 0 };
-        unsafe { (host().terrain_column)(self.args.dim, self.args.seed, x, z, &mut out) };
+        unsafe { (host().dim_column)(self.args.dim, self.args.seed, x, z, &mut out) };
         out
     }
 
     /// Whether caves took the surface block of column (`x`, `z`), in world coordinates.
     pub fn surface_carved(&self, x: i32, z: i32) -> bool {
-        unsafe { (host().terrain_carved)(self.args.dim, self.args.seed, x, z) != 0 }
+        unsafe { (host().dim_carved)(self.args.dim, self.args.seed, x, z) != 0 }
     }
 }

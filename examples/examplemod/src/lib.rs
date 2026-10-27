@@ -106,13 +106,13 @@ fn recipes(_r: &mut Registry) {
     // r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200);    // 200 ticks in a furnace
 }
 
-/// Ores, biomes, structures and dimensions. Ores go into another mod's dimension by name.
+/// Ores, biomes, structures and dimensions. Ores go into every dimension whose stone they replace.
 /// Mars as a whole planet from terrain presets is at `mods/testmod/src/lib.rs`
 /// More at `mods/base/src/worldgen.rs`
 fn worldgen(_r: &mut Registry) {
     // static OVERWORLD: Dimension = Dimension::named("base:overworld");
     // static RUBY_ORE: Block = Block::named("ruby_ore");
-    // r.ore(&OVERWORLD, &RUBY_ORE).y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
+    // r.ore(&RUBY_ORE).y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
     // r.structure(&OVERWORLD, "shrine").layer(&["ccc", "c c", "ccc"]).key('c', "base:cobblestone").spacing(256).chance(0.3);
 }
 

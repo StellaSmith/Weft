@@ -25,7 +25,6 @@ pub struct RawTerrain {
     pub size: f64,
     pub feature: RawFeature,
     pub rule: RawRule,
-    pub decorate: Option<Callback>,
 }
 
 #[derive(Clone)]
@@ -140,7 +139,6 @@ pub unsafe fn copy(owner: ModId, d: &abi::TerrainDesc) -> RawTerrain {
             size: d.size,
             feature: RawFeature { owner, name: s(f.name), preset: f.preset, params: f.params, height: f.height, mask: f.mask.as_slice().to_vec() },
             rule: copy_rule(&d.rule),
-            decorate: d.decorate.is_some().then_some(d.decorate),
         }
     }
 }
@@ -272,8 +270,6 @@ pub struct Terrain {
     caves: Option<Caves>,
     /// Biomes of cubes deep underground.
     pub cave_biomes: Vec<CaveBiome>,
-    /// (mod, callback) run after the terrain filled a cube, the owner's first.
-    pub decorations: Vec<(ModId, Callback)>,
     cache: ColumnCache<Columns>,
     /// Column heights every 4 blocks over a cube's columns and its +X/+Z edge (5 x 5): caves
     /// measure depth from this smoothed surface, so steep slopes do not leave single-column
@@ -290,7 +286,6 @@ struct Draft {
     features: Vec<RawFeature>,
     rules: Vec<RawRule>,
     cave_biomes: Vec<(String, i32, f64, f64)>,
-    decorations: Vec<(ModId, Callback)>,
 }
 
 /// Looks up content by full name while terrains are built.
@@ -305,7 +300,7 @@ pub struct Names<'a> {
 /// Merges `ops` (the owner's first, then the other mods' in load order) into a terrain.
 /// Missing names are `errors`; an edit whose target is gone is skipped with a warning.
 pub fn build(dimension: &str, owner_name: &dyn Fn(ModId) -> String, ops: Vec<RawTerrain>, names: &Names, errors: &mut Vec<String>) -> Terrain {
-    let mut d = Draft { stone: None, base: 64.0, sea: None, caves: None, features: Vec::new(), rules: Vec::new(), cave_biomes: Vec::new(), decorations: Vec::new() };
+    let mut d = Draft { stone: None, base: 64.0, sea: None, caves: None, features: Vec::new(), rules: Vec::new(), cave_biomes: Vec::new() };
     let rule_name = |r: &RawRule| if r.name.is_empty() { r.biome.clone() } else { r.name.clone() };
     for o in ops {
         let who = owner_name(o.owner);
@@ -377,7 +372,7 @@ pub fn build(dimension: &str, owner_name: &dyn Fn(ModId) -> String, ops: Vec<Raw
                 Some(i) => drop(d.cave_biomes.remove(i)),
                 None => missing("cave biome"),
             },
-            op::DECORATE => d.decorations.extend(o.decorate.map(|cb| (o.owner, cb))),
+
             n => errors.push(format!("{who}: unknown terrain edit {n} for {dimension}")),
         }
     }
@@ -462,13 +457,16 @@ pub fn build(dimension: &str, owner_name: &dyn Fn(ModId) -> String, ops: Vec<Raw
             threshold: *threshold,
         })
         .collect();
-    Terrain::new(stone, d.base, sea, features, rules, caves, cave_biomes, d.decorations)
+    Terrain::new(stone, d.base, sea, features, rules, caves, cave_biomes)
 }
 
 impl Terrain {
-    #[allow(clippy::too_many_arguments)]
-    fn new(stone: u32, base: f64, sea: Option<(i32, u32)>, features: Vec<Feature>, rules: Vec<Rule>, caves: Option<Caves>, cave_biomes: Vec<CaveBiome>, decorations: Vec<(ModId, Callback)>) -> Terrain {
-        Terrain { stone, base, sea, features, rules, caves, cave_biomes, decorations, cache: ColumnCache::new(16384), corners: ColumnCache::new(16384) }
+    fn new(stone: u32, base: f64, sea: Option<(i32, u32)>, features: Vec<Feature>, rules: Vec<Rule>, caves: Option<Caves>, cave_biomes: Vec<CaveBiome>) -> Terrain {
+        Terrain { stone, base, sea, features, rules, caves, cave_biomes, cache: ColumnCache::new(16384), corners: ColumnCache::new(16384) }
+    }
+
+    pub fn sea_level(&self) -> Option<i32> {
+        self.sea.map(|s| s.0)
     }
 
     /// Height, biome and rule of column (`x`, `z`).
@@ -727,13 +725,13 @@ const SHARDS: usize = 32;
 /// Data computed once per column of cubes and shared by every cube of it. Generation runs on
 /// many threads at once, so the map is split into locked shards; a shard that grows past its
 /// share of the capacity is simply cleared.
-struct ColumnCache<T> {
+pub struct ColumnCache<T> {
     shards: [Mutex<FxHashMap<(u64, i32, i32), Arc<T>>>; SHARDS],
     per_shard: usize,
 }
 
 impl<T> ColumnCache<T> {
-    fn new(capacity: usize) -> ColumnCache<T> {
+    pub fn new(capacity: usize) -> ColumnCache<T> {
         ColumnCache { shards: std::array::from_fn(|_| Mutex::new(FxHashMap::default())), per_shard: capacity.div_ceil(SHARDS).max(1) }
     }
 
@@ -748,7 +746,7 @@ impl<T> ColumnCache<T> {
 
     /// The value for cube column (`x`, `z`) under `seed`, computing it with `make` on a miss.
     /// Two threads missing together may both compute; the result is the same.
-    fn get(&self, seed: u64, x: i32, z: i32, make: impl FnOnce() -> T) -> Arc<T> {
+    pub fn get(&self, seed: u64, x: i32, z: i32, make: impl FnOnce() -> T) -> Arc<T> {
         if let Some(v) = self.peek(seed, x, z) {
             return v;
         }
@@ -777,7 +775,7 @@ mod tests {
     }
 
     fn terrain(features: Vec<Feature>, rules: Vec<Rule>, lava: Option<u32>, base: f64) -> Terrain {
-        Terrain::new(1, base, None, features, rules, lava.map(|lava| Caves { lava, lava_from: if lava == 1 { 1 } else { i32::MIN }, lava_to: 11 }), Vec::new(), Vec::new())
+        Terrain::new(1, base, None, features, rules, lava.map(|lava| Caves { lava, lava_from: if lava == 1 { 1 } else { i32::MIN }, lava_to: 11 }), Vec::new())
     }
 
     fn cube(t: &Terrain, seed: u64, pos: [i32; 3]) -> Vec<u32> {
@@ -911,7 +909,6 @@ mod tests {
                 bare_above: i32::MAX,
                 ice: String::new(),
             },
-            decorate: None,
         }
     }
 

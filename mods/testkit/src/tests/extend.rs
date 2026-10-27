@@ -121,6 +121,17 @@ pub async fn names(t: T) -> R {
     Ok(())
 }
 
+/// Typed channels: a `value!` struct and a string go to the server and the answers come back
+/// typed, no bytes handled by hand.
+pub async fn typed_channels(t: T) -> R {
+    t.flat().await?;
+    t.c().send(&crate::server::ECHO, &crate::server::Echo { n: 21 });
+    t.until("the doubled echo", Duration::from_secs(5), |_| crate::ECHOED.load(std::sync::atomic::Ordering::Relaxed) == 42).await?;
+    t.c().send(&crate::server::GREET, &"Steve".to_string());
+    t.until("the greeting", Duration::from_secs(5), |_| *crate::GREETED.lock().unwrap() == "hello, Steve").await?;
+    Ok(())
+}
+
 /// A key declared with `on_press_server` reaches the server by itself, and not while the chat
 /// has the input.
 pub async fn key_to_server(t: T) -> R {

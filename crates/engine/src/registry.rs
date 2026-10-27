@@ -417,6 +417,8 @@ unsafe impl Send for RawParticle {}
 pub struct PacketDef {
     pub server: Option<(ModId, Callback)>,
     pub client: Option<(ModId, Callback)>,
+    /// The value schema both sides agree on; sends with another are refused.
+    pub schema: String,
 }
 
 // ---------------------------------------------------------------- raw registration
@@ -493,7 +495,8 @@ pub struct RawGame {
     pub sets: Vec<RawSet>,
     pub client_hooks: Vec<(ModId, u32, Callback)>,
     /// (owner, name, side, callback).
-    pub packets: Vec<(ModId, String, u32, Callback)>,
+    /// (owner, channel, schema, side, callback).
+    pub packets: Vec<(ModId, String, String, u32, Callback)>,
     pub keys: Vec<(String, String)>,
     /// (block name, flow rules).
     pub liquids: Vec<(String, weft_abi::LiquidDesc)>,
@@ -997,7 +1000,7 @@ pub fn freeze(
     let mut equipment: Vec<EquipmentSlot> = Vec::new();
     let mut block_entities = Vec::new();
     let mut attach: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
-    let mut packets: Vec<(ModId, String, u32, Callback)> = Vec::new();
+    let mut packets: Vec<(ModId, String, String, u32, Callback)> = Vec::new();
     let mut event_handlers: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut systems: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
@@ -1191,13 +1194,16 @@ pub fn freeze(
         g.attr_names.insert(name.clone(), g.attributes.len() as u32);
         g.attributes.push(AttrDef { hash: name_hash(&name), comp: c.id(&name), name, default, min: min.min(max), max });
     }
-    packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
-    for (owner, name, side, cb) in packets {
+    packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.3.cmp(&b.3)));
+    for (owner, name, schema, side, cb) in packets {
         let id = *g.packet_names.entry(name.clone()).or_insert_with(|| {
-            g.packets.push(PacketDef::default());
+            g.packets.push(PacketDef { schema: schema.clone(), ..Default::default() });
             g.packets.len() as u32 - 1
         });
         let def = &mut g.packets[id as usize];
+        if def.schema != schema {
+            errors.push(format!("channel {name} carries '{}' on one side and '{schema}' on the other", def.schema));
+        }
         let slot = if side == 0 { &mut def.server } else { &mut def.client };
         if slot.is_some() {
             errors.push(format!("packet channel {name} has two {} handlers", if side == 0 { "server" } else { "client" }));

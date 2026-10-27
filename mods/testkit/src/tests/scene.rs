@@ -84,7 +84,7 @@ async fn spawn(t: &T, kind: &str, p: [i32; 3]) -> Result<u64, String> {
 }
 
 async fn pos_of(t: &T, id: u64) -> Result<[f64; 3], String> {
-    let line = t.op(&format!("entity #{id}")).await?;
+    let line = t.op(&format!("entity {id}")).await?;
     let v: Vec<f64> = line.split_whitespace().skip(1).take(3).filter_map(|s| s.parse().ok()).collect();
     v.try_into().map_err(|_| format!("entity #{id}: {line}"))
 }
@@ -252,7 +252,7 @@ async fn pathfinding(t: T, o: [i32; 3]) -> R {
     t.fill(add(o, [3, 0, 5]), add(o, [3, 1, 5]), "air").await?;
     let id = spawn(&t, "testmod:idol", o).await?;
     let goal = add(o, [7, 0, 0]);
-    t.check_eq(t.op(&format!("navigate #{id} {}", at(goal))).await?, "1".to_string(), "the walk is accepted");
+    t.check_eq(t.op(&format!("navigate {id} {}", at(goal))).await?, "1".to_string(), "the walk is accepted");
     t.secs(8.0).await?;
     let p = pos_of(&t, id).await?;
     let d = ((p[0] - goal[0] as f64 - 0.5).powi(2) + (p[2] - goal[2] as f64 - 0.5).powi(2)).sqrt();
@@ -375,9 +375,9 @@ async fn interceptor(t: &T, p: [i32; 3]) -> R {
 async fn watcher_sync(t: &T, o: [i32; 3]) -> R {
     let pig = spawn(t, "pig", o).await?;
     t.until("pig known", Duration::from_secs(5), |t| t.c().entities().contains(&pig)).await?;
-    t.op(&format!("mark #{pig} 77")).await?;
+    t.op(&format!("mark {pig} 77")).await?;
     t.until("mark on the client", Duration::from_secs(5), |t| t.c().view().component_of(pig, &MARK) == Some(77)).await?;
-    t.op(&format!("mark #{pig} 78")).await?;
+    t.op(&format!("mark {pig} 78")).await?;
     t.until("changed mark on the client", Duration::from_secs(5), |t| t.c().view().component_of(pig, &MARK) == Some(78)).await?;
     // The test kit's system counts marks up once a tick while the rule is on.
     t.cmd("/rule testkit:count_marks 1").await?;

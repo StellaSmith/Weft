@@ -311,6 +311,9 @@ pub struct Client {
     pub entity_components: FxHashMap<(u64, u32), Vec<u8>>,
     /// Formatted when drawn, in the language shown then.
     pub chat: Vec<(Msg, Instant)>,
+    /// Answers to commands run from code, by their id, until read.
+    pub command_replies: rustc_hash::FxHashMap<u32, Vec<Msg>>,
+    pub next_command: u32,
     pub gizmos: gizmo::Gizmos,
     /// This frame's gizmo shapes, from `collect_gizmos`.
     pub gizmo_lines: Vec<gizmo::Line>,
@@ -461,6 +464,8 @@ impl Client {
             packets: Vec::new(),
             entity_components: FxHashMap::default(),
             chat: Vec::new(),
+            command_replies: Default::default(),
+            next_command: 0,
             gizmos: Default::default(),
             gizmo_lines: Vec::new(),
             gizmo_fills: Vec::new(),
@@ -744,6 +749,9 @@ impl Client {
                 ToClient::Chat(line) => {
                     log::info!("[chat] {} {:?}", line.key, line.args);
                     self.chat_line(line);
+                }
+                ToClient::CommandReply { id, lines } => {
+                    self.command_replies.insert(id, lines);
                 }
                 ToClient::Disconnect(reason) => self.disconnected = Some(reason),
                 ToClient::Gizmos(shapes) => self.gizmos.receive(shapes),

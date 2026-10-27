@@ -6,3 +6,5 @@ command.testkit.client = client
 command.testkit.server = server
 testkit.drawn = drawn by testkit
 testkit.screen_text = screen text from a frame hook
+testkit.ok = ok {0}
+testkit.err = err {0}

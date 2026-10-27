@@ -388,6 +388,13 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.f32(*z);
         }
         ToClient::Chat(m) => w.msg(m),
+        ToClient::CommandReply { id, lines } => {
+            w.u32(*id);
+            w.len(lines.len());
+            for m in lines {
+                w.msg(m);
+            }
+        }
         ToClient::Disconnect(t) => {
             w.str(t);
         }
@@ -605,6 +612,15 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
         ClientTag::Died => ToClient::Died,
         ClientTag::Swing => ToClient::Swing,
         ClientTag::Chat => ToClient::Chat(r.msg()?),
+        ClientTag::CommandReply => {
+            let id = r.u32()?;
+            let n = r.len()?;
+            let mut lines = Vec::with_capacity(n.min(256));
+            for _ in 0..n {
+                lines.push(r.msg()?);
+            }
+            ToClient::CommandReply { id, lines }
+        }
         ClientTag::Disconnect => ToClient::Disconnect(r.str()?),
         ClientTag::Worn => {
             let n = r.len()?;
@@ -713,6 +729,10 @@ pub fn encode_server(m: &ToServer) -> Vec<u8> {
         ToServer::Chat(t) => {
             w.str(t);
         }
+        ToServer::Command { id, line } => {
+            w.u32(*id);
+            w.str(line);
+        }
         ToServer::Leave => {}
         ToServer::Pick { item } => {
             w.u32(*item);
@@ -768,6 +788,7 @@ pub fn decode_server(data: &[u8]) -> Option<ToServer> {
         ServerTag::Drop => ToServer::Drop { all: r.u8()? != 0 },
         ServerTag::Respawn => ToServer::Respawn,
         ServerTag::Chat => ToServer::Chat(r.str()?),
+        ServerTag::Command => ToServer::Command { id: r.u32()?, line: r.str()? },
         ServerTag::Leave => ToServer::Leave,
         ServerTag::Drag => {
             let button = r.u8()?;

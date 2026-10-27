@@ -1615,9 +1615,10 @@ pub struct Host {
     // ------------------------------------------------ client side and mod channels
     /// Client callback, see `client_hook`.
     pub reg_client_hook: unsafe extern "C" fn(reg: *mut Registrar, hook: u32, cb: Callback),
-    /// Message channel `name` between a mod's client and server parts. `side` 0: `cb` runs on the
-    /// server with `PacketArgs` when a client sends; 1: on the client with `ClientPacketArgs`.
-    pub reg_packet: unsafe extern "C" fn(reg: *mut Registrar, name: Str, side: u32, cb: Callback),
+    /// Message channel `name` between a mod's client and server parts, carrying values of
+    /// `schema` (both sides must agree, sends with another are refused). `side` 0: `cb` runs on
+    /// the server with `PacketArgs` when a client sends; 1: on the client with `ClientPacketArgs`.
+    pub reg_packet: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, side: u32, cb: Callback),
     /// Key binding `name` (shown in Controls as `key.<ns>.<name>`), default key by its settings
     /// name (`KeyJ`, `mouse3`, ...). Read with `client_pressed`.
     pub reg_key: unsafe extern "C" fn(reg: *mut Registrar, name: Str, key: Str),
@@ -1628,7 +1629,7 @@ pub struct Host {
     pub launch_option: unsafe extern "C" fn(name: Str) -> Str,
 
     /// Server: sends `data` on channel `name` to `player`'s client (after this tick's changes).
-    pub send_packet: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, name: Str, data: Slice<u8>),
+    pub send_packet: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, name: Str, schema: Str, data: Slice<u8>),
     /// Opens `menu` on the block entity at `pos`. 0 when there is none: the reason is logged and
     /// nothing opens.
     pub open_menu_at: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, menu: u32, pos: *const [i32; 3]) -> u32,
@@ -1656,6 +1657,9 @@ pub struct Host {
     pub client_command: unsafe extern "C" fn(client: *mut ClientCtx, op: u32, text: Str, num: f64) -> u64,
     /// Texts the client knows, see `client_text`. Valid until the next call.
     pub client_text: unsafe extern "C" fn(client: *mut ClientCtx, which: u32, index: u32) -> Str,
+    /// 1 and the answer's lines (in the client's language, joined by `\n`) once command `id`
+    /// (`client_op::RUN_COMMAND`) was answered, 0 before. An answer is read once.
+    pub client_command_reply: unsafe extern "C" fn(client: *mut ClientCtx, id: u32, out: *mut Str) -> u32,
     /// A settings.txt value (`view_distance`, `language`...), empty for an unknown key. Works in
     /// UI bindings too. Valid until the next call.
     pub client_setting: unsafe extern "C" fn(client: *mut ClientCtx, key: Str) -> Str,
@@ -1680,7 +1684,7 @@ pub struct Host {
     /// 0xRRGGBBAA.
     pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, kind: u32, a: *const [f64; 3], b: *const [f64; 3], color: u32, key: Str, args: Slice<UiArg>),
     /// Client: sends `data` on channel `name` to the server.
-    pub client_send_packet: unsafe extern "C" fn(client: *mut ClientCtx, name: Str, data: Slice<u8>),
+    pub client_send_packet: unsafe extern "C" fn(client: *mut ClientCtx, name: Str, schema: Str, data: Slice<u8>),
 
     /// RGBA pixels of an image (a screenshot id from `client_op::SCREENSHOT` once taken, or one
     /// from `image_load`), null while not available.
@@ -2694,6 +2698,9 @@ pub mod client_op {
     pub const POST_EFFECT: u32 = 14;
     /// Writes the settings as they are now to settings.txt.
     pub const SAVE_SETTINGS: u32 = 15;
+    /// Runs command `text` (`/tp ~ ~5 ~`) as the player, here if it is a client command, else
+    /// on the server; returns an id for `Host::client_command_reply`. The chat stays out of it.
+    pub const RUN_COMMAND: u32 = 16;
 }
 
 /// `Host::client_text` sources.

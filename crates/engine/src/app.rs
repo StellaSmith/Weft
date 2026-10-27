@@ -960,12 +960,45 @@ impl Running {
         v
     }
 
+    /// Runs a command for code that wants the answer (`client_op::RUN_COMMAND`): a client
+    /// command here and now, any other on the server. The id finds the answer.
+    pub(crate) fn run_command(&mut self, line: &str) -> u32 {
+        let line = if line.starts_with('/') { line.to_string() } else { format!("/{line}") };
+        let Some(g) = &mut self.game else { return 0 };
+        g.client.next_command += 1;
+        let id = g.client.next_command;
+        match self.client_command_lines(&line) {
+            Some(lines) => {
+                if let Some(g) = &mut self.game {
+                    g.client.command_replies.insert(id, lines);
+                }
+            }
+            None => {
+                if let Some(g) = &mut self.game {
+                    g.client.send(net::ToServer::Command { id, line });
+                }
+            }
+        }
+        id
+    }
+
     /// Runs `line` here if it is a command marked to run on the client; false otherwise.
     fn client_command(&mut self, line: &str) -> bool {
-        let Some(rest) = line.trim().strip_prefix('/') else { return false };
+        let Some(reply) = self.client_command_lines(line) else { return false };
+        if let Some(g) = &mut self.game {
+            for line in reply {
+                g.client.chat_line(line);
+            }
+        }
+        true
+    }
+
+    /// The answer of `line` if it is a command that runs on the client.
+    fn client_command_lines(&mut self, line: &str) -> Option<Vec<Msg>> {
+        let rest = line.trim().strip_prefix('/')?;
         let tokens: Vec<&str> = rest.split_whitespace().collect();
-        let Some(def) = tokens.first().and_then(|n| content().commands.iter().find(|d| d.client && d.name == *n)) else { return false };
-        let Some(g) = &self.game else { return false };
+        let def = tokens.first().and_then(|n| content().commands.iter().find(|d| d.client && d.name == *n))?;
+        let g = self.game.as_ref()?;
         let p = &g.client.player;
         let here = crate::commands::Origin { pos: p.pos, yaw: p.yaw, pitch: p.pitch };
         let players = g.client.players.clone();
@@ -988,12 +1021,7 @@ impl Running {
                 }
             },
         };
-        if let Some(g) = &mut self.game {
-            for line in reply {
-                g.client.chat_line(line);
-            }
-        }
-        true
+        Some(reply)
     }
 
     /// Mod channel messages that arrived for the client, each to its handler.

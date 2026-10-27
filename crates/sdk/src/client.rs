@@ -10,7 +10,7 @@
 //! ```
 
 use crate::abi::{self, ItemStack, Slice, Str};
-use crate::{Channel, ClientView, Key, Registry, Screen, World, callback, host};
+use crate::{ClientView, Key, Registry, Screen, Value, World, callback, host};
 
 pub use abi::{ClientState, client_flags};
 
@@ -309,9 +309,108 @@ impl Client {
         self.draw(3, [x as f64, y as f64, 0.0], [0.0; 3], color, key, args);
     }
 
-    /// Sends `data` on `channel` to the server.
-    pub fn send(&self, channel: &Channel, data: &[u8]) {
-        unsafe { (host().client_send_packet)(self.raw, s(channel.name()), Slice::new(data)) }
+    /// Sends `value` on `channel` to the server.
+    pub fn send<T: Payload>(&self, channel: &Channel<T>, value: &T) {
+        let data = value.encode();
+        unsafe { (host().client_send_packet)(self.raw, s(channel.name()), s(&T::schema()), Slice::new(&data)) }
+    }
+
+    /// Runs a command as this player (`/tp ~ ~5 ~`): a client command here, any other on the
+    /// server. The answer goes to `command_reply(id)`, not the chat.
+    pub fn run_command(&self, line: &str) -> u32 {
+        self.command(abi::client_op::RUN_COMMAND, line, 0.0) as u32
+    }
+
+    /// The answer of `run_command`'s `id` once it came, its lines in the client's language; read
+    /// once.
+    pub fn command_reply(&self, id: u32) -> Option<String> {
+        let mut out = Str::EMPTY;
+        let got = unsafe { (host().client_command_reply)(self.raw, id, &mut out) } != 0;
+        got.then(|| unsafe { out.as_str() }.to_string())
+    }
+}
+
+/// What a channel carries: a `value!` struct or number (checked by its layout like events),
+/// `String`, `Vec<u8>` or `()`.
+pub trait Payload: Sized + 'static {
+    fn schema() -> String;
+    fn encode(&self) -> Vec<u8>;
+    fn decode(bytes: &[u8]) -> Option<Self>;
+}
+
+impl<T: Value> Payload for T {
+    fn schema() -> String {
+        T::schema()
+    }
+    fn encode(&self) -> Vec<u8> {
+        unsafe { std::slice::from_raw_parts(self as *const T as *const u8, size_of::<T>()) }.to_vec()
+    }
+    fn decode(bytes: &[u8]) -> Option<T> {
+        (bytes.len() == size_of::<T>()).then(|| unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const T) })
+    }
+}
+
+impl Payload for String {
+    fn schema() -> String {
+        "text".into()
+    }
+    fn encode(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+    fn decode(bytes: &[u8]) -> Option<String> {
+        String::from_utf8(bytes.to_vec()).ok()
+    }
+}
+
+impl Payload for Vec<u8> {
+    fn schema() -> String {
+        "bytes".into()
+    }
+    fn encode(&self) -> Vec<u8> {
+        self.clone()
+    }
+    fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
+        Some(bytes.to_vec())
+    }
+}
+
+impl Payload for () {
+    fn schema() -> String {
+        "unit".into()
+    }
+    fn encode(&self) -> Vec<u8> {
+        Vec::new()
+    }
+    fn decode(_: &[u8]) -> Option<()> {
+        Some(())
+    }
+}
+
+/// A message channel between a mod's client and server halves, carrying `T`; both ends declare
+/// the same type, which the engine checks like event values:
+///
+/// ```ignore
+/// value! { pub struct Boost { pub power: f32 } }
+/// static BOOST: Channel<Boost> = Channel::named("boost");
+/// r.packet(&BOOST, |p, b| { /* p.player(), b.power */ });   // server
+/// client.send(&BOOST, &Boost { power: 2.0 });               // client
+/// ```
+pub struct Channel<T: Payload> {
+    name: &'static str,
+    full: std::sync::OnceLock<String>,
+    _p: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: Payload> Channel<T> {
+    pub const fn named(name: &'static str) -> Self {
+        Channel { name, full: std::sync::OnceLock::new(), _p: std::marker::PhantomData }
+    }
+    /// For names made at runtime; lives as long as the game.
+    pub fn generated(name: String) -> &'static Self {
+        Box::leak(Box::new(Channel::named(Box::leak(name.into_boxed_str()))))
+    }
+    pub fn name(&self) -> &str {
+        self.full.get_or_init(|| crate::full_name(self.name))
     }
 }
 
@@ -353,19 +452,17 @@ impl Packet {
     pub fn player(&self) -> u64 {
         self.args.player
     }
-    pub fn data(&self) -> &[u8] {
-        unsafe { self.args.data.as_slice() }
-    }
-    /// Answers on `channel` to the sender.
-    pub fn reply(&self, channel: &Channel, data: &[u8]) {
-        self.world().send(self.args.player, channel, data);
+    /// Answers the sender on `channel`.
+    pub fn reply<R: Payload>(&self, channel: &Channel<R>, value: &R) {
+        self.world().send(self.args.player, channel, value);
     }
 }
 
 impl World {
-    /// Sends `data` on `channel` to `player`'s client.
-    pub fn send(&self, player: u64, channel: &Channel, data: &[u8]) {
-        unsafe { (host().send_packet)(self.raw(), player, s(channel.name()), Slice::new(data)) }
+    /// Sends `value` on `channel` to `player`'s client.
+    pub fn send<T: Payload>(&self, player: u64, channel: &Channel<T>, value: &T) {
+        let data = value.encode();
+        unsafe { (host().send_packet)(self.raw(), player, s(channel.name()), s(&T::schema()), Slice::new(&data)) }
     }
 
     /// Opens `menu` on the block entity at `pos`; false (and a logged reason) if there is none.
@@ -413,17 +510,26 @@ impl Registry {
     }
 
     /// Server side of `channel`: called when a client sends on it.
-    pub fn packet(&mut self, channel: &Channel, f: impl Fn(&Packet) + Send + Sync + 'static) {
+    /// Server side of a channel: `f` gets every value a client sends on it, with who sent it.
+    pub fn packet<T: Payload>(&mut self, channel: &Channel<T>, f: impl Fn(&Packet, T) + Send + Sync + 'static) {
         let name = channel.name();
-        let cb = callback(move |a: &mut abi::PacketArgs| f(unsafe { &*(a as *const abi::PacketArgs as *const Packet) }));
-        unsafe { (host().reg_packet)(self.raw, s(&name), 0, cb) }
+        let cb = callback(move |a: &mut abi::PacketArgs| {
+            if let Some(v) = T::decode(unsafe { a.data.as_slice() }) {
+                f(unsafe { &*(a as *const abi::PacketArgs as *const Packet) }, v)
+            }
+        });
+        unsafe { (host().reg_packet)(self.raw, s(name), s(&T::schema()), 0, cb) }
     }
 
     /// Client side of channel `name`: called when the server sends on it.
-    pub fn client_packet(&mut self, channel: &Channel, f: impl Fn(&Client, &[u8]) + Send + Sync + 'static) {
+    pub fn client_packet<T: Payload>(&mut self, channel: &Channel<T>, f: impl Fn(&Client, T) + Send + Sync + 'static) {
         let name = channel.name();
-        let cb = callback(move |a: &mut abi::ClientPacketArgs| f(&Client::from_raw(a.client), unsafe { a.data.as_slice() }));
-        unsafe { (host().reg_packet)(self.raw, s(&name), 1, cb) }
+        let cb = callback(move |a: &mut abi::ClientPacketArgs| {
+            if let Some(v) = T::decode(unsafe { a.data.as_slice() }) {
+                f(&Client::from_raw(a.client), v)
+            }
+        });
+        unsafe { (host().reg_packet)(self.raw, s(name), s(&T::schema()), 1, cb) }
     }
 
     /// Key binding with a default key (`J`, `KeyJ`, `F6`, `space`, `lshift`, `mouse3`), listed
@@ -462,9 +568,9 @@ impl KeyBuilder<'_> {
     /// carries the press over, no channel of yours needed.
     pub fn on_press_server(self, f: impl Fn(&Packet) + Send + Sync + 'static) -> Self {
         let key = self.key;
-        let channel = Channel::generated(format!("{}.pressed", key.name()));
-        self.reg.packet(channel, f);
-        KeyBuilder { reg: self.reg, key }.on_press(move |c| c.send(channel, &[]))
+        let channel: &'static Channel<()> = Channel::generated(format!("{}.pressed", key.name()));
+        self.reg.packet(channel, move |p, ()| f(p));
+        KeyBuilder { reg: self.reg, key }.on_press(move |c| c.send(channel, &()))
     }
 }
 

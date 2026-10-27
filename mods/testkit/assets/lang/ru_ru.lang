@@ -5,3 +5,5 @@ command.testkit.client = клиенте
 command.testkit.server = сервере
 testkit.drawn = нарисовано testkit
 testkit.screen_text = текст на экране из покадрового хука
+testkit.ok = ok {0}
+testkit.err = err {0}

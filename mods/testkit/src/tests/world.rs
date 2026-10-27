@@ -58,7 +58,7 @@ pub async fn virtual_menus(t: T) -> R {
     t.shot("virtual_chest").await?;
     t.c().close_screen();
     t.no_screen().await?;
-    t.op(&format!("remove #{id}")).await?;
+    t.op(&format!("remove {id}")).await?;
 
     let f = t.feet();
     let plain = add(f, [2, -1, 0]);
@@ -221,7 +221,7 @@ pub async fn persistence(t: T) -> R {
     // A moving structure with a block added, in a cube nothing else changed.
     let skiff = t.op(&format!("spawn testmod:skiff {} {} {}", p[0], p[1] + 6, p[2] + 8)).await?;
     let skiff = skiff.trim().trim_start_matches('#').to_string();
-    t.op(&format!("sblock #{skiff} 0 1 0 base:glass")).await?;
+    t.op(&format!("sblock {skiff} 0 1 0 base:glass")).await?;
     t.op("put me 0 iron_sword 1").await?;
     // A machine's contents are kept, and its entity can't be made without the block.
     let chest = add(p, [-3, 0, 0]);
@@ -255,7 +255,7 @@ pub async fn persistence(t: T) -> R {
     t.loaded().await?;
     t.check_eq(t.block(p).await?, "base:gold_block".into(), "placed block after reload");
     t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "inventory after reload");
-    t.check_eq(t.op(&format!("sblock #{skiff} 0 1 0")).await?, "base:glass".to_string(), "the structure and its added block after reload");
+    t.check_eq(t.op(&format!("sblock {skiff} 0 1 0")).await?, "base:glass".to_string(), "the structure and its added block after reload");
     t.check_eq(t.slot("me", 0).await?.0, "base:iron_sword".into(), "the sword was saved");
     t.check_eq(t.op(&format!("inv {} {} {}", chest[0], chest[1], chest[2])).await?, "0:base:coal:5".to_string(), "the chest kept its coal");
     t.check_eq(t.op("secret me 0").await?, "none".into(), "the secret was not");

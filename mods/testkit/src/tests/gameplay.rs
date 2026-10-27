@@ -334,17 +334,17 @@ pub async fn creative_and_invulnerable(t: T) -> R {
     t.frames(2).await?;
     t.hold("core:attack", 1.5);
     t.secs(2.0).await?;
-    let health = t.op(&format!("entity #{}", id.trim())).await?;
+    let health = t.op(&format!("entity {}", id.trim())).await?;
     t.check(health.ends_with(" 10"), format!("the crate kept its health ({health})"));
     // The same hits do hurt an ordinary entity there.
-    t.op(&format!("remove #{}", id.trim())).await?;
+    t.op(&format!("remove {}", id.trim())).await?;
     let idol = t.op(&format!("spawn testmod:idol {} {} {}", stone[0], stone[1], stone[2])).await?;
-    let before = t.op(&format!("entity #{}", idol.trim())).await?;
+    let before = t.op(&format!("entity {}", idol.trim())).await?;
     t.look_at(stone);
     t.frames(2).await?;
     t.hold("core:attack", 1.5);
     t.secs(2.0).await?;
-    let after = t.op(&format!("entity #{}", idol.trim())).await?;
+    let after = t.op(&format!("entity {}", idol.trim())).await?;
     let hp = |s: &str| s.rsplit(' ').next().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
     t.check(hp(&after) < hp(&before), format!("an idol is hurt by the same hits ({before} -> {after})"));
     Ok(())

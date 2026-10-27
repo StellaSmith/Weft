@@ -119,6 +119,19 @@ pub(crate) unsafe fn settings<'a>(c: *mut abi::ClientCtx) -> Option<&'a crate::s
     }
 }
 
+/// The answer to a command run with `client_op::RUN_COMMAND`, once it came: its lines in the
+/// client's language, one per line.
+pub unsafe extern "C" fn client_command_reply(c: *mut abi::ClientCtx, id: u32, out: *mut Str) -> u32 {
+    unsafe {
+        let Some(r) = run(c) else { return 0 };
+        let Some(g) = r.game.as_mut() else { return 0 };
+        let Some(lines) = g.client.command_replies.remove(&id) else { return 0 };
+        let text: Vec<String> = lines.iter().map(|m| m.text(&r.lang)).collect();
+        *out = text_out(&text.join("\n"));
+        1
+    }
+}
+
 pub unsafe extern "C" fn client_setting(c: *mut abi::ClientCtx, key: Str) -> Str {
     unsafe { text_out(&settings(c).and_then(|s| s.get(key.as_str())).unwrap_or_default()) }
 }
@@ -400,6 +413,7 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
                 }
             }
             op_::SAVE_SETTINGS => r.settings.save(),
+            op_::RUN_COMMAND => return r.run_command(&text) as u64,
             _ => return 0,
         }
         1
@@ -552,14 +566,10 @@ pub unsafe extern "C" fn client_draw(c: *mut abi::ClientCtx, kind: u32, a: *cons
     }
 }
 
-pub unsafe extern "C" fn client_send_packet(c: *mut abi::ClientCtx, name: Str, data: Slice<u8>) {
+pub unsafe extern "C" fn client_send_packet(c: *mut abi::ClientCtx, name: Str, schema: Str, data: Slice<u8>) {
     unsafe {
         let Some(r) = run(c) else { return };
-        let name = name.as_str();
-        let Some(&channel) = crate::content::content().game.packet_names.get(name) else {
-            log::error!("client_send_packet: no channel {name} is registered");
-            return;
-        };
+        let Some(channel) = crate::host::channel_for(name.as_str(), schema.as_str()) else { return };
         if let Some(g) = r.game.as_mut() {
             g.client.send(crate::net::ToServer::Packet { channel, data: data.as_slice().to_vec() });
         }

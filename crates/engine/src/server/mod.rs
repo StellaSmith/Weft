@@ -1070,6 +1070,10 @@ impl Server {
                     }
                 }
             }
+            ToServer::Command { id, line } => {
+                let lines = self.command(c, pi, line.trim_start_matches('/'));
+                self.players[pi].conn.send(ToClient::CommandReply { id, lines });
+            }
             ToServer::Packet { channel, data } => {
                 let Some((owner, cb)) = c.game.packets.get(channel as usize).and_then(|d| d.server) else { return };
                 let Some((r, player)) = self.region(pi) else { return };

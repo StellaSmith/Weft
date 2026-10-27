@@ -21,16 +21,16 @@ pub async fn lift(t: T) -> R {
     let f = t.feet();
     let id = spawn(&t, "testmod:lift", add(f, [3, 0, 0])).await?;
     // Its box comes from its blocks (2 x 2 planks from block (0, 0, 0) on), no size of its own.
-    t.check_eq(t.op(&format!("size #{id}")).await?, "3.000 1.000 0.850".to_string(), "the lift's box from its blocks");
-    let p = pos_of(&t, &format!("#{id}")).await?;
-    t.op(&format!("onto #{id} 1.0")).await?;
+    t.check_eq(t.op(&format!("size {id}")).await?, "3.000 1.000 0.850".to_string(), "the lift's box from its blocks");
+    let p = pos_of(&t, &format!("{id}")).await?;
+    t.op(&format!("onto {id} 1.0")).await?;
     t.secs(2.0).await?;
-    let (me, lift) = (t.state().pos, pos_of(&t, &format!("#{id}")).await?);
+    let (me, lift) = (t.state().pos, pos_of(&t, &format!("{id}")).await?);
     t.check(lift[1] > p[1] + 1.2, "the lift went up");
     t.check((me[1] - (lift[1] + 1.0)).abs() < 0.15, format!("the player rides on top (feet {:.2}, deck {:.2})", me[1], lift[1] + 1.0));
     // Up to the top, then all the way down.
     t.secs(5.0).await?;
-    let (me, lift) = (t.state().pos, pos_of(&t, &format!("#{id}")).await?);
+    let (me, lift) = (t.state().pos, pos_of(&t, &format!("{id}")).await?);
     t.check(lift[1] < p[1] + 1.5, "the lift came down");
     t.check((me[1] - (lift[1] + 1.0)).abs() < 0.15, format!("the player rode it down (feet {:.2}, deck {:.2})", me[1], lift[1] + 1.0));
     t.check_eq(t.op("health").await?, "20".to_string(), "health after the ride");
@@ -43,7 +43,7 @@ pub async fn ride_frames(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
     let id = spawn(&t, "testmod:lift", add(f, [3, 0, 0])).await?;
-    t.op(&format!("onto #{id} 1.0")).await?;
+    t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.5).await?;
     let mut steps = Vec::new();
     let mut last = t.state().shown[1];
@@ -62,9 +62,9 @@ pub async fn ride_frames(t: T) -> R {
     t.cmd(&format!("/tp {} {} {}", f[0], f[1], f[2] + 10)).await?;
     let skiff = spawn(&t, "testmod:skiff", add(f, [0, 3, -6])).await?;
     let idol = spawn(&t, "testmod:idol", add(f, [0, 0, -6])).await?;
-    t.op(&format!("onto #{skiff} 1.0 #{idol}")).await?;
+    t.op(&format!("onto {skiff} 1.0 {idol}")).await?;
     t.secs(1.0).await?;
-    let (s, i) = (pos_of(&t, &format!("#{skiff}")).await?, pos_of(&t, &format!("#{idol}")).await?);
+    let (s, i) = (pos_of(&t, &format!("{skiff}")).await?, pos_of(&t, &format!("{idol}")).await?);
     t.check((i[0] - s[0]).abs() < 1.6 && (i[1] - (s[1] + 1.0)).abs() < 0.1, format!("the idol rides the skiff (idol {i:?}, skiff {s:?})"));
     let swing = t.c().entity(idol).map_or(1.0, |e| e.moved);
     t.check(swing < 0.15, format!("the riding idol does not walk ({swing:.2})"));
@@ -78,7 +78,7 @@ pub async fn skiff_smooth(t: T) -> R {
     let f = t.feet();
     let skiff = spawn(&t, "testmod:skiff", add(f, [-8, 3, -6])).await?;
     let idol = spawn(&t, "testmod:idol", add(f, [-8, 0, -6])).await?;
-    t.op(&format!("onto #{skiff} 1.0 #{idol}")).await?;
+    t.op(&format!("onto {skiff} 1.0 {idol}")).await?;
     // Into a leg, away from its turn (it turns every 3 seconds of its age).
     t.secs(0.5).await?;
     let x = |t: &T, id| t.c().entity(id).map_or(0.0, |e| e.pos[0]);
@@ -105,7 +105,7 @@ pub async fn skiff_smooth(t: T) -> R {
     t.check(jump < 0.15, "the skiff glides (no jumps)");
     t.check(slip < 0.02, "its rider stays on its spot of the deck");
     // Riding it too: the deck keeps its place in front of the camera.
-    t.op(&format!("onto #{skiff} 1.0")).await?;
+    t.op(&format!("onto {skiff} 1.0")).await?;
     t.secs(0.5).await?;
     // For 3.5 seconds, so a turn is in it.
     let mut steps = Vec::new();
@@ -130,14 +130,14 @@ pub async fn skiff(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
     let id = spawn(&t, "testmod:skiff", add(f, [0, 3, 0])).await?;
-    let p = pos_of(&t, &format!("#{id}")).await?;
-    t.op(&format!("onto #{id} 1.0")).await?;
+    let p = pos_of(&t, &format!("{id}")).await?;
+    t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.5).await?;
     // Jumping through its turn (it flies back after 3 seconds), then landing.
     t.hold("core:jump", 2.5);
     t.secs(3.5).await?;
     // Both as the server has them: the player's position arrives every tick from its client.
-    let (me, skiff) = (pos_of(&t, "me").await?, pos_of(&t, &format!("#{id}")).await?);
+    let (me, skiff) = (pos_of(&t, "me").await?, pos_of(&t, &format!("{id}")).await?);
     t.check((skiff[0] - p[0]).abs() > 5.0, "the skiff flew on");
     // The skiff moves on while the teleport arrives, so the player may stand anywhere on the
     // deck (1.5 + 0.3 from its middle); the server also hears the player a tick late (0.3).
@@ -199,7 +199,7 @@ pub async fn zombie_chases(t: T) -> R {
     t.fill(add(f, [4, 0, 5]), add(f, [4, 1, 5]), "air").await?;
     let id = spawn(&t, "zombie", add(f, [8, 0, 0])).await?;
     t.secs(10.0).await?;
-    let z = pos_of(&t, &format!("#{id}")).await?;
+    let z = pos_of(&t, &format!("{id}")).await?;
     let health: f32 = t.op("health").await?.parse().unwrap_or(20.0);
     t.check(z[0] < f[0] as f64 + 4.0, format!("the zombie came round the wall (x {:.1})", z[0]));
     t.check(health < 20.0, format!("and hit the player (health {health})"));
@@ -223,9 +223,9 @@ pub async fn skiff_blocks(t: T) -> R {
     t.c().select(0);
     let f = t.feet();
     let id = spawn(&t, "testmod:skiff", add(f, [0, 3, 0])).await?;
-    let sb = |p: [i32; 3]| format!("sblock #{id} {} {} {}", p[0], p[1], p[2]);
+    let sb = |p: [i32; 3]| format!("sblock {id} {} {} {}", p[0], p[1], p[2]);
     t.check_eq(t.op(&sb([1, 0, 1])).await?, "base:oak_planks".to_string(), "it is built of planks");
-    t.op(&format!("onto #{id} 1.0")).await?;
+    t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.4).await?;
     // Down at the deck ahead: the block goes on top of it.
     t.c().look(0.0, -60.0);
@@ -249,9 +249,9 @@ pub async fn skiff_blocks(t: T) -> R {
         targets.insert((s.target, s.target_frame));
     }
     t.check(targets.len() == 1, format!("one block looked at while riding ({targets:?})"));
-    let (a, sa) = (pos_of(&t, &format!("#{id}")).await?, t.op(&sb([0, 1, -1])).await?);
+    let (a, sa) = (pos_of(&t, &format!("{id}")).await?, t.op(&sb([0, 1, -1])).await?);
     t.secs(1.0).await?;
-    let b = pos_of(&t, &format!("#{id}")).await?;
+    let b = pos_of(&t, &format!("{id}")).await?;
     t.check((b[0] - a[0]).abs() > 2.0 && sa == t.op(&sb([0, 1, -1])).await?, "it flies on with the stone on it");
     // A mod's write, then the player breaks the stone.
     t.check_eq(t.op(&format!("{} base:cobblestone", sb([1, 1, 1]))).await?, "1".to_string(), "a mod sets a block of it");

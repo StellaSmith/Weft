@@ -111,6 +111,8 @@ pub enum ToClient {
     Died,
     /// Formatted by the client in its own language.
     Chat(crate::ui::text::Msg),
+    /// The answer to `ToServer::Command` `id`, for whoever ran it rather than the chat.
+    CommandReply { id: u32, lines: Vec<crate::ui::text::Msg> },
     Disconnect(String),
     Gizmos(Vec<GizmoShape>),
     /// Mod channel message (`Host::reg_packet`).
@@ -159,6 +161,8 @@ pub enum ToServer {
     Drop { all: bool },
     Respawn,
     Chat(String),
+    /// A command run from code (`client_op::RUN_COMMAND`), answered with `CommandReply`.
+    Command { id: u32, line: String },
     Leave,
     /// Gizmo groups this player shows; the server only sends shapes of these.
     Gizmos(Vec<String>),
@@ -202,12 +206,12 @@ messages!(ToClient, ClientTag, false, [
     Welcome, Cube, Unload, Blocks, Time, Teleport, Spawn, Moves, Despawn, Hurt, Burning, Worn,
     GameMode, Players, Inventory, Components, Health, Knockback, OpenMenu, MenuSlots,
     Cursor, CloseMenu, Died, Chat, Disconnect, Gizmos, Packet, EntityComponents, Particles,
-    Configs, Sounds, Animate, Taken, Swing, Shapes, Structure, Skin,
+    Configs, Sounds, Animate, Taken, Swing, Shapes, Structure, Skin, CommandReply,
 ]);
 
 messages!(ToServer, ServerTag, true, [
     Join, Move, Break, Use, UseItem, Select, Attack, Interact, OpenInventory, Click, CreativeTake,
-    Pick, Drag, CloseMenu, Drop, Respawn, Chat, Leave, Gizmos, Packet, Skin,
+    Pick, Drag, CloseMenu, Drop, Respawn, Chat, Leave, Gizmos, Packet, Skin, Command,
 ]);
 
 pub struct Conn<S, R> {

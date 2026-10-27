@@ -34,8 +34,6 @@ pub struct Inner {
     client: Option<Client>,
     pub state: ClientState,
     pub screen: String,
-    seq: u32,
-    replies: HashMap<u32, String>,
     pub name: String,
     failures: Vec<String>,
     notes: Vec<String>,
@@ -53,8 +51,6 @@ impl T {
             client: None,
             state: ClientState::DEFAULT,
             screen: String::new(),
-            seq: 0,
-            replies: HashMap::new(),
             name: name.to_string(),
             failures: Vec::new(),
             notes: Vec::new(),
@@ -252,19 +248,13 @@ impl T {
         Ok(seen)
     }
 
-    /// Sends an operation to the testkit's server half (see `server.rs`) and waits for the answer.
+    /// Runs an operation of the testkit's server half (`/tk <op>`, see `server.rs`) and waits
+    /// for its answer.
     pub async fn op(&self, text: &str) -> Result<String, String> {
-        let seq = {
-            let mut i = self.0.borrow_mut();
-            i.seq += 1;
-            i.seq
-        };
-        let mut data = seq.to_le_bytes().to_vec();
-        data.extend_from_slice(text.as_bytes());
-        self.c().send(&crate::server::OP, &data);
+        let id = self.c().run_command(&format!("/tk {text}"));
         let mut answer = None;
         self.until(&format!("server answer to '{text}'"), Duration::from_secs(10), |t| {
-            answer = t.0.borrow_mut().replies.remove(&seq);
+            answer = t.c().command_reply(id);
             answer.is_some()
         })
         .await?;
@@ -612,20 +602,6 @@ thread_local! {
 pub fn start(queue: Vec<TestDef>) {
     weft_sdk::info!("testkit: running {} test(s): {}", queue.len(), queue.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "));
     RUNNER.with(|r| *r.borrow_mut() = Some(Runner { queue, current: None, done: Vec::new(), started: Instant::now(), finished: false, warmup: 3 }));
-}
-
-/// Answers from the server half reach the test that asked.
-pub fn reply(data: &[u8]) {
-    if data.len() < 4 {
-        return;
-    }
-    let seq = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    let text = String::from_utf8_lossy(&data[4..]).to_string();
-    ACTIVE.with(|a| {
-        if let Some(t) = a.borrow().as_ref() {
-            t.0.borrow_mut().replies.insert(seq, text);
-        }
-    });
 }
 
 pub fn frame(c: &Client) {

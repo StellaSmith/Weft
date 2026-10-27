@@ -114,6 +114,7 @@ pub static HOST: Host = Host {
     client_set_player: crate::app::api::client_set_player,
     client_command: crate::app::api::client_command,
     client_text: crate::app::api::client_text,
+    client_command_reply: crate::app::api::client_command_reply,
     client_setting: crate::app::api::client_setting,
     client_block: crate::app::api::client_block,
     client_slot: crate::app::api::client_slot,
@@ -650,14 +651,27 @@ unsafe extern "C" fn set_game_mode(w: *mut abi::WorldCtx, player: u64, mode: u32
     unsafe { dim(w).events.push(crate::server::DimEvent::SetMode { player, mode }) }
 }
 
-unsafe extern "C" fn send_packet(w: *mut abi::WorldCtx, player: u64, name: Str, data: abi::Slice<u8>) {
+unsafe extern "C" fn send_packet(w: *mut abi::WorldCtx, player: u64, name: Str, schema: Str, data: abi::Slice<u8>) {
     unsafe {
-        let name = name.as_str();
-        match content().game.packet_names.get(name) {
-            Some(&channel) => dim(w).events.push(crate::server::DimEvent::Packet { player, channel, data: data.as_slice().to_vec() }),
-            None => log::error!("send_packet: no channel {name} is registered"),
+        if let Some(channel) = channel_for(name.as_str(), schema.as_str()) {
+            dim(w).events.push(crate::server::DimEvent::Packet { player, channel, data: data.as_slice().to_vec() });
         }
     }
+}
+
+/// The channel's id if it is registered and carries `schema`; a reason in the log otherwise.
+pub fn channel_for(name: &str, schema: &str) -> Option<u32> {
+    let g = &content().game;
+    let Some(&channel) = g.packet_names.get(name) else {
+        misuse("send", || format!("no channel {name} is registered"));
+        return None;
+    };
+    let have = &g.packets[channel as usize].schema;
+    if have != schema {
+        misuse("send", || format!("channel {name} carries '{have}', not '{schema}'"));
+        return None;
+    }
+    Some(channel)
 }
 
 unsafe extern "C" fn find_component(name: Str, schema: Str) -> u32 {
@@ -1552,11 +1566,11 @@ unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Call
     }
 }
 
-unsafe extern "C" fn reg_packet(r: *mut abi::Registrar, name: Str, side: u32, cb: Callback) {
+unsafe extern "C" fn reg_packet(r: *mut abi::Registrar, name: Str, schema: Str, side: u32, cb: Callback) {
     unsafe {
         let r = reg(r);
         let owner = r.owner;
-        r.game.packets.push((owner, name.as_str().to_string(), side.min(1), cb));
+        r.game.packets.push((owner, name.as_str().to_string(), schema.as_str().to_string(), side.min(1), cb));
     }
 }
 

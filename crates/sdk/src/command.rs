@@ -4,7 +4,7 @@
 //! ```ignore
 //! r.command("feed", "[amount:int]", |cmd| {
 //!     let n = cmd.int("amount").unwrap_or(20);
-//!     cmd.reply(&format!("fed {n}"));
+//!     cmd.reply("mymod.fed", &[Arg::Int(n)]);
 //! });
 //! ```
 

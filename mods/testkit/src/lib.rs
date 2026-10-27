@@ -20,9 +20,14 @@ declare_mod!(deps: [], init: init);
 
 static PLAN: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 
+/// What came back on the typed channels (`extend::typed_channels`).
+pub static ECHOED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static GREETED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
 fn init(r: &mut Registry) {
     server::register(r);
-    r.client_packet(&server::REPLY, |_, data| runner::reply(data));
+    r.client_packet(&server::ECHO_BACK, |_, e| ECHOED.store(e.n, std::sync::atomic::Ordering::Relaxed));
+    r.client_packet(&server::GREET, |_, text| *GREETED.lock().unwrap() = text);
     r.key(&runner::PROBE, "F9");
     // A branch of an engine command, handled by this mod (on the client, like /gizmo).
     r.command_branch("gizmo", "probe <n:int>", |cmd| {

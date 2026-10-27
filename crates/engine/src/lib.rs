@@ -5,6 +5,7 @@ pub mod assets;
 pub mod audio;
 
 pub mod bench;
+pub mod block_model;
 pub mod client;
 pub mod commands;
 pub mod config;

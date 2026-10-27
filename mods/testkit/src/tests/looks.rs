@@ -280,6 +280,57 @@ pub async fn shaders_and_glow(t: T) -> R {
     Ok(())
 }
 
+/// A block shaped by a Blockbench Java model file: the test mod's pedestal is a plate, a crystal
+/// column and a top, so against the sky the sides of the column show sky, the column itself not.
+pub async fn block_model_file(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let p = add(f, [0, 2, -3]);
+    t.set(p, "testmod:pedestal").await?;
+    t.c().look(0.0, 15.0);
+    t.settled().await?;
+    let shot = t.shot("pedestal").await?;
+    let at = |x: f64| t.on_screen([p[0] as f64 + x, p[1] as f64 + 0.35, p[2] as f64 + 0.5]).map(|(sx, sy)| crate::runner::lum(shot.avg(sx - 0.003, sy - 0.003, sx + 0.003, sy + 0.003)));
+    let (gap, column) = (at(0.18).unwrap_or(0.0), at(0.5).unwrap_or(255.0));
+    t.probe("sky beside the column (the file's shape, not a cube)", gap, gap > 180.0);
+    t.probe("the crystal column itself", column, column < 150.0);
+    // A resource pack's model of the same block redraws it, here as a whole cube.
+    let pack = format!("{}/resourcepacks/testkit_shapes", t.c().run_dir());
+    let file = format!("{pack}/testmod/models/block/pedestal.json");
+    std::fs::create_dir_all(std::path::Path::new(&file).parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&file, r#"{"elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"north":{},"south":{},"east":{},"west":{},"up":{},"down":{}}}]}"#).map_err(|e| e.to_string())?;
+    weft_sdk::settings::RESOURCE_PACKS.set("testkit_shapes");
+    t.c().reload_assets();
+    t.frames(5).await?;
+    t.settled().await?;
+    let cube = t.shot("pedestal_pack").await?;
+    weft_sdk::settings::RESOURCE_PACKS.set("");
+    let _ = std::fs::remove_dir_all(&pack);
+    t.c().reload_assets();
+    t.frames(2).await?;
+    let filled = t.on_screen([p[0] as f64 + 0.18, p[1] as f64 + 0.35, p[2] as f64 + 0.5]).map(|(sx, sy)| crate::runner::lum(cube.avg(sx - 0.003, sy - 0.003, sx + 0.003, sy + 0.003))).unwrap_or(255.0);
+    t.probe("a pack's model draws a cube there", filled, filled < 150.0);
+    Ok(())
+}
+
+/// An item shaped by a model file (the test mod's totem: a stone base, a crystal on it) shows its
+/// boxes in the hand and in the hotbar slot.
+pub async fn item_model_file(t: T) -> R {
+    t.flat().await?;
+    t.op("put me 0 testmod:totem 1").await?;
+    t.c().select(0);
+    t.c().look(0.0, 20.0);
+    t.settled().await?;
+    let shot = t.shot("totem").await?;
+    let crystal = |c: probe::C| probe::cyan(c) || (c[2] > 120 && c[0] < 90);
+    let hand = shot.share(0.55, 0.55, 1.0, 0.94, crystal);
+    t.probe("the crystal in the hand", hand, hand > 0.01);
+    // The first hotbar slot of the HUD, at the bottom middle (gui scale 2, 1600x900).
+    let slot = shot.share(0.388, 0.95, 0.412, 0.995, crystal);
+    t.probe("the crystal in the hotbar slot", slot, slot > 0.015);
+    Ok(())
+}
+
 /// Models: the orb (built in code, a sphere mesh and a child bone) turns by its file's idle
 /// animation; the idol (a Blockbench file with bones and mesh wings) bows when used, a server
 /// triggered animation that holds its last frame.

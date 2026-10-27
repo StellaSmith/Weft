@@ -1,0 +1,10 @@
+{
+    "textures": {
+        "crystal": "testmod:block/glow_crystal",
+        "stone": "testmod:block/machine_top"
+    },
+    "elements": [
+        { "from": [4, 0, 4], "to": [12, 4, 12], "faces": { "north": {"texture": "#stone"}, "south": {"texture": "#stone"}, "west": {"texture": "#stone"}, "east": {"texture": "#stone"}, "up": {"texture": "#stone"}, "down": {"texture": "#stone"} } },
+        { "from": [5, 4, 5], "to": [11, 14, 11], "faces": { "north": {"texture": "#crystal"}, "south": {"texture": "#crystal"}, "west": {"texture": "#crystal"}, "east": {"texture": "#crystal"}, "up": {"texture": "#crystal"} } }
+    ]
+}

@@ -7,7 +7,7 @@ those port with little more than renaming files.
 
 ## Note
 CTM is created without code and works from both mods and resource packs, a pack's file overrides the mod's one.\
-It works on cube faces only, so no CTM on items, entities or block models made with `model_box`.\
+It works on cube faces only, so no CTM on items, entities or block models (`model_box` or a model file).\
 Examples to copy from are in `mods/base/assets/textures/block/`: `glass.ctm`, `log_oak.ctm`, `stone.ctm`.
 
 Check [textures guide](textures.md) for more texturing options like overlays, glow and animation.

@@ -353,9 +353,13 @@ pub struct ModelBox {
     /// In 1/16 block units.
     pub min: [f32; 3],
     pub max: [f32; 3],
+    /// Per face; empty takes the state's texture of that face.
     pub textures: [Str; 6],
+    /// Per face texel rectangle (u0, v0, u1, v1, 0..16); negative: from the box's position, like
+    /// a cube's face.
+    pub uv: [[f32; 4]; 6],
 }
-defaults!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6] });
+defaults!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6], uv: [[-1.0; 4]; 6] });
 
 #[repr(C)]
 #[derive(Clone, Copy)]

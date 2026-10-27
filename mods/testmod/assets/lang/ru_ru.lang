@@ -1,5 +1,6 @@
 language.name = Русский
-block.block.block.block.testmod.cable = Кабель
+block.testmod.pedestal = Пьедестал
+block.testmod.cable = Кабель
 testmod.energy = {#ffe070}{0}{/} / {1} ЭЕ
 block.testmod.regolith = Реголит
 block.testmod.basalt = Красный базальт
@@ -16,6 +17,7 @@ entity.testmod.orb = Сфера
 entity.testmod.lift = Лифт
 entity.testmod.skiff = Летучий плот
 entity.testmod.crate = Ящик
+item.testmod.totem = Кристальный тотем
 item.testmod.rune = Руна света
 item.testmod.rune.tooltip = {fx:core:rainbow}Сияет всеми цветами{/fx}, {fx:testmod:glitch}мерцает{/fx} и {fx:core:wave}гудит{/fx}.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Используйте, чтобы рассыпать {fx:core:pulse}искры{/fx}; в руке показывает радиус.{/on_key}{if:testmod:hurt}

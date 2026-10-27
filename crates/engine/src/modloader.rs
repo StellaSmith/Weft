@@ -187,6 +187,7 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path) -> Result<Vec<LoadedMod>, String
                 version: m.decl.version.as_str().to_string(),
                 deps: m.decl.deps.as_slice().iter().map(|d| d.as_str().to_string()).collect(),
                 order: 0,
+                assets: m.assets.clone(),
             }
         })
         .collect();

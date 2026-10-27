@@ -1,6 +1,7 @@
 pub mod ctm;
 pub mod entity_render;
 pub mod gizmo;
+pub mod looks;
 pub mod mesher;
 pub mod models;
 pub mod modui;

@@ -23,6 +23,8 @@ declare_mod!(deps: ["base"], init: init);
 static GENERATOR: Block = Block::named("generator");
 static HUM: Sound = Sound::named("machine.hum");
 static CABLE: Block = Block::named("cable");
+/// Its shape is `models/block/pedestal.json`, a Blockbench Java block model.
+static PEDESTAL: Block = Block::named("pedestal");
 static ELECTRIC_FURNACE: Block = Block::named("electric_furnace");
 static BATTERY: Block = Block::named("battery");
 static RED_SAND: Block = Block::named("red_sand");
@@ -79,7 +81,9 @@ fn init(r: &mut Registry) {
     debug_panel(r);
     about_screen(r);
     morph(r);
-    r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor").hardness(0.5);
+    r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor").hardness(0.5);
+    // Faces the file leaves to the block (`#top`, `#side`) show these.
+    r.block(&PEDESTAL).textures("machine_top", "generator", "machine_top").hardness(1.0).tab(&BASE_BUILDING);
 
     // Same name as the base game's torch: the base game's handle, item and recipes give this.
     // It keeps the base torch's states (floor and walls) and placement, only its texture and

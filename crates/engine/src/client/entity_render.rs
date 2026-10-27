@@ -413,12 +413,17 @@ impl EntityRenderer {
         let first = self.item_boxes.len();
         let white = Vec4::new(1.0, 1.0, 1.0, 0.0);
         let block = def.block.map(|st| &c.states[st as usize]);
+        let looks = super::looks::current();
+        let look = looks.item(item);
+        let model = look.and_then(|l| l.model.as_deref()).unwrap_or(&def.model);
+        let icon = look.and_then(|l| l.icon).unwrap_or(def.icon);
         match block {
+            _ if !model.is_empty() => boxes_shape(&mut self.item_boxes, textures, Mat4::IDENTITY, model, &c.states[0], white),
             Some(st) if def.icon == u32::MAX && st.item_sprite().is_none() => block_shape(&mut self.item_boxes, textures, Mat4::IDENTITY, st, white),
             _ => {
                 let l = match block {
-                    Some(st) if def.icon == u32::MAX => textures.texture(st.item_sprite().unwrap_or(st.textures[0])),
-                    _ => textures.texture(def.icon),
+                    Some(st) if icon == u32::MAX => textures.texture(st.item_sprite().unwrap_or(st.textures[0])),
+                    _ => textures.texture(icon),
                 };
                 match sprite_name(item).and_then(|n| self.sprites.get(n)).and_then(|s| s.as_ref()) {
                     Some(sp) => {
@@ -928,7 +933,13 @@ fn hand_boxes(out: &mut Vec<GpuBox>, cam: &Camera, h: &Hand, skin: Option<(u32, 
 
 /// A block item drawn as its model's boxes; `m` maps the block's unit cube.
 fn block_shape(out: &mut Vec<GpuBox>, textures: &GameTextures, m: Mat4, s: &crate::content::StateInfo, color: Vec4) {
-    for b in s.item_shape() {
+    boxes_shape(out, textures, m, &s.item_shape(), s, color);
+}
+
+/// Model boxes (a block's, or an item's from its file) in the unit cube `m` maps, tinted like
+/// `s` (an item's own boxes pass air: no tint).
+fn boxes_shape(out: &mut Vec<GpuBox>, textures: &GameTextures, m: Mat4, boxes: &[crate::content::ModelBox], s: &crate::content::StateInfo, color: Vec4) {
+    for b in boxes {
         let (mn, mx) = (Vec3::from_array(b.min), Vec3::from_array(b.max));
         let mb = m * Mat4::from_translation(mn) * Mat4::from_scale(mx - mn);
         let l = b.textures.map(|t| textures.texture(t));
@@ -988,7 +999,8 @@ fn item_instance(m: Mat4, first: u32, hurt: f32, light: u32) -> GpuBox {
 /// Whether the item shows as its block's shape (else as a sprite).
 fn shows_block(item: u32) -> bool {
     let c = content();
-    c.items.get(item as usize).is_some_and(|d| d.icon == u32::MAX && d.block.is_some_and(|st| c.states[st as usize].item_sprite().is_none()))
+    let reshaped = super::looks::current().item(item).is_some_and(|l| l.model.is_some());
+    c.items.get(item as usize).is_some_and(|d| reshaped || !d.model.is_empty() || (d.icon == u32::MAX && d.block.is_some_and(|st| c.states[st as usize].item_sprite().is_none())))
 }
 
 /// Dropped items spin and bob: a block a quarter of a block across, a sprite half a block

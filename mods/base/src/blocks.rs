@@ -169,7 +169,7 @@ pub fn register(r: &mut Registry) {
     r.block(&SUGAR_CANE).sound_group("grass").texture("reeds").plant().needs_below("#sugar_cane_soil").needs_near_support("#water").growth(270.0, 0).on_grow(|e| grow_column(e, &SUGAR_CANE)).tab(&crate::tabs::NATURAL);
     r.block(&CACTUS).sound_group("cloth")
         .textures("cactus_top", "cactus_side", "cactus_top")
-        .model_box_faces([1.0, 0.0, 1.0], [15.0, 16.0, 15.0], ["cactus_side", "cactus_side", "cactus_top", "cactus_top", "cactus_side", "cactus_side"])
+        .model_box([1.0, 0.0, 1.0], [15.0, 16.0, 15.0])
         .hardness(0.4)
         .needs_below("#cactus_soil")
         .growth(270.0, 0).on_grow(|e| grow_column(e, &CACTUS)).tab(&crate::tabs::NATURAL);
@@ -183,7 +183,7 @@ pub fn register(r: &mut Registry) {
         .growth(205.0, 9);
     r.block(&FARMLAND).sound_group("gravel")
         .textures("farmland", "dirt", "dirt")
-        .model_box_faces([0.0, 0.0, 0.0], [16.0, 15.0, 16.0], ["dirt", "dirt", "dirt", "farmland", "dirt", "dirt"])
+        .model_box([0.0, 0.0, 0.0], [16.0, 15.0, 16.0])
         .flags(0, 0)
         .hardness(0.6)
         .mineable("shovel")
@@ -222,7 +222,7 @@ pub fn register(r: &mut Registry) {
                 Dir::East => ([0.0, 0.0, 0.0], [1.0, 16.0, 16.0]),
                 _ => ([15.0, 0.0, 0.0], [16.0, 16.0, 16.0]),
             };
-            s.model_box(min, max, "ladder").needs(d.opposite().face(), "")
+            s.model_box(min, max).needs(d.opposite().face(), "")
         })
         .climbable()
         .not_solid()
@@ -278,7 +278,7 @@ pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
         Dir::East => ([0.0, 3.0, 7.0], [2.0, 13.0, 9.0]),
         _ => ([7.0, 0.0, 7.0], [9.0, 10.0, 9.0]),
     };
-    s.model_box(min, max, texture).needs(d.opposite().face(), "")
+    s.texture(texture).model_box(min, max).needs(d.opposite().face(), "")
 }
 
 /// Sugar cane and cacti grow a block on top, up to three high.

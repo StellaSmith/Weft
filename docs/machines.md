@@ -145,7 +145,7 @@ r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
     .attach(&WORK)
     .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 });
 r.system(&WORK, tick_furnaces);
-r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0], "cable").tag("conductor");
+r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor");
 ```
 `Energy` is `stored` and `capacity`, plus `max_in` and `max_out`, the most it takes from or gives to the network per tick. A generator has `max_in: 0`, a machine `max_out: 0`, and a battery has both, without feeding itself. In their systems, generators add to `stored` and machines spend it:
 ```rust

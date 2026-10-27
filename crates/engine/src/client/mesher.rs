@@ -67,6 +67,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
     let mut mesh = Mesh::default();
     let states = &n.states;
     let opaque = |i: usize| c.states[states[i] as usize].flags & bf::OPAQUE != 0;
+    let looks = super::looks::current();
 
     for y in 0..16i32 {
         for z in 0..16i32 {
@@ -82,7 +83,12 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                     liquid(c, n, &mut mesh, x, y, z, biome);
                     continue;
                 }
-                match info.model {
+                // A resource pack may draw it differently (its shape and light stay the mod's).
+                let look = looks.state(s);
+                let boxes: &[crate::content::ModelBox] = look.and_then(|l| l.boxes.as_deref()).unwrap_or(&info.boxes);
+                let textures = look.and_then(|l| l.textures).unwrap_or(info.textures);
+                let model = if look.is_some_and(|l| l.boxes.is_some()) { Model::Boxes } else { info.model };
+                match model {
                     Model::None => {}
                     Model::Cube => {
                         for dir in 0..6 {
@@ -97,7 +103,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                                 continue;
                             }
                             let (ao, light) = corner_data(n, &opaque, x, y, z, dir);
-                            let tex = ctm.resolve(c, n, x, y, z, dir, info.textures[dir] & face::TEX_MASK);
+                            let tex = ctm.resolve(c, n, x, y, z, dir, textures[dir] & face::TEX_MASK);
                             let tint = if info.tint_faces & (1 << dir) != 0 || ctm.has_overlay(tex) { info.tint as u32 } else { 0 };
                             let w0 = x as u32 | (y as u32) << 4 | (z as u32) << 8 | (dir as u32) << face::DIR_SHIFT | ao << face::AO_SHIFT | tint << face::TINT_SHIFT;
                             let w1 = tex | biome << face::BIOME_SHIFT;
@@ -106,7 +112,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                     }
                     Model::Cross => {
                         let l = light16(n.light[i]);
-                        let t = info.textures[0];
+                        let t = textures[0];
                         let b = [x as f32, y as f32, z as f32];
                         let e = 0.15;
                         let (a0, a1) = ([b[0] + e, b[1], b[2] + e], [b[0] + 1.0 - e, b[1] + 1.0, b[2] + 1.0 - e]);
@@ -126,7 +132,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                     }
                     Model::Boxes => {
                         let l = light16(n.light[i]);
-                        for bx in &info.boxes {
+                        for bx in boxes {
                             for dir in 0..6 {
                                 let [dx, dy, dz] = NORMALS[dir];
                                 let axis = dir / 2;
@@ -143,7 +149,13 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                                         z as f32 + if k[2] == 1 { bx.max[2] } else { bx.min[2] },
                                     ]
                                 });
-                                let uv = box_uv(dir, bx.min, bx.max);
+                                if bx.uv[dir][0] <= crate::block_model::NO_FACE {
+                                    continue;
+                                }
+                                let uv = match bx.uv[dir] {
+                                    r if r[0] >= 0.0 => r.map(|v| v.round().clamp(0.0, 31.0) as u32),
+                                    _ => box_uv(dir, bx.min, bx.max),
+                                };
                                 mesh.quads[info.layer as usize].push(quad(corners, uv, bx.textures[dir], biome, info.tint, [fl; 4]));
                             }
                         }

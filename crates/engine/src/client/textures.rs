@@ -92,6 +92,12 @@ impl GameTextures {
             let name = composite_name(&parts.map(|i| entries[i as usize].name.clone()));
             ids.push(add(name, Source::Composite(parts), &mut entries));
         }
+        // Resource packs' block and item models, with the textures they bring after the rest.
+        let (looks, names) = super::looks::load(assets, c, ids.len() as u32);
+        for n in names {
+            ids.push(add(n, Source::File, &mut entries));
+        }
+        super::looks::set(looks);
         let blank = gpu.create_texture(&TextureDesc { width: 1, height: 1, mips: 1, format: Format::Rgba8Srgb, render_target: false }, "blank texture");
         gpu.write_texture(blank, 0, &[0, 0, 0, 0]);
         let blank = (blank, gpu.texture_index(blank));

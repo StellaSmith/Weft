@@ -29,6 +29,8 @@ static SPIRITS: EntityCategory = EntityCategory::named("spirits");
 static HURT: TextCondition = TextCondition::named("hurt");
 static DREAM_KEY: Key = Key::named("dream");
 static RUNE: Item = Item::named("rune");
+/// Drawn from `models/item/totem.json`: a stone base and a crystal, no icon of its own.
+static TOTEM: Item = Item::named("totem");
 /// Idols currently bowing.
 static BOWED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 /// Settings players change in Settings > Mod Settings.
@@ -129,6 +131,7 @@ pub fn register(r: &mut Registry) {
         .model(Model::from(vec![Part::new("core", [0.0, 8.0, 0.0]).mesh(sphere([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])), ring]).uv(32, 16));
 
     r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
+    r.item(&TOTEM).max_stack(1);
     r.item(&RUNE).max_stack(1).on_use(|u| {
         let w = u.world();
         w.play_animation(u.player(), "wave", false);

@@ -441,14 +441,22 @@ impl UiRenderer {
         if item == 0 {
             return;
         }
-        if def.icon != u32::MAX {
+        let looks = crate::client::looks::current();
+        let look = looks.item(item);
+        let model = look.and_then(|l| l.model.as_deref()).unwrap_or(&def.model);
+        let icon = look.and_then(|l| l.icon).unwrap_or(def.icon);
+        if !model.is_empty() {
+            self.boxes_icon(tex, x, y, size, model, &c.states[0]);
+            return;
+        }
+        if icon != u32::MAX {
             self.quads.push(Quad {
                 p0: [x, y],
                 u: [size, 0.0],
                 v: [0.0, size],
                 uv: [0.0, 0.0, 1.0, 1.0],
                 color: 0xFFFFFFFF,
-                tex: tex.texture(def.icon),
+                tex: tex.texture(icon),
                 mode: ui_mode::ICON,
                 ..Default::default()
             });
@@ -461,6 +469,25 @@ impl UiRenderer {
     /// A block state the way block items show: a sprite for flat blocks, else an isometric model.
     pub fn state_icon(&mut self, c: &Content, tex: &GameTextures, x: f32, y: f32, size: f32, state: u32) {
         let Some(s) = c.states.get(state as usize) else { return };
+        if let Some(t) = s.item_sprite() {
+            let tint = if s.tint == 0 || s.tint_faces & 1 == 0 { 0xFFFFFFFF } else { crate::content::item_tint(s.tint) << 8 | 0xFF };
+            self.quads.push(Quad {
+                p0: [x, y],
+                u: [size, 0.0],
+                v: [0.0, size],
+                uv: [0.0, 0.0, 1.0, 1.0],
+                color: tint,
+                tex: tex.texture(t),
+                mode: ui_mode::ICON,
+                ..Default::default()
+            });
+            return;
+        }
+        self.boxes_icon(tex, x, y, size, &s.item_shape(), s);
+    }
+
+    /// Model boxes drawn isometric, tinted like `s` (air for an item's own model).
+    fn boxes_icon(&mut self, tex: &GameTextures, x: f32, y: f32, size: f32, boxes: &[crate::content::ModelBox], s: &crate::content::StateInfo) {
         let tint = |face: usize| -> u32 {
             if s.tint == 0 || s.tint_faces & (1 << face) == 0 {
                 return 0xFFFFFFFF;
@@ -471,25 +498,12 @@ impl UiRenderer {
             let ch = |s: u32| (((c >> s) & 255) as f32 * k) as u32;
             ch(24) << 24 | ch(16) << 16 | ch(8) << 8 | 0xFF
         };
-        if let Some(t) = s.item_sprite() {
-            self.quads.push(Quad {
-                p0: [x, y],
-                u: [size, 0.0],
-                v: [0.0, size],
-                uv: [0.0, 0.0, 1.0, 1.0],
-                color: tint(0),
-                tex: tex.texture(t),
-                mode: ui_mode::ICON,
-                ..Default::default()
-            });
-            return;
-        }
         // Isometric: block point (X, Y, Z) lands at origin + X*ex + Y*ey + Z*ez.
         let (h, q) = (size / 2.0, size / 4.0);
         let o = [x + h, y + size * 0.03 + h];
         let at = |p: [f32; 3]| [o[0] + (p[0] - p[2]) * h, o[1] + (p[0] + p[2]) * q - p[1] * h];
         let grass = crate::content::item_tint(s.tint) << 8 | 0xFF;
-        let mut shape = s.item_shape();
+        let mut shape = boxes.to_vec();
         // Back to front.
         shape.sort_by(|a, b| (a.min[0] + a.min[1] + a.min[2]).total_cmp(&(b.min[0] + b.min[1] + b.min[2])));
         for b in &shape {

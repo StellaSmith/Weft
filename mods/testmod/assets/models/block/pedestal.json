@@ -1,0 +1,10 @@
+{
+    "textures": {
+        "crystal": "testmod:block/glow_crystal"
+    },
+    "elements": [
+        { "from": [0, 0, 0], "to": [16, 2, 16], "faces": { "down": {"texture": "#bottom"}, "up": {"texture": "#top"}, "north": {"texture": "#side", "uv": [0, 14, 16, 16]}, "south": {"texture": "#side", "uv": [0, 14, 16, 16]}, "west": {"texture": "#side", "uv": [0, 14, 16, 16]}, "east": {"texture": "#side", "uv": [0, 14, 16, 16]} } },
+        { "from": [6, 2, 6], "to": [10, 14, 10], "faces": { "north": {"texture": "#crystal"}, "south": {"texture": "#crystal"}, "west": {"texture": "#crystal"}, "east": {"texture": "#crystal"} } },
+        { "from": [2, 14, 2], "to": [14, 16, 14], "faces": { "down": {"texture": "#bottom"}, "up": {"texture": "#top"}, "north": {"texture": "#side"}, "south": {"texture": "#side"}, "west": {"texture": "#side"}, "east": {"texture": "#side"} } }
+    ]
+}

@@ -5,7 +5,8 @@ recipe.testmod.alloying.info = Uses {#ffe070}{0} FE/t{/} for {1} s
 recipe.testmod.infusing = Infusing
 testmod.infusing.plus = +
 testmod.infusing.time = Soaks for {0} s, laid out by the test mod itself
-block.block.block.testmod.cable = Cable
+block.testmod.pedestal = Pedestal
+block.testmod.cable = Cable
 testmod.energy = {#ffe070}{0}{/} / {1} FE
 block.testmod.regolith = Regolith
 block.testmod.basalt = Red Basalt
@@ -23,6 +24,7 @@ entity.testmod.lift = Lift
 entity.testmod.skiff = Skiff
 entity.testmod.crate = Crate
 item.base.coal.tooltip.testmod = {#ff6060}Seen by the test mod.{/} {block:base:diamond_block}
+item.testmod.totem = Crystal Totem
 item.testmod.rune = Rune of Light
 item.testmod.rune.tooltip = {fx:core:rainbow}Shines in every color{/fx}, {fx:testmod:glitch}flickers{/fx} and {fx:core:wave}hums{/fx}.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Use it to scatter {fx:core:pulse}sparks{/fx}; held, it shows its reach.{/on_key}{if:testmod:hurt}

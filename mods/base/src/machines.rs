@@ -65,7 +65,7 @@ pub fn register(r: &mut Registry) {
                     f[2] = "chest_top";
                     f[3] = "chest_top";
                     f[d.face() as usize] = "chest_front";
-                    s.model_box_faces([1.0, 0.0, 1.0], [15.0, 14.0, 15.0], f)
+                    s.faces(f).model_box([1.0, 0.0, 1.0], [15.0, 14.0, 15.0])
                 })
                 .hardness(2.5)
                 .mineable("axe")

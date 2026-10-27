@@ -77,7 +77,8 @@ fn blocks(_r: &mut Registry) {
     // static LAMP: Block = Block::named("lamp");
     // static PANE: Block = Block::named("pane");
     // r.block(&LAMP).light_rgb(15, 10, 4).hardness(0.3);
-    // r.block(&PANE).model_box([0.0, 0.0, 7.0], [16.0, 16.0, 9.0], "pane").cutout();
+    // r.block(&PANE).model_box([0.0, 0.0, 7.0], [16.0, 16.0, 9.0]).cutout();   // faces show block/pane
+    // A shape made in Blockbench needs no code: `assets/models/block/<name>.json` (Java block model).
     //
     // Behavior (all optional, all get a `World`):
     // static BUTTON: Block = Block::named("button");

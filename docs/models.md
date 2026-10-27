@@ -1,7 +1,6 @@
 # Models and animations guide
 
-How entities look and move: models written in code or made in Blockbench, keyframe animations, the first-person hand, and armor drawn on the wearer.\
-Custom shapes for blocks are a different, simpler thing (`model_box`), they live in the blocks part of the [cheat sheet](modding.md).
+How things are shaped: blocks and items from boxes, entities from bones, written in code or made in Blockbench, plus keyframe animations, the first-person hand, and armor drawn on the wearer.
 
 ## Note
 Examples to copy from:
@@ -9,6 +8,18 @@ Examples to copy from:
 - `mods/testmod/assets/animations/player.animation.json`: a wave for the player, first-person hand included
 - `mods/testmod/src/looks.rs`: entities with models from code (`wisp`, `orb`) and from a file (`idol`)
 - `mods/base/src/mobs.rs`: the `biped`, `quadruped` and `spider` mobs
+- `mods/testmod/assets/models/block/pedestal.json` and `models/item/totem.json`: a block and an item shaped by files
+
+## Blocks and items
+A block or item made of boxes takes Blockbench's **Java Block/Item** model: export it as `models/block/<name>.json` or `models/item/<name>.json` in your mod and it is picked up by the name, no code needed. Entities take the **Bedrock Entity** format instead (below). Two formats because the two want different things: a block is boxes whose faces each show some texture and never moves, a mob is bones that turn, swing and play keyframes over one skin. Each format is the one Blockbench made for that job.
+
+From a Java model the engine reads `elements` (`from`, `to`, and `faces` with their `texture` and `uv`), `textures` with `#name` references and `parent`, another model file or one of vanilla's cube parents (`block/cube_all`, `block/cube`, `block/cube_column`, `block/cube_bottom_top`) which give a plain cube its face textures. A face whose `#name` no texture sets shows the block's own texture of that face, so a file can bring only the shape and leave the textures to `.texture(..)` / `.textures(..)` in code. Faces the file leaves out aren't drawn, and rotated elements are drawn unrotated (the log says so).
+
+In code the same is `.model_box(min, max)` (pixels, 0..16), whose faces show the state's textures. A block's model decides its shape for everyone, collision and selection included (the union of its boxes, unless `.collision(..)`/`.selection(..)` says otherwise).
+
+For items, `models/item/<name>.json` with `"parent": "item/generated"` and a `layer0` texture is a flat item showing that texture; with `elements` the item is drawn as those boxes in the hand, on the ground and in slots. A face without a texture shows the item's own icon.
+
+A resource pack replaces these files like any other: its `models/block/stone.json` in `base/` redraws stone. Only the drawing changes; what a block collides with, how it is selected and which neighbors it hides stay what the mod gave every player, since a server knows nothing of packs.
 
 ## Quick links
 [the basics](#the-basics) | [model in code](#model-in-code) | [model from Blockbench](#model-from-blockbench) | [roles](#roles) | [animations](#animations) | [first person hand](#first-person-hand) | [armor](#armor-and-other-worn-items)

@@ -15,6 +15,8 @@ pub struct ModelBox {
     pub min: [f32; 3],
     pub max: [f32; 3],
     pub textures: [u32; 6],
+    /// Per face texels (u0, v0, u1, v1, 0..16), negative: from the box's position.
+    pub uv: [[f32; 4]; 6],
 }
 
 pub struct StateInfo {
@@ -69,9 +71,9 @@ impl StateInfo {
     /// Boxes an item of this block is drawn with when it is not a sprite (block units).
     pub fn item_shape(&self) -> Vec<ModelBox> {
         if self.model == Model::Boxes && !self.boxes.is_empty() {
-            self.boxes.iter().map(|b| ModelBox { min: b.min, max: b.max, textures: b.textures }).collect()
+            self.boxes.clone()
         } else {
-            vec![ModelBox { min: [0.0; 3], max: [1.0; 3], textures: self.textures }]
+            vec![ModelBox { min: [0.0; 3], max: [1.0; 3], textures: self.textures, uv: [[-1.0; 4]; 6] }]
         }
     }
 }
@@ -190,6 +192,9 @@ pub struct ItemDef {
     pub order: u64,
     /// The player's equipment slot it is worn in (`worn/<slot>` tag), by index.
     pub equip: Option<u32>,
+    /// Boxes from its model file (`models/item/<name>.json`) in block units, drawn instead of
+    /// the icon in hands, on the ground and in slots; empty: none.
+    pub model: Vec<ModelBox>,
 }
 
 /// A creative inventory tab: translated as `tab.<ns>.<name>`, or the mod's name for the tab a mod
@@ -372,6 +377,8 @@ pub struct ModMeta {
     /// Position when every mod comes after its dependencies (ties by id): the order in which
     /// overrides apply and the later one wins.
     pub order: u32,
+    /// Its `assets` folder (block and item model files are read at freeze).
+    pub assets: std::path::PathBuf,
 }
 
 /// Ids of components the engine reads, resolved once.
@@ -622,7 +629,8 @@ pub struct RawState {
     pub layer: Layer,
     pub model: Model,
     pub textures: [String; 6],
-    pub boxes: Vec<([f32; 3], [f32; 3], [String; 6])>,
+    /// (min, max, textures, uv) per box, see `abi::ModelBox`.
+    pub boxes: Vec<([f32; 3], [f32; 3], [String; 6], [[f32; 4]; 6])>,
     pub collision: Vec<[f32; 6]>,
     pub selection: Vec<[f32; 6]>,
     pub components: Vec<RawValue>,
@@ -697,7 +705,7 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
             let mut s = o.clone();
             s.components.extend(own.components.iter().cloned());
             s.textures.iter_mut().for_each(rename);
-            for (_, _, t) in &mut s.boxes {
+            for (_, _, t, _) in &mut s.boxes {
                 t.iter_mut().for_each(rename);
             }
             s
@@ -714,12 +722,34 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
     b.components = comps;
 }
 
+/// A model file on every state of a block: its elements become the boxes (faces left to the
+/// block keep the state's textures), a cube parent sets the face textures.
+fn apply_model(b: &mut RawBlock, m: &crate::block_model::FileModel) {
+    for s in &mut b.states {
+        if let Some(cube) = &m.cube {
+            for (i, t) in cube.iter().enumerate().filter(|(_, t)| !t.is_empty()) {
+                s.textures[i] = t.clone();
+            }
+        }
+        if m.boxes.is_empty() {
+            continue;
+        }
+        s.model = Model::Boxes;
+        s.flags &= !abi::block_flags::OPAQUE;
+        s.opacity = 0;
+        if s.layer == Layer::Opaque {
+            s.layer = Layer::Cutout;
+        }
+        s.boxes = m.boxes.iter().map(|x| (x.min, x.max, x.textures.clone(), x.uv)).collect();
+    }
+}
+
 pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
     unsafe {
         let mut states = Vec::new();
         d.states.as_slice().iter().copied().for_each(|s| {
             let mut boxes = Vec::new();
-            s.boxes.as_slice().iter().copied().for_each(|b| boxes.push((b.min, b.max, std::array::from_fn(|i| b.textures[i].as_str().to_string()))));
+            s.boxes.as_slice().iter().copied().for_each(|b| boxes.push((b.min, b.max, std::array::from_fn(|i| b.textures[i].as_str().to_string()), b.uv)));
             states.push(RawState {
                 flags: s.flags,
                 filter: s.filter,
@@ -1011,7 +1041,22 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             _ => kept.push((owner, b)),
         }
     }
-    let blocks = kept;
+    let mut blocks = kept;
+    // Shapes from model files (`models/block/<name>.json`) in the block's namespace's mod: read
+    // here, so collision and selection follow them on the server and every client alike.
+    let read_model = |name: &str| -> Option<String> {
+        let (ns, path) = name.split_once(':')?;
+        let dir = &mods.iter().find(|m| m.id == ns)?.assets;
+        std::fs::read_to_string(dir.join("models").join(format!("{path}.json"))).ok()
+    };
+    for (_, b) in &mut blocks {
+        let Some((ns, path)) = b.name.split_once(':') else { continue };
+        match crate::block_model::load(&format!("{ns}:block/{path}"), &read_model) {
+            Ok(Some(m)) => apply_model(b, &m),
+            Ok(None) => {}
+            Err(e) => errors.push(e),
+        }
+    }
     if tint_kinds.len() > abi::tint::MAX as usize {
         errors.push(format!("{} tint kinds registered, at most {} fit", tint_kinds.len(), abi::tint::MAX));
     }
@@ -1123,10 +1168,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             let mut boxes: Vec<ModelBox> = s
                 .boxes
                 .iter()
-                .map(|(min, max, t)| ModelBox {
+                .map(|(min, max, t, uv)| ModelBox {
                     min: min.map(|v| v / 16.0),
                     max: max.map(|v| v / 16.0),
-                    textures: std::array::from_fn(|i| tex(&t[i])),
+                    textures: std::array::from_fn(|i| tex(if t[i].is_empty() { &s.textures[i] } else { &t[i] })),
+                    uv: *uv,
                 })
                 .collect();
             let mut collision: Vec<[f32; 6]> = s.collision.iter().map(|c| c.map(|v| v / 16.0)).collect();
@@ -1168,8 +1214,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 layer: s.layer,
                 level: 0,
                 model: s.model,
-                // Box models carry textures per box; the state-level ones are unused.
-                textures: if matches!(s.model, Model::Boxes | Model::None) {
+                // A box model's faces default to these (the particles of breaking it show them too).
+                textures: if s.model == Model::None {
                     [0; 6]
                 } else {
                     std::array::from_fn(|i| tex(&s.textures[i]))
@@ -1229,6 +1275,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         on_use: None,
         order: 0,
         equip: None,
+        model: Vec::new(),
     }];
     let mut item_values: Vec<(ModId, Vec<RawValue>)> = vec![(ModId(u32::MAX), Vec::new())];
     for (owner, it) in items {
@@ -1245,7 +1292,32 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 }
             }
         };
-        let icon = if it.texture.is_empty() && block.is_some() { u32::MAX } else { intern(&mut textures, &mut tex_index, &it.texture) };
+        let mut icon = if it.texture.is_empty() && block.is_some() { u32::MAX } else { intern(&mut textures, &mut tex_index, &it.texture) };
+        // Its model file: a flat item of another texture, or boxes (faces it leaves to the item
+        // show the icon).
+        let mut model = Vec::new();
+        if let Some((ns, path)) = it.name.split_once(':') {
+            match crate::block_model::load(&format!("{ns}:item/{path}"), &read_model) {
+                Ok(Some(m)) => {
+                    if let Some(t) = m.sprite.filter(|t| !t.is_empty()) {
+                        icon = intern(&mut textures, &mut tex_index, &t);
+                    }
+                    let own = if icon == u32::MAX { 0 } else { icon };
+                    model = m
+                        .boxes
+                        .iter()
+                        .map(|b| ModelBox {
+                            min: b.min.map(|v| v / 16.0),
+                            max: b.max.map(|v| v / 16.0),
+                            textures: std::array::from_fn(|i| if b.textures[i].is_empty() { own } else { intern(&mut textures, &mut tex_index, &b.textures[i]) }),
+                            uv: b.uv,
+                        })
+                        .collect();
+                }
+                Ok(None) => {}
+                Err(e) => errors.push(e),
+            }
+        }
         item_values.push((owner, it.components));
         item_defs.push(ItemDef {
             name: it.name,
@@ -1258,6 +1330,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             on_use: it.on_use,
             order: (mods[owner.0 as usize].order as u64) << 32 | it.seq as u64,
             equip: None,
+            model,
         });
     }
     let item_names: FxHashMap<String, u32> =
@@ -2028,7 +2101,7 @@ mod tests {
     use super::*;
 
     fn meta(id: &str, deps: &[&str]) -> ModMeta {
-        ModMeta { id: id.into(), version: "1".into(), deps: deps.iter().map(|d| d.to_string()).collect(), order: 0 }
+        ModMeta { id: id.into(), version: "1".into(), deps: deps.iter().map(|d| d.to_string()).collect(), order: 0, assets: Default::default() }
     }
 
     #[test]

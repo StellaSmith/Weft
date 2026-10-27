@@ -53,6 +53,13 @@ impl Assets {
         self.files.contains(&candidate).then_some(candidate)
     }
 
+    /// `path`, if a resource pack has the file (not only a mod).
+    pub fn pack_path(&self, name: &str, kind: &str, ext: &str) -> Option<PathBuf> {
+        let (ns, rel) = name.split_once(':').unwrap_or(("core", name));
+        let file = format!("{kind}/{rel}.{ext}");
+        self.packs.iter().map(|p| p.join(ns).join(&file)).find(|c| self.files.contains(c))
+    }
+
     pub fn read(&self, name: &str, kind: &str, ext: &str) -> Option<Vec<u8>> {
         std::fs::read(self.path(name, kind, ext)?).ok()
     }

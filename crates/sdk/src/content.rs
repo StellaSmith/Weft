@@ -634,10 +634,12 @@ macro_rules! state_setters {
             self.each(|s, _| s.put(&c::DRAG, d));
             self
         }
-        /// Custom model made of boxes in 1/16 units, all faces use `texture`. Collision follows the
-        /// union bounds unless `collision` is set.
-        pub fn model_box(mut self, min: [f32; 3], max: [f32; 3], texture: &str) -> Self {
-            self.each(|s, ns| {
+        /// Custom model made of boxes in 1/16 units, each face showing the state's texture of
+        /// that face (`texture`, `textures`, `faces`). Collision follows the union bounds unless
+        /// `collision` is set. A `models/block/<name>.json` (Blockbench's Java block model) does
+        /// the same from a file.
+        pub fn model_box(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
+            self.each(|s, _| {
                 if s.model != Model::Boxes {
                     s.boxes.clear();
                 }
@@ -645,22 +647,7 @@ macro_rules! state_setters {
                 s.flags &= !bf::OPAQUE;
                 s.opacity = 0;
                 s.layer = Layer::Cutout;
-                let t = block_tex(ns, texture);
-                s.boxes.push((min, max, std::array::from_fn(|_| t.clone())));
-            });
-            self
-        }
-        /// Box with per-face textures (-X, +X, -Y, +Y, -Z, +Z).
-        pub fn model_box_faces(mut self, min: [f32; 3], max: [f32; 3], f: [&str; 6]) -> Self {
-            self.each(|s, ns| {
-                if s.model != Model::Boxes {
-                    s.boxes.clear();
-                }
-                s.model = Model::Boxes;
-                s.flags &= !bf::OPAQUE;
-                s.opacity = 0;
-                s.layer = Layer::Cutout;
-                s.boxes.push((min, max, std::array::from_fn(|i| block_tex(ns, f[i]))));
+                s.boxes.push((min, max, Default::default()));
             });
             self
         }

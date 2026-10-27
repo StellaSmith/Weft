@@ -100,6 +100,8 @@ pub fn all() -> Vec<TestDef> {
         looks::rich_text,
         looks::gui_shader,
         looks::models,
+        looks::block_model_file,
+        looks::item_model_file,
         bodies::lift,
         bodies::ride_frames,
         bodies::skiff,

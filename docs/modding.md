@@ -218,7 +218,7 @@ is dropped.
 - `drops(item, n)` or `drops_nothing()`: shorthand for its loot table (`drops` puts `Cond::Harvested` on the pool). Without either the block drops its own item the same way
 - `light(15)` or `light_rgb(r, g, b)`
 - `cutout()`, `translucent()`
-- `model_box(min, max, texture)`, `collision(..)`, `selection(..)` when what the crosshair picks and outlines should differ from those (by default: collision boxes, else model boxes, else a plant's cross)
+- `model_box(min, max)` (faces show the state's textures) or a `models/block/<name>.json` from Blockbench ([models guide](models.md#blocks-and-items)), `collision(..)`, `selection(..)` when what the crosshair picks and outlines should differ from those (by default: collision boxes, else model boxes, else a plant's cross)
 - `needs_below("#soil")`
 - `growth(seconds, min_light)` + `on_grow(..)` for plants
 - `on_random_tick(..)`

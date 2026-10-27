@@ -35,7 +35,7 @@ Anything a mod keeps in `assets`, at the same path:
 | `textures/entity/armor/`, `textures/particle/` | worn armor and particles |
 | `lang/en_us.lang` | all text, [tooltips](tooltips.md) included |
 | `ui/theme.theme` | colors and textures of every screen |
-| `models/`, `animations/` | mob models and keyframes ([models guide](models.md)) |
+| `models/`, `animations/` | block and item shapes (`models/block/`, `models/item/`, Java models) and mob models and keyframes ([models guide](models.md)); a block's new shape is only drawn, its collision stays |
 | `shaders/` (`fx`, `gui`, `entity`, `particle`, `post`) | the shader snippets ([shaders guide](shaders.md)) |
 | `sounds/` | sounds and music, `.ogg` or `.wav` |
 | `<texture>.ctm` | connected textures ([CTM guide](ctm.md)) |

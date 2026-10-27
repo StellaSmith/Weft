@@ -123,6 +123,11 @@ impl LocalPlayer {
     }
 }
 
+/// `u32` and `f32` values of an engine field component (`registry::HEALTH` ...).
+fn words(bytes: &[u8]) -> impl Iterator<Item = [u8; 4]> + '_ {
+    bytes.chunks_exact(4).map(|w| [w[0], w[1], w[2], w[3]])
+}
+
 impl ClientEntity {
     /// What its kind's client tick gets (`client` filled in by the caller).
     pub fn args(&self, id: u64, dt: f32) -> weft_abi::ClientEntityArgs {
@@ -511,9 +516,10 @@ impl Client {
                                 target_yaw: e.yaw,
                                 pitch: e.pitch,
                                 item: e.item,
-                                health: e.health,
+                                // Arrives as a component right after: no hurt flash for the first.
+                                health: f32::NAN,
                                 hurt: 0.0,
-                                worn: e.worn,
+                                worn: Vec::new(),
                                 walk: 0.0,
                                 swing: 0.0,
                                 age: 0.0,
@@ -586,18 +592,6 @@ impl Client {
                         s.scan_bounds();
                     }
                 }
-                ToClient::Shapes(list) => {
-                    for (id, size, look) in list {
-                        let (size, look) = ((size[0] > 0.0).then_some(size), (look != u32::MAX).then_some(look));
-                        if id == self.player_id {
-                            let k = &content().game.entities[content().game.player_kind as usize];
-                            self.player.size = size.unwrap_or([k.width, k.height, k.eye]).map(|v| v as f64);
-                            self.self_look = look;
-                        } else if let Some(e) = self.entities.get_mut(&id) {
-                            (e.size, e.look) = (size, look);
-                        }
-                    }
-                }
                 ToClient::Swing => {
                     if self.hand_swing.is_none() {
                         self.hand_swing = Some(0.0);
@@ -611,34 +605,16 @@ impl Client {
                     }
                 }
                 ToClient::Despawn(ids) => {
-                    self.entity_components.retain(|(e, _), _| !ids.contains(e));
-                    for id in ids {
+                    self.entity_components.retain(|(e, _), _| !ids.iter().any(|g| g.0 == *e));
+                    for (id, killed) in ids {
                         // Killed mobs stay a moment for the death animation, taken items until
                         // they reach the taker.
                         match self.entities.get_mut(&id) {
                             Some(e) if e.pulled.is_some() => {}
-                            Some(e) if e.health <= 0.0 && e.item.is_empty() && e.dying.is_none() => e.dying = Some(0.0),
+                            Some(e) if (killed || e.health <= 0.0) && e.item.is_empty() && e.dying.is_none() => e.dying = Some(0.0),
                             _ => {
                                 self.entities.remove(&id);
                             }
-                        }
-                    }
-                }
-                ToClient::Burning(ids) => {
-                    for e in self.entities.values_mut() {
-                        e.burning = false;
-                    }
-                    for id in ids {
-                        if let Some(e) = self.entities.get_mut(&id) {
-                            e.burning = true;
-                        }
-                    }
-                }
-                ToClient::Hurt(list) => {
-                    for (id, hp) in list {
-                        if let Some(e) = self.entities.get_mut(&id) {
-                            e.hurt = 0.4;
-                            e.health = hp;
                         }
                     }
                 }
@@ -649,13 +625,6 @@ impl Client {
                     self.player.noclip = mode == GameMode::Spectator;
                     self.player.fly_speed = 1.0;
                 }
-                ToClient::Worn(list) => {
-                    for (id, items) in list {
-                        if let Some(e) = self.entities.get_mut(&id) {
-                            e.worn = items;
-                        }
-                    }
-                }
                 ToClient::Inventory(slots) => {
                     for (i, s) in slots {
                         if let Some(dst) = self.inventory.get_mut(i as usize) {
@@ -665,17 +634,8 @@ impl Client {
                 }
                 ToClient::Components(list) => {
                     for (k, v) in list {
+                        self.engine_field(self.player_id, k, &v);
                         self.components.insert(k, v);
-                    }
-                }
-                ToClient::Health { health, max } => {
-                    if health < self.health {
-                        self.hurt_flash = 0.5;
-                    }
-                    self.health = health;
-                    self.max_health = max;
-                    if health > 0.0 {
-                        self.dead = false;
                     }
                 }
                 ToClient::OpenMenu { kind, window, slots, owner, block, name } => {
@@ -728,6 +688,7 @@ impl Client {
                 ToClient::Packet { channel, data } => self.packets.push((channel, data)),
                 ToClient::EntityComponents(list) => {
                     for (id, comp, bytes) in list {
+                        self.engine_field(id, comp, &bytes);
                         self.entity_components.insert((id, comp), bytes);
                     }
                 }
@@ -1266,6 +1227,48 @@ impl Client {
             }
         }
         best.map(|b| b.1)
+    }
+
+    /// Copies an engine field component into the entity (or the own player) that shows it.
+    fn engine_field(&mut self, id: u64, comp: u32, bytes: &[u8]) {
+        let c = content();
+        let [health, burning, worn, shape] = c.game.field_comps;
+        let f: Vec<f32> = words(bytes).map(f32::from_le_bytes).collect();
+        let shaped = || {
+            let size = (f.len() == 4 && f[0] > 0.0).then(|| [f[0], f[1], f[2]]);
+            let look = words(bytes).nth(3).map(u32::from_le_bytes).filter(|&l| l != u32::MAX);
+            (size, look)
+        };
+        if id == self.player_id {
+            if comp == health && f.len() == 2 {
+                if f[0] < self.health {
+                    self.hurt_flash = 0.5;
+                }
+                (self.health, self.max_health) = (f[0], f[1]);
+                if f[0] > 0.0 {
+                    self.dead = false;
+                }
+            } else if comp == shape {
+                let (size, look) = shaped();
+                let k = &c.game.entities[c.game.player_kind as usize];
+                self.player.size = size.unwrap_or([k.width, k.height, k.eye]).map(|v| v as f64);
+                self.self_look = look;
+            }
+            return;
+        }
+        let Some(e) = self.entities.get_mut(&id) else { return };
+        if comp == health && f.len() == 2 {
+            if f[0] < e.health {
+                e.hurt = 0.4;
+            }
+            e.health = f[0];
+        } else if comp == burning {
+            e.burning = bytes.first().is_some_and(|&b| b != 0);
+        } else if comp == worn {
+            e.worn = words(bytes).map(u32::from_le_bytes).collect();
+        } else if comp == shape {
+            (e.size, e.look) = shaped();
+        }
     }
 
     /// Items the local player wears.

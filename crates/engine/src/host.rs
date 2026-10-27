@@ -1540,7 +1540,6 @@ unsafe extern "C" fn set_entity_size(w: *mut abi::WorldCtx, id: u64, width: f32,
         let d = dim(w);
         if let Some(e) = d.entities.get_mut(id) {
             e.size = (width > 0.0).then_some([width, height.max(0.0), eye.clamp(0.0, height.max(0.0))]);
-            d.entities.reshaped.push(id);
         }
     }
 }
@@ -1558,7 +1557,6 @@ unsafe extern "C" fn set_entity_look(w: *mut abi::WorldCtx, id: u64, kind: Str) 
         let d = dim(w);
         if let Some(e) = d.entities.get_mut(id) {
             e.look = look;
-            d.entities.reshaped.push(id);
         }
     }
 }

@@ -1429,6 +1429,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), &mut errors);
     cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), &mut errors);
     cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), &mut errors);
+    for (name, schema) in [(crate::registry::HEALTH, "[f32;2]"), (crate::registry::BURNING, "u8"), (crate::registry::WORN, "bytes"), (crate::registry::SHAPE, "bytes")] {
+        cb.declare(name, schema, None, &|| "the engine".into(), &mut errors);
+    }
     for g in &games {
         for (name, schema, _) in &g.stack_components {
             cb.declare(name, schema, None, &|| format!("stack component {name}"), &mut errors);

@@ -54,6 +54,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::bucket,
         gameplay::battery,
         gameplay::burning,
+        gameplay::entity_fields,
         gameplay::fall_damage,
         gameplay::sneak_edge,
         gameplay::movement_attributes,

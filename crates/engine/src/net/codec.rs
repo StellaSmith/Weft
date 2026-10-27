@@ -234,11 +234,6 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.f32(e.yaw);
                 w.f32(e.pitch);
                 w.stack(e.item);
-                w.f32(e.health);
-                w.len(e.worn.len());
-                for i in &e.worn {
-                    w.u32(*i);
-                }
             }
         }
         ToClient::Moves(tick, list) => {
@@ -255,21 +250,9 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
         }
         ToClient::Despawn(ids) => {
             w.len(ids.len());
-            for id in ids {
+            for (id, killed) in ids {
                 w.u64(*id);
-            }
-        }
-        ToClient::Burning(ids) => {
-            w.len(ids.len());
-            for id in ids {
-                w.u64(*id);
-            }
-        }
-        ToClient::Hurt(list) => {
-            w.len(list.len());
-            for (id, h) in list {
-                w.u64(*id);
-                w.f32(*h);
+                w.u8(*killed as u8);
             }
         }
         ToClient::Taken(list) => {
@@ -290,16 +273,6 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.bytes(&raw);
             }
         }
-        ToClient::Shapes(list) => {
-            w.len(list.len());
-            for (id, size, look) in list {
-                w.u64(*id);
-                for v in size {
-                    w.f32(*v);
-                }
-                w.u32(*look);
-            }
-        }
         ToClient::Inventory(slots) => {
             w.len(slots.len());
             for (i, s) in slots {
@@ -313,10 +286,6 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
                 w.u32(*k);
                 w.bytes(v);
             }
-        }
-        ToClient::Health { health, max } => {
-            w.f32(*health);
-            w.f32(*max);
         }
         ToClient::Animate(list) => {
             w.len(list.len());
@@ -432,16 +401,6 @@ pub fn encode_client(m: &ToClient) -> Vec<u8> {
             w.u64(*entity);
             w.bytes(png);
         }
-        ToClient::Worn(list) => {
-            w.len(list.len());
-            for (id, items) in list {
-                w.u64(*id);
-                w.len(items.len());
-                for i in items {
-                    w.u32(*i);
-                }
-            }
-        }
     }
     w.0
 }
@@ -478,11 +437,7 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut list = Vec::with_capacity(n);
             for _ in 0..n {
-                let mut e = EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()?, health: r.f32()?, worn: Vec::new() };
-                for _ in 0..r.len()? {
-                    e.worn.push(r.u32()?);
-                }
-                list.push(e);
+                list.push(EntityView { id: r.u64()?, kind: r.u32()?, pos: r.dvec()?, yaw: r.f32()?, pitch: r.f32()?, item: r.stack()? });
             }
             ToClient::Spawn(list)
         }
@@ -499,17 +454,9 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             let n = r.len()?;
             let mut ids = Vec::with_capacity(n);
             for _ in 0..n {
-                ids.push(r.u64()?);
+                ids.push((r.u64()?, r.u8()? != 0));
             }
             ToClient::Despawn(ids)
-        }
-        ClientTag::Hurt => {
-            let n = r.len()?;
-            let mut list = Vec::with_capacity(n);
-            for _ in 0..n {
-                list.push((r.u64()?, r.f32()?));
-            }
-            ToClient::Hurt(list)
         }
         ClientTag::Structure => {
             let (id, full, n) = (r.u64()?, r.u8()? != 0, r.len()?);
@@ -521,14 +468,6 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
                 cubes.push((pos, Arc::new(Cube::read(&mut &raw[..], |s| if s < max { s } else { 0 })?)));
             }
             ToClient::Structure { id, cubes, full }
-        }
-        ClientTag::Shapes => {
-            let n = r.len()?;
-            let mut list = Vec::with_capacity(n);
-            for _ in 0..n {
-                list.push((r.u64()?, [r.f32()?, r.f32()?, r.f32()?], r.u32()?));
-            }
-            ToClient::Shapes(list)
         }
         ClientTag::Taken => {
             let n = r.len()?;
@@ -554,7 +493,6 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             }
             ToClient::Components(list)
         }
-        ClientTag::Health => ToClient::Health { health: r.f32()?, max: r.f32()? },
         ClientTag::OpenMenu => {
             let owner = r.u64()?;
             ToClient::OpenMenu { kind: r.u32()?, window: r.u32()?, slots: r.u32()?, owner, block: r.u32()?, name: r.str()? }
@@ -626,19 +564,6 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             ToClient::CommandReply { id, lines }
         }
         ClientTag::Disconnect => ToClient::Disconnect(r.str()?),
-        ClientTag::Worn => {
-            let n = r.len()?;
-            let mut list = Vec::with_capacity(n);
-            for _ in 0..n {
-                let id = r.u64()?;
-                let mut items = Vec::new();
-                for _ in 0..r.len()? {
-                    items.push(r.u32()?);
-                }
-                list.push((id, items));
-            }
-            ToClient::Worn(list)
-        }
         ClientTag::Players => {
             let n = r.len()?;
             let mut names = Vec::with_capacity(n.min(1024));
@@ -648,14 +573,6 @@ pub fn decode_client(data: &[u8]) -> Option<ToClient> {
             ToClient::Players(names)
         }
         ClientTag::GameMode => ToClient::GameMode(crate::world::GameMode::from_u8(r.u8()?)),
-        ClientTag::Burning => {
-            let n = r.len()?;
-            let mut ids = Vec::with_capacity(n);
-            for _ in 0..n {
-                ids.push(r.u64()?);
-            }
-            ToClient::Burning(ids)
-        }
         ClientTag::Push => ToClient::Push(([r.f32()?, r.f32()?, r.f32()?], r.u8()? != 0)),
         ClientTag::Movement => ToClient::Movement { speed: r.f32()?, jump: r.f32()? },
         ClientTag::Gizmos => {
@@ -842,7 +759,7 @@ mod tests {
 
     #[test]
     fn tags_follow_the_message_table() {
-        for m in [ToClient::Died, ToClient::Chat(Msg::new("chat.message", vec![Arg::Text("me".into()), Arg::Int(-3), Arg::Msg(Msg::new("k", vec![Arg::Float(1.5, 2)]))])), ToClient::Burning(vec![4]), ToClient::Animate(Vec::new())] {
+        for m in [ToClient::Died, ToClient::Chat(Msg::new("chat.message", vec![Arg::Text("me".into()), Arg::Int(-3), Arg::Msg(Msg::new("k", vec![Arg::Float(1.5, 2)]))])), ToClient::Despawn(vec![(4, true)]), ToClient::Animate(Vec::new())] {
             let bytes = encode_client(&m);
             assert_eq!(bytes[0] as usize, m.kind());
             assert_eq!(decode_client(&bytes).map(|b| b.kind()), Some(m.kind()));

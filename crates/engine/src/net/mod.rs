@@ -39,8 +39,6 @@ pub struct EntityView {
     pub yaw: f32,
     pub pitch: f32,
     pub item: ItemStack,
-    pub health: f32,
-    pub worn: Vec<u32>,
 }
 
 /// A debug shape for a gizmo group (`client::gizmo`): `kind` 0 is a line from `a` to `b`, 1 a box
@@ -79,18 +77,12 @@ pub enum ToClient {
     /// Moves of one server tick (its number: clients time the moves by it, not by when they
     /// arrive).
     Moves(u64, Vec<Move>),
-    Despawn(Vec<u64>),
-    Hurt(Vec<(u64, f32)>),
+    /// Entities out of sight, and whether they were killed (they play the death animation).
+    Despawn(Vec<(u64, bool)>),
     /// Items picked up: (item entity, who took it). They fly to the taker before going.
     Taken(Vec<(u64, u64)>),
     /// A use (right click) did something: the arm swings.
     Swing,
-    /// Entities' own sizes (width, height, eye; width 0: the kind's) and looks (another kind,
-    /// `u32::MAX`: its own).
-    Shapes(Vec<(u64, [f32; 3], u32)>),
-    /// Every known entity that is on fire, sent once a second.
-    Burning(Vec<u64>),
-    Worn(Vec<(u64, Vec<u32>)>),
     GameMode(crate::world::GameMode),
     /// Everyone online, sent when someone joins or leaves.
     Players(Vec<String>),
@@ -98,7 +90,6 @@ pub enum ToClient {
     Inventory(Vec<(u32, ItemStack)>),
     /// Own synced components: (component id, bytes).
     Components(Vec<(u32, Vec<u8>)>),
-    Health { health: f32, max: f32 },
     /// Hit by something at this horizontal direction from the player.
     /// Velocity change in blocks per tick, after halving the velocity when the flag says so
     /// (knockback, a mod's push).
@@ -205,10 +196,10 @@ macro_rules! messages {
 }
 
 messages!(ToClient, ClientTag, false, [
-    Welcome, Cube, Unload, Blocks, Time, Teleport, Spawn, Moves, Despawn, Hurt, Burning, Worn,
-    GameMode, Players, Inventory, Components, Health, Push, Movement, OpenMenu, MenuSlots,
+    Welcome, Cube, Unload, Blocks, Time, Teleport, Spawn, Moves, Despawn,
+    GameMode, Players, Inventory, Components, Push, Movement, OpenMenu, MenuSlots,
     Cursor, CloseMenu, Died, Chat, Disconnect, Gizmos, Packet, EntityComponents, Particles,
-    Configs, Sounds, Animate, Taken, Swing, Shapes, Structure, Skin, CommandReply,
+    Configs, Sounds, Animate, Taken, Swing, Structure, Skin, CommandReply,
 ]);
 
 messages!(ToServer, ServerTag, true, [

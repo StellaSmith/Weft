@@ -553,6 +553,29 @@ pub async fn burning(t: T) -> R {
     Ok(())
 }
 
+static ON_FIRE: Component<u8> = Component::named("core:burning");
+
+/// Fields the engine keeps on entities reach clients like any synced component: a pig in lava
+/// shows on fire and losing health, and stays for its death animation once the server drops it.
+pub async fn entity_fields(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    t.fill(add(f, [3, 0, -1]), add(f, [5, 1, 1]), "stone").await?;
+    t.fill(add(f, [4, 0, 0]), add(f, [4, 1, 0]), "air").await?;
+    t.fill(add(f, [4, -2, 0]), add(f, [4, -1, 0]), "lava").await?;
+    let id = t.op(&format!("spawn pig {}", at(add(f, [4, -1, 0])))).await?;
+    let id: u64 = id.trim().parse().map_err(|_| format!("spawn pig: {id}"))?;
+    t.until("the pig burns on the client", Duration::from_secs(3), |t| t.c().view().component_of(id, &ON_FIRE) == Some(1)).await?;
+    t.until("the pig loses health on the client", Duration::from_secs(3), |t| t.c().entity(id).is_some_and(|e| e.health < e.max_health)).await?;
+    for _ in 0..400 {
+        if t.op(&format!("entity {id}")).await.is_err() {
+            t.check(t.c().entity(id).is_some(), "the killed pig stays on the client for its death animation");
+            return Ok(());
+        }
+    }
+    Err("the pig did not die in lava".into())
+}
+
 /// A machine's window is titled with its block's name; a renamed chest keeps its own name from
 /// the stack to the placed block (its title) and back to the item when broken.
 pub async fn own_names(t: T) -> R {

@@ -89,12 +89,8 @@ pub struct Player {
     teleported: Option<DVec3>,
     /// Gizmo groups the client shows.
     gizmos: Vec<String>,
-    /// Health and maximum as last sent.
-    sent_health: (f32, f32),
     /// Walking speed and jump multipliers the client has (attributes).
     sent_movement: (f32, f32),
-    /// Burning entities this player was last told about (sorted).
-    sent_burning: Vec<u64>,
 }
 
 pub struct Generated {
@@ -412,9 +408,7 @@ impl Server {
                 vis: None,
                 teleported: None,
                 gizmos: Vec::new(),
-                sent_health: (-1.0, -1.0),
                 sent_movement: (1.0, 1.0),
-                sent_burning: Vec::new(),
             });
         }
     }
@@ -603,8 +597,6 @@ impl Server {
                             menu::close(m, r, c, player);
                             p.conn.send(ToClient::CloseMenu);
                         }
-                        p.sent_health.0 = 0.0;
-                        p.conn.send(ToClient::Health { health: 0.0, max: p.sent_health.1 });
                         p.conn.send(ToClient::Died);
                         log::info!("{} died", p.name);
                     }
@@ -1544,30 +1536,20 @@ impl Server {
     fn sync_players(&mut self, c: &'static Content) {
         let server_tick = self.tick;
         let settled: Vec<Vec<IVec3>> = self.dims.iter_mut().map(|d| d.take_settled()).collect();
-        for d in &mut self.dims {
-            for r in &mut d.regions {
-                r.entities.find_changes(&c.game.synced_comps);
-            }
-        }
-        // Entities that moved since last tick and changed equipment, per dimension (all regions).
+        // Entities that moved since last tick, per dimension (all regions).
         let mut moved: Vec<Vec<crate::net::Move>> = Vec::with_capacity(self.dims.len());
-        let mut worn: Vec<Vec<(u64, Vec<u32>)>> = Vec::with_capacity(self.dims.len());
-        let mut burning: Vec<Vec<u64>> = Vec::with_capacity(self.dims.len());
         for d in &mut self.dims {
             let mut m = Vec::new();
-            let mut w = Vec::new();
-            let mut b: Vec<u64> = d.regions.iter().flat_map(|r| r.entities.list.iter()).filter(|e| e.fire > 0 && !e.removed).map(|e| e.id).collect();
-            b.sort_unstable();
-            burning.push(b);
             for r in &mut d.regions {
                 let changed: Vec<u64> = r.entities.dirty_inv.iter().copied().collect();
                 for id in changed {
                     let now = worn_of(c, &r.entities, id);
-                    if let Some(e) = r.entities.get_mut(id).filter(|e| e.worn != now) {
-                        e.worn = now.clone();
-                        w.push((id, now));
+                    if let Some(e) = r.entities.get_mut(id) {
+                        e.worn = now;
                     }
                 }
+                r.mirror_fields(c);
+                r.entities.find_changes(&c.game.synced_comps);
                 for e in r.entities.list.iter_mut().filter(|e| !e.removed && e.anchor.is_none()) {
                     let now = (e.pos, e.yaw, e.pitch, e.crouched);
                     // Solid bodies every tick: clients show them between server positions, and a
@@ -1582,7 +1564,6 @@ impl Server {
                 }
             }
             moved.push(m);
-            worn.push(w);
         }
 
         let mut unsent = 0u64;
@@ -1627,24 +1608,17 @@ impl Server {
                     }
                     visible.insert(e.id);
                     if !p.known.contains(&e.id) {
-                        let worn = e.worn.clone();
-                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: crate::stack::for_client(e.item), health: e.health, worn });
+                        spawn.push(EntityView { id: e.id, kind: e.kind, pos: e.pos, yaw: e.yaw, pitch: e.pitch, item: crate::stack::for_client(e.item) });
                     }
-                }
-            }
-            // Before despawns: a mob killed this tick is gone already, and the client needs its
-            // last health to play the death animation.
-            for reg in &dim.regions {
-                let hurt: Vec<(u64, f32)> = reg.entities.hurt.iter().filter(|h| p.known.contains(&h.0)).copied().collect();
-                if !hurt.is_empty() {
-                    p.conn.send(ToClient::Hurt(hurt));
                 }
             }
             let taken: Vec<(u64, u64)> = dim.regions.iter().flat_map(|r| r.entities.taken.iter()).filter(|t| p.known.contains(&t.0)).copied().collect();
             if !taken.is_empty() {
                 p.conn.send(ToClient::Taken(taken));
             }
-            let gone: Vec<u64> = p.known.iter().copied().filter(|id| !visible.contains(id)).collect();
+            // A mob killed this tick is gone already: the flag starts its death animation.
+            let killed = |id: &u64| dim.regions.iter().any(|r| r.entities.killed.contains(id));
+            let gone: Vec<(u64, bool)> = p.known.iter().copied().filter(|id| !visible.contains(id)).map(|id| (id, killed(&id))).collect();
             if !gone.is_empty() {
                 p.conn.send(ToClient::Despawn(gone));
             }
@@ -1661,21 +1635,6 @@ impl Server {
                         shared.extend(reg.entities.comps.get(&(v.id, comp)).map(|b| (v.id, comp, b.to_vec())));
                     }
                 }
-            }
-            // Sizes and looks of entities seen for the first time, and changes of known ones.
-            let mut shapes: Vec<(u64, [f32; 3], u32)> = Vec::new();
-            for reg in &dim.regions {
-                let fresh = spawn.iter().map(|v| v.id);
-                let changed = reg.entities.reshaped.iter().copied().filter(|id| p.known.contains(id) && visible.contains(id));
-                for id in fresh.chain(changed) {
-                    let Some(e) = reg.entities.get(id) else { continue };
-                    if e.size.is_some() || e.look.is_some() || reg.entities.reshaped.contains(&id) {
-                        shapes.push((id, e.size.unwrap_or([0.0; 3]), e.look.unwrap_or(u32::MAX)));
-                    }
-                }
-            }
-            if let Some(me) = dim.regions.iter().find(|r| r.entities.reshaped.contains(&p.entity)).and_then(|r| r.entities.get(p.entity)) {
-                shapes.push((p.entity, me.size.unwrap_or([0.0; 3]), me.look.unwrap_or(u32::MAX)));
             }
             // Structures: all their cubes with the entity, then the cubes that change.
             let mut structures = Vec::new();
@@ -1694,9 +1653,6 @@ impl Server {
             for m in structures {
                 p.conn.send(m);
             }
-            if !shapes.is_empty() {
-                p.conn.send(ToClient::Shapes(shapes));
-            }
             if !shared.is_empty() {
                 p.conn.send(ToClient::EntityComponents(shared));
             }
@@ -1704,26 +1660,9 @@ impl Server {
             if !moves.is_empty() {
                 p.conn.send(ToClient::Moves(server_tick, moves));
             }
-            let worn: Vec<(u64, Vec<u32>)> = worn[p.dim as usize].iter().filter(|w| p.known.contains(&w.0) && visible.contains(&w.0)).cloned().collect();
-            if !worn.is_empty() {
-                p.conn.send(ToClient::Worn(worn));
-            }
             p.known = visible;
-            // Only when it changes: fire shows at once and nothing is sent while nothing burns.
-            let burning: Vec<u64> = burning[p.dim as usize].iter().copied().filter(|id| p.known.contains(id)).collect();
-            if burning != p.sent_burning {
-                p.conn.send(ToClient::Burning(burning.clone()));
-                p.sent_burning = burning;
-            }
 
             if let Some(reg) = dim.entity_region(p.entity) {
-                // Any change counts (regeneration, mods healing), not only hits.
-                let hp = reg.entities.get(p.entity).map_or(p.sent_health.0, |e| e.health);
-                let max = reg.max_health(c, p.entity);
-                if !p.dead && (hp, max) != p.sent_health {
-                    p.sent_health = (hp, max);
-                    p.conn.send(ToClient::Health { health: hp, max });
-                }
                 for &(_, push) in reg.entities.pushed.iter().filter(|h| h.0 == p.entity) {
                     p.conn.send(ToClient::Push(push));
                 }
@@ -1871,9 +1810,8 @@ impl Server {
                 }
                 r.resend.clear();
                 r.changes.clear();
-                r.entities.hurt.clear();
+                r.entities.killed.clear();
                 r.entities.taken.clear();
-                r.entities.reshaped.clear();
                 r.entities.pushed.clear();
                 r.entities.dirty_comp.clear();
                 r.gizmos.clear();

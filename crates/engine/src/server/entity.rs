@@ -158,9 +158,8 @@ pub struct Entities {
     pub anchors: FxHashMap<IVec3, u64>,
     pub spawned: Vec<u64>,
     pub despawned: Vec<u64>,
-    pub hurt: Vec<(u64, f32)>,
-    /// Entities whose size or look changed this tick.
-    pub reshaped: Vec<u64>,
+    /// Killed this tick: clients play the death animation when they go.
+    pub killed: Vec<u64>,
     /// Item entities picked up whole this tick, and by whom (clients pull them in).
     pub taken: Vec<(u64, u64)>,
     /// Hurt entities and where the hit came from (players move themselves, so they get told).

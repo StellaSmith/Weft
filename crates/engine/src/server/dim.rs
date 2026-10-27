@@ -344,6 +344,38 @@ pub fn break_time(c: &Content, state: u32, tool: u32) -> f32 {
 }
 
 impl Dim {
+    /// Writes the fields clients show (`registry::HEALTH` ...) into their synced components when
+    /// they differ, so they travel like mods' components. Absent ones stay absent while default.
+    pub fn mirror_fields(&mut self, c: &Content) {
+        let [health, burning, worn, shape] = c.game.field_comps;
+        let maxes: Vec<(u64, f32)> = self.entities.list.iter().filter(|e| e.player && !e.removed).map(|e| e.id).collect::<Vec<_>>().into_iter().map(|id| (id, self.max_health(c, id))).collect();
+        let Entities { list, comps, .. } = &mut self.entities;
+        for e in list.iter().filter(|e| !e.removed && e.anchor.is_none() && e.kind != c.game.virtual_kind) {
+            let put = |comps: &mut FxHashMap<(u64, u32), Box<[u8]>>, comp: u32, bytes: &[u8]| match comps.get_mut(&(e.id, comp)) {
+                Some(v) if **v != *bytes => *v = bytes.into(),
+                Some(_) => {}
+                None if *c.game.components[comp as usize].default != *bytes => {
+                    comps.insert((e.id, comp), bytes.into());
+                }
+                None => {}
+            };
+            let max = maxes.iter().find(|m| m.0 == e.id).map_or(0.0, |m| m.1);
+            let mut hp = [0u8; 8];
+            hp[..4].copy_from_slice(&e.health.max(0.0).to_le_bytes());
+            hp[4..].copy_from_slice(&max.to_le_bytes());
+            put(comps, health, &hp);
+            put(comps, burning, &[(e.fire > 0) as u8]);
+            let items: Vec<u8> = e.worn.iter().flat_map(|i| i.to_le_bytes()).collect();
+            put(comps, worn, &items);
+            let mut sh = [0u8; 16];
+            for (i, v) in e.size.unwrap_or([0.0; 3]).iter().enumerate() {
+                sh[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            sh[12..].copy_from_slice(&e.look.unwrap_or(u32::MAX).to_le_bytes());
+            put(comps, shape, &sh);
+        }
+    }
+
     pub fn new(id: u32, seed: u64, next_id: Arc<AtomicU64>) -> Dim {
         Dim {
             id,
@@ -782,7 +814,9 @@ impl Dim {
             let d = if d.length_squared() < 1e-8 { glam::Vec2::X } else { d.normalize() };
             self.entities.pushed.push((id, ([-d.x * 0.4, 0.4, -d.y * 0.4], true)));
         }
-        self.entities.hurt.push((id, health));
+        if health <= 0.0 {
+            self.entities.killed.push(id);
+        }
         if health <= 0.0 {
             self.emit_engine(c, abi::event::ENTITY_DIED, &abi::Death { entity: id, killer: source, kind, cause, pos: pos.to_array() });
             if !player {

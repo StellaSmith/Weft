@@ -98,12 +98,36 @@ impl RawRule {
 }
 
 /// # Safety
+/// The strings in `r` must be valid for the call.
+pub unsafe fn copy_rule(r: &abi::BiomeRuleDesc) -> RawRule {
+    unsafe {
+        let s = |s: abi::Str| s.as_str().to_string();
+        RawRule {
+            name: s(r.name),
+            fields: r.fields,
+            biome: s(r.biome),
+            temperature: (r.temperature[0], r.temperature[1]),
+            humidity: (r.humidity[0], r.humidity[1]),
+            continent: (r.continent[0], r.continent[1]),
+            height: (r.height[0], r.height[1]),
+            feature: (s(r.feature), r.feature_range[0], r.feature_range[1]),
+            top: s(r.top),
+            filler: s(r.filler),
+            depth: r.depth,
+            under: (s(r.under), r.under_layers),
+            deep_top: (s(r.deep_top), r.deep_below),
+            bare_above: r.bare_above,
+            ice: s(r.ice),
+        }
+    }
+}
+
+/// # Safety
 /// The pointers in `d` must be valid for the call.
 pub unsafe fn copy(owner: ModId, d: &abi::TerrainDesc) -> RawTerrain {
     unsafe {
         let s = |s: abi::Str| s.as_str().to_string();
         let f = &d.feature;
-        let r = &d.rule;
         RawTerrain {
             owner,
             dimension: s(d.dimension),
@@ -115,23 +139,7 @@ pub unsafe fn copy(owner: ModId, d: &abi::TerrainDesc) -> RawTerrain {
             value: d.value,
             size: d.size,
             feature: RawFeature { owner, name: s(f.name), preset: f.preset, params: f.params, height: f.height, mask: f.mask.as_slice().to_vec() },
-            rule: RawRule {
-                name: s(r.name),
-                fields: r.fields,
-                biome: s(r.biome),
-                temperature: (r.temperature[0], r.temperature[1]),
-                humidity: (r.humidity[0], r.humidity[1]),
-                continent: (r.continent[0], r.continent[1]),
-                height: (r.height[0], r.height[1]),
-                feature: (s(r.feature), r.feature_range[0], r.feature_range[1]),
-                top: s(r.top),
-                filler: s(r.filler),
-                depth: r.depth,
-                under: (s(r.under), r.under_layers),
-                deep_top: (s(r.deep_top), r.deep_below),
-                bare_above: r.bare_above,
-                ice: s(r.ice),
-            },
+            rule: copy_rule(&d.rule),
             decorate: d.decorate.is_some().then_some(d.decorate),
         }
     }
@@ -290,6 +298,8 @@ pub struct Names<'a> {
     /// Name to first block state.
     pub block: &'a dyn Fn(&str) -> Option<u32>,
     pub biome: &'a dyn Fn(&str) -> Option<u32>,
+    /// A biome's own climate and surface, which its rules start from.
+    pub biome_rule: &'a dyn Fn(&str) -> Option<&'a RawRule>,
 }
 
 /// Merges `ops` (the owner's first, then the other mods' in load order) into a terrain.
@@ -401,7 +411,16 @@ pub fn build(dimension: &str, owner_name: &dyn Fn(ModId) -> String, ops: Vec<Raw
         })
         .collect();
     let mut rules = Vec::with_capacity(d.rules.len());
-    for r in &d.rules {
+    for own in &d.rules {
+        let mut merged = (names.biome_rule)(&own.biome).cloned();
+        let r = match &mut merged {
+            Some(m) => {
+                m.apply(own);
+                m.name.clone_from(&own.name);
+                &*m
+            }
+            None => own,
+        };
         let biome = (names.biome)(&r.biome).unwrap_or_else(|| {
             errors.push(format!("terrain of {dimension}: unknown biome {}", r.biome));
             0
@@ -898,7 +917,7 @@ mod tests {
 
     fn built(ops: Vec<RawTerrain>) -> (Vec<u32>, Vec<String>) {
         let biomes = ["a:plains", "a:desert", "b:savanna", "b:dunes", "a:snow"];
-        let names = Names { block: &|n| (n == "a:stone").then_some(1), biome: &|n| biomes.iter().position(|b| *b == n).map(|i| i as u32) };
+        let names = Names { block: &|n| (n == "a:stone").then_some(1), biome: &|n| biomes.iter().position(|b| *b == n).map(|i| i as u32), biome_rule: &|_| None };
         let mut errors = Vec::new();
         let t = build("a:dim", &|m| format!("mod{}", m.0), ops, &names, &mut errors);
         (t.rules.iter().map(|r| r.biome).collect(), errors)
@@ -937,9 +956,29 @@ mod tests {
         edit.rule.fields = rf::HEIGHT;
         edit.rule.height = (0, 10);
         ops.push(edit);
-        let names = Names { block: &|_| Some(1), biome: &|_| Some(0) };
+        let names = Names { block: &|_| Some(1), biome: &|_| Some(0), biome_rule: &|_| None };
         let t = build("a:dim", &|_| String::new(), ops, &names, &mut Vec::new());
         assert_eq!((t.rules[0].height, t.rules.len()), ((0, 10), 2));
+    }
+
+    /// A rule starts from its biome's climate and surface and overrides only what it sets.
+    #[test]
+    fn rules_inherit_the_biome() {
+        let mut desert = raw(0, op::BIOME, "", Some(("", "a:desert"))).rule;
+        desert.fields = rf::TEMPERATURE | rf::SURFACE;
+        desert.temperature = (0.35, f64::INFINITY);
+        (desert.top, desert.filler, desert.depth) = ("a:sand".into(), "a:sand".into(), 3);
+        let mut coast = raw(0, op::BIOME, "", Some(("a:coast", "a:desert")));
+        coast.rule.fields |= rf::TEMPERATURE | rf::HEIGHT;
+        coast.rule.temperature = (0.0, 1.0);
+        coast.rule.height = (0, 64);
+        let ops = vec![raw(0, op::STONE, "", None), coast, raw(0, op::BIOME, "", Some(("", "a:desert")))];
+        let names = Names { block: &|n| Some(if n == "a:sand" { 2 } else { 1 }), biome: &|_| Some(0), biome_rule: &|n| (n == "a:desert").then_some(&desert) };
+        let mut errors = Vec::new();
+        let t = build("a:dim", &|_| String::new(), ops, &names, &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!((t.rules[0].temperature, t.rules[0].height, t.rules[0].top), ((0.0, 1.0), (0, 64), Some(2)));
+        assert_eq!((t.rules[1].temperature, t.rules[1].height, t.rules[1].top), ((0.35, f64::INFINITY), (i32::MIN, i32::MAX), Some(2)));
     }
 
     #[test]

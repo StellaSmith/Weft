@@ -10,13 +10,14 @@
 //!     .base_height(60.0)
 //!     .feature(preset::hills(8.0, 220.0))
 //!     .feature(preset::mountains(60.0, 160.0).mask(Mask::noise(500.0, 0.2, 0.5)).named("mountains"))
-//!     .biome(BiomeRule::new("peaks").feature("mountains", 0.5, 9.0).surface("basalt", "basalt", 1))
-//!     .biome(BiomeRule::new("dust").surface("regolith", "regolith", 3));
-//! // Another mod:
-//! r.terrain(&OVERWORLD).biome_before("base:desert", BiomeRule::new("savanna").temperature(0.2, 0.35).surface("base:grass", "base:dirt", 3));
+//!     .biome(BiomeRule::new("peaks").feature("mountains", 0.5..))
+//!     .biome(BiomeRule::new("dust"));
+//! // Another mod, whose savanna biome declares its climate and surface:
+//! r.terrain(&OVERWORLD).biome_before("base:desert", BiomeRule::new("savanna"));
 //! ```
 
 use std::marker::PhantomData;
+use std::ops::{Bound, RangeBounds};
 
 use crate::abi::{self, Slice, Str, rule_field as rf, terrain_op as op};
 use crate::{Dimension, Gen, Registry, callback, host, qualify};
@@ -161,8 +162,10 @@ pub mod preset {
     }
 }
 
-/// Surface layers and the climate a biome needs. Rules are tried in order; the first match wins
-/// and the last one is used where none does.
+/// Where a biome stands in a terrain. Its climate and surface come from the biome
+/// (`r.biome(&X).temperature(..).surface(..)`); a rule adds where else it must hold (height,
+/// continent, a feature) and sets only what differs here. Rules are tried in order; the first
+/// match wins and the last one is used where none does.
 #[derive(Clone)]
 pub struct BiomeRule {
     name: String,
@@ -188,7 +191,7 @@ impl BiomeRule {
         BiomeRule { fields: rf::BIOME, biome: biome.to_string(), ..BiomeRule::blank() }
     }
 
-    fn blank() -> BiomeRule {
+    pub(crate) fn blank() -> BiomeRule {
         let any = (f64::NEG_INFINITY, f64::INFINITY);
         BiomeRule {
             name: String::new(),
@@ -219,26 +222,29 @@ impl BiomeRule {
         (self.biome, self.fields) = (biome.to_string(), self.fields | rf::BIOME);
         self
     }
-    /// Climate ranges are `min <= v < max`; fields are about -1.4..1.4.
-    pub fn temperature(mut self, min: f64, max: f64) -> Self {
-        (self.temperature, self.fields) = ((min, max), self.fields | rf::TEMPERATURE);
+    /// Climate ranges like `0.35..` or `..-0.45` (from inclusive, to exclusive); the fields are
+    /// about -1.4..1.4. Usually the biome's.
+    pub fn temperature(mut self, range: impl RangeBounds<f64>) -> Self {
+        (self.temperature, self.fields) = (span(range), self.fields | rf::TEMPERATURE);
         self
     }
-    pub fn humidity(mut self, min: f64, max: f64) -> Self {
-        (self.humidity, self.fields) = ((min, max), self.fields | rf::HUMIDITY);
+    pub fn humidity(mut self, range: impl RangeBounds<f64>) -> Self {
+        (self.humidity, self.fields) = (span(range), self.fields | rf::HUMIDITY);
         self
     }
-    pub fn continent(mut self, min: f64, max: f64) -> Self {
-        (self.continent, self.fields) = ((min, max), self.fields | rf::CONTINENT);
+    /// Continentalness: below 0 is sea, coasts are about 0..0.1.
+    pub fn continent(mut self, range: impl RangeBounds<f64>) -> Self {
+        (self.continent, self.fields) = (span(range), self.fields | rf::CONTINENT);
         self
     }
-    /// Surface height range, inclusive.
-    pub fn height(mut self, min: i32, max: i32) -> Self {
-        (self.height, self.fields) = ((min, max), self.fields | rf::HEIGHT);
+    /// Surface heights, like `..=SEA + 1`.
+    pub fn height(mut self, range: impl RangeBounds<i32>) -> Self {
+        (self.height, self.fields) = (span_int(range), self.fields | rf::HEIGHT);
         self
     }
-    /// Where the named feature's mask is in `min..max`.
-    pub fn feature(mut self, name: &str, min: f64, max: f64) -> Self {
+    /// Where the named feature's mask is in `range`.
+    pub fn feature(mut self, name: &str, range: impl RangeBounds<f64>) -> Self {
+        let (min, max) = span(range);
         (self.feature, self.fields) = ((name.to_string(), min, max), self.fields | rf::FEATURE);
         self
     }
@@ -268,6 +274,58 @@ impl BiomeRule {
         (self.ice, self.fields) = (block.to_string(), self.fields | rf::FROZEN);
         self
     }
+
+    /// Its names, qualified with `ns`, in the order `desc` reads them.
+    pub(crate) fn names(&self, ns: &str) -> [String; 8] {
+        let q = |s: &str| if s.is_empty() { String::new() } else { qualify(ns, s) };
+        [if self.name.is_empty() { &self.biome } else { &self.name }, &self.biome, &self.feature.0, &self.top, &self.filler, &self.under.0, &self.deep_top.0, &self.ice].map(|s| q(s))
+    }
+
+    pub(crate) fn desc(&self, names: &[String; 8]) -> abi::BiomeRuleDesc {
+        abi::BiomeRuleDesc {
+            name: Str::new(&names[0]),
+            fields: self.fields,
+            biome: Str::new(&names[1]),
+            temperature: [self.temperature.0, self.temperature.1],
+            humidity: [self.humidity.0, self.humidity.1],
+            continent: [self.continent.0, self.continent.1],
+            height: [self.height.0, self.height.1],
+            feature: Str::new(&names[2]),
+            feature_range: [self.feature.1, self.feature.2],
+            top: Str::new(&names[3]),
+            filler: Str::new(&names[4]),
+            depth: self.depth,
+            under: Str::new(&names[5]),
+            under_layers: self.under.1,
+            deep_top: Str::new(&names[6]),
+            deep_below: self.deep_top.1,
+            bare_above: self.bare_above,
+            ice: Str::new(&names[7]),
+        }
+    }
+}
+
+fn span(r: impl RangeBounds<f64>) -> (f64, f64) {
+    let at = |b: Bound<&f64>, open: f64| match b {
+        Bound::Included(v) | Bound::Excluded(v) => *v,
+        Bound::Unbounded => open,
+    };
+    (at(r.start_bound(), f64::NEG_INFINITY), at(r.end_bound(), f64::INFINITY))
+}
+
+/// Inclusive.
+fn span_int(r: impl RangeBounds<i32>) -> (i32, i32) {
+    let min = match r.start_bound() {
+        Bound::Included(v) => *v,
+        Bound::Excluded(v) => v + 1,
+        Bound::Unbounded => i32::MIN,
+    };
+    let max = match r.end_bound() {
+        Bound::Included(v) => *v,
+        Bound::Excluded(v) => v - 1,
+        Bound::Unbounded => i32::MAX,
+    };
+    (min, max)
 }
 
 /// Two-noise tunnels plus large caverns. Between `lava_from` and `lava_to` some layers of height
@@ -333,27 +391,8 @@ impl TerrainBuilder<'_> {
             feature = abi::FeatureDesc { name: Str::new(&fname), preset: f.preset, params: f.params, height: f.height, mask: Slice::new(&steps) };
         }
         let r = o.rule.unwrap_or_else(BiomeRule::blank);
-        let names = [if r.name.is_empty() { &r.biome } else { &r.name }, &r.biome, &r.feature.0, &r.top, &r.filler, &r.under.0, &r.deep_top.0, &r.ice].map(|s| q(s));
-        let rule = abi::BiomeRuleDesc {
-            name: Str::new(&names[0]),
-            fields: r.fields,
-            biome: Str::new(&names[1]),
-            temperature: [r.temperature.0, r.temperature.1],
-            humidity: [r.humidity.0, r.humidity.1],
-            continent: [r.continent.0, r.continent.1],
-            height: [r.height.0, r.height.1],
-            feature: Str::new(&names[2]),
-            feature_range: [r.feature.1, r.feature.2],
-            top: Str::new(&names[3]),
-            filler: Str::new(&names[4]),
-            depth: r.depth,
-            under: Str::new(&names[5]),
-            under_layers: r.under.1,
-            deep_top: Str::new(&names[6]),
-            deep_below: r.deep_top.1,
-            bare_above: r.bare_above,
-            ice: Str::new(&names[7]),
-        };
+        let names = r.names(self.ns);
+        let rule = r.desc(&names);
         let desc = abi::TerrainDesc {
             dimension: Str::new(&self.dimension),
             op: o.op,
@@ -414,7 +453,7 @@ impl TerrainBuilder<'_> {
         self.send(Op { anchor: rule.to_string(), ..Op::new(op::REMOVE_BIOME) })
     }
     /// Changes what the closure sets on the rule and keeps the rest:
-    /// `edit_biome("base:desert", |r| r.temperature(0.5, 9.0))`.
+    /// `edit_biome("base:desert", |r| r.temperature(0.5..))`.
     pub fn edit_biome(self, rule: &str, edit: impl FnOnce(BiomeRule) -> BiomeRule) -> Self {
         self.send(Op { anchor: rule.to_string(), rule: Some(edit(BiomeRule::blank())), ..Op::new(op::EDIT_BIOME) })
     }

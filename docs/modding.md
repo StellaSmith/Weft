@@ -264,7 +264,7 @@ Look at testmod's generator for an example.
 Reactions: `r.liquid_reaction("#hot", "#water").source_block("obsidian")`.
 
 ### World
-- `r.biome(..)`
+- `r.biome(..)` with its climate, surface and tints (`.temperature(0.35..).surface(..).tint(&tints::GRASS, ..)`); terrain rules inherit them
 - `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, or `generator` + `column` to fill it in code)
 - `r.terrain(dim)` for its terrain, yours or another mod's
 - `r.ore(dim, block)`

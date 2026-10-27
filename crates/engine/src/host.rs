@@ -1043,6 +1043,7 @@ unsafe extern "C" fn reg_biome(r: *mut abi::Registrar, d: *const abi::BiomeDesc)
             },
             d.cell as usize,
             crate::components::RawValue::list(d.components),
+            crate::server::terrain::copy_rule(&d.rule),
         ));
     }
 }

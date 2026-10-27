@@ -496,11 +496,12 @@ defaults!(ItemDesc { name: Str::EMPTY, cell: core::ptr::null(), texture: Str::EM
 pub struct BiomeDesc {
     pub name: Str,
     pub cell: *const AtomicU32,
-    pub temperature: f32,
-    pub rainfall: f32,
+    /// The biome's own climate and surface (`rule.fields` says which are set): every terrain
+    /// rule placing it starts from these, and sets only what differs there.
+    pub rule: BiomeRuleDesc,
     pub components: Slice<CompValue>,
 }
-defaults!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), temperature: 0.8, rainfall: 0.4, components: Slice::EMPTY });
+defaults!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), rule: BiomeRuleDesc::DEFAULT, components: Slice::EMPTY });
 
 #[repr(C)]
 pub struct GenArgs {
@@ -2650,7 +2651,8 @@ pub mod rule_field {
 }
 
 /// Picks a biome and its surface where its conditions hold. Rules are tried in order; the first
-/// that fits wins and the last one is used where none does.
+/// that fits wins and the last one is used where none does. Fields not in `fields` come from
+/// the biome's own (`BiomeDesc::rule`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct BiomeRuleDesc {

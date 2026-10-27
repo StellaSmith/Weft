@@ -94,7 +94,7 @@ fn leaves(r: &mut Registry, handle: &'static Block, tex: &str) {
         .hardness(0.2)
         .cutout()
         .opacity(1)
-        .tint_foliage()
+        .tint(&tints::FOLIAGE)
         .tag("leaves")
         .mineable("shears")
         .tab(&crate::tabs::NATURAL);
@@ -125,7 +125,7 @@ pub fn register(r: &mut Registry) {
     r.block(&DIRT).sound_group("gravel").hardness(0.5).mineable("shovel").tag("dirt").tab(&crate::tabs::NATURAL);
     r.block(&GRASS).sound_group("grass")
         .textures("grass_top", "grass_side", "dirt")
-        .tint_grass_top()
+        .tint_top(&tints::GRASS)
         .hardness(0.6)
         .mineable("shovel")
         .drops("dirt", 1)
@@ -155,11 +155,11 @@ pub fn register(r: &mut Registry) {
     leaves(r, &SPRUCE_LEAVES, "leaves_spruce");
 
     // Vanilla numbers: water steps every 5 ticks and reaches 7 blocks, lava every 30 and 3.
-    r.liquid(&WATER).texture("water_still").tint_water().renewable(2).tag("water").bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
+    r.liquid(&WATER).texture("water_still").tint(&tints::WATER).renewable(2).tag("water").bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid(&LAVA).texture("lava_still").light(15).drag(0.3).flow_delay(30).drop_off(2).slope_find(2).temperature(1300).tag("lava").tag("hot").bucket(Item::generated("lava_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid_reaction("#hot", "#water").source_block("obsidian").flowing_block("cobblestone").turns_below_into("stone");
 
-    r.block(&TALL_GRASS).sound_group("grass").texture("tallgrass").plant().needs_below("#plant_soil").tint_grass().no_item();
+    r.block(&TALL_GRASS).sound_group("grass").texture("tallgrass").plant().needs_below("#plant_soil").tint(&tints::GRASS).no_item();
     r.loot(&TALL_GRASS).pool(Pool::new().when(Cond::Chance(0.125)).item("wheat_seeds"));
     plant(r, &DANDELION, "flower_dandelion");
     plant(r, &ROSE, "flower_rose");

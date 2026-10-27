@@ -16,8 +16,8 @@ static PLANT_SOIL: Tag = Tag::named("plant_soil");
 static CACTUS_SOIL: Tag = Tag::named("cactus_soil");
 static SUGAR_CANE_SOIL: Tag = Tag::named("sugar_cane_soil");
 /// What a biome grows, as data any mod can set on any biome: trees per 5x5 cell (0..1), share of
-/// grass on plantable soil, which trees and flowers, and tags `snowy` (nothing grows), `dry`
-/// (cacti).
+/// grass on plantable soil, which trees and flowers, and tags `frozen` (nothing grows, set by
+/// `.frozen(..)`), `dry` (cacti).
 pub static TREES: Component<f32> = Component::named("trees");
 pub static GRASS_COVER: Component<f32> = Component::named("grass");
 /// The logs of the trees a biome grows, with weights: `"base:birch_log:1 base:oak_log:4"`
@@ -28,7 +28,7 @@ pub static FLOWERS: Component<Text> = Component::named("flowers");
 /// On a log, the tree it grows into: `round <leaves>` (like oaks, 4-6 high) or `cone <leaves>`
 /// (like spruces, 6-9 high).
 pub static TREE: Component<Text> = Component::named("tree");
-static SNOWY_TAG: Tag = Tag::named("snowy");
+static FROZEN: Tag = Tag::named("frozen");
 static DRY: Tag = Tag::named("dry");
 
 pub static PLAINS: Biome = Biome::named("plains");
@@ -44,24 +44,24 @@ pub static DEEP_CAVES: Biome = Biome::named("deep_caves");
 
 pub fn register(r: &mut Registry) {
     // Tags say what a biome is (spawning, decoration and mods ask these, not names).
-    r.biome(&PLAINS).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("animals").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
-    r.biome(&FOREST).colors(0x79c05a, 0x59ae30, 0x3f76e4).climate(0.7, 0.8).tag("forest").tag("animals").set(&TREES, 0.4).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log:1 base:oak_log:4");
-    r.biome(&BIRCH_FOREST).colors(0x88bb67, 0x6ba941, 0x3f76e4).climate(0.6, 0.6).tag("forest").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log");
-    r.biome(&TAIGA).colors(0x86b783, 0x68a464, 0x3d57d6).climate(0.25, 0.8).tag("forest").tag("cold").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.08).set_text(&TREE_KINDS, "base:spruce_log");
-    r.biome(&SNOWY).colors(0x80b497, 0x60a17b, 0x3938c9).climate(0.0, 0.5).tag("cold").tag("snowy").tag("animals").set(&TREES, 0.03).set_text(&TREE_KINDS, "base:spruce_log");
-    r.biome(&DESERT).colors(0xbfb755, 0xaea42a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
-    r.biome(&MOUNTAINS).colors(0x8ab689, 0x6da36b, 0x3f76e4).climate(0.2, 0.3).tag("mountain").tag("animals").set(&TREES, 0.06).set(&GRASS_COVER, 0.05).set_text(&TREE_KINDS, "base:spruce_log");
-    r.biome(&OCEAN).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("ocean");
-    r.biome(&BEACH).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.8, 0.4).tag("beach");
+    let (grass, foliage, water) = (&tints::GRASS, &tints::FOLIAGE, &tints::WATER);
+    r.biome(&PLAINS).surface("grass", "dirt", 3).tag("animals").set(&TREES, 0.025).set(&GRASS_COVER, 0.25);
+    r.biome(&FOREST).humidity(0.25..).surface("grass", "dirt", 3).tint(grass, 0x79c05a).tint(foliage, 0x59ae30).tag("forest").tag("animals").set(&TREES, 0.4).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log:1 base:oak_log:4");
+    r.biome(&BIRCH_FOREST).temperature(..0.1).humidity(0.05..).surface("grass", "dirt", 3).tint(grass, 0x88bb67).tint(foliage, 0x6ba941).tag("forest").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.12).set_text(&TREE_KINDS, "base:birch_log");
+    r.biome(&TAIGA).temperature(..-0.15).surface("grass", "dirt", 3).tint(grass, 0x86b783).tint(foliage, 0x68a464).tint(water, 0x3d57d6).tag("forest").tag("cold").tag("animals").set(&TREES, 0.45).set(&GRASS_COVER, 0.08).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome(&SNOWY).temperature(..-0.45).surface("snowy_grass", "dirt", 3).frozen("ice").tint(grass, 0x80b497).tint(foliage, 0x60a17b).tint(water, 0x3938c9).tag("cold").tag("animals").set(&TREES, 0.03).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome(&DESERT).temperature(0.35..).humidity(..0.0).surface("sand", "sand", 3).under("sandstone", 1).tint(grass, 0xbfb755).tint(foliage, 0xaea42a).tag("dry").tag("hot");
+    r.biome(&MOUNTAINS).surface("grass", "dirt", 3).bare_above(130).tint(grass, 0x8ab689).tint(foliage, 0x6da36b).tag("mountain").tag("animals").set(&TREES, 0.06).set(&GRASS_COVER, 0.05).set_text(&TREE_KINDS, "base:spruce_log");
+    r.biome(&OCEAN).surface("sand", "sand", 3).deep_top("gravel", SEA - 8).tag("ocean");
+    r.biome(&BEACH).surface("sand", "sand", 3).tag("beach");
     // Underground (3D): whole cubes deep under the surface; spiders like it there.
-    r.biome(&DEEP_CAVES).colors(0x8db360, 0x77ab2f, 0x3f76e4).climate(0.5, 0.5).tag("cave").tag("dark");
+    r.biome(&DEEP_CAVES).tag("cave").tag("dark");
 
     for (ore, max_y, veins, size) in [(&COAL_ORE, 128, 8, 12), (&IRON_ORE, 64, 6, 8), (&GOLD_ORE, 32, 2, 7), (&DIAMOND_ORE, 16, 1, 6)] {
         r.ore(&crate::OVERWORLD, ore).y(i32::MIN, max_y).veins(veins).size(size).replace("#stone_ore_replaceables");
     }
 
     // The overworld's shape. Other mods add to it by these names (`base:desert`, `base:mountains`).
-    let (low, high) = (f64::NEG_INFINITY, f64::INFINITY);
     r.terrain(&crate::OVERWORLD)
         .stone("stone")
         .base_height(SEA as f64)
@@ -72,16 +72,17 @@ pub fn register(r: &mut Registry) {
         .feature(preset::hills(16.0, 110.0).mask(Mask::Temperature(-0.35, -0.6).not()))
         .feature(preset::dunes(4.0, 26.0).mask(Mask::Temperature(0.25, 0.45).and(Mask::Humidity(0.1, -0.05))))
         .feature(preset::mountains(150.0, 260.0).mask(Mask::noise(700.0, -0.1, 0.3).salt(0x44).and(Mask::Continent(0.0, 0.2))).named("mountains"))
-        .biome(BiomeRule::new("ocean").height(i32::MIN, SEA - 2).surface("sand", "sand", 3).deep_top("gravel", SEA - 8))
-        .biome(BiomeRule::new("snowy_plains").named("snowy_coast").height(i32::MIN, SEA + 1).continent(low, 0.1).temperature(low, -0.45).surface("snowy_grass", "dirt", 3).frozen("ice"))
-        .biome(BiomeRule::new("beach").height(i32::MIN, SEA + 1).continent(low, 0.1).surface("sand", "sand", 3))
-        .biome(BiomeRule::new("mountains").feature("mountains", 0.45, high).surface("grass", "dirt", 3).bare_above(130))
-        .biome(BiomeRule::new("snowy_plains").temperature(low, -0.45).surface("snowy_grass", "dirt", 3).frozen("ice"))
-        .biome(BiomeRule::new("taiga").temperature(low, -0.15).surface("grass", "dirt", 3))
-        .biome(BiomeRule::new("desert").temperature(0.35, high).humidity(low, 0.0).surface("sand", "sand", 3).under("sandstone", 1))
-        .biome(BiomeRule::new("forest").humidity(0.25, high).surface("grass", "dirt", 3))
-        .biome(BiomeRule::new("birch_forest").humidity(0.05, high).temperature(low, 0.1).surface("grass", "dirt", 3))
-        .biome(BiomeRule::new("plains").surface("grass", "dirt", 3))
+        // Biomes bring their climate and surface; rules only add where else they must hold.
+        .biome(BiomeRule::new("ocean").height(..=SEA - 2))
+        .biome(BiomeRule::new("snowy_plains").named("snowy_coast").height(..=SEA + 1).continent(..0.1))
+        .biome(BiomeRule::new("beach").height(..=SEA + 1).continent(..0.1))
+        .biome(BiomeRule::new("mountains").feature("mountains", 0.45..))
+        .biome(BiomeRule::new("snowy_plains"))
+        .biome(BiomeRule::new("taiga"))
+        .biome(BiomeRule::new("desert"))
+        .biome(BiomeRule::new("forest"))
+        .biome(BiomeRule::new("birch_forest"))
+        .biome(BiomeRule::new("plains"))
         .cave_biome("deep_caves", 24, 96.0, 0.25)
         .caves(Caves::new("lava", i32::MIN, 11))
         .decorate(decorate);
@@ -241,7 +242,7 @@ fn decorate(g: &mut Gen) {
             let roll = unit(h);
             // Plants go where they could be planted (soil tags); the biome decides how many.
             let b = col.biome;
-            if SNOWY_TAG.on_biome(b) {
+            if FROZEN.on_biome(b) {
                 continue;
             }
             if PLANT_SOIL.on_block(below) {

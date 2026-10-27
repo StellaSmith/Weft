@@ -152,6 +152,14 @@ pub type Screen = Handle<kind::Screen>;
 pub type HudElement = Handle<kind::HudElement>;
 pub type GizmoGroup = Handle<kind::GizmoGroup>;
 pub type TintKind = Handle<kind::TintKind>;
+
+/// The engine's tint kinds; biomes color them with `.tint(&GRASS, 0x..)`.
+pub mod tints {
+    use super::TintKind;
+    pub static GRASS: TintKind = TintKind::named("core:grass");
+    pub static FOLIAGE: TintKind = TintKind::named("core:foliage");
+    pub static WATER: TintKind = TintKind::named("core:water");
+}
 pub type EntityCategory = Handle<kind::EntityCategory>;
 pub type SoundCategory = Handle<kind::SoundCategory>;
 pub type CreativeTab = Handle<kind::CreativeTab>;
@@ -317,7 +325,7 @@ impl Registry {
     }
 
     pub fn biome<'a>(&'a mut self, biome: &'static Biome) -> BiomeBuilder<'a> {
-        BiomeBuilder { _p: PhantomData, raw: self.raw, name: biome.name().to_string(), handle: Some(biome), desc: abi::BiomeDesc::DEFAULT, colors: None, components: Vec::new() }
+        BiomeBuilder { _p: PhantomData, raw: self.raw, ns: self.ns, name: biome.name().to_string(), handle: Some(biome), rule: crate::terrain::BiomeRule::blank(), tints: Vec::new(), components: Vec::new() }
     }
 
     /// Creative inventory tab named `tab.<ns>.<name>` in the language files, shown with `icon`.
@@ -596,26 +604,20 @@ macro_rules! state_setters {
             self.each(|s, _| s.flags |= bf::CLIMBABLE);
             self
         }
-        pub fn tint_grass(mut self) -> Self {
-            self.each(|s, _| s.tint_name = "core:grass".into());
-            self
-        }
-        /// Grass color on the top face only (the sides carry their own color).
-        pub fn tint_grass_top(mut self) -> Self {
-            self.each(|s, _| {
-                s.tint_name = "core:grass".into();
-                s.tint_faces = 1 << 3;
-            });
-            self
-        }
-        pub fn tint_foliage(mut self) -> Self {
-            self.each(|s, _| s.tint_name = "core:foliage".into());
-            self
-        }
-        /// Colored by a tint kind registered with `Registry::tint_kind` (any mod's).
+        /// Colored by the biome it stands in: `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own
+        /// kind (`Registry::tint_kind`).
         pub fn tint(mut self, kind: &TintKind) -> Self {
             let kind = kind.name().to_string();
             self.each(|s, _| s.tint_name = kind.clone());
+            self
+        }
+        /// `tint` on the top face only (grass blocks: the sides carry their own color).
+        pub fn tint_top(mut self, kind: &TintKind) -> Self {
+            let kind = kind.name().to_string();
+            self.each(|s, _| {
+                s.tint_name = kind.clone();
+                s.tint_faces = 1 << 3;
+            });
             self
         }
         pub fn friction(mut self, f: f32) -> Self {
@@ -671,10 +673,6 @@ macro_rules! state_setters {
                 s.hardness = -1.0;
                 s.drag = 0.5;
             });
-            self
-        }
-        pub fn tint_water(mut self) -> Self {
-            self.each(|s, _| s.tint_name = "core:water".into());
             self
         }
         /// Air-like: invisible, no collision, not targetable.
@@ -1184,21 +1182,54 @@ impl Drop for ItemBuilder<'_> {
 pub struct BiomeBuilder<'a> {
     _p: PhantomData<&'a mut Registry>,
     raw: *mut abi::Registrar,
+    ns: &'static str,
     name: String,
     handle: Option<&'static Biome>,
-    desc: abi::BiomeDesc,
-    colors: Option<[u32; 3]>,
+    rule: crate::terrain::BiomeRule,
+    tints: Vec<(&'static TintKind, u32)>,
     components: Vec<Pending>,
 }
 
+/// A biome's climate and surface. Terrain rules placing it start from these
+/// (`BiomeRule::new("desert")` needs nothing else) and may change them there.
 impl BiomeBuilder<'_> {
-    /// Grass, foliage and water colors (`0xRRGGBB`).
-    pub fn colors(mut self, grass: u32, foliage: u32, water: u32) -> Self {
-        self.colors = Some([grass, foliage, water]);
+    fn edit(mut self, f: impl FnOnce(crate::terrain::BiomeRule) -> crate::terrain::BiomeRule) -> Self {
+        self.rule = f(std::mem::replace(&mut self.rule, crate::terrain::BiomeRule::blank()));
         self
     }
-    pub fn climate(mut self, temperature: f32, rainfall: f32) -> Self {
-        (self.desc.temperature, self.desc.rainfall) = (temperature, rainfall);
+    /// Where the climate fits it, like `0.35..` or `..-0.45` (from inclusive, to exclusive);
+    /// the terrain's fields are about -1.4..1.4. Without one it fits everywhere.
+    pub fn temperature(self, range: impl std::ops::RangeBounds<f64>) -> Self {
+        self.edit(|r| r.temperature(range))
+    }
+    pub fn humidity(self, range: impl std::ops::RangeBounds<f64>) -> Self {
+        self.edit(|r| r.humidity(range))
+    }
+    /// Top block, then `depth` blocks of filler, then the terrain's stone.
+    pub fn surface(self, top: &str, filler: &str, depth: i32) -> Self {
+        self.edit(|r| r.surface(top, filler, depth))
+    }
+    /// The lowest `layers` of the filler become `block` (sandstone under sand).
+    pub fn under(self, block: &str, layers: i32) -> Self {
+        self.edit(|r| r.under(block, layers))
+    }
+    /// Top block for columns lower than `below` (gravel on deep sea floors).
+    pub fn deep_top(self, block: &str, below: i32) -> Self {
+        self.edit(|r| r.deep_top(block, below))
+    }
+    /// Plain stone above this height (bare peaks).
+    pub fn bare_above(self, y: i32) -> Self {
+        self.edit(|r| r.bare_above(y))
+    }
+    /// A frozen biome: the water surface freezes into `block`, and it has the tag `frozen`
+    /// (decorations put no flowers there).
+    pub fn frozen(self, block: &str) -> Self {
+        self.edit(|r| r.frozen(block)).tag("frozen")
+    }
+    /// The color (`0xRRGGBB`) blocks tinted with `kind` take here (`tints::GRASS`, or a mod's
+    /// own kind). Kinds not given keep their default.
+    pub fn tint(mut self, kind: &'static TintKind, color: u32) -> Self {
+        self.tints.push((kind, color));
         self
     }
 }
@@ -1210,10 +1241,11 @@ impl Drop for BiomeBuilder<'_> {
         }
         let mut scratch = Vec::new();
         let values = raw_values(&self.components, &mut scratch);
-        let desc = abi::BiomeDesc { name: Str::new(&self.name), cell: cell(self.handle), components: Slice::new(&values), ..self.desc };
+        let names = self.rule.names(self.ns);
+        let desc = abi::BiomeDesc { name: Str::new(&self.name), cell: cell(self.handle), rule: self.rule.desc(&names), components: Slice::new(&values) };
         unsafe { (host().reg_biome)(self.raw, &desc) }
-        for (kind, color) in ["core:grass", "core:foliage", "core:water"].into_iter().zip(self.colors.into_iter().flatten()) {
-            unsafe { (host().reg_biome_tint)(self.raw, Str::new(&self.name), Str::new(kind), color) }
+        for (kind, color) in &self.tints {
+            unsafe { (host().reg_biome_tint)(self.raw, Str::new(&self.name), Str::new(kind.name()), *color) }
         }
     }
 }
@@ -1587,7 +1619,7 @@ pub struct LiquidBuilder<'a> {
     name: String,
     handle: &'static Block,
     texture: String,
-    tint: bool,
+    tint: Option<&'static TintKind>,
     light: [u8; 3],
     opacity: u8,
     drag: f32,
@@ -1602,9 +1634,9 @@ impl LiquidBuilder<'_> {
         self.texture = t.to_string();
         self
     }
-    /// Colored by the biome's water color.
-    pub fn tint_water(mut self) -> Self {
-        self.tint = true;
+    /// Colored by the biome it stands in (`tints::WATER`).
+    pub fn tint(mut self, kind: &'static TintKind) -> Self {
+        self.tint = Some(kind);
         self
     }
     pub fn light(mut self, level: u8) -> Self {
@@ -1670,8 +1702,8 @@ impl Drop for LiquidBuilder<'_> {
         let tex = if self.texture.is_empty() { format!("{short}_still") } else { self.texture.clone() };
         let (tint, light, opacity, drag) = (self.tint, self.light, self.opacity, self.drag);
         let mut b = self.reg.block(self.handle).texture(&tex).prop("level", 0..=15).states(|p, s| s.liquid(if p.int("level") >= 8 { 0 } else { p.int("level") as u8 })).light_rgb(light[0], light[1], light[2]).opacity(opacity).drag(drag).no_item().drops_nothing();
-        if tint {
-            b = b.tint_water();
+        if let Some(kind) = tint {
+            b = b.tint(kind);
         }
         b.components = std::mem::take(&mut self.components);
         drop(b);
@@ -1726,7 +1758,7 @@ impl Registry {
             reg: self,
             handle: liquid,
             texture: String::new(),
-            tint: false,
+            tint: None,
             light: [0; 3],
             opacity: 2,
             drag: 0.5,

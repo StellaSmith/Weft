@@ -63,13 +63,21 @@ r.spawn(&SHEEP).biome("#animals").ground("#animal_spawn").light(7, 15).group(2, 
 ```
 
 ## Biomes
-A biome is a name, three colors and a climate, plus whatever data and tags you attach.
+A biome says once what it is: the climate it likes, its ground, its colors, plus whatever data and tags you attach.
 
 ```rust
-static DUST: Biome = Biome::named("dust");
-r.biome(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
+static DESERT: Biome = Biome::named("desert");
+r.biome(&DESERT).temperature(0.35..).humidity(..0.0).surface("sand", "sand", 3).under("sandstone", 1).tint(&tints::GRASS, 0xbfb755).tag("dry");
 ```
-`colors(grass, foliage, water)` is what tinted blocks take in this biome. Tags (`tag("animals")`) are how everything else asks what a biome is, since spawns, ores and structures look at tags and never at names. `set(&COMPONENT, value)` attaches data, like how many trees base grows there.
+- `temperature(..)`, `humidity(..)`: where the climate fits it, as ranges like `0.35..` or `..-0.45` (the fields run about -1.4 to 1.4). Without them it fits anywhere.
+- `surface(top, filler, depth)`: a top block, `depth` blocks of filler, then the terrain's stone
+- `under(block, layers)`: the lowest layers of filler become another block (sandstone under sand)
+- `deep_top(block, below)`: a different top block where the ground is lower than `below` (gravel on a sea floor)
+- `bare_above(y)`: plain stone above this height
+- `frozen(block)`: the water surface turns into this block, and the biome gets the tag `frozen` (base grows no flowers there)
+- `tint(&kind, color)`: what blocks tinted with that kind take here, `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own kind. Kinds you don't give keep their default. To color another mod's biome with your kind, `r.biome_tint(&biome, &kind, color)`.
+
+Tags (`tag("animals")`) are how everything else asks what a biome is, since spawns, ores and structures look at tags and never at names. `set(&COMPONENT, value)` attaches data, like how many trees base grows there.
 
 Registering a biome doesn't put it anywhere. The rules of a dimension's terrain decide where it appears, and that can be underground too: base's `deep_caves` is a biome of whole cubes deep below the surface. Your biome can go into your own dimension or into someone else's, see [changing another mod's terrain](#changing-another-mods-terrain).
 
@@ -111,7 +119,7 @@ r.terrain(&MARS)
     .feature(preset::hills(8.0, 220.0))
     .feature(preset::craters(32.0, 16.0, 150.0))
     .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
-    .biome(BiomeRule::new("dust").surface("regolith", "regolith", 3));
+    .biome(BiomeRule::new("dust"));
 ```
 `stone` is the block the ground is made of and `base_height` the ground height when nothing is added. Blocks and biomes are given by name, like everywhere else: yours without a prefix, other mods' as `base:sand`.
 
@@ -139,17 +147,12 @@ preset::mountains(150.0, 260.0).mask(Mask::noise(700.0, -0.1, 0.3).salt(0x44).an
 `salt` gives a noise its own pattern, so two masks of the same size don't line up, and `named` lets a biome rule ask how strong the feature is (and other mods find it by that name).
 
 ### Biome rules
-Rules are tried in order and the **first one that fits wins**, so specific ones go first and a plain catch-all goes last. A rule starts as `BiomeRule::new("desert")`, and every condition after it is optional:
-- `temperature(min, max)`, `humidity(min, max)`, `continent(min, max)`: climate ranges, the fields run about -1.4 to 1.4
-- `height(min, max)`: the surface height
-- `feature("mountains", 0.45, MAX)`: where the named feature is strong
+A rule puts a biome into a terrain. It starts from the biome's climate and surface, so `BiomeRule::new("desert")` is a whole rule. Rules are tried in order and the **first one that fits wins**, so specific ones go first and a plain catch-all goes last. What a rule adds is where else it must hold:
+- `continent(..)`: continentalness, below 0 is sea and coasts are about `0.0..0.1`
+- `height(..)`: the surface height, like `..=SEA + 1`
+- `feature("mountains", 0.45..)`: where the named feature is strong
 
-Then the surface it makes:
-- `surface(top, filler, depth)`: a top block, `depth` blocks of filler, then the terrain's stone
-- `under(block, layers)`: the lowest layers of filler become another block (sandstone under sand)
-- `deep_top(block, below)`: a different top block where the ground is lower than `below` (gravel on a sea floor)
-- `bare_above(y)`: plain stone above this height
-- `frozen(block)`: the water surface turns into this block
+Any of the biome's own settings (`temperature`, `surface`, `frozen`...) can also be given on a rule, and then that rule uses its own.
 
 A rule is named like its biome, which is how other mods point at it (`base:desert`). When one biome has two rules, like base's snowy plains on the coast and inland, the second gets its own name with `.named("snowy_coast")`.
 
@@ -172,11 +175,11 @@ for z in 0..16usize { for x in 0..16usize {
 `g.column(x, z)` gives any other column in world coordinates, and `g.surface_carved(x, z)` says whether a cave opened the ground there, so a tree from a neighboring cube doesn't end up floating over a pit. How much grows where is data on the biome (the components `trees`, `grass`, `tree_kinds` and `flowers`), which is why another mod can give a biome its own trees without touching code, by attaching those components with `r.set_on(Target::Biome("base:forest"), &COMPONENT, value)`.
 
 ## Changing another mod's terrain
-`r.terrain(&OVERWORLD)` with `OVERWORLD = Dimension::named("base:overworld")` works on someone else's dimension just like on yours. Whatever you call on it is applied after the owner's description, and edits from several mods go in load order, so the result is the same on every machine. Testmod puts a hot, dry biome into base's deserts like this:
+`r.terrain(&OVERWORLD)` with `OVERWORLD = Dimension::named("base:overworld")` works on someone else's dimension just like on yours. Whatever you call on it is applied after the owner's description, and edits from several mods go in load order, so the result is the same on every machine. Testmod puts a hot, dry biome (`r.biome(&SCORCHED).temperature(0.4..).humidity(..-0.1)...`) into base's deserts like this:
 
 ```rust
 r.terrain(&OVERWORLD)
-    .biome_before("base:desert", BiomeRule::new("scorched").temperature(0.4, f64::INFINITY).humidity(f64::NEG_INFINITY, -0.1).surface("regolith", "regolith", 2))
+    .biome_before("base:desert", BiomeRule::new("scorched"))
     .feature(Feature::new(|_, x, z| if (x - 1000.0).abs().max((z - 1000.0).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"))
     .decorate(boulders);
 ```
@@ -186,7 +189,7 @@ Because rules are tried in order, a new biome goes in next to the rule it takes 
 |---|---|
 | `biome_before(rule, new)`, `biome_after(rule, new)` | adds a rule next to another |
 | `replace_biome(rule, new)`, `remove_biome(rule)` | swaps a rule for yours, or takes it out |
-| `edit_biome(rule, \|r\| r.temperature(0.5, 9.0))` | changes only what the closure sets, the rest of the rule stays |
+| `edit_biome(rule, \|r\| r.temperature(0.5..))` | changes only what the closure sets, the rest of the rule stays |
 | `feature(f)`, `remove_feature(name)` | adds a feature or takes a named one out |
 | `mask_feature(name, mask)` | limits a named feature further, its mask is multiplied by yours |
 | `cave_biome(..)`, `remove_cave_biome(biome)` | the same for underground biomes |

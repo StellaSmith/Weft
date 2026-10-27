@@ -527,7 +527,7 @@ pub struct RawRegistrar {
     pub owner: ModId,
     pub blocks: Vec<RawBlock>,
     pub items: Vec<RawItem>,
-    pub biomes: Vec<(BiomeDef, usize, Vec<RawValue>)>,
+    pub biomes: Vec<(BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule)>,
     pub dims: Vec<(DimensionDef, usize, Vec<RawValue>)>,
     pub tint_kinds: Vec<(String, u32)>,
     /// Biome, tint kind, color.
@@ -910,7 +910,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let mut errors: Vec<String> = Vec::new();
     let mut blocks: Vec<(ModId, RawBlock)> = Vec::new();
     let mut items: Vec<(ModId, RawItem)> = Vec::new();
-    let mut biomes: Vec<(BiomeDef, usize, Vec<RawValue>)> = Vec::new();
+    let mut biomes: Vec<(BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule)> = Vec::new();
     let mut dims: Vec<(DimensionDef, usize, Vec<RawValue>)> = Vec::new();
     let mut tint_kinds: Vec<(String, u32)> = vec![("core:grass".into(), 0x8db360), ("core:foliage".into(), 0x77ab2f), ("core:water".into(), 0x3f76e4)];
     let mut biome_tints = Vec::new();
@@ -1235,12 +1235,14 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
 
     let mut biome_values = Vec::new();
+    let mut biome_rules = Vec::new();
     let biome_defs: Vec<BiomeDef> = biomes
         .into_iter()
         .enumerate()
-        .map(|(i, (b, cell, v))| {
+        .map(|(i, (b, cell, v, rule))| {
             write_cell(cell, i as u32);
             biome_values.push(v);
+            biome_rules.push(rule);
             b
         })
         .collect();
@@ -1566,6 +1568,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         let names = crate::server::terrain::Names {
             block: &|n| block_names.get(n).map(|&b| block_defs[b as usize].first_state),
             biome: &|n| biome_names.get(n).copied(),
+            biome_rule: &|n| biome_names.get(n).map(|&b| &biome_rules[b as usize]),
         };
         let t = crate::server::terrain::build(&def.name, &|m| mods[m.0 as usize].id.clone(), ops, &names, &mut errors);
         dim_defs[d].terrain = Some(Box::new(t));

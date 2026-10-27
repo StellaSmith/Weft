@@ -158,12 +158,13 @@ fn init(r: &mut Registry) {
         .mineable("pickaxe")
         .tab(&BASE_BUILDING);
     r.block(&REINFORCED_STONE).hardness(4.0).mineable("pickaxe").needs_tool(250).tab(&BASE_BUILDING);
-    r.biome(&DUST).colors(0xb5764a, 0x9a6040, 0x8a5a40).climate(1.5, 0.0);
-    r.biome(&SCORCHED).colors(0xbf8a50, 0xae7a3a, 0x3f76e4).climate(2.0, 0.0).tag("dry").tag("hot");
+    r.biome(&DUST).surface("regolith", "regolith", 3).tint(&tints::GRASS, 0xb5764a).tint(&tints::FOLIAGE, 0x9a6040).tint(&tints::WATER, 0x8a5a40);
+    // The hottest, driest part of base's deserts.
+    r.biome(&SCORCHED).temperature(0.4..).humidity(..-0.1).surface("regolith", "regolith", 2).tint(&tints::GRASS, 0xbf8a50).tint(&tints::FOLIAGE, 0xae7a3a).tag("dry").tag("hot");
     // Base's overworld, edited from outside: a biome in the hottest, driest deserts, a rock needle
     // from a feature of this mod's own, and boulders on the new biome.
     r.terrain(&OVERWORLD)
-        .biome_before("base:desert", BiomeRule::new("scorched").temperature(0.4, f64::INFINITY).humidity(f64::NEG_INFINITY, -0.1).surface("regolith", "regolith", 2))
+        .biome_before("base:desert", BiomeRule::new("scorched"))
         .feature(Feature::new(|_, x, z| if (x - NEEDLE[0]).abs().max((z - NEEDLE[1]).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"))
         .decorate(boulders);
     r.ore(&OVERWORLD, &TIN_ORE).y(-64, 48).veins(4).size(7).replace("#stone_ore_replaceables");
@@ -176,7 +177,7 @@ fn init(r: &mut Registry) {
         .feature(preset::canyons(26.0, 9.0).mask(Mask::noise(1200.0, -0.2, 0.1)))
         .feature(preset::craters(32.0, 16.0, 150.0))
         .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
-        .biome(BiomeRule::new("dust").surface("regolith", "regolith", 3));
+        .biome(BiomeRule::new("dust"));
     r.dimension(&MARS)
         .spawn(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])
         .height(-4, 12)

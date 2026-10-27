@@ -955,8 +955,7 @@ impl Client {
                         let ((ehw, eh, _), (hw, h, _)) = (e.dims(), self.player.dims());
                         let reach = ehw + hw;
                         if d.x.abs() < reach && d.z.abs() < reach && d.y < eh && -d.y < h {
-                            let dist = d.x.abs().max(d.z.abs()).max(0.01).sqrt();
-                            push += DVec3::new(d.x, 0.0, d.z) * ((1.0 / dist).min(1.0) / dist * 0.05);
+                            push += physics::nudge(d);
                         }
                     }
                 }
@@ -1600,64 +1599,9 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
     let (sy, cy) = (p.yaw as f64).sin_cos();
     let forward = DVec3::new(-sy, 0.0, -cy);
     let right = DVec3::new(cy, 0.0, -sy);
-    // Vanilla's moveRelative: the input vector, normalized only when longer than 1.
-    let accelerate = |vel: &mut DVec3, speed: f64| {
-        let len2 = fwd_in * fwd_in + side_in * side_in;
-        if len2 < 1e-7 {
-            return;
-        }
-        let k = speed / len2.sqrt().max(1.0);
-        *vel += (forward * fwd_in + right * side_in) * k;
-    };
-
-    let feet = p.pos.floor().as_ivec3();
-    let at = |q: IVec3| block(q).map_or(0, |s| c.states[s as usize].flags);
-    p.in_liquid = at(feet) & bf::LIQUID != 0 || at(feet + IVec3::Y) & bf::LIQUID != 0;
-    let drag = block(feet).map_or(1.0, |s| c.states[s as usize].drag as f64);
+    // Vanilla's moveRelative input: normalized only when longer than 1.
+    let wish = forward * fwd_in + right * side_in;
     let g = 0.08 * gravity / 32.0;
-
-    if p.flying {
-        let fly = 0.05 * p.fly_speed as f64 * if sprint { 2.0 } else { 1.0 };
-        if jump {
-            p.vel.y += fly * 3.0;
-        }
-        if sneak {
-            p.vel.y -= fly * 3.0;
-        }
-        accelerate(&mut p.vel, fly);
-    } else if p.in_liquid {
-        accelerate(&mut p.vel, 0.02 * drag);
-        if jump {
-            p.vel.y += 0.04;
-        }
-    } else {
-        let slip = block(IVec3::new(feet.x, (p.pos.y - 0.5).floor() as i32, feet.z)).map_or(0.6, |s| c.states[s as usize].friction as f64);
-        let speed = if p.on_ground {
-            let walk = if sprint { 0.13 } else { 0.1 } * p.speed_mul;
-            walk * (0.216 / (slip * slip * slip))
-        } else if sprint {
-            0.026
-        } else {
-            0.02
-        };
-        p.jump_cooldown = p.jump_cooldown.saturating_sub(1);
-        if !jump {
-            p.jump_cooldown = 0;
-        } else if p.on_ground && p.jump_cooldown == 0 {
-            p.vel.y = 0.42 * p.jump_mul;
-            if sprint {
-                p.vel += forward * 0.2;
-            }
-            p.jump_cooldown = 10;
-        }
-        accelerate(&mut p.vel, speed * drag);
-        let climbing = at(feet) & bf::CLIMBABLE != 0;
-        if climbing {
-            p.vel.x = p.vel.x.clamp(-0.15, 0.15);
-            p.vel.z = p.vel.z.clamp(-0.15, 0.15);
-            p.vel.y = p.vel.y.max(if sneak { 0.0 } else { -0.15 });
-        }
-    }
 
     // Crouch while sneaking; stand up only where the full height fits.
     if sneak && !p.flying && !p.noclip {
@@ -1666,71 +1610,70 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl Fn(IVec3) -> Opt
         p.crouched = false;
     }
     let height = p.dims().1;
-
     let before = p.pos;
-    if p.noclip {
-        p.pos += p.vel;
-        p.on_ground = false;
-    } else {
-        // Sneaking at an edge (vanilla): each horizontal component is cut back in 0.05 steps
-        // while the moved box would have nothing under it, so the player slides along the edge
-        // and never falls off it.
-        if sneak && p.on_ground && !p.flying {
-            let ground = |dx: f64, dz: f64| {
-                let area = physics::Aabb::around(p.pos + DVec3::new(dx, -0.6, dz), hw, height);
-                physics::collides(c, block, area) || bodies.iter().any(|b| b.aabb.intersects(&area))
-            };
-            let shrink = |v: f64| if v.abs() < 0.05 { 0.0 } else { v - 0.05 * v.signum() };
-            while p.vel.x != 0.0 && !ground(p.vel.x, 0.0) {
-                p.vel.x = shrink(p.vel.x);
-            }
-            while p.vel.z != 0.0 && !ground(0.0, p.vel.z) {
-                p.vel.z = shrink(p.vel.z);
-            }
-            while p.vel.x != 0.0 && p.vel.z != 0.0 && !ground(p.vel.x, p.vel.z) {
-                p.vel.x = shrink(p.vel.x);
-                p.vel.z = shrink(p.vel.z);
-            }
-        }
-        let step_h = if p.on_ground && !p.flying { 0.6 } else { 0.0 };
-        let r = physics::move_box_with(c, block, bodies, 0, p.pos, hw, height, p.vel, step_h);
-        p.pos = r.pos;
-        if r.on_ground {
-            if let Some(b) = physics::standing_on(c, p.pos, hw, bodies, 0) {
-                p.support = Some(b);
-            }
-        }
-        for i in 0..3 {
-            if r.hit[i] {
-                p.vel[i] = 0.0;
-            }
-        }
-        if (r.hit[0] || r.hit[2] || jump) && !p.flying && at(feet) & bf::CLIMBABLE != 0 {
-            p.vel.y = 0.2;
-        }
-        p.on_ground = r.on_ground || (p.pos == before && p.on_ground);
-        p.landed |= p.on_ground;
-        // Flying creative players stop flying when they come down onto the ground.
-        if p.flying && r.on_ground && r.hit[1] {
-            p.flying = false;
-        }
-    }
 
-    if p.flying {
+    if p.flying || p.noclip {
+        let fly = 0.05 * p.fly_speed as f64 * if sprint { 2.0 } else { 1.0 };
+        if jump {
+            p.vel.y += fly * 3.0;
+        }
+        if sneak {
+            p.vel.y -= fly * 3.0;
+        }
+        let len2 = wish.length_squared();
+        if len2 > 1e-7 {
+            p.vel += wish * (fly / len2.sqrt().max(1.0));
+        }
+        if p.noclip {
+            p.pos += p.vel;
+            p.on_ground = false;
+        } else {
+            let r = physics::move_box_with(c, block, bodies, 0, p.pos, hw, height, p.vel, 0.0);
+            p.pos = r.pos;
+            for i in 0..3 {
+                if r.hit[i] {
+                    p.vel[i] = 0.0;
+                }
+            }
+            p.on_ground = r.on_ground;
+            p.landed |= p.on_ground;
+            // Flying creative players stop flying when they come down onto the ground.
+            if r.on_ground && r.hit[1] {
+                p.flying = false;
+            }
+        }
+        p.in_liquid = physics::in_liquid(c, block, p.pos, 0.0);
         p.vel.y *= 0.6;
         p.vel.x *= 0.91;
         p.vel.z *= 0.91;
-    } else if p.in_liquid {
-        p.vel *= 0.8;
-        p.vel.y -= g / 4.0;
-    } else {
-        let slip = if p.on_ground {
-            block(IVec3::new(feet.x, (before.y - 0.5).floor() as i32, feet.z)).map_or(0.6, |s| c.states[s as usize].friction as f64)
-        } else {
-            1.0
-        };
-        p.vel.y = (p.vel.y - g) * 0.98;
-        p.vel.x *= slip * 0.91;
-        p.vel.z *= slip * 0.91;
+        return;
     }
+
+    // Walking is the same step mobs take; the player only brings its input.
+    p.jump_cooldown = p.jump_cooldown.saturating_sub(1);
+    if !jump {
+        p.jump_cooldown = 0;
+    }
+    let ctl = physics::Control {
+        wish,
+        ground: if sprint { 0.13 } else { 0.1 } * p.speed_mul,
+        air: if sprint { 0.026 } else { 0.02 },
+        jump: if jump && p.jump_cooldown == 0 { 0.42 * p.jump_mul } else { 0.0 },
+        jump_boost: if sprint { forward * 0.2 } else { DVec3::ZERO },
+        swim: jump,
+        careful: sneak,
+    };
+    let frame = physics::Frame { half_width: hw, height, step: 0.6, gravity: g };
+    let w = physics::walk(c, block, bodies, 0, &mut p.pos, &mut p.vel, p.on_ground, &ctl, &frame);
+    if w.jumped {
+        p.jump_cooldown = 10;
+    }
+    p.in_liquid = w.in_liquid;
+    if w.on_ground {
+        if let Some(b) = physics::standing_on(c, p.pos, hw, bodies, 0) {
+            p.support = Some(b);
+        }
+    }
+    p.on_ground = w.on_ground || (p.pos == before && p.on_ground);
+    p.landed |= p.on_ground;
 }

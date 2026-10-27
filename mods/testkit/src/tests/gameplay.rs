@@ -300,6 +300,65 @@ pub async fn movement_attributes(t: T) -> R {
     Ok(())
 }
 
+/// Mobs move by the player's rules: a pig pushed across ice slides further than on grass, walks
+/// slower through oil, and climbs a ladder it walks into.
+pub async fn mob_physics(t: T) -> R {
+    t.flat().await?;
+    t.cmd("/rule core:mob_spawning 0").await?;
+    let f = t.feet();
+    let floor = |p: [i32; 3]| add(p, [0, -1, 0]);
+    // How far a pig slides after a push east, over `ground`.
+    let run = |t: T, at: [i32; 3], ground: &'static str| async move {
+        t.fill(floor(at), floor(add(at, [24, 0, 2])), ground).await?;
+        t.fill(at, add(at, [24, 2, 2]), "air").await?;
+        let id = t.op(&format!("spawn base:pig {} {} {}", at[0], at[1], at[2] + 1)).await?;
+        t.secs(0.5).await?;
+        let x0: f64 = t.op(&format!("entity {id}")).await?.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        t.op(&format!("push 12 0 0 {id}")).await?;
+        t.secs(1.0).await?;
+        let x1: f64 = t.op(&format!("entity {id}")).await?.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        t.op(&format!("remove {id}")).await?;
+        Ok::<f64, String>(x1 - x0)
+    };
+    let grass = run(t.clone(), add(f, [-12, 0, 6]), "grass").await?;
+    let ice = run(t.clone(), add(f, [-12, 0, 12]), "ice").await?;
+    t.note(format!("a pig went {grass:.2} blocks on grass, {ice:.2} on ice"));
+    t.check(ice > grass * 1.3, format!("it slides on ice: {grass:.2} -> {ice:.2}"));
+    // Walked 30 ticks over grass, then through oil (a liquid with drag).
+    let walk = |t: T, at: [i32; 3], liquid: bool| async move {
+        t.fill(floor(at), floor(add(at, [24, 0, 2])), "grass").await?;
+        t.fill(at, add(at, [24, 2, 2]), "air").await?;
+        if liquid {
+            t.fill(at, add(at, [24, 0, 2]), "testmod:oil").await?;
+        }
+        let id = t.op(&format!("spawn base:pig {} {} {}", at[0], at[1], at[2] + 1)).await?;
+        t.secs(0.5).await?;
+        let x0: f64 = t.op(&format!("entity {id}")).await?.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        t.op(&format!("drive {id} 1 0 30")).await?;
+        t.secs(1.5).await?;
+        let x1: f64 = t.op(&format!("entity {id}")).await?.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        t.op(&format!("remove {id}")).await?;
+        Ok::<f64, String>(x1 - x0)
+    };
+    let dry = walk(t.clone(), add(f, [-12, 0, 18]), false).await?;
+    let oil = walk(t.clone(), add(f, [-12, 0, 24]), true).await?;
+    t.note(format!("walked {dry:.2} blocks on grass, {oil:.2} through oil"));
+    t.check(oil < dry * 0.75, format!("slower through oil: {dry:.2} -> {oil:.2}"));
+    // A wall with a ladder: walked into it, the pig goes up.
+    let wall = add(f, [6, 0, -6]);
+    t.fill(add(wall, [0, 0, -1]), add(wall, [0, 5, 1]), "stone").await?;
+    t.fill(add(wall, [-1, 0, -1]), add(wall, [-1, 5, 1]), "base:ladder[facing=west]").await?;
+    let id = t.op(&format!("spawn base:pig {} {} {}", wall[0] - 2, wall[1], wall[2])).await?;
+    t.secs(0.5).await?;
+    let y0: f64 = t.op(&format!("entity {id}")).await?.split_whitespace().nth(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    t.op(&format!("drive {id} 1 0 60")).await?;
+    t.secs(3.0).await?;
+    let y1: f64 = t.op(&format!("entity {id}")).await?.split_whitespace().nth(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    t.note(format!("the pig on the ladder: y {y0:.2} -> {y1:.2}"));
+    t.check(y1 > y0 + 1.5, format!("it climbs the ladder: {y0:.2} -> {y1:.2}"));
+    Ok(())
+}
+
 pub async fn drop_and_pickup(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 cobblestone 10").await?;

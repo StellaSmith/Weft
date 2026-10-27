@@ -36,6 +36,8 @@ pub static GREET: Channel<String> = Channel::named("greet");
 /// Fired by `after` timers; counted.
 static RANG: Event<u64> = Event::named("rang");
 static RINGS: AtomicU32 = AtomicU32::new(0);
+/// Mobs walked by tests (`drive`): (entity, direction, ticks left).
+static DRIVEN: std::sync::Mutex<Vec<(u64, [f32; 2], u32)>> = std::sync::Mutex::new(Vec::new());
 /// A key whose presses reach the server: the test counts them there.
 pub static PING: Key = Key::named("ping");
 static PINGS: AtomicU32 = AtomicU32::new(0);
@@ -94,6 +96,17 @@ pub fn register(r: &mut Registry) {
     });
     r.packet(&ECHO, |p, e| p.reply(&ECHO_BACK, &Echo { n: e.n * 2 }));
     r.packet(&GREET, |p, name| p.reply(&GREET, &format!("hello, {name}")));
+    // A mob walks where a test says for a while, after its own AI had its say.
+    r.world_tick(|w| {
+        let mut driven = DRIVEN.lock().unwrap();
+        for (id, dir, left) in driven.iter_mut() {
+            if w.entity(*id).is_some() && *left > 0 {
+                w.walk(*id, *dir, 1.0, false);
+                *left -= 1;
+            }
+        }
+        driven.retain(|d| d.2 > 0);
+    });
     register_ops(r);
 }
 
@@ -129,7 +142,8 @@ const OPS: &[(&str, &str)] = &[
     ("after", "<ticks:int>"),
     ("rings", ""),
     ("heal", ""),
-    ("push", "<x:float> <y:float> <z:float>"),
+    ("push", "<x:float> <y:float> <z:float> [id:int]"),
+    ("drive", "<id:int> <dx:float> <dz:float> <ticks:int>"),
     ("health", "[id:int]"),
     ("time", "<ticks:int>"),
     ("mode", "survival | creative | spectator"),
@@ -404,9 +418,14 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
             Ok(String::new())
         }
         "rings" => Ok(RINGS.load(Ordering::Relaxed).to_string()),
+        "drive" => {
+            let dir = [cmd.float("dx").unwrap_or(0.0) as f32, cmd.float("dz").unwrap_or(0.0) as f32];
+            DRIVEN.lock().unwrap().push((int(cmd, "id")?, dir, int(cmd, "ticks")?));
+            Ok(String::new())
+        }
         "push" => {
             let v = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
-            w.push(player, v);
+            w.push(cmd.int("id").map_or(player, |i| i as u64), v);
             Ok(String::new())
         }
         "heal" => {

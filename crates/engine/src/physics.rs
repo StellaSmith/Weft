@@ -404,3 +404,147 @@ fn ray_box(o: DVec3, d: DVec3, b: &[f32; 6], max: f64) -> Option<(f64, u8)> {
     }
     (t0 <= t1 && t0 >= 0.0).then_some((t0, face))
 }
+
+/// Whether liquid fills the block `level` above the feet at `pos` (0 the feet, the eye height for
+/// eyes): the one question of "in water", asked at the height the caller means.
+pub fn in_liquid(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, pos: DVec3, level: f64) -> bool {
+    block((pos + DVec3::Y * level).floor().as_ivec3()).is_some_and(|s| c.states[s as usize].flags & bf::LIQUID != 0)
+}
+
+/// How a walker moves itself this tick, in blocks per tick like vanilla.
+#[derive(Clone, Copy, Default)]
+pub struct Control {
+    /// Where it wants to go, horizontal, length up to 1.
+    pub wish: DVec3,
+    /// Acceleration on ground of normal friction (a player 0.1, 0.13 sprinting); slippery ground
+    /// changes it the way vanilla does, so ice is fast and slides.
+    pub ground: f64,
+    /// Acceleration in the air.
+    pub air: f64,
+    /// Jump speed when it jumps off the ground, 0 = not jumping.
+    pub jump: f64,
+    /// Added to the velocity with a jump (a sprinting player's leap).
+    pub jump_boost: DVec3,
+    /// Holds itself up in liquids (a swimming mob, a player holding jump).
+    pub swim: bool,
+    /// Never steps off an edge, and holds on to a ladder (sneaking).
+    pub careful: bool,
+}
+
+/// The walker's box and the world's pull.
+#[derive(Clone, Copy)]
+pub struct Frame {
+    pub half_width: f64,
+    pub height: f64,
+    /// Blocks it walks up without jumping (0.6).
+    pub step: f64,
+    /// Blocks per tick squared.
+    pub gravity: f64,
+}
+
+pub struct Walked {
+    pub hit: [bool; 3],
+    pub on_ground: bool,
+    pub in_liquid: bool,
+    pub jumped: bool,
+}
+
+/// One tick of walking, the same for players and mobs: friction (ice), drag (lava, oil),
+/// ladders, liquids and steps from the blocks it is in, with vanilla's numbers. `vel` is blocks
+/// per tick; a player differs only in where `ctl` comes from.
+#[allow(clippy::too_many_arguments)]
+pub fn walk(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, bodies: &[Body<'_>], skip: u64, pos: &mut DVec3, vel: &mut DVec3, on_ground: bool, ctl: &Control, f: &Frame) -> Walked {
+    let feet = pos.floor().as_ivec3();
+    let flags = |q: IVec3| block(q).map_or(0, |s| c.states[s as usize].flags);
+    let liquid = in_liquid(c, block, *pos, 0.0) || in_liquid(c, block, *pos, (f.height * 0.5).min(1.0));
+    let drag = block(feet).map_or(1.0, |s| c.states[s as usize].drag as f64);
+    let slip_at = |y: f64| block(IVec3::new(feet.x, (y - 0.5).floor() as i32, feet.z)).map_or(0.6, |s| c.states[s as usize].friction as f64);
+    let accelerate = |vel: &mut DVec3, k: f64| {
+        let len2 = ctl.wish.length_squared();
+        if len2 > 1e-7 {
+            *vel += ctl.wish * (k / len2.sqrt().max(1.0));
+        }
+    };
+    let climbing = flags(feet) & bf::CLIMBABLE != 0;
+    let mut jumped = false;
+    if liquid {
+        accelerate(vel, 0.02 * drag);
+        if ctl.swim {
+            vel.y += 0.04;
+        }
+    } else {
+        let slip = slip_at(pos.y);
+        let accel = if on_ground { ctl.ground * (0.216 / (slip * slip * slip)) } else { ctl.air };
+        if ctl.jump > 0.0 && on_ground {
+            vel.y = ctl.jump;
+            *vel += ctl.jump_boost;
+            jumped = true;
+        }
+        accelerate(vel, accel * drag);
+        if climbing {
+            vel.x = vel.x.clamp(-0.15, 0.15);
+            vel.z = vel.z.clamp(-0.15, 0.15);
+            vel.y = vel.y.max(if ctl.careful { 0.0 } else { -0.15 });
+        }
+    }
+    // Careful at an edge (vanilla's sneaking): each horizontal component is cut back in 0.05
+    // steps while the moved box would have nothing under it, so it slides along the edge.
+    if ctl.careful && on_ground {
+        let ground = |dx: f64, dz: f64| {
+            let area = Aabb::around(*pos + DVec3::new(dx, -0.6, dz), f.half_width, f.height);
+            collides(c, block, area) || bodies.iter().any(|b| b.aabb.intersects(&area))
+        };
+        let shrink = |v: f64| if v.abs() < 0.05 { 0.0 } else { v - 0.05 * v.signum() };
+        while vel.x != 0.0 && !ground(vel.x, 0.0) {
+            vel.x = shrink(vel.x);
+        }
+        while vel.z != 0.0 && !ground(0.0, vel.z) {
+            vel.z = shrink(vel.z);
+        }
+        while vel.x != 0.0 && vel.z != 0.0 && !ground(vel.x, vel.z) {
+            vel.x = shrink(vel.x);
+            vel.z = shrink(vel.z);
+        }
+    }
+    let before = *pos;
+    let r = move_box_with(c, block, bodies, skip, *pos, f.half_width, f.height, *vel, if on_ground { f.step } else { 0.0 });
+    *pos = r.pos;
+    for i in 0..3 {
+        if r.hit[i] {
+            vel[i] = 0.0;
+        }
+    }
+    if (r.hit[0] || r.hit[2] || ctl.jump > 0.0) && climbing {
+        vel.y = 0.2;
+    }
+    if liquid {
+        *vel *= 0.8;
+        vel.y -= f.gravity / 4.0;
+    } else {
+        let slip = if on_ground { slip_at(before.y) } else { 1.0 };
+        vel.y = (vel.y - f.gravity) * 0.98;
+        vel.x *= slip * 0.91;
+        vel.z *= slip * 0.91;
+    }
+    Walked { hit: r.hit, on_ground: r.on_ground, in_liquid: liquid, jumped }
+}
+
+/// The push two overlapping soft bodies give each other per tick (vanilla's
+/// applyEntityCollision), for an offset `d` from the other one: along the larger axis, 0.05.
+pub fn nudge(d: DVec3) -> DVec3 {
+    let dist = d.x.abs().max(d.z.abs()).max(0.01).sqrt();
+    DVec3::new(d.x, 0.0, d.z) * ((1.0 / dist).min(1.0) / dist * 0.05)
+}
+
+/// The top of a state's collision boxes in the block (a slab 0.5, a fence 1.5), `None` when
+/// nothing there stops a walker.
+pub fn collision_top(c: &Content, state: u32) -> Option<f64> {
+    let s = &c.states[state as usize];
+    if s.flags & bf::SOLID == 0 {
+        return None;
+    }
+    if !s.collision.is_empty() {
+        return s.collision.iter().map(|b| b[4] as f64).reduce(f64::max);
+    }
+    (s.model != Model::Boxes).then_some(1.0)
+}

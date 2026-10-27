@@ -359,54 +359,27 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) ->
         out.crushed = crushes && (to - e.pos - shift).length_squared() > 1e-6;
         e.pos = to;
     }
-    let feet = e.pos.floor().as_ivec3();
-    let flags_at = |p: IVec3| block(p).map_or(0, |s| c.states[s as usize].flags);
-    e.in_liquid = flags_at(feet) & weft_abi::block_flags::LIQUID != 0;
     // After riding: falls and walking are measured relative to the body.
     let start = e.pos;
-
-    match e.walk.take() {
-        Some((dir, speed, jump)) => {
-            let target_x = dir[0] as f64 * k.speed as f64 * speed as f64;
-            let target_z = dir[1] as f64 * k.speed as f64 * speed as f64;
-            let accel = if e.on_ground || e.in_liquid { 0.4 } else { 0.08 };
-            e.vel.x += (target_x - e.vel.x) * accel;
-            e.vel.z += (target_z - e.vel.z) * accel;
-            if jump {
-                if e.on_ground {
-                    e.vel.y = 8.4 * e.jump_mul as f64;
-                } else if e.in_liquid {
-                    e.vel.y = e.vel.y.max(2.5);
-                }
-            }
-        }
-        None => {
-            let f = if e.on_ground { 0.55 } else if e.in_liquid { 0.8 } else { 0.98 };
-            e.vel.x *= f;
-            e.vel.z *= f;
+    // The step players take, in blocks per tick: a mob walks at its target speed on plain
+    // ground, faster on ice, slower in lava, and climbs ladders it walks into.
+    let mut ctl = physics::Control { swim: k.is(ef::SWIMS), ..Default::default() };
+    if let Some((dir, speed, jump)) = e.walk.take() {
+        let target = k.speed as f64 * speed as f64 * DT;
+        ctl.wish = DVec3::new(dir[0] as f64, 0.0, dir[1] as f64);
+        // Vanilla's ground friction keeps 0.546 of the speed a tick; this much a tick holds it.
+        ctl.ground = target * (1.0 - 0.6 * 0.91);
+        ctl.air = 0.02;
+        if jump {
+            ctl.jump = 0.42 * e.jump_mul as f64;
+            ctl.swim = true;
         }
     }
-    let step_h = if e.item.is_empty() && e.on_ground { 0.6 } else { 0.0 };
-    let r = physics::move_box_with(c, block, bodies, e.id, e.pos, hw, h, e.vel * DT, step_h);
-    e.pos = r.pos;
-    for i in 0..3 {
-        if r.hit[i] {
-            e.vel[i] = 0.0;
-        }
-    }
-    // Gravity after the move, like vanilla: a jump then rises its full 1.25 blocks.
-    if !k.is(ef::NO_GRAVITY) {
-        if e.in_liquid {
-            e.vel.y -= gravity * DT * 0.2;
-            e.vel.y *= 0.85;
-            if k.is(ef::SWIMS) {
-                e.vel.y += 1.2 * DT * 20.0 * 0.05;
-            }
-        } else {
-            e.vel.y -= gravity * DT;
-            e.vel.y *= 0.98;
-        }
-    }
+    let frame = physics::Frame { half_width: hw, height: h, step: if e.item.is_empty() { 0.6 } else { 0.0 }, gravity: if k.is(ef::NO_GRAVITY) { 0.0 } else { gravity * DT * DT } };
+    let mut v = e.vel * DT;
+    let r = physics::walk(c, block, bodies, e.id, &mut e.pos, &mut v, e.on_ground, &ctl, &frame);
+    e.vel = v / DT;
+    e.in_liquid = r.in_liquid;
     e.blocked = r.hit[0] || r.hit[2];
     let was_ground = e.on_ground;
     e.on_ground = r.on_ground;
@@ -462,17 +435,14 @@ pub fn soft_push(c: &Content, list: &[Entity]) -> Vec<(usize, DVec3)> {
                     if j == i || d.x.abs() >= reach || d.z.abs() >= reach || d.y >= o.height(c) || -d.y >= e.height(c) {
                         continue;
                     }
-                    // Vanilla's applyEntityCollision: along the larger axis, 0.05 per tick.
                     // Exactly on top of each other: split by id so they still drift apart.
                     let d = if d.x.abs() + d.z.abs() < 1e-4 { DVec3::new(if e.id < o.id { -0.01 } else { 0.01 }, d.y, 0.0) } else { d };
-                    let dist = d.x.abs().max(d.z.abs()).max(0.01).sqrt();
-                    let f = (1.0 / dist).min(1.0) / dist;
-                    push += DVec3::new(d.x, 0.0, d.z) * f;
+                    push += physics::nudge(d);
                     felt += 1;
                 }
             }
         }
-        (push != DVec3::ZERO).then_some((i, push * 0.05 * 20.0))
+        (push != DVec3::ZERO).then_some((i, push * 20.0))
     })
     .collect()
 }

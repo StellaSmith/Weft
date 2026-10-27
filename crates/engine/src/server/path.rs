@@ -48,14 +48,16 @@ const MAX_DROP: i32 = 3;
 /// whole way, or as far as it gets (the reachable cell closest to the target) when `to` is out
 /// of reach or more than `MAX_NODES` cells away.
 pub fn find(c: &Content, block: &impl Fn(IVec3) -> Option<u32>, from: IVec3, to: IVec3, height: i32) -> Vec<IVec3> {
+    // Judged by the collision boxes walking bumps into, like the step itself.
+    let top = |s: u32| crate::physics::collision_top(c, s);
     let open = |p: IVec3| {
         block(p).is_some_and(|s| {
             let st = &c.states[s as usize];
-            st.flags & bf::SOLID == 0 && st.liquid.is_none_or(|l| c.liquids[l as usize].temperature < crate::server::liquid::BURNING)
+            top(s).is_none() && st.liquid.is_none_or(|l| c.liquids[l as usize].temperature < crate::server::liquid::BURNING)
         })
     };
     let room = |p: IVec3| (0..height).all(|k| open(p + IVec3::Y * k));
-    let ground = |p: IVec3| block(p - IVec3::Y).is_some_and(|s| c.states[s as usize].flags & (bf::SOLID | bf::LIQUID) != 0);
+    let ground = |p: IVec3| block(p - IVec3::Y).is_some_and(|s| c.states[s as usize].flags & bf::LIQUID != 0 || top(s).is_some_and(|t| t >= 0.5));
     let standable = |p: IVec3| room(p) && ground(p);
     let wet = |p: IVec3| block(p).is_some_and(|s| c.states[s as usize].flags & bf::LIQUID != 0);
     let h = |p: IVec3| (p - to).as_vec3().length();

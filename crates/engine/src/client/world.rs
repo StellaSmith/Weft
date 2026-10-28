@@ -316,6 +316,17 @@ impl ClientWorld {
 
     /// Starts meshing jobs for dirty cubes nearest to `center` first.
     pub fn schedule_meshing(&mut self, center: IVec3, max_in_flight: usize) {
+        if self.ready.is_empty() {
+            return;
+        }
+        // Air cubes never produce faces themselves (neighbors draw the faces facing them): done
+        // here at once, without a job or a place among the jobs (most of a tall view is sky).
+        let air: Vec<IVec3> = self.ready.iter().copied().filter(|p| !self.in_flight.contains(p) && self.cubes[p].uniform_state() == Some(AIR)).collect();
+        for pos in air {
+            self.dirty.remove(&pos);
+            self.ready.remove(&pos);
+            let _ = self.tx.send(MeshResult { pos, version: self.versions[&pos], mesh: Mesh::default() });
+        }
         if self.ready.is_empty() || self.in_flight.len() >= max_in_flight {
             return;
         }
@@ -329,13 +340,6 @@ impl ClientWorld {
         for (_, pos) in ready {
             self.dirty.remove(&pos);
             self.ready.remove(&pos);
-            let center_cube = self.cubes[&pos].clone();
-            // Air cubes never produce faces themselves; neighbors draw the faces facing them.
-            if center_cube.uniform_state() == Some(AIR) {
-                let _ = self.tx.send(MeshResult { pos, version: self.versions[&pos], mesh: Mesh::default() });
-                self.in_flight.insert(pos);
-                continue;
-            }
             let mut around: [Option<Arc<Cube>>; 27] = Default::default();
             for dz in -1..=1 {
                 for dy in -1..=1 {

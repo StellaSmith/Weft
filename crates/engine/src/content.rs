@@ -280,6 +280,9 @@ pub struct DimensionDef {
     pub decorations: Vec<(ModId, Callback)>,
     /// Columns from `column`, for a dimension without a terrain.
     pub column_cache: crate::server::terrain::ColumnCache<[abi::TerrainColumn; 256]>,
+    /// Per cube column, the scattered things that may reach into it (`dim::scatter_sites`):
+    /// worked out once for the whole column instead of once per cube.
+    pub scatter_cache: crate::server::terrain::ColumnCache<Vec<crate::server::dim::Site>>,
 }
 
 pub struct ScatterDef {
@@ -850,6 +853,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 scatters: Vec::new(),
                 decorations: Vec::new(),
                 column_cache: crate::server::terrain::ColumnCache::new(4096),
+                scatter_cache: crate::server::terrain::ColumnCache::new(4096),
             },
             d.cell as usize,
             RawValue::list(d.components),
@@ -889,6 +893,7 @@ fn void_dimension() -> DimensionDef {
         scatters: Vec::new(),
         decorations: Vec::new(),
         column_cache: crate::server::terrain::ColumnCache::new(1),
+        scatter_cache: crate::server::terrain::ColumnCache::new(1),
     }
 }
 

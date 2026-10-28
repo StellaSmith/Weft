@@ -237,6 +237,35 @@ pub fn scatter_site(def: &crate::content::DimensionDef, c: &Content, s: &crate::
 const SCATTER_UP: i32 = 32;
 const SCATTER_DOWN: i32 = 16;
 
+/// A scattered thing's site: which scatter, where it stands, its biome and random value.
+#[derive(Clone, Copy)]
+pub struct Site {
+    scatter: usize,
+    pos: IVec3,
+    biome: u32,
+    random: u64,
+}
+
+/// Every site whose thing may reach into cube column (`x`, `z`), from this and neighboring
+/// cells: the same for every cube of the column, so worked out once for it.
+fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, seed: u64, x: i32, z: i32) -> std::sync::Arc<Vec<Site>> {
+    def.scatter_cache.get(seed, x, z, || {
+        let o = IVec3::new(x, 0, z) * 16;
+        let mut out = Vec::new();
+        for (i, s) in def.scatters.iter().enumerate() {
+            let cells = |lo: i32| (lo - s.reach).div_euclid(s.cell)..=(lo + 15 + s.reach).div_euclid(s.cell);
+            for cz in cells(o.z) {
+                for cx in cells(o.x) {
+                    if let Some((pos, biome, random)) = scatter_site(def, c, s, seed, (cx, cz)) {
+                        out.push(Site { scatter: i, pos, biome, random });
+                    }
+                }
+            }
+        }
+        out
+    })
+}
+
 /// The parts of scattered things (trees) that fall into this cube, from sites in this and
 /// neighboring cells.
 fn place_scatters(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed: u64, pos: IVec3, blocks: &mut [u32]) {
@@ -244,26 +273,24 @@ fn place_scatters(c: &Content, def: &crate::content::DimensionDef, dim: u32, see
         return;
     }
     let o = pos * 16;
+    let sites = scatter_sites(c, def, seed, pos.x, pos.z);
+    // Most cubes (sky, deep ground) are out of every thing's reach.
+    let reaching = |site: &&Site| site.pos.y - SCATTER_DOWN <= o.y + 15 && site.pos.y + SCATTER_UP >= o.y;
+    if !sites.iter().any(|s| reaching(&s)) {
+        return;
+    }
     let mut out = vec![abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
     let states = c.states.len() as u32;
-    for s in &def.scatters {
-        let cells = |lo: i32| (lo - s.reach).div_euclid(s.cell)..=(lo + 15 + s.reach).div_euclid(s.cell);
-        for cz in cells(o.z) {
-            for cx in cells(o.x) {
-                let Some((p, biome, random)) = scatter_site(def, c, s, seed, (cx, cz)) else { continue };
-                if p.y - SCATTER_DOWN > o.y + 15 || p.y + SCATTER_UP < o.y {
-                    continue;
-                }
-                let mut args = abi::ScatterArgs { seed, dim, pos: p.to_array(), biome, random, out: out.as_mut_ptr(), cap: out.len() as u32, len: 0 };
-                host::invoke(s.owner, s.shape, &mut args);
-                for b in &out[..(args.len as usize).min(out.len())] {
-                    let l = p + IVec3::from_array(b.offset) - o;
-                    if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() && b.state < states {
-                        let i = (l.y * 256 + l.z * 16 + l.x) as usize;
-                        if b.force != 0 || blocks[i] == AIR {
-                            blocks[i] = b.state;
-                        }
-                    }
+    for site in sites.iter().filter(reaching) {
+        let (s, p) = (&def.scatters[site.scatter], site.pos);
+        let mut args = abi::ScatterArgs { seed, dim, pos: p.to_array(), biome: site.biome, random: site.random, out: out.as_mut_ptr(), cap: out.len() as u32, len: 0 };
+        host::invoke(s.owner, s.shape, &mut args);
+        for b in &out[..(args.len as usize).min(out.len())] {
+            let l = p + IVec3::from_array(b.offset) - o;
+            if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() && b.state < states {
+                let i = (l.y * 256 + l.z * 16 + l.x) as usize;
+                if b.force != 0 || blocks[i] == AIR {
+                    blocks[i] = b.state;
                 }
             }
         }

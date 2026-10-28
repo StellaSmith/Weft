@@ -51,10 +51,8 @@ const PARTICLE_RANGE: f64 = 32.0;
 #[derive(Clone)]
 pub struct ServerConfig {
     pub seed: u64,
-    /// Horizontal view radius in cubes.
+    /// View radius in cubes, sideways and up and down alike.
     pub view_radius: i32,
-    /// Vertical view radius in cubes.
-    pub view_height: i32,
 }
 
 pub struct Player {
@@ -1394,8 +1392,10 @@ impl Server {
         let dim = &self.dims[p.dim as usize];
         let pos = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
         let center = (pos.floor().as_ivec3()) >> 4;
-        let (r, h) = (self.cfg.view_radius, self.cfg.view_height);
-        (center, r, h, h + dim.air_below(center, r))
+        // As far up and down as sideways: a crater or a cave is seen whole from beside it, not
+        // only from above (the visibility fill keeps unseen ground from loading).
+        let r = self.cfg.view_radius;
+        (center, r, r, r + dim.air_below(center, r))
     }
 
     /// Cubes players need, nearest columns first and each column top-down; loading and

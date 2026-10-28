@@ -1124,7 +1124,7 @@ impl Client {
             self.render.upload_tints(gpu, col, &tints);
         }
         // Enough jobs that meshing keeps up at 60 frames per second too, not only at thousands.
-        self.world.schedule_meshing(center, rayon::current_num_threads() * 16);
+        self.world.schedule_meshing(center, rayon::current_num_threads() * 32);
         for r in self.world.take_meshes() {
             self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
         }

@@ -48,6 +48,7 @@ pub fn all() -> Vec<TestDef> {
         world::catch_up,
         world::dynamite,
         world::crater_saved,
+        world::crater_view,
         gameplay::crafting_table_tags,
         gameplay::mining_and_wear,
         gameplay::creative_and_invulnerable,

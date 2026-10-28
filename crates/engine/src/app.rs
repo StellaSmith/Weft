@@ -540,7 +540,7 @@ impl Running {
         }
         let storage = saves::Storage::open(meta.clone(), content());
         let server = server::spawn(
-            ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance(), view_height: 6 },
+            ServerConfig { seed: meta.seed, view_radius: self.settings.view_distance() },
             Some(storage),
         );
         let (client_conn, server_conn) = net::local_pair();

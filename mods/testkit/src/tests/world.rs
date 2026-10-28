@@ -222,6 +222,30 @@ pub async fn crater_saved(t: T) -> R {
     Ok(())
 }
 
+/// The view reaches as far down as sideways: standing beyond a deep crater's rim, its bottom
+/// stays loaded and lit (it used to reach six cubes down plus the air under the player, so the
+/// bottom unloaded the moment the player stepped off the rim).
+pub async fn crater_view(t: T) -> R {
+    t.world(5).await?;
+    t.idle().await?;
+    t.op("mode creative").await?;
+    let f = t.feet();
+    t.op("crater_fast 150").await?;
+    t.op("look").await?;
+    let rim = [f[0], OVERWORLD.column(5, f[0], f[2] + 170).height.max(f[1]) + 1, f[2] + 170];
+    t.cmd(&format!("/tp {} {} {}", rim[0], rim[1], rim[2])).await?;
+    t.secs(1.0).await?;
+    t.loaded().await?;
+    t.idle().await?;
+    let bottom = add(f, [0, -140, 0]);
+    let light: u32 = t.op(&format!("light {} {} {}", bottom[0], bottom[1], bottom[2])).await?.parse().unwrap_or(0);
+    t.check_eq(light & 255, 15, "the crater's bottom, seen from beyond the rim, is loaded and lit");
+    t.c().look(0.0, -30.0);
+    t.frames(20).await?;
+    t.shot("from_rim").await?;
+    Ok(())
+}
+
 use base_api::OVERWORLD;
 
 /// Testmod edits base's overworld from outside: a biome of its own tried before base's desert,

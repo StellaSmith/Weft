@@ -471,14 +471,19 @@ impl Dim {
                     Some(a) => full_above(a),
                     None => open_above,
                 });
-        // What time acts on (growing, spreading, covered blocks) continues from when the cube was
-        // last simulated: steps due while it was away run in the next tick, in order.
+        // What time acts on continues from when the cube was last simulated: steps due while it
+        // was away run in the next tick, in order. Spreading and covered blocks only in cubes
+        // that were saved with some: freshly generated terrain stays as generated until
+        // something changes near it (a cliff of dirt does not start greening everywhere at once,
+        // which kept every new area remeshing).
         let mut lives = Vec::new();
-        let since = if cube.ticked == 0 { self.time } else { cube.ticked.min(self.time) };
-        if cube.palette().iter().any(|&s| c.lives(s)) {
+        let saved = cube.ticked != 0;
+        let since = if saved { cube.ticked.min(self.time) } else { self.time };
+        let wanted = |s: u32| if saved { c.lives(s) } else { c.grows(s).is_some() };
+        if cube.palette().iter().any(|&s| wanted(s)) {
             for i in 0..VOLUME {
                 let s = cube.get(i);
-                if c.lives(s) {
+                if wanted(s) {
                     let p = pos * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
                     match c.grows(s) {
                         Some(_) => self.schedule_growth(c, p, s, since),

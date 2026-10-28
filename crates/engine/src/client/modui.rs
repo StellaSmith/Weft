@@ -247,6 +247,14 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 // worlds or quit like the engine's.
                 let action: crate::ui::Action = Rc::new(move |ctx: &mut Ctx| ctx.requests.push(crate::app::Request::ModCall(owner, cb)));
                 let (enabled, selected) = (!flag(abi::ui_flags::DISABLED), flag(abi::ui_flags::SELECTED));
+                // Unless the mod sizes it, as high and padded as the engine's buttons.
+                let mut style = style;
+                if style.min[1] == 0.0 && style.h == Len::Auto {
+                    style.min[1] = 20.0;
+                }
+                if style.pad == [0.0; 4] {
+                    style.pad = [6.0, 4.0, 6.0, 4.0];
+                }
                 // Labels sit in the middle, like on the engine's buttons.
                 b.ui.open(Kind::Button { class: if class.is_empty() { "button".into() } else { class }, action: Some(action), enabled, selected }, style.center())
             }

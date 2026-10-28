@@ -66,14 +66,40 @@ pub enum Slicing {
     /// Corners keep their size, edges and center stretch; borders left, top, right, bottom in GUI
     /// pixels of an image `size` GUI pixels big.
     Nine { size: [f32; 2], border: [f32; 4] },
-    Tile { size: [f32; 2] },
+    /// `turn = random`: each tile of a square texture turned and mirrored its own way, so the
+    /// repeat does not show.
+    Tile { size: [f32; 2], turn: bool },
     Stretch,
+}
+
+/// GUI texture names starting with this are a skin file's face (`screens::face_texture`).
+pub const FACE: &str = "skin_face:";
+
+/// The 8x8 face of a skin (64x64 or 64x32), its hat layer drawn over it.
+fn face_of(skin: &crate::assets::Image) -> Option<Vec<u8>> {
+    if skin.width < 64 || skin.height < 16 {
+        return None;
+    }
+    let mut out = vec![0u8; 8 * 8 * 4];
+    for y in 0..8 {
+        for x in 0..8 {
+            let at = |sx: u32, sy: u32| {
+                let i = ((sy * skin.width + sx) * 4) as usize;
+                [skin.rgba[i], skin.rgba[i + 1], skin.rgba[i + 2], skin.rgba[i + 3]]
+            };
+            let (base, hat) = (at(8 + x, 8 + y), at(40 + x, 8 + y));
+            let px = if hat[3] > 0 { hat } else { [base[0], base[1], base[2], 255] };
+            out[((y * 8 + x) * 4) as usize..][..4].copy_from_slice(&px);
+        }
+    }
+    Some(out)
 }
 
 fn parse_gui(src: &str, pixels: [f32; 2]) -> Slicing {
     let mut kind = "nine_slice";
     let mut border = [0.0f32; 4];
     let mut size = pixels;
+    let mut turn = false;
     for (_, k, v) in crate::kv::pairs(src) {
         let nums: Vec<f32> = v.split_whitespace().filter_map(|n| n.parse().ok()).collect();
         match k {
@@ -81,11 +107,12 @@ fn parse_gui(src: &str, pixels: [f32; 2]) -> Slicing {
             "border" if nums.len() == 1 => border = [nums[0]; 4],
             "border" if nums.len() == 4 => border = [nums[0], nums[1], nums[2], nums[3]],
             "size" if nums.len() == 2 => size = [nums[0], nums[1]],
+            "turn" => turn = v.trim() == "random",
             _ => {}
         }
     }
     match kind {
-        "tile" => Slicing::Tile { size },
+        "tile" => Slicing::Tile { size, turn: turn && size[0] == size[1] },
         "stretch" => Slicing::Stretch,
         _ => Slicing::Nine { size, border },
     }
@@ -268,6 +295,18 @@ impl UiRenderer {
         if let Some(t) = self.textures.get(name) {
             return *t;
         }
+        if let Some(path) = name.strip_prefix(FACE) {
+            let kind = crate::content::try_content().map(|c| c.game.entities[c.game.player_kind as usize].texture.clone()).unwrap_or_default();
+            let skin = std::fs::read(path).ok().or_else(|| assets.read(&kind, "textures", "png"));
+            let loaded = skin.as_deref().and_then(decode_png).and_then(|img| face_of(&img)).map(|rgba| {
+                let t = gpu.create_texture(&TextureDesc { width: 8, height: 8, mips: 1, format: Format::Rgba8Srgb, render_target: false }, "face");
+                gpu.write_texture(t, 0, &rgba);
+                self.owned.push(t);
+                (gpu.texture_index(t), 8, 8)
+            });
+            self.textures.insert(name.to_string(), loaded);
+            return loaded;
+        }
         let anim = assets.read(name, "textures", "anim").map(|b| String::from_utf8_lossy(&b).into_owned());
         let loaded = assets.read(name, "textures", "png").and_then(|b| decode_png(&b)).map(|img| {
             let t = gpu.create_texture(
@@ -335,7 +374,7 @@ impl UiRenderer {
         });
         match slicing {
             Slicing::Nine { size, border } => self.nine_sliced(r, tex.0, size, border, scale, color),
-            Slicing::Tile { size } => self.tile(r, tex, size[0] * scale, color),
+            Slicing::Tile { size, turn } => self.tile(r, tex, size[0] * scale, turn, color),
             Slicing::Stretch => self.image(r, tex.0, [0.0, 0.0, 1.0, 1.0], color),
         }
         true
@@ -378,7 +417,7 @@ impl UiRenderer {
         let r = Rect { x: r.x - o, y: r.y - o, w: r.w + 2.0 * o, h: r.h + 2.0 * o };
         match slicing {
             Slicing::Nine { size, border } => self.nine_sliced(r, tex.0, if size == [0.0; 2] { pixels } else { size }, border, scale, color),
-            Slicing::Tile { size } => self.tile(r, tex, size[0] * scale, color),
+            Slicing::Tile { size, turn } => self.tile(r, tex, size[0] * scale, turn, color),
             Slicing::Stretch => self.image(r, tex.0, [0.0, 0.0, 1.0, 1.0], color),
         }
         true
@@ -416,18 +455,67 @@ impl UiRenderer {
         }
     }
 
-    /// Repeats the texture every `size` physical pixels from the rect's corner.
-    pub fn tile(&mut self, r: Rect, tex: (u32, u32, u32), size: f32, color: u32) {
+    /// Repeats the texture every `size` physical pixels from the rect's corner; `turn`: each tile
+    /// in one of the eight turns and mirrors, picked by its place (the same every frame).
+    pub fn tile(&mut self, r: Rect, tex: (u32, u32, u32), size: f32, turn: bool, color: u32) {
         let mut y = r.y;
+        let mut j = 0;
         while y < r.y + r.h {
             let h = size.min(r.y + r.h - y);
             let mut x = r.x;
+            let mut i = 0;
             while x < r.x + r.w {
                 let w = size.min(r.x + r.w - x);
-                self.image(Rect { x, y, w, h }, tex.0, [0.0, 0.0, w / size, h / size], color);
+                let (fw, fh) = (w / size, h / size);
+                if turn {
+                    let k = weft_noise::hash(0x7117, i, j, 0) as u32 & 7;
+                    // Where a texture point lands in the tile (0..1 each way), and back.
+                    let to_tile = |t: [f32; 2]| {
+                        let t = if k & 4 != 0 { [1.0 - t[0], t[1]] } else { t };
+                        match k & 3 {
+                            0 => t,
+                            1 => [1.0 - t[1], t[0]],
+                            2 => [1.0 - t[0], 1.0 - t[1]],
+                            _ => [t[1], 1.0 - t[0]],
+                        }
+                    };
+                    let to_tex = |s: [f32; 2]| {
+                        let t = match k & 3 {
+                            0 => s,
+                            1 => [s[1], 1.0 - s[0]],
+                            2 => [1.0 - s[0], 1.0 - s[1]],
+                            _ => [1.0 - s[1], s[0]],
+                        };
+                        if k & 4 != 0 { [1.0 - t[0], t[1]] } else { t }
+                    };
+                    // The texture rectangle the visible part shows, drawn along turned edges.
+                    let corners = [to_tex([0.0, 0.0]), to_tex([fw, 0.0]), to_tex([0.0, fh]), to_tex([fw, fh])];
+                    let (u0, v0) = (corners.iter().map(|c| c[0]).fold(1.0f32, f32::min), corners.iter().map(|c| c[1]).fold(1.0f32, f32::min));
+                    let (u1, v1) = (corners.iter().map(|c| c[0]).fold(0.0f32, f32::max), corners.iter().map(|c| c[1]).fold(0.0f32, f32::max));
+                    let at = |t: [f32; 2]| {
+                        let s = to_tile(t);
+                        [x + s[0] * size, y + s[1] * size]
+                    };
+                    let p0 = at([u0, v0]);
+                    let (pu, pv) = (at([u1, v0]), at([u0, v1]));
+                    self.quads.push(Quad {
+                        p0,
+                        u: [pu[0] - p0[0], pu[1] - p0[1]],
+                        v: [pv[0] - p0[0], pv[1] - p0[1]],
+                        uv: [u0, v0, u1, v1],
+                        color,
+                        tex: tex.0,
+                        mode: ui_mode::TEXTURE,
+                        ..Default::default()
+                    });
+                } else {
+                    self.image(Rect { x, y, w, h }, tex.0, [0.0, 0.0, fw, fh], color);
+                }
                 x += size;
+                i += 1;
             }
             y += size;
+            j += 1;
         }
     }
 
@@ -939,7 +1027,8 @@ mod slicing_tests {
     #[test]
     fn gui_sidecar() {
         assert_eq!(parse_gui("border = 2 3 4 5\n", [16.0, 16.0]), Slicing::Nine { size: [16.0, 16.0], border: [2.0, 3.0, 4.0, 5.0] });
-        assert_eq!(parse_gui("scaling = tile\nsize = 32 32", [64.0, 64.0]), Slicing::Tile { size: [32.0, 32.0] });
+        assert_eq!(parse_gui("scaling = tile\nsize = 32 32", [64.0, 64.0]), Slicing::Tile { size: [32.0, 32.0], turn: false });
+        assert_eq!(parse_gui("scaling = tile\nturn = random", [32.0, 32.0]), Slicing::Tile { size: [32.0, 32.0], turn: true });
     }
 }
 

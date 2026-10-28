@@ -8,7 +8,7 @@ use crate::runner::{R, T};
 pub async fn screens(t: T) -> R {
     t.screen("core:title").await?;
     t.shot("title").await?;
-    t.laid_out(&["text:Singleplayer", "text:Multiplayer", "text:Mods", "text:Settings", "text:Profile", "text:Quit Game", "text:About Test Mod"]);
+    t.laid_out(&["text:Singleplayer", "text:Multiplayer", "text:Mods", "text:Settings", "id:profile", "text:Quit Game", "text:About Test Mod"]);
     // A mod's button in the main menu opens its own screen, with no world around.
     t.check(t.click_ui("text:About Test Mod", 0), "the test mod's main menu button");
     t.screen("testmod:about").await?;

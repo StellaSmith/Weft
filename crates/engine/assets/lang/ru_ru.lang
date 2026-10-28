@@ -10,7 +10,6 @@ menu.save_quit = Сохранить и выйти в меню
 menu.paused = Игра приостановлена
 menu.version = Weft {0} | модов загружено: {1}
 menu.mods = Моды ({0})
-menu.logo = WEFT
 menu.profile = Профиль
 settings.title = Настройки
 settings.video = Графика

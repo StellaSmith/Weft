@@ -107,7 +107,7 @@ r.screen_part("core:title", "buttons", 0, |ui| {
 ```
 The places are `buttons` and `side` (the space right of the menu) on `core:title`, and `buttons` on `core:pause` and `core:settings`; a lower order comes first. A mod that replaces one of these screens keeps the others' parts by building the place in its own: `ui.screen_parts("core:title", "buttons")`.
 
-The main menu takes its logo from the translation `menu.logo` and shows `menu.news` beside it, so a pack or a mod can put its own picture there (`{img:..}`).
+The main menu's logo is the GUI texture `logo` (drawn across the menu bar in whole multiples of its pixels) and `menu.news` shows beside it, so a pack or a mod puts its own picture there with one file. Its buttons have 9x9 icons of their own (`menu_singleplayer`, `menu_multiplayer`, `menu_mods`, `menu_settings`), Quit Game is the class `button_quit`, and the square beside Multiplayer shows the face of the player's skin.
 
 ## HUD
 `r.hud_element(name, anchor, order, |ui| ..)` puts a part on the in-game overlay. The anchor says where, and `order` 0 sits nearest the anchor's edge.
@@ -185,7 +185,7 @@ A texture used as a background has to be stretched over parts of any size, and a
 scaling = nine_slice
 border = 4
 ```
-`scaling` is `nine_slice` (the corners keep their size, the edges and middle stretch), `tile` or `stretch`. `border` is one number for all sides or `left top right bottom`, in GUI pixels. Two more keys exist for special cases: `size = w h` for an image with more pixels than the GUI pixels it stands for, and `outset = n` for textures that reach outside their box, like shadows. An image without one is simply stretched.
+`scaling` is `nine_slice` (the corners keep their size, the edges and middle stretch), `tile` or `stretch`. `border` is one number for all sides or `left top right bottom`, in GUI pixels. Two more keys exist for special cases: `size = w h` for an image with more pixels than the GUI pixels it stands for, and `outset = n` for textures that reach outside their box, like shadows. A square `tile` texture can take `turn = random`: every tile is turned and mirrored its own way, so a big background doesn't show the repeat. An image without one is simply stretched.
 
 ## Shaders and animations
 A class's `.gui` can name a shader, and the part is then filled by `shaders/gui/<name>.wgsl` instead of the picture (`testmod_panel.gui`):

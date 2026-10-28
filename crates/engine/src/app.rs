@@ -460,6 +460,8 @@ impl Running {
                 let (w, h) = self.gpu.surface_size();
                 glam::Vec2::new(w as f32, h as f32) / self.gui_scale()
             },
+            look: &self.look,
+            assets: &self.assets,
         }
     }
 

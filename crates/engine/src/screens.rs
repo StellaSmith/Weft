@@ -25,6 +25,8 @@ pub struct BuildCx<'a> {
     pub client: Option<&'a crate::client::Client>,
     /// The window in GUI pixels.
     pub size: glam::Vec2,
+    pub look: &'a crate::ui::look::Look,
+    pub assets: &'a crate::assets::Assets,
 }
 
 impl BuildCx<'_> {
@@ -326,6 +328,29 @@ pub fn button(ui: &mut Ui, cx: &BuildCx, key: &str, args: &[Arg], width: f32, ac
     })
 }
 
+/// A menu button with an icon (class `icon`, 9x9 like a glyph and its shadow) at its left edge;
+/// the label stays in the middle, so labels line up whatever the icons.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_button(ui: &mut Ui, cx: &BuildCx, class: &str, icon: &str, key: &str, args: &[Arg], width: f32, action: impl Fn(&mut Ctx) + 'static) -> NodeId {
+    let spans = cx.t(key, args);
+    let icon = cx.look.texture(icon, "");
+    ui.button(class, Style::default().min_w(width).min_h(20.0).pad_xy(6.0, 4.0), Rc::new(action), |ui| {
+        if let Some(texture) = icon {
+            ui.add(Kind::Image { texture, color: 0xFFFFFFFF }, Style::default().w(9.0).h(9.0).at(-1.0, 6.0, [0.0, 0.5]));
+        }
+        let t = ui.text(spans, "button");
+        if let Some(t) = ui.text_mut(t) {
+            t.wrap = false;
+        }
+    })
+}
+
+/// The face (8x8, hat layer over it) of the player's own skin, else of the player kind's: a GUI
+/// texture name `UiRenderer::texture` makes from the file.
+pub fn face_texture(cx: &BuildCx) -> String {
+    format!("{}{}", crate::ui::render::FACE, cx.settings.run_dir.join("skins").join("skin.png").display())
+}
+
 /// Full-screen dimmed column with a title, used by most menus.
 pub fn frame(ui: &mut Ui, cx: &BuildCx, title: &str, f: impl FnOnce(&mut Ui)) {
     let bg = if cx.in_game { "overlay" } else { "background" };
@@ -355,21 +380,33 @@ impl Screen for Title {
         ui.root_style(Style::default().stretch());
         ui.panel("background", Style::row().grow().stretch(), |ui| {
             ui.panel("sidebar", Style::default().w(180.0).pad(12.0).gap(4.0).stretch(), |ui| {
-                // A translation, so a pack can make the logo a picture (`{img:..}`).
-                let logo = ui.text(cx.t("menu.logo", &[]), "title");
-                if let Some(t) = ui.text_mut(logo) {
-                    t.scale = 3.0;
-                    t.wrap = false;
+                // The `logo` texture across the bar: whole multiples of its pixels while it fits.
+                if let Some(logo) = cx.look.texture("logo", "") {
+                    let size = cx.assets.read(&logo, "textures", "png").and_then(|b| crate::assets::decode_png(&b)).map_or([1.0, 1.0], |i| [i.width as f32, i.height as f32]);
+                    let k = if size[0] <= 156.0 { (156.0 / size[0]).floor() } else { 156.0 / size[0] };
+                    ui.add(Kind::Image { texture: logo, color: 0xFFFFFFFF }, Style::default().w(size[0] * k).h(size[1] * k));
                 }
                 ui.spacer();
-                button(ui, cx, "menu.singleplayer", &[], 156.0, |c| open(c, "core:worlds"));
-                button(ui, cx, "menu.multiplayer", &[], 156.0, |c| open(c, "core:multiplayer"));
-                button(ui, cx, "menu.mods", &[Arg::Int(cx.mods as i64)], 156.0, |c| open(c, "core:mods"));
-                button(ui, cx, "menu.settings", &[], 156.0, |c| open(c, "core:settings"));
-                button(ui, cx, "menu.profile", &[], 156.0, |c| open(c, "core:profile"));
+                icon_button(ui, cx, "button", "menu_singleplayer", "menu.singleplayer", &[], 156.0, |c| open(c, "core:worlds"));
+                // The profile is a square beside Multiplayer: the face of the player's skin.
+                ui.container(Style::row().gap(4.0).stretch(), |ui| {
+                    let mp = icon_button(ui, cx, "button", "menu_multiplayer", "menu.multiplayer", &[], 132.0, |c| open(c, "core:multiplayer"));
+                    ui.nodes[mp].style.grow = 1.0;
+                    let face = face_texture(cx);
+                    let p = ui.button("button", Style::default().w(20.0).h(20.0), Rc::new(|c: &mut Ctx| open(c, "core:profile")), |ui| {
+                        ui.add(Kind::Image { texture: face, color: 0xFFFFFFFF }, Style::default().w(8.0).h(8.0).at(6.0, 6.0, [0.0, 0.0]));
+                    });
+                    ui.nodes[p].tooltip = Some(cx.t("menu.profile", &[]));
+                    ui.set_id(p, "profile");
+                });
+                icon_button(ui, cx, "button", "menu_mods", "menu.mods", &[Arg::Int(cx.mods as i64)], 156.0, |c| open(c, "core:mods"));
+                icon_button(ui, cx, "button", "menu_settings", "menu.settings", &[], 156.0, |c| open(c, "core:settings"));
                 parts(ui, cx, "core:title", "buttons");
                 ui.add(Kind::Container { class: None }, Style::default().h(6.0));
-                button(ui, cx, "menu.quit", &[], 156.0, |c| c.requests.push(Request::Quit));
+                let quit = button(ui, cx, "menu.quit", &[], 156.0, |c| c.requests.push(Request::Quit));
+                if let Kind::Button { class, .. } = &mut ui.nodes[quit].kind {
+                    *class = "button_quit".into();
+                }
                 ui.add(Kind::Container { class: None }, Style::default().h(6.0));
                 label(ui, cx, "menu.version", &[Arg::Text(env!("CARGO_PKG_VERSION").into()), Arg::Int(cx.mods as i64)], "dim");
             });

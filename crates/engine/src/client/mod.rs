@@ -480,6 +480,7 @@ impl Client {
     }
 
     fn receive(&mut self) {
+        self.world.begin_batch();
         while let Some(msg) = self.conn.recv() {
             match msg {
                 ToClient::Welcome { player, dim, pos, .. } => {
@@ -732,6 +733,7 @@ impl Client {
                 _ => {}
             }
         }
+        self.world.end_batch();
         if self.conn.is_closed() && self.disconnected.is_none() {
             self.disconnected = Some("connection lost".into());
         }

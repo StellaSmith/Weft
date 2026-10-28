@@ -59,8 +59,6 @@ pub struct Dim {
     /// Blocks along the edge of area edits waiting for their neighbor update, a share per tick
     /// (a crater's rim is millions).
     pub(super) edge_updates: VecDeque<IVec3>,
-    /// Light left to do after area edits (`area::LightJob`), a share per tick.
-    pub(super) light_jobs: VecDeque<super::area::LightJob>,
     /// Players mods see this tick (not spectators), listed once on first use.
     players: Option<Vec<u64>>,
     neighbor_queue: VecDeque<(IVec3, IVec3)>,
@@ -420,7 +418,6 @@ impl Dim {
             growth_queue: BinaryHeap::new(),
             growing_at: None,
             edge_updates: VecDeque::new(),
-            light_jobs: VecDeque::new(),
             players: None,
             neighbor_queue: VecDeque::new(),
             changes: Vec::new(),
@@ -941,7 +938,6 @@ impl Dim {
         self.grid.tick(&mut self.entities, c, None);
         self.flush_neighbors(c);
         self.entities.compact();
-        self.run_light_jobs(c, std::time::Duration::from_millis(15));
         self.finish_tick(c);
     }
 

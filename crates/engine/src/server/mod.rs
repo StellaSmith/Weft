@@ -630,7 +630,7 @@ impl Server {
                     }
                 }
                 DimEvent::SetTime { dim, time } => self.dims[dim as usize].set_time(time),
-                DimEvent::AreaFill { dim, fill } => self.dims[dim as usize].area_fill(c, fill),
+                DimEvent::AreaFill { dim, fill } => self.area_fill(c, dim, fill),
                 DimEvent::SetMode { player, mode } => {
                     if let Some(pi) = self.player_index(player) {
                         self.set_mode(pi, mode);
@@ -1385,9 +1385,9 @@ impl Server {
         }
     }
 
-    /// Center cube, radius, cubes above and cubes below. Flying high, the view reaches down past
-    /// the air under the player so the ground shows; on the ground it stays shallow, since
-    /// reaching deeper only loads caves.
+    /// Center cube, radius, cubes above and cubes below. Flying higher than the radius, the view
+    /// reaches down to the ground and a little into it, so the ground shows (over a deep crater
+    /// that changes nothing: adding the air below everywhere loaded caves under the whole view).
     fn view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
         let dim = &self.dims[p.dim as usize];
         let pos = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
@@ -1395,7 +1395,65 @@ impl Server {
         // As far up and down as sideways: a crater or a cave is seen whole from beside it, not
         // only from above (the visibility fill keeps unseen ground from loading).
         let r = self.cfg.view_radius;
-        (center, r, r, r + dim.air_below(center, r))
+        (center, r, r, r.max(dim.air_below(center, 2 * r) + 8))
+    }
+
+    /// An area edit, with the cubes it opens up to players' views loaded first on every core:
+    /// the visibility fill would reach them one wave of loading at a time otherwise (seconds of
+    /// floating caves and holes into the sky). Cubes it fills whole are made, not generated.
+    fn area_fill(&mut self, c: &'static Content, dim: u32, fill: area::AreaFill) {
+        let start = Instant::now();
+        let views: Vec<(IVec3, i32, i32, i32)> = self.players.iter().filter(|p| p.joined && p.dim == dim).map(|p| self.view(p)).collect();
+        let def = &c.dims[dim as usize];
+        let in_view = |cp: IVec3| {
+            cp.y >= def.min_cube_y
+                && cp.y <= def.max_cube_y
+                && views.iter().any(|&(center, r, h, down)| {
+                    let d = cp - center;
+                    d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down
+                })
+        };
+        // Unbreakable blocks it keeps may be anywhere in terrain: such cubes are generated.
+        let keeps = fill.keep_unbreakable && c.states.iter().any(|s| s.hardness < 0.0 && s.liquid.is_none());
+        let d = &self.dims[dim as usize];
+        let reach = (fill.radius / 16.0).ceil() as i32 + 2;
+        let mid = (fill.center / 16.0).floor().as_ivec3();
+        let (mut whole, mut load) = (Vec::new(), Vec::new());
+        for z in -reach..=reach {
+            for y in -reach..=reach {
+                for x in -reach..=reach {
+                    let cp = mid + IVec3::new(x, y, z);
+                    // The cubes it changes and the ones next to them.
+                    let (near, far) = fill.reach(cp);
+                    if near > (fill.radius + 17.0).powi(2) || d.has(cp) || !in_view(cp) {
+                        continue;
+                    }
+                    if far <= fill.radius * fill.radius && !keeps {
+                        whole.push(cp);
+                    } else {
+                        load.push(cp);
+                    }
+                }
+            }
+        }
+        let (seed, storage) = (self.cfg.seed, self.storage.clone());
+        let mut made: Vec<(IVec3, Cube, Vec<u8>, u16)> = load
+            .par_iter()
+            .map(|&pos| {
+                let loaded = storage.as_ref().and_then(|s| s.lock().load(dim, pos));
+                let (mut cube, entities) = loaded.unwrap_or_else(|| (dim::generate(c, dim, seed, pos), Vec::new()));
+                let conn = dim::see_through(c, &cube);
+                crate::world::light::prelight(c, &mut cube, def.sky_light);
+                (pos, cube, entities, conn)
+            })
+            .collect();
+        made.sort_unstable_by_key(|m| (-m.0.y, m.0.x, m.0.z));
+        let loaded = made.len();
+        for (pos, cube, entities, conn) in made {
+            self.dims[dim as usize].insert(c, pos, cube, &entities, conn, true);
+        }
+        log::info!("area fill r {:.0}: loaded {loaded} cubes it opens up, made {} it fills whole, {:.0} ms", fill.radius, whole.len(), start.elapsed().as_secs_f64() * 1000.0);
+        self.dims[dim as usize].area_fill(c, fill, &whole);
     }
 
     /// Cubes players need, nearest columns first and each column top-down; loading and

@@ -29,8 +29,29 @@ struct Alloc {
 
 struct Pool {
     words: u32,
-    pages: Vec<(BufferId, Vec<(u32, u32)>)>,
+    pages: Vec<(BufferId, FreeList)>,
     label: &'static str,
+}
+
+/// Free ranges of a page by start and by (length, start): best fit and merging with the
+/// neighbors in log time. A big edit frees and allocates tens of thousands of ranges at once,
+/// which a scanned list took seconds for.
+#[derive(Default)]
+struct FreeList {
+    by_start: std::collections::BTreeMap<u32, u32>,
+    by_len: std::collections::BTreeSet<(u32, u32)>,
+}
+
+impl FreeList {
+    fn add(&mut self, start: u32, len: u32) {
+        self.by_start.insert(start, len);
+        self.by_len.insert((len, start));
+    }
+
+    fn take(&mut self, start: u32, len: u32) {
+        self.by_start.remove(&start);
+        self.by_len.remove(&(len, start));
+    }
 }
 
 impl Pool {
@@ -42,33 +63,35 @@ impl Pool {
         let per = self.records_per_page();
         assert!(n <= per, "mesh larger than a page");
         for (pi, (_, free)) in self.pages.iter_mut().enumerate() {
-            if let Some(i) = free.iter().position(|&(_, len)| len >= n) {
-                let (start, len) = free[i];
-                if len == n {
-                    free.remove(i);
-                } else {
-                    free[i] = (start + n, len - n);
+            if let Some(&(len, start)) = free.by_len.range((n, 0)..).next() {
+                free.take(start, len);
+                if len > n {
+                    free.add(start + n, len - n);
                 }
                 return Alloc { page: pi as u32, offset: start, len: n };
             }
         }
         let buf = gpu.create_buffer(PAGE_BYTES, usage::STORAGE, self.label);
-        self.pages.push((buf, vec![(n, per - n)]));
+        let mut free = FreeList::default();
+        if per > n {
+            free.add(n, per - n);
+        }
+        self.pages.push((buf, free));
         Alloc { page: self.pages.len() as u32 - 1, offset: 0, len: n }
     }
 
     fn free(&mut self, a: Alloc) {
         let free = &mut self.pages[a.page as usize].1;
-        let i = free.partition_point(|&(s, _)| s < a.offset);
-        free.insert(i, (a.offset, a.len));
-        if i + 1 < free.len() && free[i].0 + free[i].1 == free[i + 1].0 {
-            free[i].1 += free[i + 1].1;
-            free.remove(i + 1);
+        let (mut start, mut len) = (a.offset, a.len);
+        if let Some((&s, &l)) = free.by_start.range(..start).next_back().filter(|(s, l)| **s + **l == start) {
+            free.take(s, l);
+            (start, len) = (s, l + len);
         }
-        if i > 0 && free[i - 1].0 + free[i - 1].1 == free[i].0 {
-            free[i - 1].1 += free[i].1;
-            free.remove(i);
+        if let Some(&l) = free.by_start.get(&(start + len)) {
+            free.take(start + len, l);
+            len += l;
         }
+        free.add(start, len);
     }
 }
 

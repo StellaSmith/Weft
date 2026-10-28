@@ -232,6 +232,10 @@ pub async fn crater_view(t: T) -> R {
     let f = t.feet();
     t.op("crater_fast 150").await?;
     t.op("look").await?;
+    // The wall's cubes, cut through, reach the client at once with the rest (they used to wait
+    // for their light to be redone, a share per tick: pillars of old blocks for seconds).
+    t.secs(0.2).await?;
+    t.sync_blocks(add(f, [144, -6, -2]), add(f, [152, -1, 2])).await?;
     let rim = [f[0], OVERWORLD.column(5, f[0], f[2] + 170).height.max(f[1]) + 1, f[2] + 170];
     t.cmd(&format!("/tp {} {} {}", rim[0], rim[1], rim[2])).await?;
     t.secs(1.0).await?;
@@ -663,3 +667,49 @@ pub async fn worldgen(t: T) -> R {
     Ok(())
 }
 
+
+/// A block placed while the whole view waits to be meshed again (as after a big crater or a
+/// resource reload) shows at once: the cubes next to the player are meshed first, past the
+/// far ones (it used to wait behind all of them).
+pub async fn edit_while_loading(t: T) -> R {
+    static VIEW: Config<i32> = Config::named("core:view_distance");
+    let before = VIEW.get();
+    VIEW.set(32);
+    let out = edit_while_loading_at(&t).await;
+    VIEW.set(before);
+    out
+}
+
+async fn edit_while_loading_at(t: &T) -> R {
+    t.world(5).await?;
+    t.idle().await?;
+    t.op("mode spectator").await?;
+    t.cmd("/tp ~ ~40 ~").await?;
+    t.c().look(0.0, 0.0);
+    t.frames(5).await?;
+    // Eye level, three blocks north.
+    let f = t.feet();
+    let p = add(f, [0, 1, -3]);
+    let gold = |c: [u8; 3]| c[0] > 180 && c[1] > 130 && c[2] < 110;
+    t.check(!gold(t.pixel(0.53, 0.53).await?), "sky in front before");
+    t.c().reload_assets();
+    let mut most = 0;
+    t.until("everything to mesh again", Duration::from_secs(10), |t| {
+        most = most.max(t.state().pending_meshes);
+        most > 5000
+    })
+    .await
+    .map_err(|e| format!("{e} (at most {most}, {} cubes)", t.state().cubes))?;
+    let backlog = t.state().pending_meshes;
+    let start = std::time::Instant::now();
+    t.set(p, "gold_block").await?;
+    let mut shown = false;
+    while start.elapsed() < Duration::from_secs(5) && !shown {
+        shown = gold(t.pixel(0.53, 0.53).await?);
+    }
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    t.note(format!("placed block shown after {ms:.0} ms with {backlog} meshes waiting"));
+    t.check(shown, "the placed block shows");
+    t.check(ms < 500.0, format!("shown after {ms:.0} ms"));
+    Ok(())
+}

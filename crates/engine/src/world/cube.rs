@@ -9,6 +9,27 @@ pub const fn index(x: usize, y: usize, z: usize) -> usize {
     (y * SIZE + z) * SIZE + x
 }
 
+/// Every bit of `around_mask`.
+pub const ALL_AROUND: u32 = (1 << 27) - 1;
+
+/// The cubes whose meshes read the block at local `(x, y, z)`: itself and the neighbors it
+/// borders (a mesh reads one block into each neighbor), bit `(dy + 1) * 9 + (dz + 1) * 3 + dx + 1`.
+pub fn around_mask(x: i32, y: i32, z: i32) -> u32 {
+    let sides = |v: i32| [v == 0, true, v == 15];
+    let (sx, sy, sz) = (sides(x), sides(y), sides(z));
+    let mut mask = 0;
+    for dy in 0..3 {
+        for dz in 0..3 {
+            for dx in 0..3 {
+                if sx[dx] && sy[dy] && sz[dz] {
+                    mask |= 1 << (dy * 9 + dz * 3 + dx);
+                }
+            }
+        }
+    }
+    mask
+}
+
 #[derive(Clone)]
 enum Blocks {
     Uniform(u32),
@@ -133,6 +154,47 @@ impl Cube {
                 }
             }
         }
+    }
+
+    /// How this differs from `old` for meshes: `None` when every block and light value is the
+    /// same, else the cubes around whose meshes read a changed one (`around_mask`), itself
+    /// included.
+    pub fn changed_around(&self, old: &Cube) -> Option<u32> {
+        let same_blocks = match (&self.blocks, &old.blocks) {
+            (Blocks::Uniform(a), Blocks::Uniform(b)) => a == b,
+            (Blocks::Packed { palette: p, bits: b, words: w }, Blocks::Packed { palette: op, bits: ob, words: ow }) => p == op && b == ob && w == ow,
+            _ => false,
+        };
+        let same_light = match (&self.light, &old.light) {
+            (Light::Uniform(a), Light::Uniform(b)) => a == b,
+            (Light::Full(a), Light::Full(b)) => a == b,
+            _ => false,
+        };
+        if same_blocks && same_light {
+            return None;
+        }
+        if let (Blocks::Uniform(_), Blocks::Uniform(_), Light::Uniform(_), Light::Uniform(_)) = (&self.blocks, &old.blocks, &self.light, &old.light) {
+            return Some(ALL_AROUND);
+        }
+        // Something changed; inside blocks are read by this cube alone, so only the outer
+        // layer decides which neighbors care.
+        let mut mask = 1 << 13;
+        for y in 0..16 {
+            for z in 0..16 {
+                let inner = (1..15).contains(&y) && (1..15).contains(&z);
+                let step = if inner { 15 } else { 1 };
+                for x in (0..16).step_by(step) {
+                    let i = index(x, y, z);
+                    if (!same_blocks && self.get(i) != old.get(i)) || (!same_light && self.light(i) != old.light(i)) {
+                        mask |= around_mask(x as i32, y as i32, z as i32);
+                    }
+                }
+                if mask == ALL_AROUND {
+                    return Some(mask);
+                }
+            }
+        }
+        Some(mask)
     }
 
     /// `Some(state)` when every block is the same.

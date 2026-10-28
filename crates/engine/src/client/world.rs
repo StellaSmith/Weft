@@ -1,11 +1,14 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use glam::{IVec2, IVec3};
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::mesher::{self, Mesh, Neighborhood, PAD_VOLUME, pidx};
 use crate::content::{AIR, content};
+use crate::world::cube::{ALL_AROUND, around_mask};
 use crate::world::{Cube, cube_of, local_index};
 
 pub struct MeshResult {
@@ -45,7 +48,31 @@ pub struct ClientWorld {
     /// them), and the block bounds (inclusive), for collisions.
     pub bounded: bool,
     pub bounds: Option<(IVec3, IVec3)>,
+    /// Updates that came together, shown together once all their cubes are meshed: new meshes
+    /// next to old ones open holes for a few frames otherwise (a crater showing the caves
+    /// under it before its walls, a block at a cube's edge).
+    batches: Vec<Batch>,
+    /// The batch being collected (`begin_batch` .. `end_batch`).
+    open: Option<Batch>,
 }
+
+struct Batch {
+    /// Cubes whose new mesh it still waits for (while open: the ones touched).
+    members: FxHashSet<IVec3>,
+    /// While open: cubes sent again and what they were, compared at the end on every core.
+    resent: Vec<(IVec3, Arc<Cube>)>,
+    results: Vec<MeshResult>,
+    since: Instant,
+    /// Some cube it touched was there before (only loading new cubes is not held).
+    update: bool,
+}
+
+/// A batch waits no longer than this for its slowest cube.
+const HOLD_MAX: Duration = Duration::from_secs(5);
+
+/// Ready cubes this close to the player (in cubes) are meshed first and past the limit on jobs:
+/// what the player just placed or broke shows the next frame, whatever else waits.
+const URGENT: i32 = 2;
 
 impl crate::physics::Blocks for ClientWorld {
     fn block(&self, p: IVec3) -> u32 {
@@ -96,6 +123,8 @@ impl ClientWorld {
             tints_dirty: FxHashSet::default(),
             bounded: false,
             bounds: None,
+            batches: Vec::new(),
+            open: None,
         }
     }
 
@@ -142,6 +171,33 @@ impl ClientWorld {
         self.hidden.clear();
         self.columns.clear();
         self.tints_dirty.clear();
+        self.batches.clear();
+    }
+
+    /// Starts collecting what arrives into one batch.
+    pub fn begin_batch(&mut self) {
+        self.open = Some(Batch { members: FxHashSet::default(), resent: Vec::new(), results: Vec::new(), since: Instant::now(), update: false });
+    }
+
+    pub fn end_batch(&mut self) {
+        let Some(mut b) = self.open.take() else { return };
+        // A resend remeshes only what reads a changed block: light resends after an edit
+        // reach far more cubes than the edit does.
+        let resent = std::mem::take(&mut b.resent);
+        let cubes = &self.cubes;
+        let masks: Vec<(IVec3, u32)> = resent.par_iter().filter_map(|(p, old)| cubes.get(p).and_then(|now| now.changed_around(old)).map(|m| (*p, m))).collect();
+        for (p, mask) in masks {
+            add_around(&mut b.members, p, mask);
+        }
+        b.members.retain(|p| self.cubes.contains_key(p));
+        for &p in &b.members {
+            self.bump(p);
+            self.dirty.insert(p);
+            self.refresh(p);
+        }
+        if b.update && !b.members.is_empty() {
+            self.batches.push(b);
+        }
     }
 
     /// Versions come from one counter so a mesh job of a removed cube can never match a new cube
@@ -151,22 +207,18 @@ impl ClientWorld {
         self.versions.insert(pos, self.next_version);
     }
 
-    fn touch(&mut self, pos: IVec3, neighbors: bool) {
-        self.bump(pos);
-        self.dirty.insert(pos);
-        self.refresh(pos);
-        if neighbors {
-            for dz in -1..=1 {
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        let n = pos + IVec3::new(dx, dy, dz);
-                        if n != pos && self.cubes.contains_key(&n) {
-                            self.bump(n);
-                            self.dirty.insert(n);
-                            self.refresh(n);
-                        }
-                    }
-                }
+    /// Remeshes the cubes of `mask` around `pos` (`cube::around_mask`); in a batch once at its
+    /// end (a crater's cubes touch each neighbor up to 27 times).
+    fn touch(&mut self, pos: IVec3, mask: u32) {
+        if let Some(b) = &mut self.open {
+            add_around(&mut b.members, pos, mask);
+            return;
+        }
+        for n in around(pos, mask) {
+            if self.cubes.contains_key(&n) {
+                self.bump(n);
+                self.dirty.insert(n);
+                self.refresh(n);
             }
         }
     }
@@ -189,10 +241,23 @@ impl ClientWorld {
                 }
             }
         }
-        if self.cubes.insert(pos, cube).is_none() {
-            self.columns.get_mut(&col).unwrap().cubes += 1;
+        let fresh_hidden = hidden != crate::net::KEEP_HIDDEN;
+        match self.cubes.insert(pos, cube) {
+            None => {
+                self.columns.get_mut(&col).unwrap().cubes += 1;
+                self.touch(pos, ALL_AROUND);
+            }
+            Some(old) => {
+                if fresh_hidden {
+                    self.touch(pos, ALL_AROUND);
+                } else if let Some(b) = &mut self.open {
+                    b.update = true;
+                    b.resent.push((pos, old));
+                } else if let Some(mask) = self.cubes[&pos].changed_around(&old) {
+                    self.touch(pos, mask);
+                }
+            }
         }
-        self.touch(pos, true);
     }
 
     pub fn remove(&mut self, pos: IVec3) {
@@ -219,16 +284,18 @@ impl ClientWorld {
         let cp = cube_of(p);
         let Some(cube) = self.cubes.get_mut(&cp) else { return };
         Arc::make_mut(cube).set(local_index(p), state);
+        if let Some(b) = &mut self.open {
+            b.update = true;
+        }
         let l = p & 15;
-        let border = l.x == 0 || l.x == 15 || l.y == 0 || l.y == 15 || l.z == 0 || l.z == 15;
-        self.touch(cp, border);
+        self.touch(cp, around_mask(l.x, l.y, l.z));
     }
 
     /// Remeshes every cube, e.g. after textures were reloaded.
     pub fn remesh_all(&mut self) {
         let all: Vec<IVec3> = self.cubes.keys().copied().collect();
         for p in all {
-            self.touch(p, false);
+            self.touch(p, 1 << 13);
         }
     }
 
@@ -333,7 +400,37 @@ impl ClientWorld {
 
     /// Starts meshing jobs for dirty cubes nearest to `center` first.
     pub fn schedule_meshing(&mut self, center: IVec3, max_in_flight: usize) {
-        if self.ready.is_empty() || self.in_flight.len() >= max_in_flight {
+        if self.ready.is_empty() {
+            return;
+        }
+        let mut start = Vec::new();
+        for dz in -URGENT..=URGENT {
+            for dy in -URGENT..=URGENT {
+                for dx in -URGENT..=URGENT {
+                    let p = center + IVec3::new(dx, dy, dz);
+                    if self.ready.contains(&p) && !self.in_flight.contains(&p) {
+                        start.push(p);
+                    }
+                }
+            }
+        }
+        self.start_jobs(start);
+        // Then updates of what is on screen, oldest first: a batch held for a cube at the back
+        // of a long queue would hold everything it came with.
+        let mut take = max_in_flight.saturating_sub(self.in_flight.len());
+        let mut start = FxHashSet::default();
+        'batches: for b in &self.batches {
+            for p in &b.members {
+                if take == 0 {
+                    break 'batches;
+                }
+                if self.ready.contains(p) && !self.in_flight.contains(p) && start.insert(*p) {
+                    take -= 1;
+                }
+            }
+        }
+        self.start_jobs(start.into_iter().collect());
+        if self.in_flight.len() >= max_in_flight {
             return;
         }
         let moved = (center - self.order_center).abs().max_element() > 1;
@@ -352,6 +449,10 @@ impl ClientWorld {
                 take -= 1;
             }
         }
+        self.start_jobs(start);
+    }
+
+    fn start_jobs(&mut self, start: Vec<IVec3>) {
         for pos in start {
             self.dirty.remove(&pos);
             self.ready.remove(&pos);
@@ -381,15 +482,37 @@ impl ClientWorld {
         }
     }
 
-    /// Finished meshes that are still current.
+    /// Finished meshes that are still current, those of a batch once it is complete.
     pub fn take_meshes(&mut self) -> Vec<MeshResult> {
         let mut out = Vec::new();
         while let Ok(r) = self.rx.try_recv() {
             self.in_flight.remove(&r.pos);
-            if self.versions.get(&r.pos) == Some(&r.version) {
-                out.push(r);
+            if self.versions.get(&r.pos) != Some(&r.version) {
+                continue;
+            }
+            // Into the oldest batch waiting for it; the others stop waiting for it too.
+            let mut into = None;
+            for (i, b) in self.batches.iter_mut().enumerate() {
+                if b.members.remove(&r.pos) && into.is_none() {
+                    into = Some(i);
+                }
+            }
+            match into {
+                Some(i) => self.batches[i].results.push(r),
+                None => out.push(r),
             }
         }
+        // Complete once nothing it waits for can still come now (a cube waiting for a neighbor
+        // that has not arrived is not waited for).
+        let (ready, in_flight, versions) = (&self.ready, &self.in_flight, &self.versions);
+        self.batches.retain_mut(|b| {
+            b.members.retain(|p| ready.contains(p) || in_flight.contains(p));
+            if !b.members.is_empty() && b.since.elapsed() < HOLD_MAX {
+                return true;
+            }
+            out.extend(b.results.drain(..).filter(|r| versions.get(&r.pos) == Some(&r.version)));
+            false
+        });
         out
     }
 
@@ -398,6 +521,15 @@ impl ClientWorld {
     pub fn pending_meshes(&self) -> usize {
         self.ready.len() + self.in_flight.len()
     }
+}
+
+/// The cubes of `mask` around `pos` (`cube::around_mask`), loaded or not.
+fn around(pos: IVec3, mask: u32) -> impl Iterator<Item = IVec3> {
+    (0..27).filter(move |i| mask & (1 << i) != 0).map(move |i| pos + IVec3::new(i % 3 - 1, i / 9 - 1, i / 3 % 3 - 1))
+}
+
+fn add_around(set: &mut FxHashSet<IVec3>, pos: IVec3, mask: u32) {
+    set.extend(around(pos, mask));
 }
 
 fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32, pos: IVec3) -> Neighborhood {

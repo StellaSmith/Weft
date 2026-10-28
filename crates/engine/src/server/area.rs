@@ -6,13 +6,14 @@
 
 use std::sync::Arc;
 
-use glam::{DVec3, IVec3};
+use glam::{DVec3, IVec2, IVec3};
 use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::dim::Dim;
 use crate::content::Content;
 use crate::world::cube::{Cube, VOLUME};
-use crate::world::light::{CubeMap, Lighter};
+use crate::world::light::Lighter;
 
 /// A ball of one block: every block whose middle is within `radius` of `center` becomes
 /// `state` (unbreakable ones stay with `keep_unbreakable`).
@@ -26,13 +27,58 @@ pub struct AreaFill {
     pub keep_unbreakable: bool,
 }
 
-/// Light work an area edit left for the following ticks.
+/// Light work for one cube of an area edit.
 #[derive(Clone, Copy)]
-pub enum LightJob {
+enum LightJob {
     /// A cube lit on its own (or set to full sky) joins its neighbors (`Lighter::light_prelit`).
     Join(IVec3),
     /// A cube lit from scratch (`Lighter::light_new`), with whether the sky is open above it.
     New(IVec3, bool),
+}
+
+impl LightJob {
+    fn pos(self) -> IVec3 {
+        match self {
+            LightJob::Join(p) | LightJob::New(p, _) => p,
+        }
+    }
+}
+
+/// What one light task sees: the 3x3 columns around its own between `low` and `top`, read
+/// from the map as they are and copied on the first write (no other task of its round reaches
+/// them). Boxed, so the lighter's cached pointers stay put as more are copied.
+struct Overlay<'a> {
+    base: &'a FxHashMap<IVec3, Arc<Cube>>,
+    own: FxHashMap<IVec3, Box<Cube>>,
+    key: IVec2,
+    low: i32,
+    top: i32,
+}
+
+impl Overlay<'_> {
+    fn reaches(&self, p: IVec3) -> bool {
+        (p.x - self.key.x).abs() <= 1 && (p.z - self.key.y).abs() <= 1 && p.y >= self.low && p.y <= self.top
+    }
+}
+
+impl crate::world::light::CubeMap for Overlay<'_> {
+    fn cube(&self, p: IVec3) -> Option<&Cube> {
+        if !self.reaches(p) {
+            return None;
+        }
+        self.own.get(&p).map(|b| &**b).or_else(|| self.base.get(&p).map(|a| &**a))
+    }
+
+    fn cube_mut(&mut self, p: IVec3) -> Option<&mut Cube> {
+        if !self.reaches(p) {
+            return None;
+        }
+        if !self.own.contains_key(&p) {
+            let copy = Box::new((**self.base.get(&p)?).clone());
+            self.own.insert(p, copy);
+        }
+        self.own.get_mut(&p).map(|b| &mut **b)
+    }
 }
 
 /// What one fill did, for the log.
@@ -66,7 +112,7 @@ impl AreaFill {
     }
 
     /// Squared distance from the center to the nearest and farthest point of cube `cp`.
-    fn reach(&self, cp: IVec3) -> (f64, f64) {
+    pub fn reach(&self, cp: IVec3) -> (f64, f64) {
         let lo = (cp * 16).as_dvec3();
         let hi = lo + DVec3::splat(16.0);
         let near = self.center.clamp(lo, hi) - self.center;
@@ -129,8 +175,9 @@ impl AreaFill {
 }
 
 impl Dim {
-    /// Applies `fill` to every loaded cube of this region it reaches (see the module).
-    pub fn area_fill(&mut self, c: &'static Content, fill: &AreaFill) -> FillStats {
+    /// Applies `fill` to every loaded cube of this region it reaches (see the module), and makes
+    /// the `fresh` cubes (never loaded, filled whole) as they end up.
+    pub fn area_fill(&mut self, c: &'static Content, fill: &AreaFill, fresh: &[IVec3]) -> FillStats {
         let mut stats = FillStats::default();
         let start = std::time::Instant::now();
         let targets: Vec<(IVec3, Arc<Cube>)> = self.cubes.iter().filter(|(cp, _)| fill.touches(**cp)).map(|(cp, cube)| (*cp, cube.clone())).collect();
@@ -173,7 +220,18 @@ impl Dim {
             self.modified.insert(cp);
             self.edited.insert(cp);
             self.conn.remove(&cp);
+            // Clients get the blocks now, whatever the light does.
+            self.light_dirty.insert(cp);
             relight.push(cp);
+        }
+        for &cp in fresh {
+            let mut cube = Cube::uniform(fill.state, 0);
+            cube.edits = fill.id;
+            self.grid.cube_loaded(c, cp, &cube);
+            self.add_cube(cp, Arc::new(cube));
+            relight.push(cp);
+            stats.cubes += 1;
+            stats.whole += 1;
         }
         stats.apply_ms = start.elapsed().as_secs_f64() * 1000.0;
         let start = std::time::Instant::now();
@@ -184,6 +242,12 @@ impl Dim {
             self.relight_around(c, &relight, &mut stats);
         }
         stats.light_ms = start.elapsed().as_secs_f64() * 1000.0;
+        // Lit for good: they go out to players like any loaded cube.
+        let mut fresh = fresh.to_vec();
+        fresh.sort_unstable_by_key(|p| -p.y);
+        for cp in fresh {
+            self.settle_down(cp);
+        }
         stats
     }
 
@@ -239,39 +303,62 @@ impl Dim {
         dimmed.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
         dimmed.dedup();
         stats.relit = changed.len() + dimmed.len();
-        // The rest is flood fills reaching into walls and caves (seconds for a crater of
-        // hundreds of blocks at a view of 64): queued and done a share per tick
-        // (`run_light_jobs`) so the world keeps ticking meanwhile.
-        self.light_dirty.extend(whole.iter().copied());
-        self.light_jobs.extend(alone.iter().map(|&cp| LightJob::Join(cp)));
-        self.light_jobs.extend(flood.iter().chain(&dimmed).map(|&cp| LightJob::New(cp, open_above(cp))));
-        self.light_jobs.extend(whole.iter().map(|&cp| LightJob::Join(cp)));
+        // Whole air cubes among others like them have nothing to push or pull.
+        let full: FxHashSet<IVec3> = whole.iter().copied().collect();
+        let mut jobs: Vec<LightJob> = alone.iter().map(|&cp| LightJob::Join(cp)).collect();
+        jobs.extend(flood.iter().chain(&dimmed).map(|&cp| LightJob::New(cp, open_above(cp))));
+        jobs.extend(whole.iter().filter(|&&cp| crate::world::DIRS.iter().any(|d| !full.contains(&(cp + *d)))).map(|&cp| LightJob::Join(cp)));
+        self.run_light_jobs(c, jobs);
     }
 
-    /// Light jobs left by area edits, for up to `budget` of this tick, in the order queued.
-    pub fn run_light_jobs(&mut self, c: &'static Content, budget: std::time::Duration) {
-        if self.light_jobs.is_empty() {
-            return;
-        }
-        let start = std::time::Instant::now();
+    /// Runs light jobs on every core. Light leaves a cube by at most 15 blocks (less than a
+    /// cube) except full sky going straight down, so jobs are grouped by column and columns
+    /// three apart are done at once, each seeing only the 3x3 columns around it (`Overlay`);
+    /// nine rounds cover every column. Within a column the jobs keep their order (top down).
+    fn run_light_jobs(&mut self, c: &'static Content, jobs: Vec<LightJob>) {
         let def = &c.dims[self.id as usize];
-        let mut map = super::dim::Cubes(&mut self.cubes);
-        let mut lighter = Lighter::new(&mut map, c, def.sky_light);
-        let mut done = 0;
-        while let Some(job) = self.light_jobs.pop_front() {
-            // A cube unloaded or handed to another region since is lit when it comes back.
-            match job {
-                LightJob::Join(cp) if lighter.map.cube(cp).is_some() => lighter.light_prelit(cp),
-                LightJob::New(cp, open) if lighter.map.cube(cp).is_some() => lighter.light_new(cp, open),
-                _ => {}
+        let mut columns: FxHashMap<IVec2, Vec<LightJob>> = FxHashMap::default();
+        for job in jobs {
+            let p = job.pos();
+            columns.entry(IVec2::new(p.x, p.z)).or_default().push(job);
+        }
+        let opaque = |cube: &Cube| cube.palette().iter().all(|&s| c.states[s as usize].opacity >= 15);
+        for round in 0..9 {
+            let keys: Vec<IVec2> = columns.keys().copied().filter(|k| k.x.rem_euclid(3) + 3 * k.y.rem_euclid(3) == round).collect();
+            let mut work: Vec<(IVec2, Vec<LightJob>, i32, i32)> = Vec::with_capacity(keys.len());
+            for key in keys {
+                let jobs = columns.remove(&key).unwrap();
+                let top = jobs.iter().map(|j| j.pos().y).max().unwrap() + 1;
+                // Full sky goes on down whatever shaft is below, and sideways from there.
+                let mut low = jobs.iter().map(|j| j.pos().y).min().unwrap();
+                while self.cubes.get(&IVec3::new(key.x, low - 1, key.y)).is_some_and(|cube| !opaque(cube)) {
+                    low -= 1;
+                }
+                work.push((key, jobs, low - 1, top));
             }
-            done += 1;
-            if done % 16 == 0 && start.elapsed() >= budget {
-                break;
+            let cubes = &self.cubes;
+            let done: Vec<(FxHashMap<IVec3, Box<Cube>>, FxHashSet<IVec3>)> = work
+                .into_par_iter()
+                .map(|(key, jobs, low, top)| {
+                    let mut map = Overlay { base: cubes, own: FxHashMap::default(), key, low, top };
+                    let mut lighter = Lighter::new(&mut map, c, def.sky_light);
+                    for job in jobs {
+                        match job {
+                            LightJob::Join(cp) => lighter.light_prelit(cp),
+                            LightJob::New(cp, open) => lighter.light_new(cp, open),
+                        }
+                    }
+                    let changed = std::mem::take(&mut lighter.changed);
+                    (map.own, changed)
+                })
+                .collect();
+            for (own, changed) in done {
+                for (p, cube) in own {
+                    self.cubes.insert(p, Arc::from(cube));
+                }
+                self.light_dirty.extend(changed);
             }
         }
-        let changed = std::mem::take(&mut lighter.changed);
-        self.light_dirty.extend(changed);
     }
 
     /// Light once per cube, the changed ones and those around them (light reaches 15 blocks:
@@ -282,13 +369,7 @@ impl Dim {
         around.dedup();
         stats.relit = around.len();
         let def = &c.dims[self.id as usize];
-        let mut map = super::dim::Cubes(&mut self.cubes);
-        let mut lighter = Lighter::new(&mut map, c, def.sky_light);
-        for &cp in &around {
-            let open_above = cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y;
-            lighter.light_new(cp, open_above);
-        }
-        let changed = std::mem::take(&mut lighter.changed);
-        self.light_dirty.extend(changed);
+        let jobs = around.iter().map(|&cp| LightJob::New(cp, cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y)).collect();
+        self.run_light_jobs(c, jobs);
     }
 }

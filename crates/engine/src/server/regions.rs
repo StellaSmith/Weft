@@ -152,6 +152,10 @@ impl DimSet {
 
     pub fn insert(&mut self, c: &Content, pos: IVec3, mut cube: Cube, entities: &[u8], mut conn: u16, mut prelit: bool) {
         self.generating.remove(&pos);
+        // Loaded meanwhile (an area edit loads what it opens up at once).
+        if self.has(pos) {
+            return;
+        }
         // Area edits made while it was away (or before it was ever generated), once each.
         let mut edited = false;
         if let Some(last) = self.edits.last().map(|e| e.id).filter(|&l| cube.edits < l) {
@@ -220,14 +224,22 @@ impl DimSet {
     }
 
     /// Makes area edit `fill` (its id given here): every region's loaded cubes now, the rest
-    /// when they load.
-    pub fn area_fill(&mut self, c: &'static Content, mut fill: super::area::AreaFill) {
+    /// when they load. `fresh` cubes are not loaded and filled whole: made directly.
+    pub fn area_fill(&mut self, c: &'static Content, mut fill: super::area::AreaFill, fresh: &[IVec3]) {
         let start = std::time::Instant::now();
         fill.id = self.edits.last().map_or(1, |e| e.id + 1);
         self.edits.push(fill);
+        // Regions first (making one may merge others), then who gets what.
+        for &cp in fresh {
+            self.region_for(c, section_of_cube(cp));
+        }
+        let mut made: Vec<Vec<IVec3>> = vec![Vec::new(); self.regions.len()];
+        for &cp in fresh {
+            made[self.owner[&section_of_cube(cp)]].push(cp);
+        }
         let mut total = super::area::FillStats::default();
-        for r in &mut self.regions {
-            let s = r.area_fill(c, &fill);
+        for (r, made) in self.regions.iter_mut().zip(&made) {
+            let s = r.area_fill(c, &fill, made);
             total.cubes += s.cubes;
             total.whole += s.whole;
             total.relit += s.relit;

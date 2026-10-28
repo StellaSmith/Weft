@@ -291,6 +291,11 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
             if !(c == SKY && uniform.is_some_and(|l| ch(l, SKY) == SKY_FULL)) {
                 self.seed_from_neighbors(cp, c, dirs);
             }
+            // Nothing of its own to push out (an air cube's block light).
+            if uniform.is_some_and(|l| ch(l, c) <= 1) {
+                self.propagate(c);
+                continue;
+            }
             for d in 0..6 {
                 if c == SKY && d == 3 {
                     continue;

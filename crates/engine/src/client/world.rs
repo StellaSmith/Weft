@@ -22,6 +22,12 @@ pub struct ClientWorld {
     /// Dirty cubes whose six neighbors are all known: meshable now. Kept up to date as cubes
     /// come and go, so a frame never walks every dirty cube (tens of thousands while loading).
     ready: FxHashSet<IVec3>,
+    /// `ready` sorted farthest first around `order_center` (taken from the end), sorted again
+    /// only when the player moved or `ready` grew by a quarter since: a frame no longer walks
+    /// hundreds of thousands of ready cubes at a view of 64.
+    order: Vec<IVec3>,
+    order_center: IVec3,
+    order_size: usize,
     versions: FxHashMap<IVec3, u32>,
     in_flight: FxHashSet<IVec3>,
     tx: Sender<MeshResult>,
@@ -75,6 +81,9 @@ impl ClientWorld {
             time: 0,
             dirty: FxHashSet::default(),
             ready: FxHashSet::default(),
+            order: Vec::new(),
+            order_center: IVec3::MAX,
+            order_size: 0,
             versions: FxHashMap::default(),
             in_flight: FxHashSet::default(),
             tx,
@@ -110,6 +119,14 @@ impl ClientWorld {
     fn refresh(&mut self, p: IVec3) {
         let def = &content().dims[self.dim as usize];
         if self.dirty.contains(&p) && (0..6).all(|d| self.neighbor_known(p, d, def.min_cube_y, def.max_cube_y)) {
+            // Air cubes never produce faces themselves (neighbors draw the faces facing them):
+            // done right away, without a job (most of a tall view is sky).
+            if self.cubes.get(&p).is_some_and(|c| c.uniform_state() == Some(AIR)) {
+                self.dirty.remove(&p);
+                self.ready.remove(&p);
+                let _ = self.tx.send(MeshResult { pos: p, version: self.versions[&p], mesh: Mesh::default() });
+                return;
+            }
             self.ready.insert(p);
         } else {
             self.ready.remove(&p);
@@ -316,28 +333,26 @@ impl ClientWorld {
 
     /// Starts meshing jobs for dirty cubes nearest to `center` first.
     pub fn schedule_meshing(&mut self, center: IVec3, max_in_flight: usize) {
-        if self.ready.is_empty() {
-            return;
-        }
-        // Air cubes never produce faces themselves (neighbors draw the faces facing them): done
-        // here at once, without a job or a place among the jobs (most of a tall view is sky).
-        let air: Vec<IVec3> = self.ready.iter().copied().filter(|p| !self.in_flight.contains(p) && self.cubes[p].uniform_state() == Some(AIR)).collect();
-        for pos in air {
-            self.dirty.remove(&pos);
-            self.ready.remove(&pos);
-            let _ = self.tx.send(MeshResult { pos, version: self.versions[&pos], mesh: Mesh::default() });
-        }
         if self.ready.is_empty() || self.in_flight.len() >= max_in_flight {
             return;
         }
-        let mut ready: Vec<(i32, IVec3)> = self.ready.iter().copied().filter(|p| !self.in_flight.contains(p)).map(|p| ((p - center).length_squared(), p)).collect();
-        // Only the nearest few are started; no need to order the rest.
-        let take = max_in_flight - self.in_flight.len();
-        if ready.len() > take {
-            ready.select_nth_unstable_by_key(take, |r| r.0);
-            ready.truncate(take);
+        let moved = (center - self.order_center).abs().max_element() > 1;
+        if moved || self.order.is_empty() || self.ready.len() > self.order_size + self.order_size / 4 + 64 {
+            self.order.clear();
+            self.order.extend(self.ready.iter().copied());
+            self.order.sort_unstable_by_key(|p| std::cmp::Reverse((*p - center).length_squared()));
+            (self.order_center, self.order_size) = (center, self.ready.len());
         }
-        for (_, pos) in ready {
+        let mut take = max_in_flight - self.in_flight.len();
+        let mut start = Vec::with_capacity(take);
+        while take > 0 {
+            let Some(pos) = self.order.pop() else { break };
+            if self.ready.contains(&pos) && !self.in_flight.contains(&pos) {
+                start.push(pos);
+                take -= 1;
+            }
+        }
+        for pos in start {
             self.dirty.remove(&pos);
             self.ready.remove(&pos);
             let mut around: [Option<Arc<Cube>>; 27] = Default::default();

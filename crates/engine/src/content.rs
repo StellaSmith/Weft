@@ -853,7 +853,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 scatters: Vec::new(),
                 decorations: Vec::new(),
                 column_cache: crate::server::terrain::ColumnCache::new(4096),
-                scatter_cache: crate::server::terrain::ColumnCache::new(4096),
+                scatter_cache: crate::server::terrain::ColumnCache::new(32768),
             },
             d.cell as usize,
             RawValue::list(d.components),

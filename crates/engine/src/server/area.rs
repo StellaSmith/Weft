@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use super::dim::Dim;
 use crate::content::Content;
 use crate::world::cube::{Cube, VOLUME};
-use crate::world::light::Lighter;
+use crate::world::light::{CubeMap, Lighter};
 
 /// A ball of one block: every block whose middle is within `radius` of `center` becomes
 /// `state` (unbreakable ones stay with `keep_unbreakable`).
@@ -24,6 +24,15 @@ pub struct AreaFill {
     pub radius: f64,
     pub state: u32,
     pub keep_unbreakable: bool,
+}
+
+/// Light work an area edit left for the following ticks.
+#[derive(Clone, Copy)]
+pub enum LightJob {
+    /// A cube lit on its own (or set to full sky) joins its neighbors (`Lighter::light_prelit`).
+    Join(IVec3),
+    /// A cube lit from scratch (`Lighter::light_new`), with whether the sky is open above it.
+    New(IVec3, bool),
 }
 
 /// What one fill did, for the log.
@@ -125,9 +134,13 @@ impl Dim {
         let mut stats = FillStats::default();
         let start = std::time::Instant::now();
         let targets: Vec<(IVec3, Arc<Cube>)> = self.cubes.iter().filter(|(cp, _)| fill.touches(**cp)).map(|(cp, cube)| (*cp, cube.clone())).collect();
-        let done: Vec<(IVec3, Option<(Cube, Vec<IVec3>)>)> = targets.par_iter().map(|(cp, cube)| (*cp, fill.apply(c, *cp, cube))).collect();
+        // With whether the cube had a light source.
+        let done: Vec<(IVec3, Option<(Cube, Vec<IVec3>)>, bool)> =
+            targets.par_iter().map(|(cp, cube)| (*cp, fill.apply(c, *cp, cube), cube.palette().iter().any(|&s| c.states[s as usize].light != [0; 3]))).collect();
         let mut relight: Vec<IVec3> = Vec::new();
-        for (cp, result) in done {
+        // Cubes that lost a light source: those around them may get darker.
+        let mut lost_light: Vec<IVec3> = Vec::new();
+        for (cp, result, emitted) in done {
             let Some((mut cube, edges)) = result else {
                 // Reached but unchanged: it still counts as having had this edit.
                 if let Some(cube) = self.cubes.get_mut(&cp) {
@@ -151,6 +164,9 @@ impl Dim {
             for (_, id) in gone {
                 self.entities.remove(id);
             }
+            if emitted {
+                lost_light.push(cp);
+            }
             self.grid.cube_unloaded(cp);
             self.grid.cube_loaded(c, cp, &cube);
             self.cubes.insert(cp, Arc::new(cube));
@@ -160,9 +176,107 @@ impl Dim {
             relight.push(cp);
         }
         stats.apply_ms = start.elapsed().as_secs_f64() * 1000.0;
-        // Light once per cube, the changed ones and those around them (light reaches 15 blocks:
-        // less than a cube), from the top down so sky light comes from cubes already done.
         let start = std::time::Instant::now();
+        let st = &c.states[fill.state as usize];
+        if st.opacity == 0 && st.light == [0; 3] && st.liquid.is_none() {
+            self.relight_opened(c, &relight, &lost_light, &mut stats);
+        } else {
+            self.relight_around(c, &relight, &mut stats);
+        }
+        stats.light_ms = start.elapsed().as_secs_f64() * 1000.0;
+        stats
+    }
+
+    /// Light for cubes that only lost blocks (a crater): light around them can only grow, so
+    /// only they are lit again and push it out, except around lost light sources. Cubes open to
+    /// full sky above need no flood fill: whole air ones are set to full sky, partial ones are
+    /// lit alone in parallel (as generation does) and joined to their neighbors.
+    fn relight_opened(&mut self, c: &'static Content, changed: &[IVec3], lost_light: &[IVec3], stats: &mut FillStats) {
+        let def = &c.dims[self.id as usize];
+        let full = crate::world::light::SKY_FULL as u32;
+        let mut order = changed.to_vec();
+        order.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
+        let open_above = |cp: IVec3| cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y;
+        // Full sky across the bottom of the cube above (or open sky).
+        let sky_above = |cubes: &rustc_hash::FxHashMap<IVec3, Arc<Cube>>, cp: IVec3| match cubes.get(&(cp + IVec3::Y)) {
+            Some(a) => match a.uniform_light() {
+                Some(l) => l & 0xFF == full,
+                None => (0..256).all(|i| a.light(crate::world::cube::index(i % 16, 0, i / 16)) & 0xFF == full),
+            },
+            None => open_above(cp),
+        };
+        let mut whole = Vec::new();
+        let mut alone = Vec::new();
+        let mut flood = Vec::new();
+        for &cp in &order {
+            let air = self.cubes[&cp].uniform_state().is_some();
+            if !def.sky_light || !sky_above(&self.cubes, cp) {
+                flood.push(cp);
+            } else if air {
+                Arc::make_mut(self.cubes.get_mut(&cp).unwrap()).fill_light(full);
+                whole.push(cp);
+            } else {
+                alone.push(cp);
+            }
+        }
+        let lit: Vec<(IVec3, Cube)> = alone
+            .par_iter()
+            .map(|&cp| {
+                let mut cube = (*self.cubes[&cp]).clone();
+                crate::world::light::prelight(c, &mut cube, true);
+                (cp, cube)
+            })
+            .collect();
+        for (cp, cube) in lit {
+            self.cubes.insert(cp, Arc::new(cube));
+        }
+        // Around lost light sources, the cubes left as they were may be too bright now.
+        let mut dimmed: Vec<IVec3> = lost_light
+            .iter()
+            .flat_map(|&cp| (-1..=1).flat_map(move |y| (-1..=1).flat_map(move |z| (-1..=1).map(move |x| cp + IVec3::new(x, y, z)))))
+            .filter(|p| self.cubes.contains_key(p) && !changed.contains(p))
+            .collect();
+        dimmed.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
+        dimmed.dedup();
+        stats.relit = changed.len() + dimmed.len();
+        // The rest is flood fills reaching into walls and caves (seconds for a crater of
+        // hundreds of blocks at a view of 64): queued and done a share per tick
+        // (`run_light_jobs`) so the world keeps ticking meanwhile.
+        self.light_dirty.extend(whole.iter().copied());
+        self.light_jobs.extend(alone.iter().map(|&cp| LightJob::Join(cp)));
+        self.light_jobs.extend(flood.iter().chain(&dimmed).map(|&cp| LightJob::New(cp, open_above(cp))));
+        self.light_jobs.extend(whole.iter().map(|&cp| LightJob::Join(cp)));
+    }
+
+    /// Light jobs left by area edits, for up to `budget` of this tick, in the order queued.
+    pub fn run_light_jobs(&mut self, c: &'static Content, budget: std::time::Duration) {
+        if self.light_jobs.is_empty() {
+            return;
+        }
+        let start = std::time::Instant::now();
+        let def = &c.dims[self.id as usize];
+        let mut map = super::dim::Cubes(&mut self.cubes);
+        let mut lighter = Lighter::new(&mut map, c, def.sky_light);
+        let mut done = 0;
+        while let Some(job) = self.light_jobs.pop_front() {
+            // A cube unloaded or handed to another region since is lit when it comes back.
+            match job {
+                LightJob::Join(cp) if lighter.map.cube(cp).is_some() => lighter.light_prelit(cp),
+                LightJob::New(cp, open) if lighter.map.cube(cp).is_some() => lighter.light_new(cp, open),
+                _ => {}
+            }
+            done += 1;
+            if done % 16 == 0 && start.elapsed() >= budget {
+                break;
+            }
+        }
+        let changed = std::mem::take(&mut lighter.changed);
+        self.light_dirty.extend(changed);
+    }
+
+    /// Light once per cube, the changed ones and those around them (light reaches 15 blocks:
+    /// less than a cube), from the top down so sky light comes from cubes already done.
+    fn relight_around(&mut self, c: &'static Content, relight: &[IVec3], stats: &mut FillStats) {
         let mut around: Vec<IVec3> = relight.iter().flat_map(|&cp| (-1..=1).flat_map(move |y| (-1..=1).flat_map(move |z| (-1..=1).map(move |x| cp + IVec3::new(x, y, z))))).filter(|p| self.cubes.contains_key(p)).collect();
         around.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
         around.dedup();
@@ -176,7 +290,5 @@ impl Dim {
         }
         let changed = std::mem::take(&mut lighter.changed);
         self.light_dirty.extend(changed);
-        stats.light_ms = start.elapsed().as_secs_f64() * 1000.0;
-        stats
     }
 }

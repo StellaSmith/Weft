@@ -5,6 +5,7 @@
 //! remeshes only its cube.
 
 use glam::{DVec3, IVec3, Mat4, Vec3, Vec4};
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use weft_render::*;
 
@@ -71,6 +72,7 @@ impl Pool {
     }
 }
 
+#[derive(Clone, Copy)]
 struct GpuMesh {
     faces: Option<Alloc>,
     /// Per layer, per direction rank (see `mesher::DIR_RANK`).
@@ -111,6 +113,58 @@ impl Camera {
 /// index), cube center relative to the camera.
 type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4], Vec3);
 
+/// Meshes a worker culls and turns into draws at a time.
+const MESH_CHUNK: usize = 2048;
+
+/// The draws of one visible mesh (its corner `lo` relative to the camera, `k` its structure or
+/// 0), returning the faces drawn. A face direction can be seen only from the side its normal
+/// points to; contiguous visible runs become one draw.
+fn mesh_draws(m: &GpuMesh, key: MeshKey, lo: Vec3, k: i32, cam_cube: IVec3, out: &mut Vec<DrawRecord>) -> u64 {
+    let rel = if k == 0 { key.1 - cam_cube } else { key.1 };
+    let origin = [rel.x, rel.y, rel.z, k];
+    let center = lo + Vec3::splat(8.0);
+    let mut faces = 0u64;
+    let args = |s: u32, len: u32| DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 };
+    if let Some(a) = m.faces {
+        // Directions by rank: +X +Y +Z -X -Y -Z.
+        let seen = [lo.x < 0.0, lo.y < 0.0, lo.z < 0.0, lo.x > -16.0, lo.y > -16.0, lo.z > -16.0];
+        let mut off = a.offset;
+        for layer in 0..3 {
+            let counts = m.face_counts[layer];
+            let mut run: Option<(u32, u32)> = None;
+            for rank in 0..6 {
+                let n = counts[rank];
+                if n > 0 && seen[rank] {
+                    faces += n as u64;
+                    run = Some(match run {
+                        Some((s, len)) => (s, len + n),
+                        None => (off, n),
+                    });
+                } else if n > 0 {
+                    if let Some((s, len)) = run.take() {
+                        out.push((0, layer as u8, a.page, args(s, len), origin, center));
+                    }
+                }
+                off += n;
+            }
+            if let Some((s, len)) = run {
+                out.push((0, layer as u8, a.page, args(s, len), origin, center));
+            }
+        }
+    }
+    if let Some(a) = m.quads {
+        let mut off = a.offset;
+        for layer in 0..3 {
+            let n = m.quad_counts[layer];
+            if n > 0 {
+                out.push((1, layer as u8, a.page, args(off, n), origin, center));
+            }
+            off += n;
+        }
+    }
+    faces
+}
+
 /// A mesh's place: the structure (entity) it belongs to, 0 for the world, and its cube.
 pub type MeshKey = (u64, IVec3);
 
@@ -119,14 +173,17 @@ pub struct WorldRenderer {
     quad_pipes: [PipelineId; 3],
     faces: Pool,
     quads: Pool,
-    meshes: FxHashMap<MeshKey, GpuMesh>,
+    /// Index into `entries` by key. The meshes themselves lie side by side, so a frame goes
+    /// through them in parallel chunks.
+    meshes: FxHashMap<MeshKey, usize>,
+    entries: Vec<(MeshKey, GpuMesh)>,
     globals: Vec<BufferId>,
     origins: Vec<(BufferId, u32)>,
     /// Per frame: camera-relative positions of the structures drawn (index 0: none, the world).
     offsets: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
     /// `draw`'s lists, kept between frames.
-    scratch: (Vec<(MeshKey, f32, Vec3, i32)>, Vec<DrawRecord>, Vec<usize>),
+    scratch: (Vec<Vec<DrawRecord>>, Vec<DrawRecord>, Vec<usize>),
     /// Of the last `draw`: where its translucent draws start in `scratch.2`, and the buffers
     /// they use (globals, origins, indirect, offsets, the frame's scene).
     translucent: usize,
@@ -223,6 +280,7 @@ impl WorldRenderer {
             faces: Pool { words: FACE_WORDS, pages: Vec::new(), label: "face page" },
             quads: Pool { words: QUAD_WORDS, pages: Vec::new(), label: "quad page" },
             meshes: FxHashMap::default(),
+            entries: Vec::new(),
             offsets: Vec::new(),
             globals,
             origins: Vec::new(),
@@ -338,18 +396,22 @@ impl WorldRenderer {
     }
 
     pub fn remove(&mut self, key: MeshKey) {
-        if let Some(m) = self.meshes.remove(&key) {
-            if let Some(a) = m.faces {
-                self.faces.free(a);
-            }
-            if let Some(a) = m.quads {
-                self.quads.free(a);
-            }
+        let Some(i) = self.meshes.remove(&key) else { return };
+        let (_, m) = self.entries.swap_remove(i);
+        if let Some(&(moved, _)) = self.entries.get(i) {
+            self.meshes.insert(moved, i);
+        }
+        if let Some(a) = m.faces {
+            self.faces.free(a);
+        }
+        if let Some(a) = m.quads {
+            self.quads.free(a);
         }
     }
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         self.meshes.clear();
+        self.entries.clear();
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
@@ -366,7 +428,7 @@ impl WorldRenderer {
 
     /// Every cube of structure `frame` goes (it left).
     pub fn remove_frame(&mut self, frame: u64) {
-        let keys: Vec<MeshKey> = self.meshes.keys().copied().filter(|k| k.0 == frame).collect();
+        let keys: Vec<MeshKey> = self.entries.iter().map(|e| e.0).filter(|k| k.0 == frame).collect();
         for k in keys {
             self.remove(k);
         }
@@ -404,7 +466,8 @@ impl WorldRenderer {
             gpu.write_buffer(self.quads.pages[a.page as usize].0, a.offset as u64 * 32, bytemuck::cast_slice(&data));
             a
         });
-        self.meshes.insert(key, GpuMesh { faces, face_counts, quads, quad_counts });
+        self.meshes.insert(key, self.entries.len());
+        self.entries.push((key, GpuMesh { faces, face_counts, quads, quad_counts }));
     }
 
     /// `frames`: structures to draw and where their block (0, 0, 0) is in the world.
@@ -424,77 +487,49 @@ impl WorldRenderer {
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));
 
         let planes = frustum_planes(view_proj);
-        let (mut visible, mut draws, mut sorted) = std::mem::take(&mut self.scratch);
-        visible.clear();
+        let (mut parts, mut draws, mut sorted) = std::mem::take(&mut self.scratch);
         draws.clear();
         sorted.clear();
         // Camera-relative offset of each structure drawn (k + 1 its index; 0 the world).
         let frame_offsets: Vec<Vec3> = frames.iter().map(|f| (f.1 - (cam_cube * 16).as_dvec3()).as_vec3()).collect();
-        for (&key, _) in &self.meshes {
-            let (lo, k) = if key.0 == 0 {
-                ((key.1 - cam_cube).as_vec3() * 16.0 - cam_frac, 0)
-            } else {
-                let Some(k) = frames.iter().position(|f| f.0 == key.0) else { continue };
-                (frame_offsets[k] + key.1.as_vec3() * 16.0 - cam_frac, k as i32 + 1)
-            };
-            let center = lo + Vec3::splat(8.0);
-            if planes.iter().all(|pl| pl.dot(center.extend(1.0)) > -13.86) {
-                visible.push((key, center.length_squared(), lo, k));
-            }
-        }
-        visible.sort_by(|a, b| a.1.total_cmp(&b.1));
-
-        let mut faces_drawn = 0u64;
-        for &(key, _, lo, k) in &visible {
-            let m = &self.meshes[&key];
-            let rel = if k == 0 { key.1 - cam_cube } else { key.1 };
-            let origin = [rel.x, rel.y, rel.z, k];
-            let center = lo + Vec3::splat(8.0);
-            if let Some(a) = m.faces {
-                // Directions by rank: +X +Y +Z -X -Y -Z. A face direction can be seen only from
-                // the side its normal points to; contiguous visible runs become one draw.
-                let seen = [lo.x < 0.0, lo.y < 0.0, lo.z < 0.0, lo.x > -16.0, lo.y > -16.0, lo.z > -16.0];
-                let mut off = a.offset;
-                for layer in 0..3 {
-                    let counts = m.face_counts[layer];
-                    let mut run: Option<(u32, u32)> = None;
-                    for rank in 0..6 {
-                        let n = counts[rank];
-                        if n > 0 && seen[rank] {
-                            faces_drawn += n as u64;
-                            run = Some(match run {
-                                Some((s, len)) => (s, len + n),
-                                None => (off, n),
-                            });
-                        } else if n > 0 {
-                            if let Some((s, len)) = run.take() {
-                                draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin, center));
-                            }
-                        }
-                        off += n;
-                    }
-                    if let Some((s, len)) = run {
-                        draws.push((0, layer as u8, a.page, DrawIndexedArgs { indices: len * 6, instances: 1, first_index: 0, vertex_offset: (s * 4) as i32, first_instance: 0 }, origin, center));
+        // Culling and the draws of what is left, a chunk of meshes per worker (at a view of 64
+        // there are some 300k meshes and 100k draws a frame).
+        parts.resize_with(self.entries.len().div_ceil(MESH_CHUNK), Vec::new);
+        let faces_drawn: u64 = self
+            .entries
+            .par_chunks(MESH_CHUNK)
+            .zip(parts.par_iter_mut())
+            .map(|(chunk, out)| {
+                out.clear();
+                let mut faces = 0u64;
+                for &(key, m) in chunk {
+                    let (lo, k) = if key.0 == 0 {
+                        ((key.1 - cam_cube).as_vec3() * 16.0 - cam_frac, 0)
+                    } else {
+                        let Some(k) = frames.iter().position(|f| f.0 == key.0) else { continue };
+                        (frame_offsets[k] + key.1.as_vec3() * 16.0 - cam_frac, k as i32 + 1)
+                    };
+                    let center = lo + Vec3::splat(8.0);
+                    if planes.iter().all(|pl| pl.dot(center.extend(1.0)) > -13.86) {
+                        faces += mesh_draws(&m, key, lo, k, cam_cube, out);
                     }
                 }
-            }
-            if let Some(a) = m.quads {
-                let mut off = a.offset;
-                for layer in 0..3 {
-                    let n = m.quad_counts[layer];
-                    if n > 0 {
-                        draws.push((1, layer as u8, a.page, DrawIndexedArgs { indices: n * 6, instances: 1, first_index: 0, vertex_offset: (off * 4) as i32, first_instance: 0 }, origin, center));
-                    }
-                    off += n;
-                }
-            }
+                faces
+            })
+            .sum();
+        for p in &parts {
+            draws.extend_from_slice(p);
         }
-        // Opaque/cutout front to back (early depth rejection), translucent back to front across
-        // faces and quads (ice in front of water must come after it). In one cube, seen from
-        // above, the quads (liquid surfaces) go first, from below the faces.
-        let order = |d: &DrawRecord| (d.1 == 2, d.1, d.0, d.2);
+        // Opaque/cutout front to back (early depth rejection) within each run of one pipeline
+        // and page, translucent back to front across faces and quads (ice in front of water must
+        // come after it). In one cube, seen from above, the quads (liquid surfaces) go first,
+        // from below the faces.
+        let dist = |d: &DrawRecord| d.5.length_squared().to_bits();
         sorted.extend(0..draws.len());
-        sorted.sort_by_key(|&i| order(&draws[i]));
+        sorted.par_sort_unstable_by_key(|&i| {
+            let d = &draws[i];
+            (d.1 == 2, d.1, d.0, d.2, if d.1 == 2 { 0 } else { dist(d) })
+        });
         let translucent_start = sorted.iter().position(|&i| draws[i].1 == 2).unwrap_or(sorted.len());
         let center = |d: &DrawRecord| d.5;
         sorted[translucent_start..].sort_by(|&a, &b| {
@@ -508,7 +543,7 @@ impl WorldRenderer {
         self.drawn = n;
         self.faces_drawn = faces_drawn;
         if n == 0 {
-            self.scratch = (visible, draws, sorted);
+            self.scratch = (parts, draws, sorted);
             self.buffers = None;
             return;
         }
@@ -531,7 +566,7 @@ impl WorldRenderer {
         }
 
         self.buffers = Some((gbuf, obuf, ibuf, fbuf, scene));
-        self.scratch = (visible, draws, sorted);
+        self.scratch = (parts, draws, sorted);
         self.emit(list, 0..self.translucent);
     }
 

@@ -462,7 +462,7 @@ pub fn build(dimension: &str, owner_name: &dyn Fn(ModId) -> String, ops: Vec<Raw
 
 impl Terrain {
     fn new(stone: u32, base: f64, sea: Option<(i32, u32)>, features: Vec<Feature>, rules: Vec<Rule>, caves: Option<Caves>, cave_biomes: Vec<CaveBiome>) -> Terrain {
-        Terrain { stone, base, sea, features, rules, caves, cave_biomes, cache: ColumnCache::new(16384), corners: ColumnCache::new(16384) }
+        Terrain { stone, base, sea, features, rules, caves, cave_biomes, cache: ColumnCache::new(32768), corners: ColumnCache::new(32768) }
     }
 
     pub fn sea_level(&self) -> Option<i32> {
@@ -724,7 +724,8 @@ const SHARDS: usize = 32;
 
 /// Data computed once per column of cubes and shared by every cube of it. Generation runs on
 /// many threads at once, so the map is split into locked shards; a shard that grows past its
-/// share of the capacity is simply cleared.
+/// share of the capacity drops a quarter of its entries (clearing it whole made a view of 64,
+/// some 13k columns, compute most columns twice).
 pub struct ColumnCache<T> {
     shards: [Mutex<FxHashMap<(u64, i32, i32), Arc<T>>>; SHARDS],
     per_shard: usize,
@@ -753,7 +754,11 @@ impl<T> ColumnCache<T> {
         let v = Arc::new(make());
         let mut map = self.shard(x, z).lock();
         if map.len() >= self.per_shard {
-            map.clear();
+            let mut n = 0usize;
+            map.retain(|_, _| {
+                n += 1;
+                n % 4 != 0
+            });
         }
         map.insert((seed, x, z), v.clone());
         v

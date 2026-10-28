@@ -236,8 +236,8 @@ pub async fn catch_up(t: T) -> R {
     t.secs(0.3).await?;
     t.check_eq(t.block(dirt).await?, "base:dirt".to_string(), "bare dirt is still dirt");
     t.op("time 200000").await?;
-    // Machines catch up in parts over a few seconds.
-    t.secs(10.0).await?;
+    // Made up at once, in the tick after the jump.
+    t.secs(1.0).await?;
     t.check_eq(t.block(dirt).await?, "base:grass".to_string(), "grass took the bare dirt");
     t.check_eq(t.block(covered).await?, "base:dirt".to_string(), "grass under stone died");
     // One coal burns 1600 ticks: eight of the ten ores, no more.
@@ -256,7 +256,7 @@ pub async fn catch_up(t: T) -> R {
     t.cmd(&format!("/tp {} {} {}", f[0], f[1], f[2])).await?;
     t.secs(1.0).await?;
     t.loaded().await?;
-    t.secs(10.0).await?;
+    t.secs(0.5).await?;
     t.check_eq(t.slot(&at(far), 2).await?, ("base:iron_ingot".into(), 4, 0), "a furnace caught up while unloaded");
     Ok(())
 }

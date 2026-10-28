@@ -17,8 +17,7 @@ use crate::world::light::{CubeMap, Lighter};
 use crate::world::{Cube, DIRS, Rng, cube_of, local_index};
 
 const MAX_NEIGHBOR_UPDATES: usize = 1 << 16;
-/// A machine that missed this many ticks or fewer catches up at once; more, in parts of a
-/// twentieth of what is left each tick, so energy networks keep up with it (`run_systems`).
+/// Missed ticks are made up in at most this many parts, all in one tick (`run_systems`).
 const CATCH_UP_PARTS: u64 = 20;
 const ITEM_LIFETIME: u64 = 20 * 60 * 5;
 
@@ -55,9 +54,6 @@ pub struct Dim {
     growth_queue: BinaryHeap<Reverse<(u64, i32, i32, i32)>>,
     /// Time of the growth step being run, so blocks it places time from it rather than now.
     growing_at: Option<u64>,
-    /// Entities doing more than one tick this tick (catching up), and how many: systems and
-    /// the energy network both see them.
-    catch_up: FxHashMap<u64, u32>,
     /// Players mods see this tick (not spectators), listed once on first use.
     players: Option<Vec<u64>>,
     neighbor_queue: VecDeque<(IVec3, IVec3)>,
@@ -389,7 +385,6 @@ impl Dim {
             growth: FxHashMap::default(),
             growth_queue: BinaryHeap::new(),
             growing_at: None,
-            catch_up: FxHashMap::default(),
             players: None,
             neighbor_queue: VecDeque::new(),
             changes: Vec::new(),
@@ -902,7 +897,7 @@ impl Dim {
         self.natural_spawns(c);
         self.tick_entities(c);
         self.tick_structures(c);
-        self.grid.tick(&mut self.entities, c, &self.catch_up);
+        self.grid.tick(&mut self.entities, c, None);
         self.flush_neighbors(c);
         self.entities.compact();
         self.finish_tick(c);
@@ -1222,31 +1217,58 @@ impl Dim {
     /// Systems over per-entity components: values copied into one aligned array, handed over
     /// in one call, written back (changes of synced components marked for sending).
     fn run_systems(&mut self, c: &'static Content) {
-        self.catch_up.clear();
         if c.game.systems.is_empty() {
             return;
         }
-        // Every entity a system works on remembers the time it was simulated to; one that fell
-        // behind (unloaded, the time jumped) does the missed ticks at once, or in parts when
-        // they are many.
+        // Every entity a system works on remembers the time it was simulated to. One that fell
+        // behind (unloaded, the time jumped) makes the missed ticks up right here, before its
+        // normal tick: in at most `CATCH_UP_PARTS` calls whatever was missed, each followed by
+        // the energy network moving that many ticks' worth, so machines that feed each other
+        // keep pace (a generator does not fill its buffer and stop while the furnace waits).
         let (sim, now) = (c.game.simulated_comp, self.time);
         let worked: Vec<u64> =
             self.entities.list.iter().filter(|e| !e.removed && c.game.systems.iter().any(|s| self.entities.comps.contains_key(&(e.id, s.1)))).map(|e| e.id).collect();
+        let mut missed: Vec<(u64, u64)> = Vec::new();
         for id in worked {
             let last = self.entities.comps.get(&(id, sim)).and_then(|b| b.get(..8)).map(|b| u64::from_le_bytes(b.try_into().unwrap())).filter(|&t| t < now);
-            let behind = last.map_or(1, |t| now - t);
-            let ticks = if behind <= CATCH_UP_PARTS { behind } else { behind.div_ceil(CATCH_UP_PARTS) };
-            self.entities.comps.insert((id, sim), last.map_or(now, |t| t + ticks).to_le_bytes().into());
-            if ticks > 1 {
-                self.catch_up.insert(id, ticks.min(u32::MAX as u64) as u32);
+            if let Some(t) = last.filter(|&t| now - t > 1) {
+                missed.push((id, now - t - 1));
             }
+            self.entities.comps.insert((id, sim), now.to_le_bytes().into());
         }
+        let mut part = FxHashMap::default();
+        for k in 0..CATCH_UP_PARTS {
+            part.clear();
+            for &(id, n) in &missed {
+                let parts = n.min(CATCH_UP_PARTS);
+                if k < parts {
+                    let ticks = n * (k + 1) / parts - n * k / parts;
+                    part.insert(id, ticks.min(u32::MAX as u64) as u32);
+                }
+            }
+            if part.is_empty() {
+                break;
+            }
+            self.systems_once(c, Some(&part));
+            self.grid.tick(&mut self.entities, c, Some(&part));
+        }
+        self.systems_once(c, None);
+    }
+
+    /// Every system once: over `only` (entity, ticks) when given, else over all with one tick.
+    fn systems_once(&mut self, c: &'static Content, only: Option<&FxHashMap<u64, u32>>) {
         for &(owner, comp, cb) in &c.game.systems {
             let size = c.game.components[comp as usize].size as usize;
             if size == 0 {
                 continue;
             }
-            let ids: Vec<u64> = self.entities.list.iter().filter(|e| !e.removed && self.entities.comps.contains_key(&(e.id, comp))).map(|e| e.id).collect();
+            let ids: Vec<u64> = self
+                .entities
+                .list
+                .iter()
+                .filter(|e| !e.removed && self.entities.comps.contains_key(&(e.id, comp)) && only.is_none_or(|o| o.contains_key(&e.id)))
+                .map(|e| e.id)
+                .collect();
             if ids.is_empty() {
                 continue;
             }
@@ -1255,7 +1277,7 @@ impl Dim {
             for (i, id) in ids.iter().enumerate() {
                 bytes[i * size..(i + 1) * size].copy_from_slice(&self.entities.comps[&(*id, comp)]);
             }
-            let ticks: Vec<u32> = ids.iter().map(|id| self.catch_up.get(id).copied().unwrap_or(1)).collect();
+            let ticks: Vec<u32> = ids.iter().map(|id| only.and_then(|o| o.get(id).copied()).unwrap_or(1)).collect();
             let (ids_ptr, values, count, ticks) = (ids.as_ptr(), bytes.as_mut_ptr(), ids.len() as u32, ticks.as_ptr());
             self.call(owner, cb, |w| abi::SystemArgs { world: w, component: comp, ids: ids_ptr, values, count, stride: size as u32, ticks });
             let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, ids.len() * size) };

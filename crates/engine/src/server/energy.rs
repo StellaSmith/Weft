@@ -116,8 +116,9 @@ impl Grid {
         }
     }
 
-    /// `catch_up`: machines doing several ticks this tick, whose rates count that many times.
-    pub fn tick(&mut self, e: &mut Entities, c: &Content, catch_up: &FxHashMap<u64, u32>) {
+    /// `catch_up`: a part of a catch-up, the machines making up ticks and how many (their rates
+    /// count that many times); the others sit it out.
+    pub fn tick(&mut self, e: &mut Entities, c: &Content, catch_up: Option<&FxHashMap<u64, u32>>) {
         if self.dirty {
             self.rebuild(e, c);
         }
@@ -126,7 +127,7 @@ impl Grid {
             let mut want: Vec<(u64, i64)> = Vec::new();
             for &id in net {
                 let Some(v) = read(e, c, id) else { continue };
-                let n = catch_up.get(&id).copied().unwrap_or(1) as i64;
+                let n = catch_up.map_or(1, |m| m.get(&id).copied().unwrap_or(0)) as i64;
                 if v.max_out > 0 && v.stored > 0 {
                     offer.push((id, (v.max_out * n).min(v.stored)));
                 }

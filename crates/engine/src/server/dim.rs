@@ -17,11 +17,9 @@ use crate::world::light::{CubeMap, Lighter};
 use crate::world::{Cube, DIRS, Rng, cube_of, local_index};
 
 const MAX_NEIGHBOR_UPDATES: usize = 1 << 16;
-const RANDOM_TICKS_PER_CUBE: u32 = 3;
-/// Random ticks only happen this many cubes around a player (like vanilla's ticking distance):
-/// far terrain has nobody to watch grass spread, and scanning every loaded cube each tick costs
-/// more than all the ticks themselves.
-const RANDOM_TICK_RADIUS: i32 = 8;
+/// A machine that missed this many ticks or fewer catches up at once; more, in parts of a
+/// twentieth of what is left each tick, so energy networks keep up with it (`run_systems`).
+const CATCH_UP_PARTS: u64 = 20;
 const ITEM_LIFETIME: u64 = 20 * 60 * 5;
 
 pub enum DimEvent {
@@ -57,6 +55,9 @@ pub struct Dim {
     growth_queue: BinaryHeap<Reverse<(u64, i32, i32, i32)>>,
     /// Time of the growth step being run, so blocks it places time from it rather than now.
     growing_at: Option<u64>,
+    /// Entities doing more than one tick this tick (catching up), and how many: systems and
+    /// the energy network both see them.
+    catch_up: FxHashMap<u64, u32>,
     /// Players mods see this tick (not spectators), listed once on first use.
     players: Option<Vec<u64>>,
     neighbor_queue: VecDeque<(IVec3, IVec3)>,
@@ -388,6 +389,7 @@ impl Dim {
             growth: FxHashMap::default(),
             growth_queue: BinaryHeap::new(),
             growing_at: None,
+            catch_up: FxHashMap::default(),
             players: None,
             neighbor_queue: VecDeque::new(),
             changes: Vec::new(),
@@ -468,19 +470,26 @@ impl Dim {
                     Some(a) => full_above(a),
                     None => open_above,
                 });
-        // Growing blocks continue from when the cube was last simulated: steps due while it was
-        // away run in the next tick, in order.
-        if cube.palette().iter().any(|&s| c.grows(s).is_some()) {
-            let since = if cube.ticked == 0 { self.time } else { cube.ticked.min(self.time) };
+        // What time acts on (growing, spreading, covered blocks) continues from when the cube was
+        // last simulated: steps due while it was away run in the next tick, in order.
+        let mut lives = Vec::new();
+        let since = if cube.ticked == 0 { self.time } else { cube.ticked.min(self.time) };
+        if cube.palette().iter().any(|&s| c.lives(s)) {
             for i in 0..VOLUME {
                 let s = cube.get(i);
-                if c.grows(s).is_some() {
+                if c.lives(s) {
                     let p = pos * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
-                    self.schedule_growth(c, p, s, since);
+                    match c.grows(s) {
+                        Some(_) => self.schedule_growth(c, p, s, since),
+                        None => lives.push(p),
+                    }
                 }
             }
         }
         self.add_cube(pos, Arc::new(cube));
+        for p in lives {
+            self.consider(c, p, since);
+        }
         let mut map = Cubes(&mut self.cubes);
         let mut lighter = Lighter::new(&mut map, c, def.sky_light);
         if prelit {
@@ -527,7 +536,7 @@ impl Dim {
             // Only cubes where something happened are saved; the rest generate again the same.
             // Saved ones keep the time their growing blocks were simulated to, to catch up later
             // (untouched ones start growing again when they come back, like vanilla's).
-            let grows = cube.palette().iter().any(|&s| c.grows(s).is_some());
+            let grows = cube.palette().iter().any(|&s| c.lives(s));
             grew |= grows;
             let modified = self.modified.remove(&pos);
             if modified || !inside.is_empty() {
@@ -598,10 +607,24 @@ impl Dim {
             self.neighbor_queue.push_back((p + d, p));
         }
         self.grid.block_changed(c, p, old, state);
+        let from = self.growing_at.unwrap_or(self.time);
         if c.grows(state).is_none() {
             self.growth.remove(&p);
         } else if !self.growth.contains_key(&p) {
-            self.schedule_growth(c, p, state, self.growing_at.unwrap_or(self.time));
+            self.schedule_growth(c, p, state, from);
+        }
+        // What may now happen with time: here, to the block it covers or uncovers, and around a
+        // block that spreads.
+        self.consider(c, p, from);
+        self.consider(c, p - IVec3::Y, from);
+        if c.states[state as usize].spread.is_some() {
+            for dy in -3..=1 {
+                for dz in -1..=1 {
+                    for dx in -1..=1 {
+                        self.consider(c, p + IVec3::new(dx, dy, dz), from);
+                    }
+                }
+            }
         }
         let (ob, nb) = (c.states[old as usize].block, c.states[state as usize].block);
         if ob != nb {
@@ -876,43 +899,10 @@ impl Dim {
             self.grow(c);
         }
 
-        // Sorted so the random stream is consumed in the same order on every run.
-        let mut ticking: Vec<IVec3> = Vec::new();
-        for e in self.entities.list.iter().filter(|e| updates && e.player && !e.removed) {
-            let center = cube_of(e.pos.floor().as_ivec3());
-            let r = RANDOM_TICK_RADIUS;
-            for dy in -r..=r {
-                for dz in -r..=r {
-                    for dx in -r..=r {
-                        let p = center + IVec3::new(dx, dy, dz);
-                        let ticks = self.cubes.get(&p).is_some_and(|cube| cube.palette().iter().any(|&s| c.states[s as usize].flags & bf::RANDOM_TICKS != 0));
-                        if ticks {
-                            ticking.push(p);
-                        }
-                    }
-                }
-            }
-        }
-        ticking.sort_by_key(|p| (p.x, p.y, p.z));
-        ticking.dedup();
-        for cp in ticking {
-            for _ in 0..RANDOM_TICKS_PER_CUBE {
-                let r = self.rng.next();
-                let i = (r & 4095) as usize;
-                let Some(cube) = self.cubes.get(&cp) else { break };
-                let state = cube.get(i);
-                if c.states[state as usize].flags & bf::RANDOM_TICKS == 0 {
-                    continue;
-                }
-                let p = cp * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
-                self.call_block(c, state, |b| b.on_random_tick, |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 });
-            }
-        }
-
         self.natural_spawns(c);
         self.tick_entities(c);
         self.tick_structures(c);
-        self.grid.tick(&mut self.entities, c);
+        self.grid.tick(&mut self.entities, c, &self.catch_up);
         self.flush_neighbors(c);
         self.entities.compact();
         self.finish_tick(c);
@@ -1232,6 +1222,25 @@ impl Dim {
     /// Systems over per-entity components: values copied into one aligned array, handed over
     /// in one call, written back (changes of synced components marked for sending).
     fn run_systems(&mut self, c: &'static Content) {
+        self.catch_up.clear();
+        if c.game.systems.is_empty() {
+            return;
+        }
+        // Every entity a system works on remembers the time it was simulated to; one that fell
+        // behind (unloaded, the time jumped) does the missed ticks at once, or in parts when
+        // they are many.
+        let (sim, now) = (c.game.simulated_comp, self.time);
+        let worked: Vec<u64> =
+            self.entities.list.iter().filter(|e| !e.removed && c.game.systems.iter().any(|s| self.entities.comps.contains_key(&(e.id, s.1)))).map(|e| e.id).collect();
+        for id in worked {
+            let last = self.entities.comps.get(&(id, sim)).and_then(|b| b.get(..8)).map(|b| u64::from_le_bytes(b.try_into().unwrap())).filter(|&t| t < now);
+            let behind = last.map_or(1, |t| now - t);
+            let ticks = if behind <= CATCH_UP_PARTS { behind } else { behind.div_ceil(CATCH_UP_PARTS) };
+            self.entities.comps.insert((id, sim), last.map_or(now, |t| t + ticks).to_le_bytes().into());
+            if ticks > 1 {
+                self.catch_up.insert(id, ticks.min(u32::MAX as u64) as u32);
+            }
+        }
         for &(owner, comp, cb) in &c.game.systems {
             let size = c.game.components[comp as usize].size as usize;
             if size == 0 {
@@ -1246,8 +1255,9 @@ impl Dim {
             for (i, id) in ids.iter().enumerate() {
                 bytes[i * size..(i + 1) * size].copy_from_slice(&self.entities.comps[&(*id, comp)]);
             }
-            let (ids_ptr, values, count) = (ids.as_ptr(), bytes.as_mut_ptr(), ids.len() as u32);
-            self.call(owner, cb, |w| abi::SystemArgs { world: w, component: comp, ids: ids_ptr, values, count, stride: size as u32 });
+            let ticks: Vec<u32> = ids.iter().map(|id| self.catch_up.get(id).copied().unwrap_or(1)).collect();
+            let (ids_ptr, values, count, ticks) = (ids.as_ptr(), bytes.as_mut_ptr(), ids.len() as u32, ticks.as_ptr());
+            self.call(owner, cb, |w| abi::SystemArgs { world: w, component: comp, ids: ids_ptr, values, count, stride: size as u32, ticks });
             let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, ids.len() * size) };
             for (i, id) in ids.iter().enumerate() {
                 if let Some(old) = self.entities.comps.get_mut(&(*id, comp)) {
@@ -1466,11 +1476,86 @@ impl Dim {
             self.growth.remove(&p);
             return;
         };
+        self.schedule_at(p, mean, from);
+    }
+
+    /// What time does to `p` next, in `mean` ticks on average from `from` (an exponential wait
+    /// drawn from the place and time, like a random tick would come).
+    fn schedule_at(&mut self, p: IVec3, mean: f64, from: u64) {
         let h = hash(0x6F0 ^ from ^ (self.id as u64) << 48, p.x as i64, p.y as i64, p.z as i64);
         let u = ((h >> 11) as f64 + 1.0) / (1u64 << 53) as f64;
         let at = from + (-u.ln() * mean).max(1.0) as u64;
         self.growth.insert(p, at);
         self.growth_queue.push(Reverse((at, p.x, p.y, p.z)));
+    }
+
+    /// Covered (`smother`) or something near spreads onto it: schedules the change if it can
+    /// happen now. Growing blocks have their own steps; one change waits at a time.
+    fn consider(&mut self, c: &Content, p: IVec3, from: u64) {
+        if self.growth.contains_key(&p) {
+            return;
+        }
+        let Some(state) = self.get(p) else { return };
+        if c.grows(state).is_some() {
+            return;
+        }
+        let covered = self.get(p + IVec3::Y).is_some_and(|s| c.states[s as usize].flags & bf::OPAQUE != 0);
+        let mean = match c.states[state as usize].smother {
+            Some((_, mean)) if covered => mean,
+            Some(_) => return,
+            None if covered || !c.spread_target(state) => return,
+            None => match self.spreaders_near(c, p, state) {
+                (Some((_, mean, _)), n) => mean / n as f64,
+                _ => return,
+            },
+        };
+        self.schedule_at(p, mean, from);
+    }
+
+    /// A block that spreads onto `state` at `p` from where it reaches (1 sideways, 1 below to 3
+    /// above): its state, mean ticks and light needed, and how many there are.
+    fn spreaders_near(&self, c: &Content, p: IVec3, state: u32) -> (Option<(u32, f64, u32)>, u32) {
+        let mut first = None;
+        let mut n = 0;
+        for dy in -1..=3 {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let Some(s) = self.get(p + IVec3::new(dx, dy, dz)) else { continue };
+                    if let Some((tag, mean, light)) = c.states[s as usize].spread
+                        && c.components.has(comps::BLOCK, state, tag)
+                    {
+                        first.get_or_insert((s, mean, light));
+                        n += 1;
+                    }
+                }
+            }
+        }
+        (first, n)
+    }
+
+    /// A scheduled change of a block that does not grow comes due at `at`: a covered block
+    /// turns, an uncovered one with light above takes what spreads onto it. Too dark: it tries
+    /// again later.
+    fn react(&mut self, c: &'static Content, p: IVec3, state: u32, at: u64) {
+        let covered = self.get(p + IVec3::Y).is_some_and(|s| c.states[s as usize].flags & bf::OPAQUE != 0);
+        self.growing_at = Some(at);
+        match c.states[state as usize].smother {
+            Some((into, _)) if covered => {
+                self.set(c, p, into);
+            }
+            Some(_) => {}
+            None if covered => {}
+            None => {
+                if let (Some((into, _, need)), _) = self.spreaders_near(c, p, state) {
+                    if abi::light::effective(self.light(p + IVec3::Y), self.daylight_at(c, at)) >= need {
+                        self.set(c, p, into);
+                    } else {
+                        self.consider(c, p, at);
+                    }
+                }
+            }
+        }
+        self.growing_at = None;
     }
 
     /// Growth steps due by now, in time order (catching up on unloaded time included).
@@ -1486,7 +1571,10 @@ impl Dim {
             }
             self.growth.remove(&p);
             let Some(state) = self.get(p) else { continue };
-            let Some((_, need)) = c.grows(state) else { continue };
+            let Some((_, need)) = c.grows(state) else {
+                self.react(c, p, state, at);
+                continue;
+            };
             // Support that went away without a neighbor noticing (water two blocks off).
             if !self.supported(c, p, state) {
                 self.break_off(c, p, state);

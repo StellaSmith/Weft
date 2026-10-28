@@ -85,11 +85,68 @@ fn ratio(a: u32, b: u32) -> f32 {
     if b == 0 { 0.0 } else { a as f32 / b as f32 }
 }
 
+/// Items the output slot still takes of `out`, as whole results.
+fn room_for(output: ItemStack, out: ItemStack) -> u32 {
+    let room = if output.is_empty() { max_stack(out.item) } else if output.stacks_with(&out) { max_stack(out.item).saturating_sub(output.count) } else { 0 };
+    room / out.count.max(1)
+}
+
+/// `ticks` of one furnace at once (its area was unloaded, the time jumped): it smelts while
+/// input, room and fuel last, lighting fuel as it goes, then the fire burns down and the
+/// progress cools, as tick by tick.
+fn catch_up(w: &World, id: u64, s: &mut Smelting, ticks: u32) {
+    let inv = w.inventory(id);
+    let (input_slot, fuel_slot, output_slot) = (inv.group("input"), inv.group("fuel"), inv.group("output"));
+    let (input, fuel, output) = (input_slot.get(0), fuel_slot.get(0), output_slot.get(0));
+    let mut idle = ticks as u64;
+    if let Some((out, time)) = (!input.is_empty()).then(|| recipe_process(&crate::recipes::SMELTING, input.item)).flatten() {
+        let q = abi::Query { entity: id, item: input.item, ..query() };
+        s.cook_max = w.compute(&SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
+        let items = (input.count).min(room_for(output, out)) as u64;
+        let per_fuel = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()).unwrap_or(0) as u64;
+        let fuel_items = if per_fuel > 0 { fuel.count as u64 } else { 0 };
+        let work = (items * s.cook_max as u64).saturating_sub(s.cook as u64);
+        let worked = idle.min(work).min(s.burn as u64 + fuel_items * per_fuel);
+        let lit = if worked > s.burn as u64 { (worked - s.burn as u64).div_ceil(per_fuel.max(1)) } else { 0 };
+        if lit > 0 {
+            let mut left = fuel;
+            for _ in 0..lit {
+                left = use_one(left);
+            }
+            fuel_slot.set(0, left);
+            s.burn_max = per_fuel as u32;
+        }
+        s.burn = (s.burn as u64 + lit * per_fuel - worked) as u32;
+        let total = s.cook as u64 + worked;
+        let done = (total / s.cook_max as u64) as u32;
+        s.cook = (total % s.cook_max as u64) as u32;
+        if done > 0 {
+            input_slot.set(0, input.shrink(done));
+            output_slot.set(0, if output.is_empty() { ItemStack { count: out.count * done, ..out } } else { output.grow(out.count * done) });
+            for _ in 0..done {
+                w.emit(&SMELTED, Smelted { furnace: id, input: input.item, output: out });
+            }
+        }
+        idle -= worked;
+    }
+    s.burn = (s.burn as u64).saturating_sub(idle) as u32;
+    s.cook = (s.cook as u64).saturating_sub(idle * 2) as u32;
+}
+
 /// Every furnace of a region at once, through its state (a system: no host call to reach it).
 fn tick_furnaces(b: &mut SystemBatch<Smelting>) {
     let w = b.world();
-    for (id, s) in b.iter_mut() {
+    for (id, s, ticks) in b.iter_mut() {
         let Some(st) = w.entity(id) else { continue };
+        if ticks > 1 {
+            let was_lit = s.burn > 0;
+            catch_up(&w, id, s, ticks);
+            let pos = [st.pos[0].floor() as i32, st.pos[1].floor() as i32, st.pos[2].floor() as i32];
+            if (s.burn > 0) != was_lit && FURNACE.is(w.get(pos)) {
+                w.set_prop(pos, "lit", if s.burn > 0 { "true" } else { "false" });
+            }
+            continue;
+        }
         let pos = [st.pos[0].floor() as i32, st.pos[1].floor() as i32, st.pos[2].floor() as i32];
         let inv = w.inventory(id);
         let (input_slot, fuel_slot, output_slot) = (inv.group("input"), inv.group("fuel"), inv.group("output"));

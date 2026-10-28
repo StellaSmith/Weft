@@ -38,8 +38,8 @@ item.testmod.rune.tooltip = {fx:core:rainbow}Shines in every color{/fx}, {fx:tes
     {#ff8080}It feels your wounds.{/if}{if:creative}
     {#80ff80}Creative: it never tires.{/if}
 key.testmod.dream = Daydream
-config.testmod.crystal_sparks = Crystal sparks
-config.testmod.crystal_sparks.tooltip = Glow crystals shed sparks now and then.
+config.testmod.generator_hum = Generator hum
+config.testmod.generator_hum.tooltip = Generators hum while they burn fuel.
 config.testmod.wisp_sparks = Sparks per wisp
 config.testmod.dream_strength = Daydream strength
 config.testmod.dream_style = Daydream style

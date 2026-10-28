@@ -481,7 +481,6 @@ impl StateDef {
 #[derive(Default)]
 struct BlockCallbacks {
     on_use: Option<abi::Callback>,
-    on_random_tick: Option<abi::Callback>,
     on_neighbor: Option<abi::Callback>,
     on_scheduled: Option<abi::Callback>,
     placement: Option<abi::Callback>,
@@ -907,8 +906,33 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    pub fn on_random_tick(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_random_tick = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+    /// Spreads onto blocks with `tag` near it (grass onto `#grass_spreads_to`): a target
+    /// within 1 block sideways, 3 down and 1 up with `min_light` above it and nothing opaque on
+    /// top turns into this block in `mean_seconds` on average (sooner with more of this around),
+    /// also while nobody is near (caught up on loading).
+    pub fn spreads(mut self, tag: &str, mean_seconds: f32, min_light: u32) -> Self {
+        self.each(|s, _| {
+            s.put_text(abi::comp::SPREADS_TO, "tag", tag);
+            s.put(&c::SPREAD_TIME, mean_seconds);
+            s.put(&c::SPREAD_LIGHT, min_light);
+        });
+        self
+    }
+
+    /// Turns into `block` in `mean_seconds` on average once something opaque covers it (grass
+    /// into dirt).
+    pub fn smothered(mut self, block: &str, mean_seconds: f32) -> Self {
+        self.each(|s, _| {
+            s.put_text(abi::comp::SMOTHERED_INTO, "block", block);
+            s.put(&c::SMOTHER_TIME, mean_seconds);
+        });
+        self
+    }
+
+    /// Particles of `kind` clients show around it now and then, near the player (vanilla's
+    /// torch smoke, a crystal's sparks).
+    pub fn ambient_particle(mut self, kind: &str) -> Self {
+        self.each(|s, _| s.put_text(abi::comp::AMBIENT_PARTICLE, "str", kind));
         self
     }
 
@@ -1063,7 +1087,6 @@ impl Drop for BlockBuilder<'_> {
             components: Slice::new(&values),
             on_use: cb.on_use.unwrap_or(abi::Callback::NONE),
 
-            on_random_tick: cb.on_random_tick.unwrap_or(abi::Callback::NONE),
             on_neighbor: cb.on_neighbor.unwrap_or(abi::Callback::NONE),
             on_scheduled: cb.on_scheduled.unwrap_or(abi::Callback::NONE),
             placement: cb.placement.unwrap_or(abi::Callback::NONE),

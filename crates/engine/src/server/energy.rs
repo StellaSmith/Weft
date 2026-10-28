@@ -116,7 +116,8 @@ impl Grid {
         }
     }
 
-    pub fn tick(&mut self, e: &mut Entities, c: &Content) {
+    /// `catch_up`: machines doing several ticks this tick, whose rates count that many times.
+    pub fn tick(&mut self, e: &mut Entities, c: &Content, catch_up: &FxHashMap<u64, u32>) {
         if self.dirty {
             self.rebuild(e, c);
         }
@@ -125,11 +126,12 @@ impl Grid {
             let mut want: Vec<(u64, i64)> = Vec::new();
             for &id in net {
                 let Some(v) = read(e, c, id) else { continue };
+                let n = catch_up.get(&id).copied().unwrap_or(1) as i64;
                 if v.max_out > 0 && v.stored > 0 {
-                    offer.push((id, v.max_out.min(v.stored)));
+                    offer.push((id, (v.max_out * n).min(v.stored)));
                 }
                 if v.max_in > 0 && v.stored < v.capacity {
-                    want.push((id, v.max_in.min(v.capacity - v.stored)));
+                    want.push((id, (v.max_in * n).min(v.capacity - v.stored)));
                 }
             }
             // An entity that both offers and wants (a battery) should not feed itself.

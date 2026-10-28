@@ -61,7 +61,7 @@ A machine works through its state component: `r.system(&BURNER, f)` hands `f` ev
 ```rust
 fn tick_generators(b: &mut SystemBatch<Burner>) {
     let w = b.world();
-    for (id, m) in b.iter_mut() {
+    for (id, m, _ticks) in b.iter_mut() {
         let slot = w.inventory(id).group("fuel");
         if m.burn == 0 {
             let fuel = slot.get(0);
@@ -85,6 +85,9 @@ w.set_prop(pos, "lit", if lit { "true" } else { "false" });
 ```
 which keeps the way it faces.
 `tick_furnaces` in `mods/base/src/machines.rs` is the whole thing in one place, with the recipe, the lit state and an event.
+
+### Catching up
+The third value is how many ticks the call stands for. It's 1 almost always. When a machine's area was unloaded, or the world's time jumped (someone slept, `/time`), the engine doesn't load anything extra and doesn't tick the machine thousands of times: it hands over the missed ticks instead, all at once when they are few, otherwise in parts of a twentieth over a couple of seconds. Energy networks move that many ticks' worth along with them, so a generator and its furnace keep up with each other.So a machine that should keep working while nobody watches does `ticks` ticks of work in one go. For a furnace that's simple arithmetic: as many items as the fuel, the input and the output slot allow, see base's `catch_up` in `machines.rs` and testmod's generator. A machine that doesn't care can ignore the number, it just loses the missed time.
 
 ## The screen
 `screen(|ui| ..)` builds the window. `ui.group("input")` draws a group as its grid, `ui.group_slot("input", 1)` a single slot of it when a layout places them apart, and `ui.player_inventory(true)` the player's inventory and hotbar, every machine menu has them:
@@ -160,7 +163,7 @@ There are no units, conversion or losses along the way. Testmod uses 40 per tick
 ## Many machines
 Systems already run once per tick and region with every machine at once, so thousands cost little. Work that only changes the state and touches no inventory is the cheapest of all:
 ```rust
-r.system(&HEAT, |batch| for (_, heat) in batch.iter_mut() { *heat = heat.saturating_sub(1); });   // HEAT: Component<u32>
+r.system(&HEAT, |batch| for (_, heat, ticks) in batch.iter_mut() { *heat = heat.saturating_sub(ticks); });   // HEAT: Component<u32>
 ```
 
 Machines have no built-in way to pass items to each other, so a pipe or a hopper is something you write: do it in a tick with `inventory(id).insert(..)`.

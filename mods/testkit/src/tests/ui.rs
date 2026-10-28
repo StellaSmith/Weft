@@ -230,7 +230,7 @@ pub async fn chat(t: T) -> R {
 
 /// Settings mods declare get a screen built from the declarations; changes apply and are saved.
 pub async fn mod_settings(t: T) -> R {
-    static SPARKS: Config<bool> = Config::named("testmod:crystal_sparks");
+    static HUM: Config<bool> = Config::named("testmod:generator_hum");
     t.c().open_screen(&screens::MOD_SETTINGS);
     t.screen("core:mod_settings").await?;
     t.frames(2).await?;
@@ -238,13 +238,13 @@ pub async fn mod_settings(t: T) -> R {
     t.screen("core:config").await?;
     t.frames(3).await?;
     t.shot("testmod").await?;
-    let before = SPARKS.get();
-    t.check(t.click_ui("text:Crystal sparks", 0), "sparks toggle shown");
-    t.until("toggled", std::time::Duration::from_secs(2), |_| SPARKS.get() != before).await?;
+    let before = HUM.get();
+    t.check(t.click_ui("text:Generator hum", 0), "hum toggle shown");
+    t.until("toggled", std::time::Duration::from_secs(2), |_| HUM.get() != before).await?;
     // A test run writes beside the player's settings, never over them.
     let file = std::fs::read_to_string(format!("{}/test-config/testmod.txt", t.c().run_dir())).unwrap_or_default();
-    t.check(file.contains(&format!("crystal_sparks = {}", !before)), format!("saved: {file:?}"));
-    SPARKS.set(before);
+    t.check(file.contains(&format!("generator_hum = {}", !before)), format!("saved: {file:?}"));
+    HUM.set(before);
     t.c().close_screen();
     t.c().close_screen();
     Ok(())

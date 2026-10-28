@@ -45,6 +45,7 @@ pub fn all() -> Vec<TestDef> {
         world::foreign_terrain,
         world::tick_control,
         world::growth,
+        world::catch_up,
         gameplay::crafting_table_tags,
         gameplay::mining_and_wear,
         gameplay::creative_and_invulnerable,

@@ -340,9 +340,32 @@ fn energy_gizmos(w: &World, ids: &[u64]) {
 fn tick_generators(b: &mut SystemBatch<Burner>) {
     let w = b.world();
     energy_gizmos(&w, b.ids());
-    for (id, m) in b.iter_mut() {
+    for (id, m, ticks) in b.iter_mut() {
         let Some(e) = w.energy(id) else { continue };
         let room = e.capacity - e.stored;
+        if ticks > 1 {
+            // Catching up: it runs while there is room for what it makes, lighting fuel as it
+            // goes (the network takes from it between parts of the catch-up).
+            let mut want = (ticks as i64).min(room / PER_TICK).max(0) as u32;
+            let mut ran = want.min(m.burn);
+            m.burn -= ran;
+            want -= ran;
+            let slot = w.inventory(id).group("fuel");
+            while want > 0 {
+                let fuel = slot.get(0);
+                let Some(t) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) else { break };
+                (m.burn, m.burn_max) = (t, t);
+                slot.set(0, use_one(fuel));
+                let r = want.min(m.burn);
+                m.burn -= r;
+                ran += r;
+                want -= r;
+            }
+            if let Some(e) = w.energy_mut(id) {
+                e.stored = (e.stored + ran as i64 * PER_TICK).min(e.capacity);
+            }
+            continue;
+        }
         if m.burn == 0 && room >= PER_TICK {
             let slot = w.inventory(id).group("fuel");
             let fuel = slot.get(0);
@@ -360,7 +383,7 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
                 e.stored = (e.stored + PER_TICK).min(e.capacity);
             }
             // A low hum every two seconds, under the test mod's own volume setting.
-            if w.time() % 40 == 0 {
+            if w.time() % 40 == 0 && looks::GENERATOR_HUM.get() {
                 if let Some(st) = w.entity(id) {
                     w.play_sound(&HUM, st.pos, 0.4);
                 }
@@ -372,7 +395,7 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
 fn tick_furnaces(b: &mut SystemBatch<Work>) {
     let w = b.world();
     energy_gizmos(&w, b.ids());
-    for (id, m) in b.iter_mut() {
+    for (id, m, ticks) in b.iter_mut() {
         let Some(e) = w.energy(id) else { continue };
         let stored = e.stored;
         let inv = w.inventory(id);
@@ -387,6 +410,23 @@ fn tick_furnaces(b: &mut SystemBatch<Work>) {
         let (out, time) = recipe.unwrap();
         // Twice as fast as the base furnace, paid for in energy.
         m.progress_max = (time / 2).max(1);
+        if ticks > 1 {
+            // Catching up: as many steps as the energy, the input and the room allow.
+            let room = if output.is_empty() { max_stack(out.item) } else { max_stack(out.item) - output.count } / out.count.max(1);
+            let work = (input.count.min(room) * m.progress_max).saturating_sub(m.progress) as i64;
+            let steps = (ticks as i64).min(stored / FURNACE_USE).min(work);
+            let total = m.progress + steps as u32;
+            let done = total / m.progress_max;
+            m.progress = total % m.progress_max;
+            if let Some(e) = w.energy_mut(id) {
+                e.stored -= steps * FURNACE_USE;
+            }
+            if done > 0 {
+                input_slot.set(0, input.shrink(done));
+                output_slot.set(0, if output.is_empty() { ItemStack { count: out.count * done, ..out } } else { output.grow(out.count * done) });
+            }
+            continue;
+        }
         m.progress += 1;
         let done = m.progress >= m.progress_max;
         if done {

@@ -222,7 +222,8 @@ is dropped.
 - `model_box(min, max)` (faces show the state's textures) or a `models/block/<name>.json` from Blockbench ([models guide](models.md#blocks-and-items)), `collision(..)`, `selection(..)` when what the crosshair picks and outlines should differ from those (by default: collision boxes, else model boxes, else a plant's cross)
 - `needs_below("#soil")`
 - `growth(seconds, min_light)` + `on_grow(..)` for plants
-- `on_random_tick(..)`
+- `spreads("#grass_spreads_to", seconds, min_light)` for what creeps onto neighbors (grass onto dirt), `smothered("dirt", seconds)` for what turns when covered. There are no random ticks: these, growth and scheduled ticks all run on world time, so they catch up on time nobody was there for
+- `ambient_particle("mymod:spark")` for particles the client shows around a block now and then (torch smoke), nothing on the server
 - `on_use`, `on_neighbor`, `on_scheduled`
 - `on_placed(|w, change| ..)`, `on_broken(..)`: the `BLOCK_PLACED` and `BLOCK_BROKEN` events for this block only, at the end of the tick
 - `prop("lit", ["false", "true"])`, `prop("age", 0..=7)` and `facing(Facings::HORIZONTAL, Toward::Player)` for states, like blockstates in modern Minecraft: every combination of values is a state
@@ -329,7 +330,7 @@ base adds `base:smelted`.
 
 ### Systems and energy
 Systems run over every entity with a component all at once, and that is how machines tick:
-`r.system(&BURNER, |batch| for (id, m) in batch.iter_mut() { .. })`.
+`r.system(&BURNER, |batch| for (id, m, ticks) in batch.iter_mut() { .. })`. `ticks` is 1 unless the machine is catching up on time it missed (unloaded, the time jumped): then it should do that many ticks of work at once, see [machines](machines.md#catching-up).
 
 Energy is a built-in engine contract, you can give a block entity the `core:energy` component, tag
 cables with `conductor`, and every mod's generators and machines will work together.\

@@ -294,6 +294,21 @@ pub mod comp {
     pub const WEAR_PER_HIT: &str = "wear_per_hit";
     /// Tag of biomes players may start in (the engine's spawn search tries them first).
     pub const SPAWN_BIOME: &str = "spawn_biome";
+    /// Block: spreads onto blocks with this tag (`tag`; grass onto dirt) within 1 block
+    /// sideways, 3 down and 1 up, where the target has light (`spread_light`) and nothing
+    /// opaque on top. In `spread_time` seconds on average, sooner with more of it around.
+    pub const SPREADS_TO: &str = "spreads_to";
+    /// `f32`: mean seconds for one spreading block to take a target (vanilla grass about 765).
+    pub const SPREAD_TIME: &str = "spread_time";
+    /// `u32`: light the target needs above it (vanilla grass 9).
+    pub const SPREAD_LIGHT: &str = "spread_light";
+    /// Block: turns into this one (`block`) when something opaque covers it (grass to dirt).
+    pub const SMOTHERED_INTO: &str = "smothered_into";
+    /// `f32`: mean seconds before a covered block turns (vanilla about 68).
+    pub const SMOTHER_TIME: &str = "smother_time";
+    /// Block: a particle kind (`str`) clients show around it now and then, near the player only
+    /// (vanilla's torch smoke); nothing of it reaches the server.
+    pub const AMBIENT_PARTICLE: &str = "ambient_particle";
 
 }
 
@@ -319,8 +334,6 @@ pub mod block_flags {
     pub const CLIMBABLE: u32 = 16;
     /// Raycasts pass through (air, liquids for normal interaction).
     pub const NOT_TARGETABLE: u32 = 32;
-    /// Receives random ticks: set by the engine on blocks with `on_random_tick`.
-    pub const RANDOM_TICKS: u32 = 64;
     /// Hide faces between two blocks of this kind (glass). Without it see-through blocks keep
     /// their inner faces, which is what makes leaves look dense.
     pub const CULL_SAME: u32 = 128;
@@ -418,8 +431,6 @@ pub struct BlockDesc {
     pub components: Slice<CompValue>,
     /// `UseArgs`; return `handled = 1` to consume the click.
     pub on_use: Callback,
-    /// `BlockEventArgs`.
-    pub on_random_tick: Callback,
     pub on_neighbor: Callback,
     pub on_scheduled: Callback,
     /// `PlaceArgs`: choose the state from the player's facing/hit face.
@@ -451,7 +462,6 @@ defaults!(BlockDesc {
     components: Slice::EMPTY,
     on_use: Callback::NONE,
 
-    on_random_tick: Callback::NONE,
     on_neighbor: Callback::NONE,
     on_scheduled: Callback::NONE,
     placement: Callback::NONE,
@@ -2175,6 +2185,9 @@ pub struct SystemArgs {
     pub values: *mut u8,
     pub count: u32,
     pub stride: u32,
+    /// Per entity, the ticks this call stands for: 1, or more while it catches up on time it
+    /// missed (loaded again, the world's time jumped).
+    pub ticks: *const u32,
 }
 
 /// Engine events (`Host::reg_event_handler`); values are the structs named in each line.

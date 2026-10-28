@@ -433,11 +433,15 @@ impl LootModBuilder<'_> {
     }
 }
 
-/// Every entity of a region that has a component, with the values side by side.
+/// Every entity of a region that has a component, with the values side by side, and the ticks
+/// each call stands for: 1 normally, more while an entity catches up on time it missed (its
+/// region was unloaded, the world's time jumped). A system worth catching up does the work of
+/// `ticks` ticks at once (a furnace: so many items smelted), anything else may ignore it.
 pub struct SystemBatch<'a, T> {
     world: World,
     ids: &'a [u64],
     values: &'a mut [T],
+    ticks: &'a [u32],
 }
 
 impl<T> SystemBatch<'_, T> {
@@ -450,8 +454,12 @@ impl<T> SystemBatch<'_, T> {
     pub fn values(&mut self) -> &mut [T] {
         self.values
     }
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (u64, &mut T)> {
-        self.ids.iter().copied().zip(self.values.iter_mut())
+    pub fn ticks(&self) -> &[u32] {
+        self.ticks
+    }
+    /// (entity, its value, ticks to do).
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (u64, &mut T, u32)> {
+        self.ids.iter().copied().zip(self.values.iter_mut()).zip(self.ticks.iter().copied()).map(|((id, v), t)| (id, v, t))
     }
 }
 
@@ -464,7 +472,12 @@ impl Registry {
                 return;
             }
             let n = a.count as usize;
-            let mut b = SystemBatch { world: World::from_raw(a.world), ids: unsafe { std::slice::from_raw_parts(a.ids, n) }, values: unsafe { std::slice::from_raw_parts_mut(a.values as *mut T, n) } };
+            let mut b = SystemBatch {
+                world: World::from_raw(a.world),
+                ids: unsafe { std::slice::from_raw_parts(a.ids, n) },
+                values: unsafe { std::slice::from_raw_parts_mut(a.values as *mut T, n) },
+                ticks: unsafe { std::slice::from_raw_parts(a.ticks, n) },
+            };
             f(&mut b);
         });
         unsafe { (host().reg_system)(self.raw, Str::new(comp.name()), Str::new(&T::schema()), cb) }

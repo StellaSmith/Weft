@@ -34,13 +34,14 @@ static TOTEM: Item = Item::named("totem");
 /// Idols currently bowing.
 static BOWED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 /// Settings players change in Settings > Mod Settings.
-static CRYSTAL_SPARKS: Config<bool> = Config::named("crystal_sparks");
+/// The generator's low hum (in `lib.rs`).
+pub static GENERATOR_HUM: Config<bool> = Config::named("generator_hum");
 static WISP_SPARKS: Config<i32> = Config::named("wisp_sparks");
 static DREAM_STRENGTH: Config<f32> = Config::named("dream_strength");
 static DREAM_STYLE: Config<u32> = Config::named("dream_style");
 
 pub fn register(r: &mut Registry) {
-    r.config(&CRYSTAL_SPARKS).bool(true);
+    r.config(&GENERATOR_HUM).bool(true);
     // The server decides how much its wisps sparkle; joining players get its value.
     r.config(&WISP_SPARKS).int(2, 0, 10).server();
     r.config(&DREAM_STRENGTH).float(1.0, 0.1, 1.0).step(0.05);
@@ -81,13 +82,8 @@ pub fn register(r: &mut Registry) {
     r.block(&GLOW_CRYSTAL)
         .hardness(1.5)
         .mineable("pickaxe")
-        .on_random_tick(|e| {
-            if !CRYSTAL_SPARKS.get() {
-                return;
-            }
-            let [x, y, z] = e.pos();
-            e.world().spawn_particles(&SPARK, [x as f64 + 0.5, y as f64 + 1.1, z as f64 + 0.5]).count(3).spread(0.4).speed(0.4);
-        });
+        // Sparks now and then, shown by the client near the player.
+        .ambient_particle(SPARK.name());
 
     // Its own category (no spawning rule: wisps come only from commands and creative): they
     // drift off again when nobody is within 64 blocks.

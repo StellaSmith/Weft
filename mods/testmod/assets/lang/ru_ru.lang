@@ -27,8 +27,8 @@ item.testmod.rune.tooltip = {fx:core:rainbow}Сияет всеми цветам�
     {#ff8080}Она чувствует ваши раны.{/if}{if:creative}
     {#80ff80}Творческий режим: не устаёт.{/if}
 key.testmod.dream = Грёзы
-config.testmod.crystal_sparks = Искры кристаллов
-config.testmod.crystal_sparks.tooltip = Светящиеся кристаллы иногда роняют искры.
+config.testmod.generator_hum = Гул генератора
+config.testmod.generator_hum.tooltip = Генераторы гудят, пока жгут топливо.
 config.testmod.wisp_sparks = Искр на огонёк
 config.testmod.dream_strength = Сила грёз
 config.testmod.dream_style = Вид грёз

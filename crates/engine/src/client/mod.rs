@@ -224,6 +224,8 @@ pub struct Client {
     start: Instant,
     /// Ticks counted since the server last said the time (`Scene` ticks).
     since_time: u32,
+    /// Particle kind per block state shown around the player (`ambient`), `u32::MAX` none.
+    ambient_kinds: Option<Vec<u32>>,
     /// The frame's `Scene`, one buffer per frame in flight.
     scene_bufs: Vec<BufferId>,
     pub target: Option<Hit>,
@@ -406,6 +408,7 @@ impl Client {
             drawn_frames: FxHashSet::default(),
             start: Instant::now(),
             since_time: 0,
+            ambient_kinds: None,
             scene_bufs: Vec::new(),
             target: None,
             target_entity: None,
@@ -841,12 +844,14 @@ impl Client {
         let flying = self.player.flying || self.player.noclip;
         let ready = self.joined && !self.dead && (flying || block(self.player.pos.floor().as_ivec3()).is_some());
         // The clock bodies are predicted by runs on while the player waits, or they would stop.
+        let mut ambient_steps = 0;
         if self.joined {
             let air_if_missing = |p: IVec3| block(p).or(Some(crate::content::AIR));
             self.accum += dt.min(0.25);
             while self.accum >= STEP {
                 self.accum -= STEP;
                 self.since_time = (self.since_time + 1).min(20);
+                ambient_steps += 1;
                 // A rider is where it is on its body: if moves arrived late and the body's past
                 // changed, the rider moves with it, not over the deck.
                 if let Some(e) = self.player.riding.and_then(|(b, _, now)| self.entities.get(&b).map(|e| e.pose(self.body_tick(self.body_clock)) + now)) {
@@ -912,6 +917,9 @@ impl Client {
                     );
                 }
             }
+        }
+        for _ in 0..ambient_steps {
+            self.ambient();
         }
 
         // From the eye as drawn, the moment structures are drawn at too, so a block on a
@@ -1143,6 +1151,33 @@ impl Client {
 
     fn chance(&mut self) -> f32 {
         self.rng.float()
+    }
+
+    /// Like vanilla's block display ticks: random blocks around the player that name a particle
+    /// (`abi::comp::AMBIENT_PARTICLE`) show one, each about every three seconds. The server has
+    /// no part in it.
+    fn ambient(&mut self) {
+        const TRIES: usize = 667;
+        let c = content();
+        let kinds = self.ambient_kinds.get_or_insert_with(|| {
+            let comp = c.components.id(weft_abi::comp::AMBIENT_PARTICLE);
+            (0..c.states.len() as u32)
+                .map(|s| comp.and_then(|id| c.components.text(crate::components::BLOCK, s, id)).and_then(|name| c.game.particle_names.get(name).copied()).unwrap_or(u32::MAX))
+                .collect()
+        });
+        if kinds.iter().all(|&k| k == u32::MAX) {
+            return;
+        }
+        let center = self.player.pos.floor().as_ivec3();
+        for _ in 0..TRIES {
+            let r = self.rng.next();
+            let p = center + IVec3::new((r % 33) as i32 - 16, ((r >> 8) % 33) as i32 - 16, ((r >> 16) % 33) as i32 - 16);
+            let kind = kinds.get(self.world.block(p) as usize).copied().unwrap_or(u32::MAX);
+            if kind != u32::MAX {
+                let pos = [p.x as f64 + 0.5, p.y as f64 + 0.9, p.z as f64 + 0.5];
+                self.particles.spawn(&weft_abi::ParticleBurst { kind, pos, spread: [0.3, 0.2, 0.3], speed: 0.3, count: 1, ..weft_abi::ParticleBurst::DEFAULT });
+            }
+        }
     }
 
     /// The engine's cosmetics of one entity, its kind's client tick unless a mod gave it one:

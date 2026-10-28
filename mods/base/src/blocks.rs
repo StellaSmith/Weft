@@ -1,10 +1,8 @@
-use weft_sdk::abi::block_flags as bf;
 use weft_sdk::*;
 
 use crate::items::{FLAMMABLE, FUEL};
 use crate::worldgen;
 
-pub static GRASS_SPREADS_TO: Tag = Tag::named("grass_spreads_to");
 
 pub static STONE: Block = Block::named("stone");
 pub static COBBLESTONE: Block = Block::named("cobblestone");
@@ -124,7 +122,10 @@ pub fn register(r: &mut Registry) {
         .mineable("shovel")
         .drops("dirt", 1)
         .tag("dirt")
-        .on_random_tick(grass_tick).tab(&crate::tabs::NATURAL);
+        // Vanilla's pace: a minute or so under a block, many minutes to cover bare dirt.
+        .spreads("#grass_spreads_to", 765.0, 9)
+        .smothered("dirt", 68.0)
+        .tab(&crate::tabs::NATURAL);
     r.block(&SNOWY_GRASS).sound_group("grass").textures("snow", "grass_snow_side", "dirt").hardness(0.6).mineable("shovel").drops("dirt", 1).tag("dirt").tab(&crate::tabs::NATURAL);
     r.block(&SAND).sound_group("sand").hardness(0.5).mineable("shovel").tag("sand").falling().tab(&crate::tabs::NATURAL);
     r.block(&GRAVEL).sound_group("gravel").hardness(0.6).mineable("shovel").falling().tab(&crate::tabs::NATURAL);
@@ -241,20 +242,6 @@ pub fn register(r: &mut Registry) {
     r.tag("crop_soil", &["farmland"]);
     r.tag("grass_spreads_to", &["dirt"]);
     r.tag("animal_spawn", &["grass"]);
-}
-
-fn grass_tick(e: &mut BlockEvent) {
-    let w = e.world();
-    let p = e.pos();
-    if state_flags(w.get([p[0], p[1] + 1, p[2]])) & bf::OPAQUE != 0 {
-        w.set(p, DIRT.id());
-        return;
-    }
-    let r = w.random();
-    let t = [p[0] + (r % 3) as i32 - 1, p[1] + ((r >> 8) % 5) as i32 - 3, p[2] + ((r >> 16) % 3) as i32 - 1];
-    if GRASS_SPREADS_TO.on_block(w.get(t)) && state_flags(w.get([t[0], t[1] + 1, t[2]])) & bf::OPAQUE == 0 {
-        w.set(t, GRASS.id());
-    }
 }
 
 /// Torches stand on the floor or hang on a wall, facing away from it.

@@ -51,6 +51,10 @@ pub struct StateInfo {
     pub support: Option<(u8, Option<u32>)>,
     /// Tag a horizontal neighbor of the support needs (unless the support is the same block).
     pub support_near: Option<u32>,
+    /// Spreads onto blocks of this tag (`abi::comp::SPREADS_TO`): mean ticks, light needed.
+    pub spread: Option<(u32, f64, u32)>,
+    /// Turns into this state when covered (`abi::comp::SMOTHERED_INTO`), in mean ticks.
+    pub smother: Option<(u32, f64)>,
     /// Sound events break, place, step, hit (`u32::MAX` none), from its `sound` component.
     pub sounds: [u32; 4],
 }
@@ -81,7 +85,6 @@ impl StateInfo {
 #[derive(Clone, Copy, Default)]
 pub struct BlockCallbacks {
     pub on_use: Option<Callback>,
-    pub on_random_tick: Option<Callback>,
     pub on_neighbor: Option<Callback>,
     pub on_scheduled: Option<Callback>,
     pub placement: Option<Callback>,
@@ -409,6 +412,8 @@ pub struct Content {
     /// Name and default color of each tint kind, kind 1 first.
     pub tint_kinds: Vec<(String, u32)>,
     pub dims: Vec<DimensionDef>,
+    /// Tags some block spreads onto (`StateInfo::spread`).
+    pub spread_tags: Vec<u32>,
     pub templates: Vec<TemplateDef>,
     pub template_names: FxHashMap<String, u32>,
     /// Weighted lists of block states from `blocks` component values, by the index the value holds.
@@ -479,6 +484,19 @@ impl Content {
     pub fn grows(&self, state: u32) -> Option<(f64, u32)> {
         let b = self.block_of(state);
         b.cb.grow.filter(|_| b.cb.on_grow.is_some() || self.grown(state).is_some())
+    }
+
+    /// Whether something may happen to a block in `state` with time: it grows, something could
+    /// spread onto it, or it turns when covered. Such blocks keep the time they were simulated
+    /// to when saved, to catch up later.
+    pub fn lives(&self, state: u32) -> bool {
+        let s = &self.states[state as usize];
+        self.grows(state).is_some() || s.smother.is_some() || self.spread_target(state)
+    }
+
+    /// Some block spreads onto this state.
+    pub fn spread_target(&self, state: u32) -> bool {
+        self.spread_tags.iter().any(|&t| self.components.has(crate::components::BLOCK, state, t))
     }
 
     /// The default growth step: the `age` property one higher, `None` at the last age.
@@ -712,7 +730,7 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
         })
         .collect();
     let (n, o) = (&mut b.cb, &old.cb);
-    for (mine, theirs) in [(&mut n.on_use, o.on_use), (&mut n.on_random_tick, o.on_random_tick), (&mut n.on_neighbor, o.on_neighbor), (&mut n.on_scheduled, o.on_scheduled), (&mut n.placement, o.placement), (&mut n.on_grow, o.on_grow)] {
+    for (mine, theirs) in [(&mut n.on_use, o.on_use), (&mut n.on_neighbor, o.on_neighbor), (&mut n.on_scheduled, o.on_scheduled), (&mut n.placement, o.placement), (&mut n.on_grow, o.on_grow)] {
         if mine.is_none() {
             *mine = theirs;
         }
@@ -771,7 +789,6 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
             components: RawValue::list(d.components),
             cb: BlockCallbacks {
                 on_use: cb(d.on_use),
-                on_random_tick: cb(d.on_random_tick),
                 on_neighbor: cb(d.on_neighbor),
                 on_scheduled: cb(d.on_scheduled),
                 placement: cb(d.placement),
@@ -1135,6 +1152,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         liquid: None,
         support: None,
         support_near: None,
+        spread: None,
+        smother: None,
         sounds: [u32::MAX; 4],
     }];
     // What each registered block opens, by menu name (resolved once menus are frozen).
@@ -1194,11 +1213,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             } else {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             };
-            // Random ticks reach blocks that have the callback, inherited ones included.
-            let random = if b.cb.on_random_tick.is_some() { abi::block_flags::RANDOM_TICKS } else { 0 };
             states.push(StateInfo {
                 block: index,
-                flags: s.flags | random,
+                flags: s.flags,
                 // Light, tint, hardness, friction, drag and support come from components.
                 light: [0; 3],
                 absorb: std::array::from_fn(|i| s.opacity.saturating_add(s.filter[i])),
@@ -1224,6 +1241,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 liquid: None,
                 support: None,
                 support_near: None,
+                spread: None,
+                smother: None,
                 sounds: [u32::MAX; 4],
             });
             state_values.push(s.components);
@@ -1423,7 +1442,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), &mut errors);
     cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), &mut errors);
     cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), &mut errors);
-    for (name, schema) in [(crate::registry::HEALTH, "[f32;2]"), (crate::registry::BURNING, "u8"), (crate::registry::WORN, "bytes"), (crate::registry::SHAPE, "bytes")] {
+    for (name, schema) in [(crate::registry::HEALTH, "[f32;2]"), (crate::registry::BURNING, "u8"), (crate::registry::WORN, "bytes"), (crate::registry::SHAPE, "bytes"), (crate::registry::SIMULATED, "u64")] {
         cb.declare(name, schema, None, &|| "the engine".into(), &mut errors);
     }
     for g in &games {
@@ -1600,6 +1619,13 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
         if let Some(f) = get(st, abi::comp::TINT_FACES) {
             s.tint_faces = f[0];
+        }
+        if let Some(tag) = u32_of(st, abi::comp::SPREADS_TO) {
+            let secs = f32_of(st, abi::comp::SPREAD_TIME).unwrap_or(765.0);
+            s.spread = Some((tag, secs as f64 * 20.0, u32_of(st, abi::comp::SPREAD_LIGHT).unwrap_or(9)));
+        }
+        if let Some(into) = u32_of(st, abi::comp::SMOTHERED_INTO) {
+            s.smother = Some((into, f32_of(st, abi::comp::SMOTHER_TIME).unwrap_or(68.0) as f64 * 20.0));
         }
         if let Some(face) = get(st, abi::comp::SUPPORT_FACE).map(|f| f[0]).filter(|&f| f < 6) {
             s.support = Some((face, u32_of(st, abi::comp::SUPPORT)));
@@ -1977,7 +2003,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     if !errors.is_empty() {
         return Err(errors);
     }
+    let mut spread_tags: Vec<u32> = states.iter().filter_map(|s| s.spread.map(|sp| sp.0)).collect();
+    spread_tags.sort_unstable();
+    spread_tags.dedup();
     Ok(Content {
+        spread_tags,
         mods,
         states,
         blocks: block_defs,
@@ -2050,7 +2080,7 @@ fn freeze_liquids(
             let st = &mut states[(def.first_state + s) as usize];
             st.liquid = Some(id);
             st.level = if s < 8 { s as u8 } else { 0 };
-            st.flags = abi::block_flags::LIQUID | abi::block_flags::REPLACEABLE | abi::block_flags::NOT_TARGETABLE | (st.flags & abi::block_flags::RANDOM_TICKS);
+            st.flags = abi::block_flags::LIQUID | abi::block_flags::REPLACEABLE | abi::block_flags::NOT_TARGETABLE;
         }
         liquids.push(LiquidDef {
             name: name.clone(),

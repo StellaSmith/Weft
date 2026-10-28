@@ -4,7 +4,7 @@ use weft_sdk::abi::entry_kind as ek;
 use weft_sdk::terrain::Column;
 use weft_sdk::*;
 
-use super::add;
+use super::{add, at};
 use super::probe;
 use crate::runner::{R, T};
 
@@ -207,6 +207,57 @@ pub async fn growth(t: T) -> R {
     t.loaded().await?;
     t.secs(0.5).await?;
     t.check_eq(t.block(add(cane2, [0, 2, 0])).await?, "base:sugar_cane".to_string(), "sugar cane grown while unloaded");
+    Ok(())
+}
+
+/// Time the world skips is made up, without random ticks: grass takes bare dirt and dies under a
+/// block, a furnace smelts what its fuel allows and a generator runs an electric furnace through
+/// a cable, all after a jump of the time and, for an area that was unloaded, when it comes back.
+pub async fn catch_up(t: T) -> R {
+    t.flat().await?;
+    t.op("time 1000").await?;
+    let f = t.feet();
+    let dirt = add(f, [3, -1, 0]);
+    t.set(dirt, "dirt").await?;
+    let covered = add(f, [3, -1, 3]);
+    t.set(covered, "grass").await?;
+    t.set(add(covered, [0, 1, 0]), "stone").await?;
+    let furnace = add(f, [-3, 0, 0]);
+    t.set(furnace, "furnace").await?;
+    t.op(&format!("insert {} raw_iron 10", at(furnace))).await?;
+    t.op(&format!("insert {} coal 1", at(furnace))).await?;
+    let g = add(f, [-3, 0, 3]);
+    t.set(g, "testmod:generator").await?;
+    t.set(add(g, [-1, 0, 0]), "testmod:cable").await?;
+    let e = add(g, [-2, 0, 0]);
+    t.set(e, "testmod:electric_furnace").await?;
+    t.op(&format!("insert {} coal 4", at(g))).await?;
+    t.op(&format!("insert {} iron_ore 3", at(e))).await?;
+    t.secs(0.3).await?;
+    t.check_eq(t.block(dirt).await?, "base:dirt".to_string(), "bare dirt is still dirt");
+    t.op("time 200000").await?;
+    // Machines catch up in parts over a few seconds.
+    t.secs(10.0).await?;
+    t.check_eq(t.block(dirt).await?, "base:grass".to_string(), "grass took the bare dirt");
+    t.check_eq(t.block(covered).await?, "base:dirt".to_string(), "grass under stone died");
+    // One coal burns 1600 ticks: eight of the ten ores, no more.
+    t.check_eq(t.slot(&at(furnace), 2).await?, ("base:iron_ingot".into(), 8, 0), "furnace smelted what its coal allows");
+    t.check_eq(t.slot(&at(furnace), 0).await?, ("base:raw_iron".into(), 2, 0), "and left the rest");
+    t.check_eq(t.slot(&at(e), 1).await?, ("base:iron_ingot".into(), 3, 0), "the generator powered the electric furnace");
+    // Unloaded the whole time: done when the area comes back.
+    let far = add(f, [-6, 0, 0]);
+    t.set(far, "furnace").await?;
+    t.op(&format!("insert {} raw_iron 4", at(far))).await?;
+    t.op(&format!("insert {} coal 1", at(far))).await?;
+    t.secs(0.2).await?;
+    t.cmd("/tp 3000 10 3000").await?;
+    t.secs(3.0).await?;
+    t.op("time 400000").await?;
+    t.cmd(&format!("/tp {} {} {}", f[0], f[1], f[2])).await?;
+    t.secs(1.0).await?;
+    t.loaded().await?;
+    t.secs(10.0).await?;
+    t.check_eq(t.slot(&at(far), 2).await?, ("base:iron_ingot".into(), 4, 0), "a furnace caught up while unloaded");
     Ok(())
 }
 

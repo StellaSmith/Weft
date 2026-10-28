@@ -99,6 +99,129 @@ pub async fn load_benchmark(t: T) -> R {
     Ok(())
 }
 
+/// Craters of growing radius through the mod API as it is (`w.set` per block), each on fresh
+/// ground: the loop in the mod, the command round trip (the settling after it included), then
+/// frames and server ticks while clients remesh.
+pub async fn crater(t: T) -> R {
+    t.world(5).await?;
+    t.idle().await?;
+    t.op("mode spectator").await?;
+    for (i, r) in [16, 32, 48, 64].into_iter().enumerate() {
+        let x = 4000 * (i as i32 + 1);
+        let h = OVERWORLD.column(5, x, 0).height;
+        t.cmd(&format!("/tp {x} {h} 0")).await?;
+        t.secs(0.5).await?;
+        t.loaded().await?;
+        t.idle().await?;
+        let start = std::time::Instant::now();
+        let out = t.op(&format!("crater {r}")).await?;
+        let round = start.elapsed().as_secs_f64() * 1000.0;
+        let v: Vec<&str> = out.split_whitespace().collect();
+        t.note(format!("r {r}: {} set, {} already air, {} not loaded; loop {} ms, command round trip {round:.0} ms", v[0], v[1], v[2], v[3]));
+        t.bench(3.0, &format!("after crater {r}")).await?;
+    }
+    // The area edit: one call, the engine's own log line says where the time went
+    // (`area fill r ...`); here the round trip, what is left, and the frames after.
+    for (i, r) in [64, 128, 250, 500, 1000].into_iter().enumerate() {
+        let x = 4000 * (i as i32 + 5);
+        let h = OVERWORLD.column(5, x, 0).height;
+        t.cmd(&format!("/tp {x} {h} 0")).await?;
+        t.secs(0.5).await?;
+        t.loaded().await?;
+        t.idle().await?;
+        let f = t.feet();
+        let start = std::time::Instant::now();
+        t.op(&format!("crater_fast {r}")).await?;
+        // The fill runs at the end of the tick the command came in; the next answer comes after.
+        t.op("look").await?;
+        t.note(format!("fast r {r}: done {:.0} ms after the command", start.elapsed().as_secs_f64() * 1000.0));
+        // Deeper than that is beyond what is loaded below the player.
+        if r <= 64 {
+            let below = add(f, [0, -(r - 2), 0]);
+            t.check_eq(t.op(&format!("get {} {} {}", below[0], below[1], below[2])).await?, "core:air".to_string(), &format!("r {r}: hollow near the bottom"));
+            let out = add(f, [0, -(r + 2), 0]);
+            t.check(t.op(&format!("get {} {} {}", out[0], out[1], out[2])).await? != "core:air", format!("r {r}: solid below the crater"));
+            let light: u32 = t.op(&format!("light {} {} {}", below[0], below[1], below[2])).await?.parse().unwrap_or(0);
+            t.check_eq(light & 255, 15, &format!("r {r}: full sky light near the bottom, the crater relit"));
+        }
+        // From beyond the rim, looking at the middle: the far part was never loaded when it
+        // went off and gets the crater as it loads.
+        let rim = f[2] + r + 40;
+        let top = OVERWORLD.column(5, f[0], rim).height.max(f[1]);
+        t.cmd(&format!("/tp {} {} {}", f[0], top + 40, rim)).await?;
+        t.c().look(0.0, -25.0);
+        t.secs(1.0).await?;
+        t.loaded().await?;
+        t.secs(1.0).await?;
+        t.shot(&format!("crater_{r}")).await?;
+        t.bench(3.0, &format!("after fast crater {r}")).await?;
+    }
+    Ok(())
+}
+
+/// Testmod's dynamite: lit with a right click, it burns down its fuse and leaves a crater of
+/// the set radius, dug by the engine's area edit in one go.
+pub async fn dynamite(t: T) -> R {
+    static RADIUS: Config<i32> = Config::named("testmod:dynamite_radius");
+    t.flat().await?;
+    t.op("mode creative").await?;
+    let before = RADIUS.get();
+    RADIUS.set(24);
+    // Into whatever block the player looks at, whatever the ground does there.
+    t.c().look(0.0, -20.0);
+    t.secs(0.4).await?;
+    let aim = t.op("look").await?;
+    let v: Vec<i32> = aim.split_whitespace().skip(1).take(3).filter_map(|v| v.parse().ok()).collect();
+    let [x, y, z] = v[..] else { return Err(format!("looking at nothing: {aim}")) };
+    let d = [x, y, z];
+    t.set(d, "testmod:dynamite").await?;
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.5).await?;
+    let lit = t.block(d).await?;
+    t.check(lit.starts_with("testmod:dynamite[fuse="), format!("lit dynamite is {lit}"));
+    t.check(lit != "testmod:dynamite[fuse=0]", "the click lit the fuse");
+    // Out of the blast, above it, looking down into where it will be.
+    t.cmd(&format!("/tp {} {} {}", d[0], d[1] + 30, d[2] + 40)).await?;
+    t.c().look(0.0, -35.0);
+    t.secs(6.0).await?;
+    RADIUS.set(before);
+    t.check_eq(t.block(d).await?, "core:air".to_string(), "the dynamite went off");
+    for p in [add(d, [0, -20, 0]), add(d, [20, 0, 0]), add(d, [0, 0, -20]), add(d, [10, -10, 10])] {
+        t.check_eq(t.block(p).await?, "core:air".to_string(), &format!("{p:?} is in the crater"));
+    }
+    t.shot("crater").await?;
+    Ok(())
+}
+
+/// A crater bigger than what is loaded survives closing the world: the part never loaded gets
+/// it when visited after reopening, and what was built in the crater since stays.
+pub async fn crater_saved(t: T) -> R {
+    t.world(8).await?;
+    t.idle().await?;
+    t.op("mode creative").await?;
+    let f = t.feet();
+    t.op("crater_fast 600").await?;
+    t.op("look").await?;
+    let built = add(f, [3, -20, 0]);
+    t.set(built, "gold_block").await?;
+    let name = format!("test-{}", t.name());
+    t.c().leave_world();
+    t.screen("core:title").await?;
+    t.c().open_world(&name, 8);
+    t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED)).await?;
+    t.loaded().await?;
+    t.check_eq(t.block(built).await?, "base:gold_block".to_string(), "a block built in the crater stays after reopening");
+    let far = [f[0] + 450, f[1] - 100, f[2]];
+    t.cmd(&format!("/tp {} {} {}", far[0], far[1], far[2])).await?;
+    t.secs(1.0).await?;
+    t.loaded().await?;
+    for p in [far, add(far, [0, -40, 0]), add(far, [0, 40, 30])] {
+        t.check_eq(t.block(p).await?, "core:air".to_string(), &format!("{p:?}, first loaded after reopening, is in the crater"));
+    }
+    Ok(())
+}
+
 use base_api::OVERWORLD;
 
 /// Testmod edits base's overworld from outside: a biome of its own tried before base's desert,

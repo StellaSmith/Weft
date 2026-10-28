@@ -30,11 +30,14 @@ pub struct Cube {
     /// World time it was simulated to when it was last unloaded (0: never), for growth to catch
     /// up on.
     pub ticked: u64,
+    /// The last area edit of its dimension it got (`server::area`), so a saved cube gets the
+    /// ones made while it was away, once.
+    pub edits: u32,
 }
 
 impl Cube {
     pub fn uniform(state: u32, light: u32) -> Cube {
-        Cube { blocks: Blocks::Uniform(state), light: Light::Uniform(light), biomes: None, ticked: 0 }
+        Cube { blocks: Blocks::Uniform(state), light: Light::Uniform(light), biomes: None, ticked: 0, edits: 0 }
     }
 
     pub fn from_states(states: &[u32; VOLUME]) -> Cube {
@@ -154,10 +157,10 @@ impl Cube {
             let mut states = Box::new([0u32; VOLUME]);
             self.decode(&mut states);
             let light = std::mem::replace(&mut self.light, Light::Uniform(0));
-            let (biomes, ticked) = (self.biomes.take(), self.ticked);
+            let (biomes, ticked, edits) = (self.biomes.take(), self.ticked, self.edits);
             *self = Cube::from_states(&states);
             self.light = light;
-            (self.biomes, self.ticked) = (biomes, ticked);
+            (self.biomes, self.ticked, self.edits) = (biomes, ticked, edits);
         }
         if let Light::Full(l) = &self.light {
             if l.iter().all(|&v| v == l[0]) {
@@ -238,8 +241,8 @@ impl Cube {
                 }
             }
         }
-        // Bit 0: biomes follow, bit 1: the simulated time follows.
-        out.push(self.biomes.is_some() as u8 | ((self.ticked != 0) as u8) << 1);
+        // Bit 0: biomes follow, bit 1: the simulated time, bit 2: the last area edit.
+        out.push(self.biomes.is_some() as u8 | ((self.ticked != 0) as u8) << 1 | ((self.edits != 0) as u8) << 2);
         if let Some(b) = &self.biomes {
             for v in b.iter() {
                 out.extend_from_slice(&v.to_le_bytes());
@@ -247,6 +250,9 @@ impl Cube {
         }
         if self.ticked != 0 {
             out.extend_from_slice(&self.ticked.to_le_bytes());
+        }
+        if self.edits != 0 {
+            out.extend_from_slice(&self.edits.to_le_bytes());
         }
     }
 
@@ -290,7 +296,8 @@ impl Cube {
             None
         };
         let ticked = if flags & 2 != 0 { u64::from_le_bytes(take_bytes(data, 8)?.try_into().ok()?) } else { 0 };
-        Some(Cube { blocks, light, biomes, ticked })
+        let edits = if flags & 4 != 0 { u32::from_le_bytes(take_bytes(data, 4)?.try_into().ok()?) } else { 0 };
+        Some(Cube { blocks, light, biomes, ticked, edits })
     }
 }
 

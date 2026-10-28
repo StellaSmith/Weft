@@ -54,3 +54,6 @@ testmod.about.name = Привет, {0}
 testmod.about.volume = Громкость: {0}
 testmod.about.closed = Закрыто
 testmod.about.fov = Поле зрения здесь: {0}
+block.testmod.dynamite = Динамит
+config.testmod.dynamite_radius = Радиус воронки динамита
+config.testmod.dynamite_radius.tooltip = Сколько блоков вокруг выносит динамит. Сотни можно: движок копает воронку за один раз.

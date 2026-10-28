@@ -29,6 +29,8 @@ pub enum DimEvent {
     /// `dim` u32::MAX = the region's own dimension.
     Teleport { from: u32, id: u64, dim: u32, pos: DVec3 },
     SetTime { dim: u32, time: u64 },
+    /// `server::area`, done at the end of the tick across every region of `dim`.
+    AreaFill { dim: u32, fill: super::area::AreaFill },
     SetMode { player: u64, mode: crate::world::GameMode },
     Particles { dim: u32, burst: abi::ParticleBurst },
     Sound { dim: u32, sound: u32, pos: DVec3, volume: f32, pitch: f32 },
@@ -54,6 +56,9 @@ pub struct Dim {
     growth_queue: BinaryHeap<Reverse<(u64, i32, i32, i32)>>,
     /// Time of the growth step being run, so blocks it places time from it rather than now.
     growing_at: Option<u64>,
+    /// Blocks along the edge of area edits waiting for their neighbor update, a share per tick
+    /// (a crater's rim is millions).
+    pub(super) edge_updates: VecDeque<IVec3>,
     /// Players mods see this tick (not spectators), listed once on first use.
     players: Option<Vec<u64>>,
     neighbor_queue: VecDeque<(IVec3, IVec3)>,
@@ -61,7 +66,7 @@ pub struct Dim {
     pub changes: Vec<(IVec3, u32)>,
     /// Cubes whose light changed this tick, sent whole.
     pub resend: Vec<(IVec3, Arc<Cube>)>,
-    light_dirty: FxHashSet<IVec3>,
+    pub(super) light_dirty: FxHashSet<IVec3>,
     /// Cubes changed since the last save. Untouched cubes are never written (regenerating is cheaper).
     pub modified: FxHashSet<IVec3>,
     pub entities: Entities,
@@ -99,7 +104,7 @@ pub struct Dim {
     pub relight: FxHashSet<IVec3>,
 }
 
-struct Cubes<'a>(&'a mut FxHashMap<IVec3, Arc<Cube>>);
+pub(super) struct Cubes<'a>(pub(super) &'a mut FxHashMap<IVec3, Arc<Cube>>);
 
 impl CubeMap for Cubes<'_> {
     fn cube(&self, c: IVec3) -> Option<&Cube> {
@@ -385,6 +390,7 @@ impl Dim {
             growth: FxHashMap::default(),
             growth_queue: BinaryHeap::new(),
             growing_at: None,
+            edge_updates: VecDeque::new(),
             players: None,
             neighbor_queue: VecDeque::new(),
             changes: Vec::new(),
@@ -1345,7 +1351,12 @@ impl Dim {
     pub fn flush_neighbors(&mut self, c: &'static Content) {
         if !c.dims[self.id as usize].block_updates {
             self.neighbor_queue.clear();
+            self.edge_updates.clear();
             return;
+        }
+        let share = self.edge_updates.len().min(MAX_NEIGHBOR_UPDATES / 2);
+        for p in self.edge_updates.drain(..share) {
+            self.neighbor_queue.push_back((p, p));
         }
         let mut budget = MAX_NEIGHBOR_UPDATES;
         while let Some((p, from)) = self.neighbor_queue.pop_front() {

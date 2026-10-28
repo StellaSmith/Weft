@@ -46,6 +46,8 @@ pub fn all() -> Vec<TestDef> {
         world::tick_control,
         world::growth,
         world::catch_up,
+        world::dynamite,
+        world::crater_saved,
         gameplay::crafting_table_tags,
         gameplay::mining_and_wear,
         gameplay::creative_and_invulnerable,
@@ -118,7 +120,7 @@ pub fn all() -> Vec<TestDef> {
 
 /// Measurements without a verdict worth failing a run over; `--test bench`.
 pub fn bench() -> Vec<TestDef> {
-    crate::tests![world::load_benchmark, world::item_farm, looks::particle_crowd]
+    crate::tests![world::load_benchmark, world::item_farm, looks::particle_crowd, world::crater]
 }
 
 impl T {

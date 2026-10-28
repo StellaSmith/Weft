@@ -25,6 +25,16 @@ impl World {
         unsafe { (host().set_block)(self.raw, &pos, state) != 0 }
     }
 
+    /// Every block whose middle is within `radius` of `center` becomes `state` (air for a
+    /// crater), at the end of the tick and across the whole dimension: loaded cubes at once on
+    /// every core, the rest when they load. Far faster than `set` per block for anything big.
+    /// `keep_unbreakable`: blocks with negative hardness stay.
+    pub fn fill_sphere(&self, center: [f64; 3], radius: f64, state: u32, keep_unbreakable: bool) {
+        let flags = if keep_unbreakable { abi::area_flags::KEEP_UNBREAKABLE } else { 0 };
+        let desc = abi::AreaFillDesc { center, radius, state, flags };
+        unsafe { (host().area_fill)(self.raw, &desc) }
+    }
+
     /// A block of moving structure `entity` (in its own coordinates; block (0, 0, 0) is centered
     /// on the entity); `None` if the entity is not one.
     pub fn structure_block(&self, entity: u64, pos: [i32; 3]) -> Option<u32> {

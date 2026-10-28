@@ -25,11 +25,13 @@ pub struct DimSet {
     next_id: Arc<AtomicU64>,
     owner: FxHashMap<IVec3, usize>,
     pub dirty: bool,
+    /// Area edits made in this dimension, in order (`server::area`); saved with the world.
+    pub edits: Vec<super::area::AreaFill>,
 }
 
 impl DimSet {
     pub fn new(id: u32, seed: u64, next_id: Arc<AtomicU64>) -> DimSet {
-        DimSet { id, regions: Vec::new(), generating: FxHashSet::default(), time: 1000, seed, next_id, owner: FxHashMap::default(), dirty: false }
+        DimSet { id, regions: Vec::new(), generating: FxHashSet::default(), time: 1000, seed, next_id, owner: FxHashMap::default(), dirty: false, edits: Vec::new() }
     }
 
     fn new_region(&mut self, section: IVec3) -> usize {
@@ -148,12 +150,31 @@ impl DimSet {
         self.regions[r].get(p)
     }
 
-    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube, entities: &[u8], conn: u16, prelit: bool) {
+    pub fn insert(&mut self, c: &Content, pos: IVec3, mut cube: Cube, entities: &[u8], mut conn: u16, mut prelit: bool) {
         self.generating.remove(&pos);
+        // Area edits made while it was away (or before it was ever generated), once each.
+        let mut edited = false;
+        if let Some(last) = self.edits.last().map(|e| e.id).filter(|&l| cube.edits < l) {
+            let had = cube.edits;
+            for e in self.edits.iter().filter(|e| e.id > had && e.touches(pos)) {
+                if let Some((next, _)) = e.apply(c, pos, &cube) {
+                    cube = next;
+                    edited = true;
+                }
+            }
+            cube.edits = last;
+            if edited {
+                prelit = false;
+                conn = super::dim::see_through(c, &cube);
+            }
+        }
         let r = self.region_for(c, section_of_cube(pos));
         let d = &mut self.regions[r];
         d.insert(c, pos, cube, prelit);
         d.conn.insert(pos, conn);
+        if edited {
+            d.modified.insert(pos);
+        }
         for (e, inv, comps, blocks) in super::persist::read(c, entities) {
             let id = e.id;
             if d.entities.get(id).is_some() {
@@ -196,6 +217,35 @@ impl DimSet {
             pos = p;
         }
         DVec3::new(pos[0] as f64 + 0.5, pos[1] as f64 + 1.0, pos[2] as f64 + 0.5)
+    }
+
+    /// Makes area edit `fill` (its id given here): every region's loaded cubes now, the rest
+    /// when they load.
+    pub fn area_fill(&mut self, c: &'static Content, mut fill: super::area::AreaFill) {
+        let start = std::time::Instant::now();
+        fill.id = self.edits.last().map_or(1, |e| e.id + 1);
+        self.edits.push(fill);
+        let mut total = super::area::FillStats::default();
+        for r in &mut self.regions {
+            let s = r.area_fill(c, &fill);
+            total.cubes += s.cubes;
+            total.whole += s.whole;
+            total.relit += s.relit;
+            total.edges += s.edges;
+            total.apply_ms += s.apply_ms;
+            total.light_ms += s.light_ms;
+        }
+        log::info!(
+            "area fill r {:.0}: {} cubes changed ({} whole), {:.0} ms applying, {} relit in {:.0} ms, {} edge updates queued, {:.0} ms in all",
+            fill.radius,
+            total.cubes,
+            total.whole,
+            total.apply_ms,
+            total.relit,
+            total.light_ms,
+            total.edges,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     pub fn set_time(&mut self, t: u64) {

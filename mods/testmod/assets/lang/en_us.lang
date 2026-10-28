@@ -74,3 +74,6 @@ testmod.about.name = Hello, {0}
 testmod.about.volume = Volume: {0}
 testmod.about.closed = Closed
 testmod.about.fov = Field of view here: {0}
+block.testmod.dynamite = Dynamite
+config.testmod.dynamite_radius = Dynamite crater radius
+config.testmod.dynamite_radius.tooltip = How many blocks around it dynamite takes out. Hundreds are fine: the engine digs the crater in one go.

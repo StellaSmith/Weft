@@ -101,7 +101,12 @@ fn start(c: &Client) {
     // The player's packs would change every picture.
     c.reload_assets();
     let want = test.as_deref().unwrap_or("all");
-    let all = if want == "bench" { tests::bench() } else { tests::all() };
+    // Benchmarks run by name too, or all of them with `bench`.
+    let all = match want {
+        "bench" => tests::bench(),
+        "all" | "list" => tests::all(),
+        _ => tests::all().into_iter().chain(tests::bench()).collect(),
+    };
     if want == "list" {
         for t in &all {
             info!("test {}", t.name);

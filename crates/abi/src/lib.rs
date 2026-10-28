@@ -962,6 +962,23 @@ impl Default for EntityState {
     }
 }
 
+/// A ball filled with one block (`Host::area_fill`): a crater with air.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AreaFillDesc {
+    pub center: [f64; 3],
+    pub radius: f64,
+    pub state: u32,
+    /// `area_flags`.
+    pub flags: u32,
+}
+defaults!(AreaFillDesc { center: [0.0; 3], radius: 0.0, state: 0, flags: 0 });
+
+pub mod area_flags {
+    /// Unbreakable blocks (negative hardness) stay.
+    pub const KEEP_UNBREAKABLE: u32 = 1;
+}
+
 pub mod component_flags {
     pub const SAVE: u32 = 1;
     /// Sent to the player that owns it (HUD values like hunger).
@@ -1665,6 +1682,9 @@ pub struct Host {
     pub entity_teleport: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dim: u32, pos: *const [f64; 3]),
     /// Sets this dimension's time of day counter at the end of the tick.
     pub set_time: unsafe extern "C" fn(world: *mut WorldCtx, time: u64),
+    /// Fills a ball with one block at the end of the tick, the whole dimension at once: loaded
+    /// cubes on every core, the rest when they load (`AreaFillDesc`).
+    pub area_fill: unsafe extern "C" fn(world: *mut WorldCtx, desc: *const AreaFillDesc),
     /// 0 survival, 1 creative, 2 spectator.
     pub set_game_mode: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, mode: u32),
 

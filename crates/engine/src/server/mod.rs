@@ -1,6 +1,7 @@
 //! Authoritative simulation. Runs on its own thread; single player talks to it through the
 //! in-process transport. Each dimension is a set of regions ticked in parallel.
 
+pub mod area;
 mod builtin;
 pub mod dim;
 pub mod energy;
@@ -293,6 +294,10 @@ impl Server {
                 if let Some(&i) = c.dim_names.get(name) {
                     dims[i as usize].set_time(*t);
                 }
+            }
+            for (name, spec) in &s.meta.edits {
+                let (Some(&i), Some(fill)) = (c.dim_names.get(name), area::AreaFill::parse(c, spec)) else { continue };
+                dims[i as usize].edits.push(fill);
             }
         }
         let (gen_tx, gen_rx) = unbounded();
@@ -627,6 +632,7 @@ impl Server {
                     }
                 }
                 DimEvent::SetTime { dim, time } => self.dims[dim as usize].set_time(time),
+                DimEvent::AreaFill { dim, fill } => self.dims[dim as usize].area_fill(c, fill),
                 DimEvent::SetMode { player, mode } => {
                     if let Some(pi) = self.player_index(player) {
                         self.set_mode(pi, mode);
@@ -687,6 +693,7 @@ impl Server {
             }
         }
         s.meta.times = self.dims.iter().map(|d| (c.dims[d.id as usize].name.clone(), d.time)).collect();
+        s.meta.edits = self.dims.iter().flat_map(|d| d.edits.iter().map(|e| (c.dims[d.id as usize].name.clone(), e.spec(c)))).collect();
         s.meta.configs = crate::config::world_values();
         s.meta.next_entity = self.next_id.load(Ordering::Relaxed);
         for p in &mut self.players {

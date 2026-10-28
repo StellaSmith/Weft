@@ -111,6 +111,7 @@ pub static HOST: Host = Host {
     inventory_create,
     entity_teleport,
     set_time,
+    area_fill,
     set_game_mode,
     client_state: crate::app::api::client_state,
     client_input: crate::app::api::client_input,
@@ -699,6 +700,18 @@ unsafe extern "C" fn set_time(w: *mut abi::WorldCtx, time: u64) {
     unsafe {
         let d = dim(w);
         d.events.push(crate::server::DimEvent::SetTime { dim: d.id, time })
+    }
+}
+
+unsafe extern "C" fn area_fill(w: *mut abi::WorldCtx, desc: *const abi::AreaFillDesc) {
+    unsafe {
+        let d = dim(w);
+        let a = &*desc;
+        if d.framed || !a.radius.is_finite() || a.radius <= 0.0 || a.state as usize >= crate::content::content().states.len() {
+            return;
+        }
+        let fill = crate::server::area::AreaFill { id: 0, center: DVec3::from_array(a.center), radius: a.radius, state: a.state, keep_unbreakable: a.flags & abi::area_flags::KEEP_UNBREAKABLE != 0 };
+        d.events.push(crate::server::DimEvent::AreaFill { dim: d.id, fill });
     }
 }
 

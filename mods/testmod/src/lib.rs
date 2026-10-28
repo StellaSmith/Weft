@@ -25,6 +25,10 @@ static HUM: Sound = Sound::named("machine.hum");
 static CABLE: Block = Block::named("cable");
 /// Its shape is `models/block/pedestal.json`, a Blockbench Java block model.
 static PEDESTAL: Block = Block::named("pedestal");
+static DYNAMITE: Block = Block::named("dynamite");
+static BOOM: Sound = Sound::named("boom");
+/// How far testmod's dynamite blows (a server setting).
+static DYNAMITE_RADIUS: Config<i32> = Config::named("dynamite_radius");
 static ELECTRIC_FURNACE: Block = Block::named("electric_furnace");
 static BATTERY: Block = Block::named("battery");
 static RED_SAND: Block = Block::named("red_sand");
@@ -81,6 +85,7 @@ fn init(r: &mut Registry) {
     debug_panel(r);
     about_screen(r);
     morph(r);
+    dynamite(r);
     r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor").hardness(0.5);
     // Faces the file leaves to the block (`#top`, `#side`) show these.
     r.block(&PEDESTAL).textures("machine_top", "generator", "machine_top").hardness(1.0).tab(&BASE_BUILDING);
@@ -335,6 +340,45 @@ fn energy_gizmos(w: &World, ids: &[u64]) {
             w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 1.0, 11);
         }
     }
+}
+
+/// Dynamite: lit by a right click, five seconds of fuse throwing sparks, then a crater of
+/// `dynamite_radius` blocks through the engine's area edit: one call however big, the part not
+/// loaded gets it when it loads.
+fn dynamite(r: &mut Registry) {
+    r.config(&DYNAMITE_RADIUS).int(500, 4, 2000).server();
+    r.sound(&BOOM).files(&["base:dig/stone1"]).pitch(0.2, 0.3);
+    r.block(&DYNAMITE)
+        .prop("fuse", 0..=10)
+        .states(|p, s| {
+            let lit = !p.is("fuse", "0");
+            let side = "dynamite_side";
+            let s = s.faces([side, side, "dynamite_top", if lit { "dynamite_top_lit" } else { "dynamite_top" }, side, side]);
+            if lit { s.light_rgb(12, 7, 2) } else { s }
+        })
+        .hardness(0.0)
+        .tab(&BASE_TOOLS)
+        .on_use(|u| {
+            let (w, pos) = (u.world(), u.pos());
+            if w.prop(pos, "fuse") == Some("0") {
+                w.set_prop(pos, "fuse", "10");
+                w.schedule(pos, 10);
+            }
+            true
+        })
+        .on_scheduled(|e| {
+            let (w, pos) = (e.world(), e.pos());
+            let Some(left) = w.prop(pos, "fuse").and_then(|v| v.parse::<u32>().ok()).filter(|&f| f > 0) else { return };
+            let center = [pos[0] as f64 + 0.5, pos[1] as f64 + 0.5, pos[2] as f64 + 0.5];
+            if left > 1 {
+                w.set_prop(pos, "fuse", &(left - 1).to_string());
+                w.spawn_particles(&looks::SPARK, [center[0], center[1] + 0.6, center[2]]).count(6).spread(0.2).speed(0.5);
+                w.schedule(pos, 10);
+            } else {
+                w.play_sound(&BOOM, center, 4.0);
+                w.fill_sphere(center, DYNAMITE_RADIUS.get() as f64, 0, true);
+            }
+        });
 }
 
 fn tick_generators(b: &mut SystemBatch<Burner>) {

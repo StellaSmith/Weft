@@ -119,6 +119,8 @@ const OPS: &[(&str, &str)] = &[
     ("set", "<pos:pos> <block:block>"),
     ("fill", "<from:pos> <to:pos> <block:block>"),
     ("get", "<pos:pos>"),
+    ("crater", "<r:int>"),
+    ("crater_fast", "<r:int>"),
     ("group", "@owner <name:word>"),
     ("pings", ""),
     ("setprop", "<pos:pos> <prop:word> <value:word>"),
@@ -273,6 +275,38 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
             if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
         }
         "get" => Ok(block_name(w.get(pos(cmd, "pos")?)).to_string()),
+        "crater_fast" => {
+            // The same through the area edit: one call, done at the end of the tick.
+            let r: i32 = int(cmd, "r")?;
+            w.fill_sphere([me[0] as f64 + 0.5, me[1] as f64 + 0.5, me[2] as f64 + 0.5], r as f64, 0, true);
+            Ok(String::new())
+        }
+        "crater" => {
+            // Every loaded block within `r` of the player turned to air, one `w.set` each, the
+            // way a mod would do it today: changed, already air, not loaded, milliseconds.
+            let r: i32 = int(cmd, "r")?;
+            let start = std::time::Instant::now();
+            let (mut changed, mut air, mut missed) = (0u64, 0u64, 0u64);
+            for y in -r..=r {
+                for z in -r..=r {
+                    for x in -r..=r {
+                        if x * x + y * y + z * z > r * r {
+                            continue;
+                        }
+                        let p = [me[0] + x, me[1] + y, me[2] + z];
+                        let s = w.get(p);
+                        if s == 0 {
+                            air += 1;
+                        } else if w.set(p, 0) {
+                            changed += 1;
+                        } else {
+                            missed += 1;
+                        }
+                    }
+                }
+            }
+            Ok(format!("{changed} {air} {missed} {:.1}", start.elapsed().as_secs_f64() * 1000.0))
+        }
         "group" => {
             let g = w.inventory(owner(w, cmd)?).group(word(cmd, "name")?);
             Ok(format!("{} {}", g.len(), (0..g.len()).filter(|&i| !g.get(i).is_empty()).count()))

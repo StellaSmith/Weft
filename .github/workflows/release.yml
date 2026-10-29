@@ -1,0 +1,58 @@
+# Builds a Windows release and publishes it on GitHub.
+#   - push a tag like v0.2.0 (the version in Cargo.toml must match), or
+#   - run it by hand from the Actions tab and give an existing tag (for a release that was tagged
+#     before this workflow existed).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Tag matches the version
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The game and every mod in the workspace; `--dist` then packs the mods.
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Make the distribution
+        shell: pwsh
+        run: |
+          target/release/weft.exe --dist dist/Weft
+          if (-not (Test-Path dist/Weft/weft.exe)) { throw "no distribution made" }
+          Compress-Archive -Path dist/Weft -DestinationPath "Weft-$env:TAG-windows-x64.zip"
+
+      - name: Publish
+        shell: bash
+        run: |
+          gh release create "$TAG" "Weft-$TAG-windows-x64.zip" \
+            --verify-tag --title "Weft ${TAG#v}" \
+            --notes-file .github/release-notes.md --generate-notes

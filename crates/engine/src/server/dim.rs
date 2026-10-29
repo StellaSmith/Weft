@@ -13,7 +13,7 @@ use crate::components as comps;
 use crate::content::{AIR, Content};
 use crate::host::{self, CallCtx};
 use crate::world::cube::VOLUME;
-use crate::world::light::{CubeMap, Lighter};
+use crate::world::light::{self, CubeMap, Lighter};
 use crate::world::{Cube, DIRS, Rng, cube_of, local_index};
 
 const MAX_NEIGHBOR_UPDATES: usize = 1 << 16;
@@ -46,7 +46,6 @@ pub struct Dim {
     /// The world seed.
     pub seed: u64,
     pub cubes: FxHashMap<IVec3, Arc<Cube>>,
-    pub generating: FxHashSet<IVec3>,
     pub time: u64,
     rng: Rng,
     scheduled: BinaryHeap<Reverse<(u64, i32, i32, i32)>>,
@@ -113,6 +112,14 @@ impl CubeMap for Cubes<'_> {
     fn cube_mut(&mut self, c: IVec3) -> Option<&mut Cube> {
         self.0.get_mut(&c).map(Arc::make_mut)
     }
+}
+
+/// What every cube goes through once made (generated, loaded, or on the GPU) before it joins a
+/// world, on the server or a client: the area edits made since, then its light on its own as if
+/// open sky were above (`light::prelight`; joining the world fixes that up).
+pub fn prepare(c: &Content, dim: u32, edits: &[super::area::AreaFill], pos: IVec3, cube: &mut Cube) {
+    super::area::catch_up(c, edits, pos, cube);
+    light::prelight(c, cube, c.dims[dim as usize].sky_light);
 }
 
 pub fn generate(c: &Content, dim: u32, seed: u64, pos: IVec3) -> Cube {
@@ -221,7 +228,7 @@ fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: I
 /// corner. Depends only on the seed and the dimension's columns, so every cube agrees.
 pub fn structure_in(def: &crate::content::DimensionDef, c: &Content, s: &crate::content::StructureDef, seed: u64, cell: (i32, i32)) -> Option<IVec3> {
     let h = hash(seed ^ s.salt, cell.0 as i64, 7, cell.1 as i64);
-    if ((h >> 11) as f64 / (1u64 << 53) as f64) >= s.chance as f64 {
+    if weft_noise::unit(h) >= s.chance as f64 {
         return None;
     }
     let room = (s.spacing - s.extent.x.max(s.extent.z)).max(1) as u64;
@@ -243,7 +250,7 @@ pub fn scatter_site(def: &crate::content::DimensionDef, c: &Content, s: &crate::
         return None;
     }
     let density = s.density.and_then(|d| c.components.get::<f32>(comps::BIOME, col.biome, d)).unwrap_or(0.0);
-    if ((h.rotate_left(17) >> 11) as f64 / (1u64 << 53) as f64) >= density as f64 || def.carved(seed, x, z) {
+    if weft_noise::unit(h.rotate_left(17)) >= density as f64 || def.carved(seed, x, z) {
         return None;
     }
     Some((IVec3::new(x, col.height + 1, z), col.biome, hash(h, 1, 2, 3)))
@@ -433,9 +440,8 @@ impl Dim {
             id,
             seed,
             cubes: FxHashMap::default(),
-            generating: FxHashSet::default(),
             time: 1000,
-            rng: Rng(seed ^ (id as u64).wrapping_mul(0x9E37_79B9)),
+            rng: Rng(weft_noise::mix(seed ^ id as u64)),
             scheduled: BinaryHeap::new(),
             growth: FxHashMap::default(),
             growth_queue: BinaryHeap::new(),
@@ -498,28 +504,26 @@ impl Dim {
     }
 
     /// `prelit`: the cube carries light from `light::prelight`.
-    pub fn insert(&mut self, c: &Content, pos: IVec3, cube: Cube, prelit: bool) {
-        self.generating.remove(&pos);
+    pub fn insert(&mut self, c: &Content, pos: IVec3, mut cube: Cube, prelit: bool) {
         if self.cubes.contains_key(&pos) {
             return;
         }
         self.grid.cube_loaded(c, pos, &cube);
         let def = &c.dims[self.id as usize];
-        let open_above = pos.y + 1 >= def.sky_cube_y || pos.y + 1 > def.max_cube_y;
-        // The worker's light assumed open sky above; true when the cube above lets full sky
-        // through its whole bottom (or there is nothing above).
-        let full_above = |above: &Cube| match above.uniform_light() {
-            Some(l) => l & 0xFF == crate::world::light::SKY_FULL as u32,
-            None => (0..256).all(|i| above.light(crate::world::cube::index(i % 16, 0, i / 16)) & 0xFF == crate::world::light::SKY_FULL as u32),
-        };
+        let open_above = light::open_above(def, pos.y);
         // Clear cubes have a cheaper path of their own in `light_new`.
-        let clear = cube.palette().iter().all(|&s| c.states[s as usize].opacity == 0);
+        let clear = cube.palette().iter().all(|&s| c.tight[s as usize].opacity == 0);
+        // The worker's light assumed open sky above.
         let prelit = prelit
             && !clear
             && (!def.sky_light
-                || match self.cubes.get(&(pos + IVec3::Y)) {
-                    Some(a) => full_above(a),
-                    None => open_above,
+                || match light::sky_below(self.cubes.get(&(pos + IVec3::Y)).map(|a| &**a), open_above) {
+                    light::SkyBelow::Full => true,
+                    light::SkyBelow::Dark => {
+                        cube.mask_light(!0xFF);
+                        true
+                    }
+                    light::SkyBelow::Partial => false,
                 });
         // What time acts on continues from when the cube was last simulated: steps due while it
         // was away run in the next tick, in order. Spreading and covered blocks only in cubes
@@ -534,7 +538,7 @@ impl Dim {
             for i in 0..VOLUME {
                 let s = cube.get(i);
                 if wanted(s) {
-                    let p = pos * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
+                    let p = pos * 16 + crate::world::cube::offset(i);
                     match c.grows(s) {
                         Some(_) => self.schedule_growth(c, p, s, since),
                         None => lives.push(p),
@@ -723,7 +727,7 @@ impl Dim {
         }
         for i in 0..VOLUME {
             let Some(&kind) = c.game.block_entities.get(&c.states[cube.get(i) as usize].block) else { continue };
-            let p = pos * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
+            let p = pos * 16 + crate::world::cube::offset(i);
             if !self.entities.anchors.contains_key(&p) {
                 self.add_block_entity(c, p, kind);
             }
@@ -1227,7 +1231,7 @@ impl Dim {
                     e.fire = e.fire.max(300);
                 }
                 // Sunlight sets them on fire for 8 seconds; burning hurts once a second, water puts it out.
-                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && e.age % 20 == 0 && !e.in_liquid {
+                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
                     let head = (e.pos + DVec3::Y * k.eye as f64).floor().as_ivec3();
                     let sky = cubes.get(&cube_of(head)).map_or(0, |cb| cb.light(local_index(head)) & 0xFF);
                     if sky >= 15 {
@@ -1238,7 +1242,7 @@ impl Dim {
                     e.fire = 0;
                 }
                 e.fire = e.fire.saturating_sub(1);
-                let burn = e.fire > 0 && e.fire % 20 == 0 && !hot;
+                let burn = e.fire > 0 && e.fire % crate::world::TPS == 0 && !hot;
                 let despawn = c.game.categories[k.category as usize].despawn;
                 if despawn > 0.0 && e.age % 100 == 0 {
                     let near = players.iter().any(|p| (*p - e.pos).length_squared() < despawn * despawn);

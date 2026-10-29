@@ -8,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 use weft_abi::{self as abi, Callback, ModId, TerrainColumn, rule_field as rf, terrain_op as op};
-use weft_noise::fixed::{Fields, ONE, div_floor, hash, perlin2, perlin3, q4, q12, ramp, seed32, shape};
+use weft_noise::fixed::{Fields, ONE, div_floor, hash, perlin2, perlin3, q4, q12, ramp, salt, seed32, shape};
 
 use crate::host;
 
@@ -568,7 +568,7 @@ impl Terrain {
         let cols = self.columns(seed, cx, cz);
         for (i, c) in cols.cols.iter().enumerate() {
             let (x, z) = ((ox + (i % 16) as i32) * 16, (oz + (i / 16) as i32) * 16);
-            let deep = self.cave_biomes.iter().enumerate().find(|&(k, b)| oy + 15 < c.height - b.depth && perlin3(seed32(seed, 0xCB10 ^ k as u64), x, (oy + 8) * 16, z, b.size, b.size, b.size) > b.threshold);
+            let deep = self.cave_biomes.iter().enumerate().find(|&(k, b)| oy + 15 < c.height - b.depth && perlin3(seed32(seed, salt::CAVE_BIOME ^ k as u64), x, (oy + 8) * 16, z, b.size, b.size, b.size) > b.threshold);
             biomes[i] = deep.map_or(c.biome, |(_, b)| b.biome) as u16;
         }
         let max_h = cols.cols.iter().map(|c| c.height).max().unwrap_or(0);
@@ -705,7 +705,7 @@ fn carves(tunnel: bool, cavern: i32, closed: i32, depth: i32) -> bool {
 /// span the whole cave and never hang over open space. `Some(true)` lava, `Some(false)` stone.
 fn lake(seed: u64, wy: i32) -> Option<bool> {
     let band = div_floor(wy, 64).0;
-    let h = hash(seed32(seed, 0x1A7A), 0, band, 0);
+    let h = hash(seed32(seed, salt::LAVA), 0, band, 0);
     if h & 1 == 0 {
         return None;
     }
@@ -720,11 +720,11 @@ fn lake(seed: u64, wy: i32) -> Option<bool> {
 /// Cave fields at a grid node (every 4 blocks): tunnels, caverns (Q12).
 fn cave_node(seed: u64, x: i32, y: i32, z: i32) -> (i32, i32) {
     let (x, y, z) = (x * 16, y * 16, z * 16);
-    let a = perlin3(seed32(seed, 0xC1), x, y, z, 48 * 16, 32 * 16, 48 * 16);
-    let b = perlin3(seed32(seed, 0xC2), x, y, z, 48 * 16, 32 * 16, 48 * 16);
+    let a = perlin3(seed32(seed, salt::CAVE_A), x, y, z, 48 * 16, 32 * 16, 48 * 16);
+    let b = perlin3(seed32(seed, salt::CAVE_B), x, y, z, 48 * 16, 32 * 16, 48 * 16);
     // Two thin noise zero-crossings intersect into winding tunnels.
     let spaghetti = 328 - (a.abs() + b.abs());
-    let cheese = perlin3(seed32(seed, 0xC3), x, y, z, 90 * 16, 50 * 16, 90 * 16) - 1720;
+    let cheese = perlin3(seed32(seed, salt::CAVERN), x, y, z, 90 * 16, 50 * 16, 90 * 16) - 1720;
     (spaghetti, cheese)
 }
 
@@ -733,7 +733,7 @@ fn cave_node(seed: u64, x: i32, y: i32, z: i32) -> (i32, i32) {
 const PIT: i32 = 492;
 
 fn cavern_roof(seed: u64, x: i32, z: i32) -> i32 {
-    ramp(perlin2(seed32(seed, 0xC4), x * 16, z * 16, 120 * 16), 1638, 1024)
+    ramp(perlin2(seed32(seed, salt::CAVERN_ROOF), x * 16, z * 16, 120 * 16), 1638, 1024)
 }
 
 const SHARDS: usize = 32;

@@ -49,6 +49,7 @@ pub fn all() -> Vec<TestDef> {
         world::dynamite,
         world::crater_saved,
         world::crater_view,
+        world::sky_column_edit,
         world::edit_while_loading,
         world::gpu_terrain,
         world::distant_terrain,

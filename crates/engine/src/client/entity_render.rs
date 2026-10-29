@@ -776,18 +776,18 @@ impl EntityRenderer {
 
         if overlay_start > 0 {
             list.pipeline(self.pipeline);
-            list.bind(0, buf);
-            list.bind(1, vb);
-            list.bind(2, glow);
+            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
+            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
             list.draw(overlay_start as u32 * 36, 1);
         }
         let item_buf = self.item_buf.map(|b| b.0);
         if let (Some(ib), false) = (item_buf, instances.is_empty()) {
             list.pipeline(self.item_pipe);
-            list.bind(0, buf);
-            list.bind(1, vb);
-            list.bind(2, glow);
-            list.bind(3, ib);
+            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
+            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
+            list.bind(crate::gpu_layout::bind::entity::ITEM_BOXES, ib);
             let mut i = 0;
             while i < instances.len() {
                 let item = instances[i].0;
@@ -801,9 +801,9 @@ impl EntityRenderer {
         let list = late;
         if hand_start > overlay_start {
             list.pipeline(self.overlay);
-            list.bind(0, buf);
-            list.bind(1, vb);
-            list.bind(2, glow);
+            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
+            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
             list.push(Cmd::Draw { vertices: (hand_start - overlay_start) as u32 * 36, instances: 1, first_vertex: overlay_start as u32 * 36, first_instance: 0 });
         }
         if hand_end > hand_start || hand_item.is_some() {
@@ -813,17 +813,17 @@ impl EntityRenderer {
             gpu.mapped(hb)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&hv));
             if hand_end > hand_start {
                 list.pipeline(self.hand_pipe);
-                list.bind(0, buf);
-                list.bind(1, hb);
-                list.bind(2, glow);
+                list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+                list.bind(crate::gpu_layout::bind::entity::SCENE, hb);
+                list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
                 list.push(Cmd::Draw { vertices: (hand_end - hand_start) as u32 * 36, instances: 1, first_vertex: hand_start as u32 * 36, first_instance: 0 });
             }
             if let (Some((_, n)), Some(ib)) = (hand_item, item_buf) {
                 list.pipeline(self.hand_item_pipe);
-                list.bind(0, buf);
-                list.bind(1, hb);
-                list.bind(2, glow);
-                list.bind(3, ib);
+                list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+                list.bind(crate::gpu_layout::bind::entity::SCENE, hb);
+                list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
+                list.bind(crate::gpu_layout::bind::entity::ITEM_BOXES, ib);
                 list.push(Cmd::Draw { vertices: n * 36, instances: 1, first_vertex: 0, first_instance: boxes.len() as u32 - 1 });
             }
         }
@@ -834,7 +834,7 @@ impl EntityRenderer {
 /// Two layers of flames facing the camera, the inner one smaller, like vanilla's burning mobs.
 fn fire_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, width: f32, height: f32, cam_yaw: f32, age: f32) {
     let c = content();
-    let frame = |offset: f32| textures.frame_of(c.fire_texture, (age * 20.0 + offset) as u32);
+    let frame = |offset: f32| textures.frame_of(c.fire_texture, (age * crate::world::TPS as f32 + offset) as u32);
     for (i, (scale, back)) in [(1.4, 0.0), (1.0, 0.2)].into_iter().enumerate() {
         let l = frame(i as f32 * 11.0);
         let w = width * scale;

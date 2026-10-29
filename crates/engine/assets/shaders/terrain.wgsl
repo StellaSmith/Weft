@@ -2,62 +2,8 @@
 // by line, so every block comes out as the CPU makes it. One workgroup per cube: columns, then
 // the cave grid, then the blocks.
 
-const ONE: i32 = 4096;
-
-// Description of the dimension's terrain (`terrain_gpu::describe`), words.
-@group(1) @binding(0) var<storage, read> desc: array<i32>;
-// Per cube: x, y, z, unused, then per mod feature 256 column heights and 25 corner heights.
-@group(1) @binding(1) var<storage, read> jobs: array<i32>;
-// Per cube: blocks two per word, biomes two per word, column heights, column biomes two per word.
-@group(1) @binding(2) var<storage, read_write> outp: array<u32>;
-
-struct Params {
-    cubes: u32,
-    custom: u32,
-}
-var<immediate> params: Params;
-
-// Header word offsets.
-const D_STONE: u32 = 0u;
-const D_BASE: u32 = 1u;
-const D_HAS_SEA: u32 = 2u;
-const D_SEA: u32 = 3u;
-const D_WATER: u32 = 4u;
-const D_HAS_CAVES: u32 = 5u;
-const D_LAVA: u32 = 6u;
-const D_LAVA_FROM: u32 = 7u;
-const D_LAVA_TO: u32 = 8u;
-const D_FEATURES: u32 = 9u;
-const D_RULES: u32 = 10u;
-const D_CAVE_BIOMES: u32 = 11u;
-const D_SEEDS: u32 = 12u;
-const D_FEAT_OFF: u32 = 26u;
-const D_RULE_OFF: u32 = 27u;
-const D_CAVE_OFF: u32 = 28u;
-const D_SCATTER_OFF: u32 = 29u;
-
-// Seeds, in `D_SEEDS` order.
-const S_CONT: u32 = 0u;
-const S_TEMP: u32 = 1u;
-const S_HUM: u32 = 2u;
-const S_HILLS: u32 = 3u;
-const S_MTN: u32 = 4u;
-const S_PLAT: u32 = 5u;
-const S_CAN: u32 = 6u;
-const S_DUNE: u32 = 7u;
-const S_CRAT: u32 = 8u;
-const S_C1: u32 = 9u;
-const S_C2: u32 = 10u;
-const S_C3: u32 = 11u;
-const S_C4: u32 = 12u;
-const S_LAKE: u32 = 13u;
-
-const FEATURE_WORDS: u32 = 8u;
-const MASK_WORDS: u32 = 6u;
-const RULE_WORDS: u32 = 24u;
-const CAVE_WORDS: u32 = 5u;
-const OUT_WORDS: u32 = 2560u;
-const CUSTOM_WORDS: u32 = 281u;
+// The prelude (`gpu_layout::terrain`) declares the bindings, the description's layout (`D_*`),
+// record sizes (`WORDS_*`), outputs (`OUT_*`), mask kinds and presets, and the seeds (`S_*`).
 
 fn seed(i: u32) -> u32 {
     return bitcast<u32>(desc[D_SEEDS + i]);
@@ -229,23 +175,23 @@ fn craters(x: i32, z: i32, radius: i32, depth: i32, spacing: i32) -> i32 {
 }
 
 fn preset(kind: i32, a: i32, b: i32, c: i32, x: i32, z: i32) -> i32 {
-    switch (kind) {
-        case 1: { return (clamp(continent(x, z) * 5 / 2, -ONE, ONE) * a) >> 12u; }
-        case 2: { return (fbm(seed(S_HILLS), x, z, b, 4u) * a) >> 12u; }
-        case 3: {
+    switch (u32(kind)) {
+        case PRESET_CONTINENTS: { return (clamp(continent(x, z) * 5 / 2, -ONE, ONE) * a) >> 12u; }
+        case PRESET_HILLS: { return (fbm(seed(S_HILLS), x, z, b, 4u) * a) >> 12u; }
+        case PRESET_MOUNTAINS: {
             let r = ridge(seed(S_MTN), x, z, b);
             return ((((r * r) >> 12u) * a) >> 12u) + ((fbm(seed(S_HILLS), x, z, 60 * 16, 4u) * a) >> 12u) / 7;
         }
-        case 4: {
+        case PRESET_PLATEAUS: {
             let v = (ramp(fbm(seed(S_PLAT), x, z, b, 3u), 0, 1024) * a) >> 12u;
             let step = max(c, 1);
             return div_floor(v, step).x * step;
         }
-        case 5: {
+        case PRESET_CANYONS: {
             let r = ridge(seed(S_CAN), x, z, min(b, 1 << 20) * 40);
             return -((ramp(r, 3994, ONE) * a) >> 12u);
         }
-        case 6: {
+        case PRESET_DUNES: {
             let wl = clamp(b, 1, (1 << 18) - 1);
             let warp = (fbm(seed(S_DUNE), x, z, wl * 4, 2u) * wl) >> 12u;
             let t = div_floor(x + z / 2 + warp, wl).y * ONE / wl;
@@ -257,7 +203,7 @@ fn preset(kind: i32, a: i32, b: i32, c: i32, x: i32, z: i32) -> i32 {
             }
             return (profile * a) >> 12u;
         }
-        case 7: { return craters(x, z, a, b, c); }
+        case PRESET_CRATERS: { return craters(x, z, a, b, c); }
         default: { return 0; }
     }
 }
@@ -265,18 +211,18 @@ fn preset(kind: i32, a: i32, b: i32, c: i32, x: i32, z: i32) -> i32 {
 // Postfix mask steps: kind, then 5 words (noise: seed, scale, octaves, from, to; ranges: from,
 // to; all: count).
 fn mask(at: u32, len: u32, x: i32, z: i32) -> i32 {
-    var stack: array<i32, 8>;
+    var stack: array<i32, LIMIT_MASK_DEPTH>;
     var sp = 0u;
     for (var i = 0u; i < len; i++) {
-        let m = at + i * MASK_WORDS;
+        let m = at + i * WORDS_MASK;
         let kind = desc[m];
         var v = 0;
-        switch (kind) {
-            case 1: { v = ramp(fbm(bitcast<u32>(desc[m + 1u]), x, z, desc[m + 2u], u32(desc[m + 3u])), desc[m + 4u], desc[m + 5u]); }
-            case 2: { v = ramp(continent(x, z), desc[m + 4u], desc[m + 5u]); }
-            case 3: { v = ramp(temperature(x, z), desc[m + 4u], desc[m + 5u]); }
-            case 4: { v = ramp(humidity(x, z), desc[m + 4u], desc[m + 5u]); }
-            case 5: {
+        switch (u32(kind)) {
+            case MASK_NOISE: { v = ramp(fbm(bitcast<u32>(desc[m + 1u]), x, z, desc[m + 2u], u32(desc[m + 3u])), desc[m + 4u], desc[m + 5u]); }
+            case MASK_CONTINENT: { v = ramp(continent(x, z), desc[m + 4u], desc[m + 5u]); }
+            case MASK_TEMPERATURE: { v = ramp(temperature(x, z), desc[m + 4u], desc[m + 5u]); }
+            case MASK_HUMIDITY: { v = ramp(humidity(x, z), desc[m + 4u], desc[m + 5u]); }
+            case MASK_ALL: {
                 let n = u32(desc[m + 1u]);
                 var acc = ONE;
                 for (var k = sp - n; k < sp; k++) {
@@ -285,6 +231,7 @@ fn mask(at: u32, len: u32, x: i32, z: i32) -> i32 {
                 sp -= n;
                 v = acc;
             }
+            // MASK_NOT
             default: {
                 sp -= 1u;
                 v = ONE - stack[sp];
@@ -308,11 +255,11 @@ fn column(job: u32, bx: i32, bz: i32, ci: u32, stride: u32) -> Column {
     let x = bx * 16;
     let z = bz * 16;
     var h = desc[D_BASE];
-    var strengths: array<i32, 32>;
+    var strengths: array<i32, LIMIT_FEATURES>;
     let nf = u32(desc[D_FEATURES]);
     let fo = u32(desc[D_FEAT_OFF]);
     for (var i = 0u; i < nf; i++) {
-        let f = fo + i * FEATURE_WORDS;
+        let f = fo + i * WORDS_FEATURE;
         var w = ONE;
         if (desc[f + 7u] > 0) {
             w = mask(u32(desc[f + 6u]), u32(desc[f + 7u]), x, z);
@@ -339,7 +286,7 @@ fn column(job: u32, bx: i32, bz: i32, ci: u32, stride: u32) -> Column {
         rule = 0;
     }
     for (var i = 0u; i < nr; i++) {
-        let r = ro + i * RULE_WORDS;
+        let r = ro + i * WORDS_RULE;
         var ok = height >= desc[r + 7u] && height <= desc[r + 8u]
             && temp >= desc[r + 1u] && temp < desc[r + 2u]
             && humid >= desc[r + 3u] && humid < desc[r + 4u]
@@ -355,7 +302,7 @@ fn column(job: u32, bx: i32, bz: i32, ci: u32, stride: u32) -> Column {
     }
     var biome = 0;
     if (u32(rule) < nr) {
-        biome = desc[ro + u32(rule) * RULE_WORDS];
+        biome = desc[ro + u32(rule) * WORDS_RULE];
     }
     return Column(height, biome, rule);
 }
@@ -459,7 +406,7 @@ fn block(x: u32, y: u32, z: u32, ox: i32, oy: i32, oz: i32, cave: bool) -> u32 {
     var bare = false;
     let ri = u32(col_rule[i]);
     if (ri < nr) {
-        let r = u32(desc[D_RULE_OFF]) + ri * RULE_WORDS;
+        let r = u32(desc[D_RULE_OFF]) + ri * WORDS_RULE;
         if (desc[r + 22u] != 0 && h > desc[r + 23u]) {
             bare = true;
         }
@@ -525,7 +472,7 @@ fn generate(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_inde
     if (cube >= params.cubes) {
         return;
     }
-    let job = cube * (4u + params.custom * CUSTOM_WORDS);
+    let job = cube * (4u + params.custom * WORDS_CUSTOM);
     let ox = jobs[job] * 16;
     let oy = jobs[job + 1u] * 16;
     let oz = jobs[job + 2u] * 16;
@@ -533,13 +480,13 @@ fn generate(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_inde
         atomicStore(&max_h, -2147483647 - 1);
     }
     workgroupBarrier();
-    let c = column(job, ox + i32(t % 16u), oz + i32(t / 16u), t, CUSTOM_WORDS);
+    let c = column(job, ox + i32(t % 16u), oz + i32(t / 16u), t, WORDS_CUSTOM);
     col_h[t] = c.height;
     col_biome[t] = c.biome;
     col_rule[t] = c.rule;
     atomicMax(&max_h, c.height);
     if (t < 25u) {
-        corners[t] = column(job, ox + i32(t % 5u) * 4, oz + i32(t / 5u) * 4, 256u + t, CUSTOM_WORDS).height;
+        corners[t] = column(job, ox + i32(t % 5u) * 4, oz + i32(t / 5u) * 4, 256u + t, WORDS_CUSTOM).height;
     }
     workgroupBarrier();
     let mh = atomicLoad(&max_h);
@@ -552,24 +499,24 @@ fn generate(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_inde
         nodes[t] = cave_node(ox + i32(t % 5u) * 4, oy + i32(t / 25u) * 4, oz + i32((t / 5u) % 5u) * 4);
     }
     workgroupBarrier();
-    let out = cube * OUT_WORDS;
+    let out = cube * WORDS_OUT;
     // Biome per column: a cave biome deep enough under it, else the column's.
     var biome = c.biome;
     let ncb = u32(desc[D_CAVE_BIOMES]);
     let co = u32(desc[D_CAVE_OFF]);
     for (var k = 0u; k < ncb; k++) {
-        let b = co + k * CAVE_WORDS;
+        let b = co + k * WORDS_CAVE;
         if (oy + 15 < c.height - desc[b + 1u] && perlin3(bitcast<u32>(desc[b + 4u]), (ox + i32(t % 16u)) * 16, (oy + 8) * 16, (oz + i32(t / 16u)) * 16, desc[b + 2u], desc[b + 2u], desc[b + 2u]) > desc[b + 3u]) {
             biome = desc[b];
             break;
         }
     }
     biomes[t] = biome;
-    outp[out + 2048u + 128u + t] = bitcast<u32>(c.height);
+    outp[out + OUT_HEIGHTS + t] = bitcast<u32>(c.height);
     workgroupBarrier();
     if (t < 128u) {
-        outp[out + 2048u + t] = u32(biomes[t * 2u]) | (u32(biomes[t * 2u + 1u]) << 16u);
-        outp[out + 2048u + 128u + 256u + t] = u32(col_biome[t * 2u]) | (u32(col_biome[t * 2u + 1u]) << 16u);
+        outp[out + OUT_BIOMES + t] = u32(biomes[t * 2u]) | (u32(biomes[t * 2u + 1u]) << 16u);
+        outp[out + OUT_COLUMN_BIOMES + t] = u32(col_biome[t * 2u]) | (u32(col_biome[t * 2u + 1u]) << 16u);
         let z = t / 8u;
         let x = (t % 8u) * 2u;
         let empty = oy > max(mh, sea) + 16;
@@ -644,12 +591,12 @@ fn mod64(a: vec2<u32>, m: u32) -> u32 {
 // Distant terrain (`client::lod`): a tile of 32x32 cells of 2^level blocks and a cell around it,
 // each its column at the cell's middle: the block on top (water above the ground under the sea),
 // the one under it, the biome. Caves are left out.
-const LOD_SAMPLES: u32 = 1156u;
+const LOD_LAST: i32 = i32(LOD_SIDE) - 1;
 // Per sample: ground height (low half) and biome; and what scattered things put on it: the
 // highest canopy top + 32768 and its block, and how many of its blocks they cover.
-var<workgroup> lod_ground: array<u32, 1156>;
-var<workgroup> canopy: array<atomic<u32>, 1156>;
-var<workgroup> cover: array<atomic<u32>, 1156>;
+var<workgroup> lod_ground: array<u32, LOD_SAMPLES>;
+var<workgroup> canopy: array<atomic<u32>, LOD_SAMPLES>;
+var<workgroup> cover: array<atomic<u32>, LOD_SAMPLES>;
 
 @compute @workgroup_size(256)
 fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
@@ -664,15 +611,15 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
     let nr = u32(desc[D_RULES]);
     let stone = desc[D_STONE];
     for (var k = t; k < LOD_SAMPLES; k += 256u) {
-        let bx = ox + (i32(k % 34u) - 1) * s + s / 2;
-        let bz = oz + (i32(k / 34u) - 1) * s + s / 2;
+        let bx = ox + (i32(k % LOD_SIDE) - 1) * s + s / 2;
+        let bz = oz + (i32(k / LOD_SIDE) - 1) * s + s / 2;
         let c = column(job, bx, bz, k, LOD_SAMPLES);
         var top = stone;
         var under = stone;
         var ice = -1;
         let ri = u32(c.rule);
         if (ri < nr) {
-            let r = u32(desc[D_RULE_OFF]) + ri * RULE_WORDS;
+            let r = u32(desc[D_RULE_OFF]) + ri * WORDS_RULE;
             let bare = desc[r + 22u] != 0 && c.height > desc[r + 23u];
             if (!bare) {
                 if (desc[r + 12u] >= 0) {
@@ -719,11 +666,11 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
         let key = vec2<u32>(u32(desc[at + 2u]), u32(desc[at + 3u]));
         let nb = u32(desc[at + 4u]);
         let table = at + 5u;
-        at = table + nb * 5u;
+        at = table + nb * WORDS_SCATTER_BIOME;
         let c0 = div_floor(ox - s - reach, cell).x;
-        let c1 = div_floor(ox + 33 * s + reach, cell).x;
+        let c1 = div_floor(ox + LOD_LAST * s + reach, cell).x;
         let d0 = div_floor(oz - s - reach, cell).x;
-        let d1 = div_floor(oz + 33 * s + reach, cell).x;
+        let d1 = div_floor(oz + LOD_LAST * s + reach, cell).x;
         let wide = u32(c1 - c0 + 1);
         let cells = wide * u32(d1 - d0 + 1);
         for (var k = t; k < cells; k += 256u) {
@@ -732,15 +679,15 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
             let h = hash64(key, cx, cz);
             let px = cx * cell + i32(mod64(h, u32(cell)));
             let pz = cz * cell + i32(mod64(shr64(h, 8u), u32(cell)));
-            let si = clamp(div_floor(px - ox, s).x + 1, 0, 33);
-            let sj = clamp(div_floor(pz - oz, s).x + 1, 0, 33);
-            let g = lod_ground[u32(sj) * 34u + u32(si)];
+            let si = clamp(div_floor(px - ox, s).x + 1, 0, LOD_LAST);
+            let sj = clamp(div_floor(pz - oz, s).x + 1, 0, LOD_LAST);
+            let g = lod_ground[u32(sj) * LOD_SIDE + u32(si)];
             let gh = bitcast<i32>(g << 16u) >> 16u;
             let biome = g >> 16u;
             if (gh < sea || biome >= nb) {
                 continue;
             }
-            let b = table + biome * 5u;
+            let b = table + biome * WORDS_SCATTER_BIOME;
             let limit = vec2<u32>(u32(desc[b]), u32(desc[b + 1u]));
             let bits = shr64(shl64(h, 17u) | shr64(h, 47u), 11u);
             if (!(bits.y < limit.y || (bits.y == limit.y && bits.x < limit.x))) {
@@ -749,10 +696,10 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
             let r = desc[b + 2u];
             let top = u32(gh + 1 + desc[b + 3u] + 32768);
             let packed = (top << 16u) | u32(desc[b + 4u]);
-            let a0 = clamp(div_floor(px - r - ox, s).x + 1, 0, 33);
-            let a1 = clamp(div_floor(px + r - ox, s).x + 1, 0, 33);
-            let e0 = clamp(div_floor(pz - r - oz, s).x + 1, 0, 33);
-            let e1 = clamp(div_floor(pz + r - oz, s).x + 1, 0, 33);
+            let a0 = clamp(div_floor(px - r - ox, s).x + 1, 0, LOD_LAST);
+            let a1 = clamp(div_floor(px + r - ox, s).x + 1, 0, LOD_LAST);
+            let e0 = clamp(div_floor(pz - r - oz, s).x + 1, 0, LOD_LAST);
+            let e1 = clamp(div_floor(pz + r - oz, s).x + 1, 0, LOD_LAST);
             for (var j = e0; j <= e1; j++) {
                 for (var i = a0; i <= a1; i++) {
                     let x0 = ox + (i - 1) * s;
@@ -760,7 +707,7 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
                     let wx = min(px + r + 1, x0 + s) - max(px - r, x0);
                     let wz = min(pz + r + 1, z0 + s) - max(pz - r, z0);
                     if (wx > 0 && wz > 0) {
-                        let q = u32(j) * 34u + u32(i);
+                        let q = u32(j) * LOD_SIDE + u32(i);
                         atomicAdd(&cover[q], u32(wx * wz));
                         atomicMax(&canopy[q], packed);
                     }

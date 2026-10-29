@@ -80,11 +80,13 @@ unsafe impl Value for Text {
     }
 }
 
-/// Values written as text and read as something else: `Text` stays text, `BlockRef` and
-/// `BlockList` name blocks that the engine resolves when the game loads (a typo is a load error).
+/// Values written as text and read as something else: `Text` stays text, `BlockRef`,
+/// `BlockList` and `ItemRef` name things that the engine resolves when the game loads (a typo is
+/// a load error).
 pub trait TextValue: Value {}
 impl TextValue for Text {}
 impl TextValue for BlockRef {}
+impl TextValue for ItemRef {}
 impl TextValue for BlockList {}
 impl TextValue for TagRef {}
 impl TextValue for TintRef {}
@@ -120,6 +122,17 @@ pub struct BlockRef(pub u32);
 unsafe impl Value for BlockRef {
     fn schema() -> String {
         "block".into()
+    }
+}
+
+/// An item a component names (`set_text(&REMAINDER, "bucket")`), read back as its id.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemRef(pub u32);
+
+unsafe impl Value for ItemRef {
+    fn schema() -> String {
+        "item".into()
     }
 }
 
@@ -501,7 +514,7 @@ pub static WORN: Component<abi::Worn> = Component::named(abi::comp::WORN);
 pub static WORN_TEXTURE: Component<Text> = Component::named(abi::comp::WORN_TEXTURE);
 pub static WEAR_PER_HIT: Component<u32> = Component::named(abi::comp::WEAR_PER_HIT);
 pub static LIQUID: Component<Text> = Component::named(abi::comp::LIQUID);
-pub static REMAINDER: Component<Text> = Component::named(abi::comp::REMAINDER);
+pub static REMAINDER: Component<ItemRef> = Component::named(abi::comp::REMAINDER);
 pub static SHADER: Component<Text> = Component::named(abi::comp::SHADER);
 pub static MODEL: Component<Text> = Component::named(abi::comp::MODEL);
 pub static ANIMATIONS: Component<Text> = Component::named(abi::comp::ANIMATIONS);
@@ -510,8 +523,8 @@ pub static SOUND: Component<Text> = Component::named(abi::comp::SOUND);
 /// The stack after one of it is used up (burnt as fuel, taken by a recipe): one less, and the
 /// last one leaves its `remainder` behind (a lava bucket its bucket).
 pub fn use_one(stack: ItemStack) -> ItemStack {
-    match REMAINDER.on_item(stack.item).and_then(|r| crate::Item::lookup(r.as_str())) {
-        Some(left) if stack.count == 1 => ItemStack::new(left, 1),
+    match REMAINDER.on_item(stack.item) {
+        Some(left) if stack.count == 1 => ItemStack::new(left.0, 1),
         _ => stack.shrink(1),
     }
 }

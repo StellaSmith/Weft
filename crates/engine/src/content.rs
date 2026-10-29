@@ -813,7 +813,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 on_scheduled: cb(d.on_scheduled),
                 placement: cb(d.placement),
                 on_grow: cb(d.on_grow),
-                grow: (d.grow_seconds > 0.0).then_some((d.grow_seconds as f64 * 20.0, d.grow_light)),
+                grow: (d.grow_seconds > 0.0).then_some((d.grow_seconds as f64 * crate::world::TPS as f64, d.grow_light)),
             },
             replace: d.replace != 0,
             own_states: d.own_states != 0,
@@ -1478,11 +1478,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         return Err(errors);
     }
     cb.start([states.len(), item_defs.len(), entities.kinds.len(), biome_defs.len(), dim_defs.len()]);
-    // References in values (`block`, `blocks`) become state ids here, so a typo is a load error.
+    // References in values (`block`, `blocks`, `item`) become ids here, so a typo is a load error.
     let ref_lists: std::rc::Rc<std::cell::RefCell<Vec<Vec<[u32; 2]>>>> = Default::default();
     {
         let blocks: FxHashMap<String, (u32, Vec<Prop>)> = block_defs.iter().map(|b| (b.name.clone(), (b.first_state, b.props.clone()))).collect();
         let lists = ref_lists.clone();
+        let items = item_names.clone();
         let state = move |text: &str| -> Result<u32, String> {
             let (name, props) = split_state(text)?;
             let (first, defs) = blocks.get(name).ok_or_else(|| format!("unknown block {name}"))?;
@@ -1496,6 +1497,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         };
         cb.refs = Some(Box::new(move |schema: &str, text: &str| match schema {
             "block" => state(text.trim()).map(|s| s.to_le_bytes().to_vec()),
+            "item" => items.get(text.trim()).map(|i| i.to_le_bytes().to_vec()).ok_or_else(|| format!("unknown item {}", text.trim())),
             "tint" => tint_names.iter().position(|k| k == text.trim()).map(|i| (i as u32 + 1).to_le_bytes().to_vec()).ok_or_else(|| format!("no tint kind {}", text.trim())),
             _ => {
                 let mut list = Vec::new();
@@ -1646,10 +1648,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
         if let Some(tag) = u32_of(st, abi::comp::SPREADS_TO) {
             let secs = f32_of(st, abi::comp::SPREAD_TIME).unwrap_or(765.0);
-            s.spread = Some((tag, secs as f64 * 20.0, u32_of(st, abi::comp::SPREAD_LIGHT).unwrap_or(9)));
+            s.spread = Some((tag, secs as f64 * crate::world::TPS as f64, u32_of(st, abi::comp::SPREAD_LIGHT).unwrap_or(9)));
         }
         if let Some(into) = u32_of(st, abi::comp::SMOTHERED_INTO) {
-            s.smother = Some((into, f32_of(st, abi::comp::SMOTHER_TIME).unwrap_or(68.0) as f64 * 20.0));
+            s.smother = Some((into, f32_of(st, abi::comp::SMOTHER_TIME).unwrap_or(68.0) as f64 * crate::world::TPS as f64));
         }
         if let Some(face) = get(st, abi::comp::SUPPORT_FACE).map(|f| f[0]).filter(|&f| f < 6) {
             s.support = Some((face, u32_of(st, abi::comp::SUPPORT)));
@@ -1705,7 +1707,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
         replace.sort_unstable();
         replace.dedup();
-        let salt = o.block.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+        let salt = crate::registry::name_hash(&o.block);
         let biome = match o.biome.as_str() {
             "" => None,
             t => match crate::refs::tag(&components, t) {
@@ -1799,7 +1801,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             },
         };
         let extent = blocks.iter().fold(glam::IVec3::ZERO, |m, (p, _)| m.max(*p + glam::IVec3::ONE));
-        let salt = s.template.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+        let salt = crate::registry::name_hash(&s.template);
         dim_defs[d as usize].structures.push(StructureDef { name: s.template, blocks, extent, spacing: s.spacing.max(1) as i32, chance: s.chance, biome, sink: s.sink, salt });
     }
     // Terrains: the owner's description first, then other mods' edits in load order.
@@ -1902,14 +1904,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                 errors.push(format!("item {} holds unknown liquid {liquid}", item_defs[i as usize].name));
                 continue;
             };
-            let empty = match components.text(comps::ITEM, i, rc) {
-                Some(n) => item_names.get(n).copied().unwrap_or_else(|| {
-                    // The container would vanish when poured.
-                    errors.push(format!("item {}: unknown remainder {n}", item_defs[i as usize].name));
-                    0
-                }),
-                None => 0,
-            };
+            let empty = components.get::<u32>(comps::ITEM, i, rc).unwrap_or(0);
             item_liquid.insert(i, (l as u16, empty));
             if empty != 0 {
                 containers.insert((empty, l as u16), i);
@@ -1947,6 +1942,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         }
     }
     game.particle_textures.clear();
+    if let Some(ap) = components.id(abi::comp::AMBIENT_PARTICLE) {
+        let mut named: Vec<&str> = (0..states.len() as u32).filter_map(|s| components.text(comps::BLOCK, s, ap)).filter(|n| !game.particle_names.contains_key(*n)).collect();
+        named.dedup();
+        errors.extend(named.into_iter().map(|n| format!("ambient_particle: unknown particle {n}")));
+    }
     // A structure's box is what its blocks fill; a set size would only disagree with them.
     for kind in game.entities.iter_mut().filter(|k| !k.template_name.is_empty()) {
         match template_names.get(&kind.template_name) {

@@ -500,7 +500,7 @@ impl WorldRenderer {
         if quads.is_empty() {
             return;
         }
-        let mut used: Vec<u32> = quads.iter().map(|q| q[1] & 0xFFFF).collect();
+        let mut used: Vec<u32> = quads.iter().map(|q| q[1] & crate::gpu_layout::face::TEX_MASK).collect();
         used.sort_unstable();
         used.dedup();
         textures.ensure_blocks(gpu, used);
@@ -543,14 +543,14 @@ impl WorldRenderer {
             return;
         }
         // The textures it shows are loaded before it is drawn.
-        let mut used: Vec<u32> = mesh.faces.iter().flatten().map(|f| f[1] & 0xFFFF).chain(mesh.quads.iter().flatten().map(|q| q[4] & 0xFFFF)).collect();
+        let mut used: Vec<u32> = mesh.faces.iter().flatten().map(|f| f[1] & crate::gpu_layout::face::TEX_MASK).chain(mesh.quads.iter().flatten().map(|q| q[4] & crate::gpu_layout::face::TEX_MASK)).collect();
         used.sort_unstable();
         used.dedup();
         textures.ensure_blocks(gpu, used);
         let face_counts = mesh.faces.each_ref().map(|v| {
             let mut n = [0u32; 6];
             for f in v {
-                n[super::mesher::DIR_RANK[((f[0] >> 12) & 7) as usize] as usize] += 1;
+                n[super::mesher::DIR_RANK[crate::gpu_layout::face_dir(f)] as usize] += 1;
             }
             n
         });
@@ -790,17 +790,18 @@ impl WorldRenderer {
                 (self.quad_pipes[layer as usize], self.quads.pages[page as usize].0)
             };
             list.pipeline(pipe);
-            list.bind(0, gbuf);
-            list.bind(1, obuf);
-            list.bind(2, buf);
-            list.bind(3, self.biomes);
-            list.bind(4, self.tex_info);
-            list.bind(5, self.anim);
-            list.bind(6, fbuf);
-            list.bind(7, self.glow);
-            list.bind(8, self.tex_shader);
-            list.bind(9, scene);
-            list.bind(10, self.lod_mask.0);
+            use crate::gpu_layout::bind::world as b;
+            list.bind(b::G, gbuf);
+            list.bind(b::ORIGINS, obuf);
+            list.bind(b::RECORDS, buf);
+            list.bind(b::BIOMES, self.biomes);
+            list.bind(b::TEX_INFO, self.tex_info);
+            list.bind(b::FRAMES, self.anim);
+            list.bind(b::OFFSETS, fbuf);
+            list.bind(b::GLOW_MAP, self.glow);
+            list.bind(b::TEX_SHADER, self.tex_shader);
+            list.bind(b::SCENE, scene);
+            list.bind(b::LOD_MASK, self.lod_mask.0);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: start as u64 * 20, count });
         }
     }

@@ -215,7 +215,7 @@ impl ClientWorld {
         let def = &content().dims[self.dim as usize];
         let hidden = self.cubes.get(&p).map_or(0, |s| s.hidden);
         (0..27).all(|i| {
-            let n = p + IVec3::new(i % 3 - 1, i / 9 - 1, i / 3 % 3 - 1);
+            let n = p + crate::world::cube::around(i);
             i == 13 || hidden & (1 << i) != 0 || n.y < def.min_cube_y || n.y > def.max_cube_y || self.cubes.contains_key(&n)
         })
     }
@@ -648,7 +648,7 @@ impl ClientWorld {
 
 /// The cubes of `mask` around `pos` (`cube::around_mask`), loaded or not.
 fn around(pos: IVec3, mask: u32) -> impl Iterator<Item = IVec3> {
-    (0..27).filter(move |i| mask & (1 << i) != 0).map(move |i| pos + IVec3::new(i % 3 - 1, i / 9 - 1, i / 3 % 3 - 1))
+    (0..27).filter(move |i| mask & (1 << i) != 0).map(move |i| pos + crate::world::cube::around(i))
 }
 
 const BORDER_ROW: [i32; 18] = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];

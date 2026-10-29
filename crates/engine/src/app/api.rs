@@ -381,7 +381,7 @@ pub unsafe extern "C" fn client_command(c: *mut abi::ClientCtx, op: u32, text: S
                     }
                     return 1;
                 }
-                let Some(s) = crate::screens::named(&text, &r.settings) else {
+                let Some(s) = crate::screens::named(&text) else {
                     log::warn!("client_op::OPEN_SCREEN: no screen {text}");
                     return 0;
                 };

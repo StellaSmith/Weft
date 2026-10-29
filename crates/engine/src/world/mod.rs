@@ -1,9 +1,16 @@
 pub mod cube;
 pub mod light;
+pub mod view;
 
 use glam::IVec3;
 
 pub use cube::Cube;
+pub use view::View;
+
+/// Game ticks per second, the unit every duration in ticks is in.
+pub const TPS: u32 = 20;
+/// One tick in seconds.
+pub const TICK: f64 = 1.0 / TPS as f64;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum GameMode {
@@ -62,7 +69,7 @@ pub fn block_bounds<'a>(cubes: impl Iterator<Item = (&'a IVec3, &'a cube::Cube)>
         }
         for i in 0..cube::VOLUME {
             if cube.get(i) != 0 {
-                let p = cp * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
+                let p = cp * 16 + crate::world::cube::offset(i);
                 out = Some(out.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
             }
         }
@@ -70,8 +77,5 @@ pub fn block_bounds<'a>(cubes: impl Iterator<Item = (&'a IVec3, &'a cube::Cube)>
     out
 }
 
-pub fn hash_pos(seed: u64, p: IVec3) -> u64 {
-    mix(seed ^ mix((p.x as u32 as u64) | ((p.z as u32 as u64) << 32)) ^ mix(p.y as u32 as u64 ^ 0xA5A5))
-}
 
 

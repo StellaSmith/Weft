@@ -250,7 +250,7 @@ impl Pending {
     pub(crate) fn text_as(name: &str, schema: &str, text: &str) -> Pending {
         // Block names without a namespace are this mod's, like everywhere else.
         let text = match schema {
-            "block" | "blocks" => text
+            "block" | "blocks" | "item" => text
                 .split_whitespace()
                 .map(|e| match e.rsplit_once(':') {
                     // `oak_log:4`: the weight stays, the name gets the namespace.
@@ -930,9 +930,10 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Particles of `kind` clients show around it now and then, near the player (vanilla's
-    /// torch smoke, a crystal's sparks).
+    /// torch smoke, a crystal's sparks). A kind nothing registers is a load error.
     pub fn ambient_particle(mut self, kind: &str) -> Self {
-        self.each(|s, _| s.put_text(abi::comp::AMBIENT_PARTICLE, "str", kind));
+        let kind = crate::full_name(kind);
+        self.each(|s, _| s.put_text(abi::comp::AMBIENT_PARTICLE, "str", &kind));
         self
     }
 

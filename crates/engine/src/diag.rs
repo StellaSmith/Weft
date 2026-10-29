@@ -359,7 +359,7 @@ impl Reporter {
 
     fn summarize(&mut self, s: &FrameSample) {
         let (mods, secs) = self.mods.take();
-        let ticks = (secs * crate::server::TPS as f64).max(1.0);
+        let ticks = (secs * crate::world::TPS as f64).max(1.0);
         let mut mods: Vec<(String, u64, u64)> = mods.into_iter().filter(|m| m.2 > 0).collect();
         mods.sort_by(|a, b| b.1.cmp(&a.1));
         let mods: Vec<String> = mods.iter().take(5).map(|(id, ns, calls)| format!("{id} {:.3} ms/{:.0} calls", *ns as f64 / 1e6 / ticks, *calls as f64 / ticks)).collect();

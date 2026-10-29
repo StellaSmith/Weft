@@ -20,7 +20,7 @@ pub use structure::origin as structure_origin;
 pub mod visibility;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -32,18 +32,18 @@ use weft_abi::{self as abi, ItemStack, component_flags as cf, damage};
 
 pub use dim::{Dim, DimEvent, break_time};
 
-use crate::content::{Content, DimensionDef, content};
+use crate::content::{Content, content};
 use crate::ui::text::{Arg, Msg};
 use crate::net::{EntityView, ServerConn, ToClient, ToServer};
 use crate::saves::Storage;
 use crate::commands::{Origin, Selector};
-use crate::world::{Cube, GameMode, cube_of};
+use crate::world::{Cube, GameMode, View, cube_of};
 use entity::Entity;
 use menu::OpenMenu;
 use regions::DimSet;
 
-pub const TPS: u32 = 20;
-const AUTOSAVE_TICKS: u64 = 20 * 30;
+pub use crate::world::TPS;
+const AUTOSAVE_TICKS: u64 = TPS as u64 * 30;
 const REACH: f64 = 6.0;
 /// Players further away than vanilla's particle distance get no particles.
 const PARTICLE_RANGE: f64 = 32.0;
@@ -79,13 +79,13 @@ pub struct Player {
     /// View (dim, center, radius, height) whose cubes were all present at the last check, and the
     /// same plus the settled version when nothing was left to send. Lets idle ticks skip scanning
     /// the whole view volume.
-    gen_done: Option<(u32, IVec3, i32, i32, u64)>,
+    gen_done: Option<(u32, View, u64)>,
     /// What the player can see; only these cubes (and the sky column) get loaded.
     vis: Option<visibility::Visibility>,
     /// Settled cubes in range not sent yet (waiting for their neighbors), and the range they
     /// were gathered for: only cubes newly settled or newly in range are looked at.
     unsent: FxHashSet<IVec3>,
-    sync_range: Option<(IVec3, i32, i32, i32)>,
+    sync_range: Option<View>,
     /// Set by teleports: moves sent before the client saw the teleport are stale and would read
     /// as a long fall, so they are ignored until one arrives near this point.
     teleported: Option<DVec3>,
@@ -93,6 +93,8 @@ pub struct Player {
     gizmos: Vec<String>,
     /// Walking speed and jump multipliers the client has (attributes).
     sent_movement: (f32, f32),
+    /// The view distance the client has (`ToServer::View`).
+    view_radius: i32,
 }
 
 pub struct Generated {
@@ -106,7 +108,7 @@ pub struct Generated {
 
 /// Cubes around a player that are loaded whether visible or not, so digging and walking into
 /// sealed ground always finds blocks there.
-const NEAR: i32 = 2;
+pub const NEAR: i32 = 2;
 
 /// Saved cubes beyond what is loaded sent to a player per tick (each read from disk).
 const FAR_PER_TICK: usize = 256;
@@ -117,7 +119,6 @@ pub struct Shared {
     pub paused: AtomicBool,
     pub hosting: AtomicBool,
     pub tick_us: AtomicU64,
-    pub view: AtomicI32,
     pub regions: AtomicU64,
     /// Load pipeline counters for profiling: cubes generating or waiting for insertion, cubes a
     /// player should get but has not yet, and work done so far.
@@ -136,7 +137,7 @@ pub struct Shared {
     pub entities: AtomicU64,
     /// Where players load cubes (dim, center, radius, up, down), for generation jobs to skip
     /// cubes a fast player already left behind.
-    pub views: parking_lot::RwLock<Vec<(u32, IVec3, i32, i32, i32)>>,
+    pub views: parking_lot::RwLock<Vec<(u32, View)>>,
 }
 
 pub const PHASES: [&str; 6] = ["insert", "messages", "regions", "request", "sync", "rest"];
@@ -224,10 +225,6 @@ impl ServerHandle {
     pub fn regions(&self) -> u32 {
         self.shared.regions.load(Ordering::Relaxed) as u32
     }
-
-    pub fn set_view(&self, radius: i32) {
-        self.shared.view.store(radius, Ordering::Relaxed);
-    }
 }
 
 impl Drop for ServerHandle {
@@ -240,7 +237,6 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
     let (connect, incoming) = unbounded();
     let (stop, stop_rx) = unbounded::<()>();
     let shared = Arc::new(Shared::default());
-    shared.view.store(cfg.view_radius, Ordering::Relaxed);
     let sh = shared.clone();
     let thread = std::thread::Builder::new()
         .name("server".into())
@@ -278,17 +274,14 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
     ServerHandle { connect, shared, stop, thread: Some(thread) }
 }
 
-/// Cubes kept loaded around a view: the visible range plus, above it, the column up to where the
-/// generator guarantees open sky (capped), so sky light reaches the visible cubes without having
-/// to send or render those extra cubes.
 /// The cubes in a player's view that differ from generation: told about first (the client
 /// does not generate them), then sent, loaded ones as they are and the rest from storage with
 /// the area edits made since they were saved.
-fn send_far(c: &'static Content, p: &mut Player, dim: &mut DimSet, storage: Option<&Arc<Mutex<Storage>>>, (center, r, h, down): (IVec3, i32, i32, i32), tick: u64) {
-    let in_view = |q: IVec3| {
-        let d = q - center;
-        d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down
-    };
+fn send_far(c: &'static Content, p: &mut Player, dim: &mut DimSet, storage: Option<&Arc<Mutex<Storage>>>, view: View, tick: u64) {
+    // What the client generates: the view and the sky column above it.
+    let def = &c.dims[p.dim as usize];
+    let center = view.center;
+    let in_view = |q: IVec3| view.loaded(def, q);
     if tick % 10 == 0 || p.announced.is_empty() {
         let mut new: Vec<IVec3> = dim.modified().filter(|&q| in_view(q) && !p.announced.contains(&q)).collect();
         if let Some(s) = storage {
@@ -318,16 +311,9 @@ fn send_far(c: &'static Content, p: &mut Player, dim: &mut DimSet, storage: Opti
                 Arc::new(cube)
             }
         };
-        p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, hidden: 0 });
+        p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, edit: false });
         p.sent.insert(pos);
     }
-}
-
-fn loaded_y_range(def: &DimensionDef, center_y: i32, h: i32, down: i32) -> (i32, i32) {
-    let lo = (center_y - down).max(def.min_cube_y);
-    let top = center_y + h;
-    let hi = if def.sky_light && def.sky_cube_y != i32::MAX { top.max((def.sky_cube_y - 1).min(top + 12)) } else { top };
-    (lo, hi.min(def.max_cube_y))
 }
 
 impl Server {
@@ -343,7 +329,7 @@ impl Server {
             }
             for (name, spec) in &s.meta.edits {
                 let (Some(&i), Some(fill)) = (c.dim_names.get(name), area::AreaFill::parse(c, spec)) else { continue };
-                dims[i as usize].edits.push(fill);
+                Arc::make_mut(&mut dims[i as usize].edits).push(fill);
             }
         }
         let (gen_tx, gen_rx) = unbounded();
@@ -462,6 +448,7 @@ impl Server {
                 teleported: None,
                 gizmos: Vec::new(),
                 sent_movement: (1.0, 1.0),
+                view_radius: self.cfg.view_radius,
             });
         }
     }
@@ -469,7 +456,6 @@ impl Server {
     pub fn tick(&mut self) {
         let start = Instant::now();
         let c = content();
-        self.cfg.view_radius = self.shared.view.load(Ordering::Relaxed);
         let mut phase = Instant::now();
         let mut lap = |i: usize, shared: &Shared| {
             let now = Instant::now();
@@ -1146,6 +1132,11 @@ impl Server {
                     p.conn.send(ToClient::Skin { entity, png: png.to_vec() });
                 }
             }
+            ToServer::View(r) => {
+                let c = content();
+                let def = crate::config::by_name("core:view_distance").map(|id| &c.game.configs[id as usize]);
+                self.players[pi].view_radius = def.map_or(r as f64, |d| d.fit(r as f64)) as i32;
+            }
             ToServer::Gizmos(mut names) => {
                 names.retain(|n| n.len() <= 64);
                 names.truncate(64);
@@ -1439,24 +1430,20 @@ impl Server {
         }
     }
 
-    /// What a player sees (the client generates it): center cube, radius, cubes above and
-    /// below. As far up and down as sideways; flying higher than that, down to the ground and
-    /// a little into it, so the ground shows.
-    fn full_view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
+    /// What a player sees (the client generates it).
+    fn full_view(&self, p: &Player) -> View {
         let dim = &self.dims[p.dim as usize];
         let pos = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
         let center = (pos.floor().as_ivec3()) >> 4;
-        let r = self.cfg.view_radius;
-        (center, r, r, r.max(dim.air_below(center, 2 * r) + 8))
+        let r = p.view_radius;
+        View::around(center, r, dim.air_below(center, View::air_probe(r)))
     }
 
     /// What the server loads, simulates and sends whole around a player: the view cut to the
     /// simulation distance. Beyond it clients generate the world themselves and get only what
     /// differs from generation (`send_far`).
-    fn view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
-        let (center, r, _, down) = self.full_view(p);
-        let s = (crate::config::get(content().game.simulation_distance) as i32).min(r);
-        (center, s, s, down.min(s))
+    fn view(&self, p: &Player) -> View {
+        self.full_view(p).cut(crate::config::get(content().game.simulation_distance) as i32)
     }
 
     /// An area edit, with the cubes it opens up to players' views loaded first on every core:
@@ -1464,16 +1451,9 @@ impl Server {
     /// floating caves and holes into the sky). Cubes it fills whole are made, not generated.
     fn area_fill(&mut self, c: &'static Content, dim: u32, fill: area::AreaFill) {
         let start = Instant::now();
-        let views: Vec<(IVec3, i32, i32, i32)> = self.players.iter().filter(|p| p.joined && p.dim == dim).map(|p| self.view(p)).collect();
+        let views: Vec<View> = self.players.iter().filter(|p| p.joined && p.dim == dim).map(|p| self.view(p)).collect();
         let def = &c.dims[dim as usize];
-        let in_view = |cp: IVec3| {
-            cp.y >= def.min_cube_y
-                && cp.y <= def.max_cube_y
-                && views.iter().any(|&(center, r, h, down)| {
-                    let d = cp - center;
-                    d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down
-                })
-        };
+        let in_view = |cp: IVec3| views.iter().any(|v| v.contains_in(def, cp));
         // Unbreakable blocks it keeps may be anywhere in terrain: such cubes are generated.
         let keeps = fill.keep_unbreakable && c.states.iter().any(|s| s.hardness < 0.0 && s.liquid.is_none());
         let d = &self.dims[dim as usize];
@@ -1497,14 +1477,14 @@ impl Server {
                 }
             }
         }
-        let (seed, storage) = (self.cfg.seed, self.storage.clone());
+        let (seed, storage, edits) = (self.cfg.seed, self.storage.clone(), &self.dims[dim as usize].edits);
         let mut made: Vec<(IVec3, Cube, Vec<u8>, u16)> = load
             .par_iter()
             .map(|&pos| {
                 let loaded = storage.as_ref().and_then(|s| s.lock().load(dim, pos));
                 let (mut cube, entities) = loaded.unwrap_or_else(|| (dim::generate(c, dim, seed, pos), Vec::new()));
+                dim::prepare(c, dim, edits, pos, &mut cube);
                 let conn = dim::see_through(c, &cube);
-                crate::world::light::prelight(c, &mut cube, def.sky_light);
                 (pos, cube, entities, conn)
             })
             .collect();
@@ -1547,7 +1527,7 @@ impl Server {
         if in_flight >= budget {
             return;
         }
-        *self.shared.views.write() = self.players.iter().filter(|p| p.joined).map(|p| (p.dim, self.view(p))).map(|(d, (c, r, h, down))| (d, c, r, h, down)).collect();
+        *self.shared.views.write() = self.players.iter().filter(|p| p.joined).map(|p| (p.dim, self.view(p))).collect();
         let mut wanted: Vec<(i32, u32, IVec3)> = Vec::new();
         self.wanted.clear();
         let edited: Vec<Vec<IVec3>> = self.dims.iter_mut().map(|d| d.take_edited()).collect();
@@ -1556,32 +1536,27 @@ impl Server {
             if !p.joined {
                 continue;
             }
-            let (center, r, h, down) = self.view(p);
+            let view = self.view(p);
+            let (center, r, h) = (view.center, view.radius, view.up);
             let pdim = p.dim;
             let edited = &edited[pdim as usize];
-            let key = (pdim, center, r, h + down * 1000, self.dims[pdim as usize].settled_version());
+            let key = (pdim, view, self.dims[pdim as usize].settled_version());
             if p.gen_done == Some(key) && edited.is_empty() {
                 continue;
             }
             let def = &c.dims[pdim as usize];
-            let (_, hi) = loaded_y_range(def, center.y, h, down);
-            let in_view = |pos: IVec3| {
-                let d = pos - center;
-                d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
-            };
+            let (_, hi) = view.loaded_y(def);
+            let in_view = |pos: IVec3| view.contains_in(def, pos);
             let Server { players, dims, wanted: wanted_set, .. } = &mut *self;
             let dim = &mut dims[pdim as usize];
             let p = &mut players[pi];
             // The visibility fill follows the player and goes on from cubes that arrived.
             let vis = p.vis.get_or_insert_with(visibility::Visibility::new);
-            let (arrived, left) = vis.update(dim, c, (center, r, h, down), &in_view, NEAR, edited);
+            let (arrived, left) = vis.update(dim, c, view, &in_view, NEAR, edited);
             let vis = p.vis.as_ref().unwrap();
             let mut missing: Vec<IVec3> = vis.waiting.keys().copied().collect();
             // Above the view the column is loaded up to open sky, so light coming down is right.
-            let sky_column = |pos: IVec3| {
-                let d = pos - center;
-                d.x * d.x + d.z * d.z <= r * r && pos.y > center.y + h && pos.y <= hi
-            };
+            let sky_column = |pos: IVec3| view.column(pos) && pos.y > center.y + h && pos.y <= hi;
             for y in center.y + h + 1..=hi {
                 for dz in -r..=r {
                     for dx in -r..=r {
@@ -1620,9 +1595,7 @@ impl Server {
             }
             for &pos in &missing {
                 if !dim.generating.contains(&pos) && !queued.contains(&(pdim, pos)) {
-                    // Nearest columns first, each from the top down.
-                    let d = pos - center;
-                    wanted.push(((d.x * d.x + d.z * d.z) * 64 - pos.y, pdim, pos));
+                    wanted.push((view.order(pos), pdim, pos));
                     wanted_set.insert((pdim, pos));
                 }
             }
@@ -1645,11 +1618,12 @@ impl Server {
         let seed = self.cfg.seed;
         let storage = self.storage.clone();
         let shared = self.shared.clone();
+        let edits = self.dims[dim as usize].edits.clone();
         crate::background().spawn(move || {
             // Columns go up to open sky, so nothing above the view's floor counts as left behind.
-            let wanted = shared.views.read().iter().any(|&(d, c, r, _, down)| {
-                let o = pos - c;
-                d == dim && o.x * o.x + o.z * o.z <= (r + 2) * (r + 2) && o.y >= -down - 2
+            let wanted = shared.views.read().iter().any(|&(d, v)| {
+                let v = v.grown(2);
+                d == dim && v.column(pos) && pos.y >= v.center.y - v.down
             });
             if !wanted {
                 let _ = tx.send(Generated { dim, pos, cube: None, entities: Vec::new(), conn: 0 });
@@ -1658,8 +1632,8 @@ impl Server {
             let t = Instant::now();
             let loaded = storage.and_then(|s| s.lock().load(dim, pos));
             let (mut cube, entities) = loaded.unwrap_or_else(|| (dim::generate(content(), dim, seed, pos), Vec::new()));
+            dim::prepare(content(), dim, &edits, pos, &mut cube);
             let conn = dim::see_through(content(), &cube);
-            crate::world::light::prelight(content(), &mut cube, content().dims[dim as usize].sky_light);
             shared.gen_ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             shared.generated.fetch_add(1, Ordering::Relaxed);
             let _ = tx.send(Generated { dim, pos, cube: Some(cube), entities, conn });
@@ -1704,7 +1678,8 @@ impl Server {
             if !self.players[pi].joined {
                 continue;
             }
-            let (center, r, h, down) = self.view(&self.players[pi]);
+            let view = self.view(&self.players[pi]);
+            let (center, r, h, down) = (view.center, view.radius, view.up, view.down);
             let full = self.full_view(&self.players[pi]);
             let Server { players, dims, tick, storage, .. } = self;
             let p = &mut players[pi];
@@ -1715,7 +1690,7 @@ impl Server {
             for reg in &dim.regions {
                 for (pos, cube) in &reg.resend {
                     if p.sent.contains(pos) {
-                        p.conn.send(ToClient::Cube { dim: p.dim, pos: *pos, cube: cube.clone(), hidden: crate::net::KEEP_HIDDEN });
+                        p.conn.send(ToClient::Cube { dim: p.dim, pos: *pos, cube: cube.clone(), edit: true });
                     }
                 }
                 if !reg.changes.is_empty() {
@@ -1725,7 +1700,7 @@ impl Server {
                     }
                 }
             }
-            if *tick % 20 == 0 {
+            if *tick % TPS as u64 == 0 {
                 p.conn.send(ToClient::Time { dim: p.dim, time: dim.time });
             }
 
@@ -1859,32 +1834,23 @@ impl Server {
                 }
             }
 
-            let in_range = |pos: IVec3| {
-                let d = pos - center;
-                d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down && pos.y >= def.min_cube_y && pos.y <= def.max_cube_y
-            };
-            let range = (center, r, h, down);
-            let moved = p.sync_range != Some(range);
+            let in_range = |pos: IVec3| view.contains_in(def, pos);
+            let moved = p.sync_range != Some(view);
             if moved {
                 // Settled cubes that came into range; the ones that left are unloaded below.
-                let was = p.sync_range.map(|(oc, or, oh, od)| {
-                    move |pos: IVec3| {
-                        let d = pos - oc;
-                        d.x * d.x + d.z * d.z <= or * or && d.y <= oh && d.y >= -od
-                    }
-                });
+                let was = p.sync_range;
                 p.unsent.retain(|&q| in_range(q));
                 for dy in -down..=h {
                     for dz in -r..=r {
                         for dx in -r..=r {
                             let pos = center + IVec3::new(dx, dy, dz);
-                            if in_range(pos) && !was.as_ref().is_some_and(|w| w(pos)) && !p.sent.contains(&pos) && dim.settled(pos) {
+                            if in_range(pos) && !was.is_some_and(|w| w.contains(pos)) && !p.sent.contains(&pos) && dim.settled(pos) {
                                 p.unsent.insert(pos);
                             }
                         }
                     }
                 }
-                p.sync_range = Some(range);
+                p.sync_range = Some(view);
             }
             p.unsent.extend(settled[p.dim as usize].iter().copied().filter(|&q| in_range(q) && !p.sent.contains(&q)));
             // Send a cube once its neighbors exist and its sky light is final.
@@ -1907,11 +1873,7 @@ impl Server {
             unsent += to_send.len().saturating_sub(SEND_PER_TICK) as u64;
             for &(_, pos) in to_send.iter().take(SEND_PER_TICK) {
                 if let Some(cube) = dim.snapshot(pos) {
-                    let hidden = crate::world::DIRS.iter().enumerate().fold(0u8, |m, (i, d)| {
-                        let n = pos + *d;
-                        if dim.has(n) || (in_range(n) && p.vis.as_ref().is_some_and(|v| v.seen.contains(&n))) { m } else { m | 1 << i }
-                    });
-                    p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, hidden });
+                    p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, edit: false });
                     p.sent.insert(pos);
                     p.unsent.remove(&pos);
                 }
@@ -1919,11 +1881,10 @@ impl Server {
             if !moved {
                 continue;
             }
-            let (fc, fr, fh, fdown) = full;
-            let gone = |pos: IVec3| {
-                let d = pos - fc;
-                d.x * d.x + d.z * d.z > (fr + 2) * (fr + 2) || d.y > fh + 2 || d.y < -fdown - 2
-            };
+            // A cube more around it, against flicker at the edge.
+            let keep = full.grown(2);
+            let (_, hi) = full.loaded_y(def);
+            let gone = |pos: IVec3| !(keep.column(pos) && pos.y >= keep.center.y - keep.down && pos.y <= hi + 2);
             p.announced.retain(|&q| !gone(q));
             let far: Vec<IVec3> = p.sent.iter().copied().filter(|&q| gone(q)).collect();
             for pos in far {
@@ -1972,14 +1933,14 @@ impl Server {
         }
         for di in 0..self.dims.len() {
             let def = &c.dims[di];
-            let views: Vec<(IVec3, i32, i32, i32)> = self
+            let views: Vec<(View, i32, i32)> = self
                 .players
                 .iter()
                 .filter(|p| p.joined && p.dim as usize == di)
                 .map(|p| {
-                    let (center, r, h, down) = self.view(p);
-                    let (lo, hi) = loaded_y_range(def, center.y, h, down);
-                    (center, r + 3, lo - 3, hi + 3)
+                    let view = self.view(p);
+                    let (lo, hi) = view.loaded_y(def);
+                    (view.grown(3), lo - 3, hi + 3)
                 })
                 .collect();
             let storage = self.storage.clone();
@@ -1987,10 +1948,7 @@ impl Server {
             let before: usize = d.regions.iter().map(|r| r.cubes.len()).sum();
             for r in &mut d.regions {
                 let removed = r.retain_cubes(c, |pos| {
-                    views.iter().any(|&(center, rad, lo, hi)| {
-                        let d = pos - center;
-                        d.x * d.x + d.z * d.z <= rad * rad && pos.y >= lo && pos.y <= hi
-                    })
+                    views.iter().any(|&(v, lo, hi)| v.column(pos) && pos.y >= lo && pos.y <= hi)
                 });
                 for (pos, cube, inside) in removed {
                     if let Some(s) = &storage {

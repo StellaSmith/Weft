@@ -23,6 +23,53 @@ pub trait CubeMap {
 
 const DIRS: [IVec3; 6] = [IVec3::NEG_X, IVec3::X, IVec3::NEG_Y, IVec3::Y, IVec3::NEG_Z, IVec3::Z];
 pub const SKY_FULL: u8 = 15;
+
+/// The one rule light moves by: from a block at `v` into one taking `op` (its opacity, or the
+/// channel's absorption), losing at least one, except full sky going straight down (`down_sky`)
+/// through clear blocks.
+#[inline]
+pub fn step(v: u8, op: u8, down_sky: bool) -> u8 {
+    if down_sky && v == SKY_FULL && op == 0 { SKY_FULL } else { v.saturating_sub(op.max(1)) }
+}
+
+/// The most light at `v` gives a neighbor (`step` into a clear block).
+#[inline]
+pub fn reach(v: u8, down_sky: bool) -> u8 {
+    step(v, 0, down_sky)
+}
+
+/// Nothing above cube height `y` can shade it: open sky (`sky_above`) or the dimension's top.
+#[inline]
+pub fn open_above(def: &crate::content::DimensionDef, y: i32) -> bool {
+    y + 1 >= def.sky_cube_y || y + 1 > def.max_cube_y
+}
+
+/// Sky light a cube's bottom gives the cube under it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SkyBelow {
+    /// Full sky everywhere: a cube lit as if under open sky (`prelight`) is right.
+    Full,
+    /// None anywhere: right without its sky light.
+    Dark,
+    /// Some: it has to be lit again.
+    Partial,
+}
+
+/// What comes down from `above` (`None`: not loaded; `open`: open sky is there, `open_above`).
+pub fn sky_below(above: Option<&Cube>, open: bool) -> SkyBelow {
+    let Some(a) = above else { return if open { SkyBelow::Full } else { SkyBelow::Dark } };
+    let sky = |i: usize| a.light(crate::world::cube::index(i % 16, 0, i / 16)) & 0xFF;
+    let v = match a.uniform_light() {
+        Some(l) => l & 0xFF,
+        None if (1..256).all(|i| sky(i) == sky(0)) => sky(0),
+        None => return SkyBelow::Partial,
+    };
+    match v {
+        0 => SkyBelow::Dark,
+        v if v == SKY_FULL as u32 => SkyBelow::Full,
+        _ => SkyBelow::Partial,
+    }
+}
 /// Channel index: 0 sky, 1..4 red, green, blue.
 const SKY: usize = 0;
 
@@ -138,7 +185,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                 if op >= 15 && self.c.tight[state as usize].opacity >= 15 {
                     continue;
                 }
-                let nv = if c == SKY && d == 2 && v == SKY_FULL && op == 0 { SKY_FULL } else { v.saturating_sub(op.max(1)) };
+                let nv = step(v, op, c == SKY && d == 2);
                 if nv > ch(light, c) && self.put(n, c, nv) {
                     self.add.push_back((n, nv));
                     steps += 1;
@@ -156,7 +203,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                 if nl == 0 {
                     continue;
                 }
-                let derived = nl < v || (c == SKY && d == 2 && v == SKY_FULL && nl == SKY_FULL);
+                let derived = nl <= reach(v, c == SKY && d == 2);
                 if derived {
                     let (state, _) = self.read(n).unwrap();
                     let e = self.emit(state, c);
@@ -210,8 +257,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                         if !self.accepts(cp + DIRS[d], SKY, SKY_FULL) {
                             continue;
                         }
-                        // Straight down keeps full strength, sideways loses one.
-                        let reach = if d == 2 { SKY_FULL } else { SKY_FULL - 1 };
+                        let reach = reach(SKY_FULL, d == 2);
                         for a in 0..16 {
                             for b in 0..16 {
                                 let p = base
@@ -241,7 +287,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                             let p = base + IVec3::new(x, 15, z);
                             let (state, _) = self.read(p).unwrap();
                             let op = self.absorb(state, SKY);
-                            let nv = if v == SKY_FULL && op == 0 { SKY_FULL } else { v.saturating_sub(op.max(1)) };
+                            let nv = step(v, op, true);
                             if nv > 0 && op < 15 {
                                 self.put(p, SKY, nv);
                                 self.add.push_back((p, nv));
@@ -266,7 +312,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                     let state = self.map.cube(cp).unwrap().get(i);
                     let e = self.emit(state, c);
                     if e > 0 {
-                        let p = base + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
+                        let p = base + crate::world::cube::offset(i);
                         self.put(p, c, e);
                         self.add.push_back((p, e));
                     }
@@ -324,7 +370,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                         if v <= 1 {
                             continue;
                         }
-                        let reach = if c == SKY && d == 2 && v == SKY_FULL { SKY_FULL } else { v - 1 };
+                        let reach = reach(v, c == SKY && d == 2);
                         let Some((state, light)) = self.read(p + DIRS[d]) else { continue };
                         if ch(light, c) < reach && self.c.tight[state as usize].opacity < 15 {
                             self.add.push_back((p, v));
@@ -428,8 +474,7 @@ pub fn outward<M: CubeMap>(map: &M, c: &Content, sky: bool, cp: IVec3, out: &mut
         }
         let nu = n.uniform_light();
         for &ch_ in channels {
-            // Straight down sky keeps full strength, anything else loses at least one.
-            let most = if ch_ == SKY && d == 2 { SKY_FULL } else { SKY_FULL - 1 };
+            let most = reach(SKY_FULL, ch_ == SKY && d == 2);
             if uniform.is_some_and(|l| ch(l, ch_) <= 1) || nu.is_some_and(|l| ch(l, ch_) >= most) {
                 continue;
             }
@@ -447,7 +492,7 @@ pub fn outward<M: CubeMap>(map: &M, c: &Content, sky: bool, cp: IVec3, out: &mut
                     if v <= 1 {
                         continue;
                     }
-                    let reach = if ch_ == SKY && d == 2 && v == SKY_FULL { SKY_FULL } else { v - 1 };
+                    let reach = reach(v, ch_ == SKY && d == 2);
                     let q = (local + DIRS[d]) & 15;
                     let i = index(q.x as usize, q.y as usize, q.z as usize);
                     if ch(n.light(i), ch_) < reach && c.tight[n.get(i) as usize].opacity < 15 {
@@ -500,7 +545,7 @@ pub fn prelight(c: &Content, cube: &mut Cube, sky: bool) {
                 if op >= 15 && p.opacity >= 15 {
                     continue;
                 }
-                let nv = if sky && d == 2 && v == SKY_FULL && op == 0 { SKY_FULL } else { v.saturating_sub(op.max(1)) };
+                let nv = step(v, op, sky && d == 2);
                 if nv > light[n] {
                     light[n] = nv;
                     queue.push((n as u16, nv));
@@ -516,7 +561,8 @@ pub fn prelight(c: &Content, cube: &mut Cube, sky: bool) {
             for y in (0..16).rev() {
                 let i = y * 256 + col;
                 let op = props[idx[i] as usize].opacity;
-                v = if v == SKY_FULL && op == 0 { SKY_FULL } else if y == 15 && op < 15 { SKY_FULL.saturating_sub(op.max(1)) } else { 0 };
+                // Only full sky goes on down here; dimmer light is the flood's.
+                v = if v == SKY_FULL && (op == 0 || y == 15) && op < 15 { step(v, op, true) } else { 0 };
                 if v == 0 {
                     break;
                 }
@@ -568,5 +614,27 @@ mod tests {
         assert_eq!(ch(v, 0), 15);
         assert_eq!(ch(v, 3), 200);
         assert_eq!(ch(v, 1), 0);
+    }
+
+    #[test]
+    fn light_steps() {
+        // Full sky straight down through clear blocks keeps its strength, nothing else does.
+        assert_eq!(step(SKY_FULL, 0, true), SKY_FULL);
+        assert_eq!(step(SKY_FULL, 0, false), SKY_FULL - 1);
+        assert_eq!(step(SKY_FULL, 1, true), SKY_FULL - 1);
+        assert_eq!(step(SKY_FULL, 3, true), SKY_FULL - 3);
+        assert_eq!(step(14, 0, true), 13);
+        assert_eq!(step(2, 5, false), 0);
+        assert_eq!(reach(SKY_FULL, true), SKY_FULL);
+        assert_eq!(reach(0, false), 0);
+    }
+
+    #[test]
+    fn sky_from_above() {
+        assert_eq!(sky_below(None, true), SkyBelow::Full);
+        assert_eq!(sky_below(None, false), SkyBelow::Dark);
+        assert_eq!(sky_below(Some(&Cube::uniform(0, SKY_FULL as u32)), false), SkyBelow::Full);
+        assert_eq!(sky_below(Some(&Cube::uniform(0, 0)), true), SkyBelow::Dark);
+        assert_eq!(sky_below(Some(&Cube::uniform(0, 7)), true), SkyBelow::Partial);
     }
 }

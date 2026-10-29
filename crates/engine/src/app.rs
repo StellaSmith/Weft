@@ -207,6 +207,8 @@ pub(crate) struct Running {
     reload_requested: bool,
     /// The settings in effect, and the config changes seen (`apply_settings`).
     applied: Applied,
+    /// Packs changed while their screen was open (`apply_settings`).
+    packs_pending: bool,
     config_seen: u64,
     /// CPU milliseconds of the last frame, see `bench::CPU_PARTS`.
     prof: [f32; 5],
@@ -276,6 +278,8 @@ struct Applied {
     view: i32,
     language: String,
     gui_scale: u32,
+    /// Resource and shader packs: put into effect once their screens are closed, however.
+    packs: (Vec<String>, Option<String>),
 }
 
 /// Mod ids in load order (where a bare UI class looks for its texture, the last first).
@@ -321,6 +325,7 @@ impl App {
 
         let mut roots: Vec<(String, PathBuf)> = vec![("core".into(), engine_assets(self.opts.dev))];
         roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
+        let packs_now = (settings.resource_packs(), settings.shader_pack());
         let packs = crate::packs::enabled(&self.opts.run_dir, &settings.resource_packs());
         crate::packs::set_shader_pack(settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&self.opts.run_dir).join(p)));
         let assets = Assets::new(roots, packs);
@@ -388,7 +393,8 @@ impl App {
             },
             f3_combo: None,
             reload_requested: false,
-            applied: Applied::default(),
+            packs_pending: false,
+            applied: Applied { packs: packs_now, ..Default::default() },
             config_seen: u64::MAX,
             prof: [0.0; 5],
             bench: None,
@@ -419,9 +425,9 @@ impl App {
                 .unwrap_or_else(|| saves::create(&saves_dir, world, self.opts.seed.unwrap_or(1)));
             r.start_world(meta);
         } else {
-            r.open(screens::engine("core:title", &r.settings));
+            r.open(screens::engine("core:title"));
             if let Some(name) = &self.opts.screen {
-                match screens::named(name, &r.settings) {
+                match screens::named(name) {
                     Some(s) => r.open(s),
                     None => log::warn!("--screen: no screen {name}"),
                 }
@@ -567,7 +573,7 @@ impl Running {
     fn leave_world(&mut self) {
         self.leave_world_silent();
         self.screens.clear();
-        self.open(screens::engine("core:title", &self.settings));
+        self.open(screens::engine("core:title"));
     }
 
     fn leave_world_silent(&mut self) {
@@ -617,7 +623,7 @@ impl Running {
                     let mut a = weft_abi::ScreenKeyArgs { client: v.raw(), key: weft_abi::Str::new(&key) };
                     crate::host::invoke(owner, cb, &mut a);
                 }
-                Request::Screen(name) => match screens::named(&name, &self.settings) {
+                Request::Screen(name) => match screens::named(&name) {
                     Some(s) => self.open(s),
                     None => log::warn!("no screen {name}"),
                 },
@@ -969,16 +975,13 @@ impl Running {
     /// command or a test.
     fn apply_settings(&mut self) {
         let s = self.settings.clone();
-        let now = Applied { vsync: s.vsync(), view: s.view_distance(), language: s.language(), gui_scale: s.gui_scale() };
+        let mut now = Applied { vsync: s.vsync(), view: s.view_distance(), language: s.language(), gui_scale: s.gui_scale(), packs: (s.resource_packs(), s.shader_pack()) };
         if now.vsync != self.applied.vsync {
             self.gpu.set_vsync(now.vsync);
         }
         if now.view != self.applied.view {
             if let Some(g) = &mut self.game {
                 g.client.set_view_distance(now.view);
-                if let Some(sv) = &g.server {
-                    sv.set_view(now.view);
-                }
             }
         }
         let relang = now.language != self.applied.language;
@@ -989,6 +992,15 @@ impl Running {
         s.apply_binds(&mut self.input);
         if relang || now.gui_scale != self.applied.gui_scale {
             self.rebuild_all();
+        }
+        // Not while choosing: every click would reload everything.
+        if now.packs != self.applied.packs {
+            if self.screens.iter().any(|(s, _)| matches!(s.name(), "core:resource_packs" | "core:shader_packs")) {
+                now.packs = self.applied.packs.clone();
+                self.packs_pending = true;
+            } else {
+                self.reload_requested = true;
+            }
         }
         self.applied = now;
     }
@@ -1222,7 +1234,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) if !self.opts.automated => {
                 r.input.release_all();
                 if r.game.is_some() && r.screens.is_empty() {
-                    r.open(screens::engine("core:pause", &r.settings));
+                    r.open(screens::engine("core:pause"));
                 }
                 r.set_capture(false);
             }
@@ -1361,7 +1373,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
             requests.push(Request::Close);
         } else if r.game.is_some() && r.screens.is_empty() {
-            r.open(screens::engine("core:pause", &r.settings));
+            r.open(screens::engine("core:pause"));
         }
     }
     // F3 alone toggles the overlay on release; F3 + digit toggles one group instead.
@@ -1408,6 +1420,10 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             r.hud.invalidate();
         }
     }
+    if r.packs_pending && !r.screens.iter().any(|(s, _)| matches!(s.name(), "core:resource_packs" | "core:shader_packs")) {
+        r.packs_pending = false;
+        r.apply_settings();
+    }
     if r.input.pressed("core:reload") || f3_reload || std::mem::take(&mut r.reload_requested) {
         r.assets.set_packs(crate::packs::enabled(&opts.run_dir, &r.settings.resource_packs()));
         crate::packs::set_shader_pack(r.settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&opts.run_dir).join(p)));
@@ -1419,6 +1435,9 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.lang = Lang::load(&r.assets, &r.settings.language(), r.lang.dev);
         r.look = Look::new(&r.assets, &mod_ids(), &r.lang);
         r.textures.reload(&mut *r.gpu, content(), &r.assets);
+        if let Some(a) = &mut r.audio {
+            a.reload();
+        }
         if let Some(g) = &mut r.game {
             g.client.render.reload_shaders(&mut *r.gpu, &r.textures, &r.assets);
             g.client.render.set_textures(&mut *r.gpu, &r.textures);
@@ -1482,7 +1501,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             }
             crate::client::ClientEvent::Died => {
                 r.screens.clear();
-                r.open(screens::engine("core:death", &r.settings));
+                r.open(screens::engine("core:death"));
             }
         }
     }
@@ -1531,7 +1550,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         log::info!("disconnected: {reason}");
         r.leave_world_silent();
         r.screens.clear();
-        r.open(screens::engine("core:title", &r.settings));
+        r.open(screens::engine("core:title"));
         r.open(Box::new(screens::Message { title: "multiplayer.disconnected".into(), args: vec![Arg::Text(reason)] }));
     }
     r.input.sensitivity = r.settings.sensitivity();

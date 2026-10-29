@@ -252,6 +252,32 @@ pub async fn crater_view(t: T) -> R {
     Ok(())
 }
 
+/// An edited cube in the sky column over the view (generated so sky light comes down right,
+/// never drawn) is announced like any other: the client keeps the edit, not generation. It
+/// used to be announced only up to the view's top.
+pub async fn sky_column_edit(t: T) -> R {
+    weft_sdk::settings::VIEW_DISTANCE.set(6);
+    let r = sky_column(&t).await;
+    weft_sdk::settings::VIEW_DISTANCE.set(12);
+    r
+}
+
+async fn sky_column(t: &T) -> R {
+    t.world(5).await?;
+    t.idle().await?;
+    let f = t.feet();
+    // Two cubes over the view's top (6 over the player's cube), under open sky (cube 16).
+    let cube = (f[1] >> 4) + 8;
+    if cube >= 16 {
+        t.fail(format!("the player stands too high ({}) for a sky column", f[1]));
+        return Ok(());
+    }
+    let p = [f[0], cube * 16 + 5, f[2]];
+    t.set(p, "gold_block").await?;
+    t.until("the client has the block", Duration::from_secs(5), |t| t.c().block(p).is_some_and(|b| b != 0)).await?;
+    Ok(())
+}
+
 use base_api::OVERWORLD;
 
 /// Testmod edits base's overworld from outside: a biome of its own tried before base's desert,

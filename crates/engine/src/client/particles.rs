@@ -159,8 +159,8 @@ impl Particles {
         let c = content();
         let kinds = &c.game.particles;
         // Speed kept this frame per kind (`drag` is per tick).
-        let keep: Vec<f32> = kinds.iter().map(|k| k.drag.powf(dt * 20.0)).collect();
-        let ground = 0.7f32.powf(dt * 20.0);
+        let keep: Vec<f32> = kinds.iter().map(|k| k.drag.powf(dt * crate::world::TPS as f32)).collect();
+        let ground = 0.7f32.powf(dt * crate::world::TPS as f32);
         let block = |p: IVec3| world.block_or_air(p);
         let step = |p: &mut Particle| {
             p.age += dt;
@@ -252,8 +252,8 @@ impl Particles {
                 continue;
             }
             list.pipeline(pipe);
-            list.bind(0, buf);
-            list.bind(1, scene);
+            list.bind(crate::gpu_layout::bind::particle::PARTICLES, buf);
+            list.bind(crate::gpu_layout::bind::particle::SCENE, scene);
             list.push(Cmd::Draw { vertices: 6, instances: count, first_vertex: 0, first_instance: first });
         }
     }

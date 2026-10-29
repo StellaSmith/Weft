@@ -1,7 +1,8 @@
 //! Distant terrain beyond the view: made on the GPU straight from the dimension's terrain at a
-//! coarser step (`terrain_gpu.wgsl`'s `lod`), never from cubes, so it reaches as far as wanted
+//! coarser step (`shaders/terrain.wgsl`'s `lod`), never from cubes, so it reaches as far as wanted
 //! for a few kilobytes a tile. A tile is 32x32 cells of 2^level blocks; each cell is the column
-//! at its middle: its top block, the one under it, its biome (no caves, trees or edits yet).
+//! at its middle: its top block, the one under it, its biome, and tree canopies over it (no
+//! caves or edits).
 //! Tiles are picked by distance, nearer ones split into the four of the level below; one is
 //! shown once made, its parent or children standing in until then. Where a column of real cubes
 //! shows its ground the tiles' pixels are dropped (`fs_lod`, `Lod::mask`), so they fill in for
@@ -19,7 +20,8 @@ use crate::gpu_layout::face;
 /// Cells a tile side.
 pub const CELLS: i32 = 32;
 /// Columns a tile is made from: its cells and one around them (for the walls at its edges).
-pub const SAMPLES: usize = 34 * 34;
+pub const SAMPLES: usize = crate::gpu_layout::terrain::lod::SAMPLES as usize;
+const SIDE: i32 = crate::gpu_layout::terrain::lod::SIDE as i32;
 /// Words per tile coming back from the GPU.
 pub const LOD_WORDS_PER_TILE: usize = SAMPLES * 2;
 pub const MAX_LEVEL: u32 = 5;
@@ -96,7 +98,7 @@ pub fn made(job: LodJob, words: Vec<u32>) {
 /// (sx, sy, sz) blocks, drawn in the average color of texture `tex` (its smallest mip), tinted
 /// for `biome` when `tint`.
 fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint: u32, biome: u32) -> [u32; 4] {
-    [x as u32 | (z as u32) << 11 | dir << 22 | tint << 25, tex | biome << face::BIOME_SHIFT, (y as u32 & 0xFFFF) | (size.1 as u32) << 16, size.0 as u32 | (size.2 as u32) << 16]
+    crate::gpu_layout::lod_record(dir, [x, y, z], [size.0, size.1, size.2], tex, tint, biome)
 }
 
 /// The tile's top faces (runs along x merged) and the walls down to lower neighbors: the top
@@ -105,7 +107,7 @@ fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint:
 pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i32)) {
     let s = 1 << key.level;
     let at = |i: i32, j: i32| {
-        let k = ((j + 1) * 34 + i + 1) as usize * 2;
+        let k = ((j + 1) * SIDE + i + 1) as usize * 2;
         let (a, b) = (words[k], words[k + 1]);
         ((a & 0xFFFF) as u16 as i16 as i32, a >> 16, b & 0xFFFF, b >> 16)
     };
@@ -399,7 +401,7 @@ fn custom_heights(c: &Content, dim: u32, seed: u64, key: TileKey, custom: &[usiz
     let mut out = Vec::with_capacity(custom.len() * SAMPLES);
     for &i in custom {
         for k in 0..SAMPLES as i32 {
-            let (x, z) = (o.x + (k % 34 - 1) * s + s / 2, o.y + (k / 34 - 1) * s + s / 2);
+            let (x, z) = (o.x + (k % SIDE - 1) * s + s / 2, o.y + (k / SIDE - 1) * s + s / 2);
             out.push(t.features[i].height_at(&f, x * 16, z * 16));
         }
     }

@@ -103,11 +103,6 @@ fn texture_frame(name: u32) -> Frame {
     return Frame(base, base, 0.0);
 }
 
-// Corner light in a face word: four bits each.
-fn unpack_corner_light(l: u32) -> vec4<f32> {
-    return vec4<f32>(f32(l & 15u), f32((l >> 4u) & 15u), f32((l >> 8u) & 15u), f32((l >> 12u) & 15u)) / 15.0;
-}
-
 fn finish(local: vec3<f32>, origin: vec4<i32>) -> vec4<f32> {
     let pos = vec3<f32>(origin.xyz) * 16.0 + local - g.cam_frac.xyz + offsets[origin.w].xyz;
     return vec4(pos, 1.0);
@@ -120,16 +115,15 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let w1 = records[f * 4u + 1u];
     let w2 = records[f * 4u + 2u];
     let w3 = records[f * 4u + 3u];
-    let ao = (w0 >> FACE_AO_SHIFT) & 255u;
-    let a = vec4<u32>(ao & 3u, (ao >> 2u) & 3u, (ao >> 4u) & 3u, (ao >> 6u) & 3u);
+    let a = face_ao(w0);
     let flip = a.x + a.z < a.y + a.w;
     // Indexed as (0 1 2)(0 2 3); starting one corner later puts the diagonal on 1-3.
     var c = vi % 4u;
     if flip {
         c = (c + 1u) % 4u;
     }
-    let dir = (w0 >> FACE_DIR_SHIFT) & 7u;
-    let local = vec3<f32>(f32(w0 & 15u), f32((w0 >> 4u) & 15u), f32((w0 >> 8u) & 15u)) + CORNERS[dir * 4u + c];
+    let dir = face_dir(w0);
+    let local = face_pos(w0) + CORNERS[dir * 4u + c];
     let pos = finish(local, origins[ii]);
     var out: VOut;
     out.clip = scene.view_proj * pos;
@@ -140,12 +134,7 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.layer2 = fr.b;
     out.blend = fr.blend;
     out.glow = glow_of(fr.a);
-    var lw = w2;
-    if c >= 2u {
-        lw = w3;
-    }
-    let l = (lw >> ((c & 1u) * 16u)) & 65535u;
-    out.light = unpack_corner_light(l);
+    out.light = corner_light(w2, w3, c);
     let o = origins[ii] + g.cam_cube;
     out.slot = shader_of(w1 & FACE_TEX_MASK);
     out.pos = vec3<f32>(o.xyz * 16) + local;
@@ -163,31 +152,19 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     return out;
 }
 
-fn decode_pos(w: u32) -> vec3<f32> {
-    return (vec3<f32>(f32(w & 1023u), f32((w >> 10u) & 1023u), f32((w >> 20u) & 1023u)) - 32.0) / 16.0;
-}
-
 @vertex
 fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     let q = vi / 4u;
     let c = vi % 4u;
     let base = q * 8u;
-    let p0 = decode_pos(records[base]);
-    let p1 = decode_pos(records[base + 1u]);
-    let p2 = decode_pos(records[base + 2u]);
-    let local = decode_pos(records[base + c]);
+    let p0 = quad_pos(records[base]);
+    let p1 = quad_pos(records[base + 1u]);
+    let p2 = quad_pos(records[base + 2u]);
+    let local = quad_pos(records[base + c]);
     let w4 = records[base + 4u];
     let uvw = records[base + 5u];
-    let u0 = f32(uvw & 31u) / 16.0;
-    let v0 = f32((uvw >> 5u) & 31u) / 16.0;
-    let u1 = f32((uvw >> 10u) & 31u) / 16.0;
-    let v1 = f32((uvw >> 15u) & 31u) / 16.0;
-    var uvs = array<vec2<f32>, 4>(vec2(u0, v1), vec2(u1, v1), vec2(u1, v0), vec2(u0, v0));
-    var lw = records[base + 6u];
-    if c >= 2u {
-        lw = records[base + 7u];
-    }
-    let l = (lw >> ((c & 1u) * 16u)) & 65535u;
+    let uv = quad_uv(uvw);
+    var uvs = array<vec2<f32>, 4>(vec2(uv.x, uv.w), vec2(uv.z, uv.w), vec2(uv.z, uv.y), vec2(uv.x, uv.y));
     let n = normalize(cross(p1 - p0, p2 - p1));
     // Face shading blended by normal; plants opt out like vanilla's crossed squares.
     var shade = n.x * n.x * 0.6 + n.z * n.z * 0.8 + n.y * n.y * select(0.5, 1.0, n.y > 0.0);
@@ -204,7 +181,7 @@ fn vs_quad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     out.layer2 = fr.b;
     out.blend = fr.blend;
     out.glow = glow_of(fr.a);
-    out.light = unpack_corner_light(l);
+    out.light = corner_light(records[base + 6u], records[base + 7u], c);
     let o = origins[ii] + g.cam_cube;
     out.slot = shader_of(w4 & FACE_TEX_MASK);
     out.pos = vec3<f32>(o.xyz * 16) + local;
@@ -310,9 +287,9 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
     let w1 = records[f * 4u + 1u];
     let w2 = records[f * 4u + 2u];
     let w3 = records[f * 4u + 3u];
-    let dir = (w0 >> 22u) & 7u;
-    let lo = vec3<f32>(f32(w0 & 2047u), f32(bitcast<i32>(w2 << 16u) >> 16u) - 0.125, f32((w0 >> 11u) & 2047u));
-    let size = vec3<f32>(f32(w3 & 65535u), f32(w2 >> 16u), f32(w3 >> 16u));
+    let dir = lod_dir(w0);
+    let lo = lod_pos(w0, w2) - vec3(0.0, 0.125, 0.0);
+    let size = lod_size(w2, w3);
     let local = lo + CORNERS[dir * 4u + c] * size;
     let pos = finish(local, origins[ii]);
     var out: VOut;
@@ -329,7 +306,7 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
     out.light = vec4(1.0, 0.0, 0.0, 0.0);
     let o = origins[ii] + g.cam_cube;
     out.pos = vec3<f32>(o.xyz * 16) + local;
-    let kind = (w0 >> 25u) & TINT_MASK;
+    let kind = lod_tint(w0);
     var tint = vec3(1.0);
     if kind != 0u {
         tint = unpack_rgb(biomes[(w1 >> FACE_BIOME_SHIFT) * g.extra.z + kind - 1u]);

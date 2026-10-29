@@ -6,5 +6,6 @@ license.workspace = true
 
 [dependencies]
 naga.workspace = true
+weft_noise.workspace = true
 raw-window-handle.workspace = true
 bytemuck.workspace = true

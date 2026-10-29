@@ -246,11 +246,11 @@ impl Models {
         gpu.mapped(ib)[..insts.len() * size_of::<Instance>()].copy_from_slice(bytemuck::cast_slice(&insts));
         gpu.mapped(bb)[..self.rows.len() * 48].copy_from_slice(bytemuck::cast_slice(&self.rows));
         list.pipeline(pipe);
-        list.bind(0, ib);
-        list.bind(1, view);
-        list.bind(2, self.cuboids);
-        list.bind(3, self.corners);
-        list.bind(4, bb);
+        list.bind(crate::gpu_layout::bind::model::INSTANCES, ib);
+        list.bind(crate::gpu_layout::bind::model::SCENE, view);
+        list.bind(crate::gpu_layout::bind::model::CUBOIDS, self.cuboids);
+        list.bind(crate::gpu_layout::bind::model::CORNERS, self.corners);
+        list.bind(crate::gpu_layout::bind::model::BONES, bb);
         let mut i = 0;
         while i < self.queued.len() {
             let kind = self.queued[i].0;

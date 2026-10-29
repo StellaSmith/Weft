@@ -152,7 +152,7 @@ impl AreaFill {
             for (i, s) in states.iter_mut().enumerate() {
                 let old = cube.get(i);
                 *s = old;
-                let p = base + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32);
+                let p = base + crate::world::cube::offset(i);
                 if self.inside(p) {
                     if old != self.state && !keep(old) {
                         *s = self.state;
@@ -311,15 +311,8 @@ fn relight_opened(c: &'static Content, dim: u32, cubes: &mut FxHashMap<IVec3, Ar
     let full = crate::world::light::SKY_FULL as u32;
     let mut order = changed.to_vec();
     order.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
-    let open_above = |cp: IVec3| cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y;
-    // Full sky across the bottom of the cube above (or open sky).
-    let sky_above = |cubes: &rustc_hash::FxHashMap<IVec3, Arc<Cube>>, cp: IVec3| match cubes.get(&(cp + IVec3::Y)) {
-        Some(a) => match a.uniform_light() {
-            Some(l) => l & 0xFF == full,
-            None => (0..256).all(|i| a.light(crate::world::cube::index(i % 16, 0, i / 16)) & 0xFF == full),
-        },
-        None => open_above(cp),
-    };
+    let open_above = |cp: IVec3| crate::world::light::open_above(def, cp.y);
+    let sky_above = |cubes: &rustc_hash::FxHashMap<IVec3, Arc<Cube>>, cp: IVec3| crate::world::light::sky_below(cubes.get(&(cp + IVec3::Y)).map(|a| &**a), open_above(cp)) == crate::world::light::SkyBelow::Full;
     let mut whole = Vec::new();
     let mut alone = Vec::new();
     let mut flood = Vec::new();
@@ -421,7 +414,7 @@ fn relight_around(c: &'static Content, dim: u32, cubes: &mut FxHashMap<IVec3, Ar
     around.dedup();
     let relit = around.len();
     let def = &c.dims[dim as usize];
-    let jobs = around.iter().map(|&cp| LightJob::New(cp, cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y)).collect();
+    let jobs = around.iter().map(|&cp| LightJob::New(cp, crate::world::light::open_above(def, cp.y))).collect();
     run_light_jobs(c, dim, cubes, dirty, jobs);
     relit
 }

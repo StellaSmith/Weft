@@ -294,7 +294,7 @@ fn mod_profile() -> String {
         return text.clone();
     }
     let (mods, secs) = window.take();
-    let ticks = (secs * 20.0).max(1.0);
+    let ticks = (secs * crate::world::TPS as f64).max(1.0);
     let lines: Vec<String> = mods.iter().map(|(id, ns, calls)| format!("{id}: {:.2} ms, {:.0} calls", *ns as f64 / 1e6 / ticks, *calls as f64 / ticks)).collect();
     *text = lines.join("
 ");

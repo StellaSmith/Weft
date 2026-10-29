@@ -32,8 +32,8 @@ use crate::world::DIRS;
 /// Entered from nowhere: every face is an exit (the player's own cube).
 const START: u8 = 1 << 6;
 
-/// The range a fill was made for: center cube, radius, cubes above and below.
-pub type Range = (IVec3, i32, i32, i32);
+/// The range a fill was made for.
+pub type Range = crate::world::View;
 
 /// A loaded cube the fill went through: faces it was entered by (`START` too) and faces it was
 /// left by.
@@ -73,7 +73,7 @@ impl Visibility {
     pub fn update(&mut self, dim: &mut impl Cubes, c: &Content, range: Range, in_range: &impl Fn(IVec3) -> bool, near: i32, edited: &[IVec3]) -> (Vec<IVec3>, Vec<IVec3>) {
         let mut queue = Vec::new();
         let mut left = Vec::new();
-        let center = range.0;
+        let center = range.center;
         if self.range != Some(range) {
             self.range = Some(range);
             left = self.seen.iter().copied().filter(|&p| !in_range(p)).collect();

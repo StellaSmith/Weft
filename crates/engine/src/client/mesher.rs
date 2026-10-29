@@ -39,16 +39,7 @@ impl Mesh {
     }
 }
 
-/// Corners in counter-clockwise order seen from outside: bottom-left, bottom-right, top-right,
-/// top-left in texture space.
-const CORNERS: [[[i32; 3]; 4]; 6] = [
-    [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]],
-    [[1, 0, 1], [1, 0, 0], [1, 1, 0], [1, 1, 1]],
-    [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
-    [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]],
-    [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]],
-    [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
-];
+use crate::gpu_layout::CORNERS;
 
 const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
@@ -59,8 +50,7 @@ pub fn corners(dir: usize) -> [[i32; 3]; 4] {
 
 #[inline]
 fn light16(l: u32) -> u32 {
-    let c = |s: u32| ((l >> s) & 0xFF).min(15);
-    c(0) | c(8) << 4 | c(16) << 8 | c(24) << 12
+    crate::gpu_layout::corner_light([l & 0xFF, (l >> 8) & 0xFF, (l >> 16) & 0xFF, l >> 24])
 }
 
 pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
@@ -123,9 +113,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
                             let (ao, light) = corner_data(n, &opaque, x, y, z, dir);
                             let tex = ctm.resolve(c, n, x, y, z, dir, textures[dir] & face::TEX_MASK);
                             let tint = if info.tint_faces & (1 << dir) != 0 || ctm.has_overlay(tex) { info.tint as u32 } else { 0 };
-                            let w0 = x as u32 | (y as u32) << 4 | (z as u32) << 8 | (dir as u32) << face::DIR_SHIFT | ao << face::AO_SHIFT | tint << face::TINT_SHIFT;
-                            let w1 = tex | biome << face::BIOME_SHIFT;
-                            mesh.faces[info.layer as usize].push([w0, w1, light[0] | light[1] << 16, light[2] | light[3] << 16]);
+                            mesh.faces[info.layer as usize].push(crate::gpu_layout::face_record([x, y, z], dir as u32, ao, tint, tex, biome, light));
                         }
                     }
                     Model::Cross => {
@@ -184,7 +172,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
     }
     // Grouped by direction so the renderer can skip faces turned away from the camera.
     for faces in &mut mesh.faces {
-        faces.sort_by_key(|f| DIR_RANK[((f[0] >> 12) & 7) as usize]);
+        faces.sort_by_key(|f| DIR_RANK[crate::gpu_layout::face_dir(f)]);
     }
     mesh
 }
@@ -247,8 +235,7 @@ fn corner_data(n: &Neighborhood, opaque: &impl Fn(usize) -> bool, x: i32, y: i32
             }
             count += 1;
         }
-        let avg = |v: u32| ((v + count / 2) / count.max(1)).min(15);
-        lights[k] = avg(sum[0]) | avg(sum[1]) << 4 | avg(sum[2]) << 8 | avg(sum[3]) << 12;
+        lights[k] = crate::gpu_layout::corner_light(sum.map(|v| (v + count / 2) / count.max(1)));
     }
     (ao_bits, lights)
 }
@@ -256,19 +243,16 @@ fn corner_data(n: &Neighborhood, opaque: &impl Fn(usize) -> bool, x: i32, y: i32
 const FLAT: u8 = quad::FLAT as u8;
 
 fn quad(corners: [[f32; 3]; 4], uv: [u32; 4], texture: u32, biome: u32, tint: u8, light: [u32; 4]) -> [u32; 8] {
-    let enc = |p: [f32; 3]| {
-        let e = |v: f32| ((v * 16.0).round() as i32 + 32).clamp(0, 1023) as u32;
-        e(p[0]) | e(p[1]) << 10 | e(p[2]) << 20
-    };
+    use crate::gpu_layout::{quad_pos, quad_uv};
     [
-        enc(corners[0]),
-        enc(corners[1]),
-        enc(corners[2]),
-        enc(corners[3]),
+        quad_pos(corners[0]),
+        quad_pos(corners[1]),
+        quad_pos(corners[2]),
+        quad_pos(corners[3]),
         texture & face::TEX_MASK | biome << face::BIOME_SHIFT,
-        uv[0] | uv[1] << 5 | uv[2] << 10 | uv[3] << 15 | (tint as u32) << quad::TINT_SHIFT,
-        light[0] | light[1] << 16,
-        light[2] | light[3] << 16,
+        quad_uv(uv, tint as u32),
+        light[0] | light[1] << face::CORNER_SHIFT,
+        light[2] | light[3] << face::CORNER_SHIFT,
     ]
 }
 

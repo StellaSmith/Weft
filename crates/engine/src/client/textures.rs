@@ -321,7 +321,7 @@ impl GameTextures {
 
 /// A composite changes when any of its parts does.
 fn composite_stamp(assets: &Assets, entries: &[Entry], parts: [u32; 4]) -> u64 {
-    parts.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &p| (h ^ assets::texture_stamp(assets, &entries[p as usize].name)).wrapping_mul(0x100_0000_01b3))
+    parts.iter().fold(weft_noise::FNV, |h, &p| weft_noise::fnv_step(h, assets::texture_stamp(assets, &entries[p as usize].name)))
 }
 
 fn set_glow(map: &mut Vec<u32>, color: u32, glow: u32) {

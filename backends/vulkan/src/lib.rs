@@ -1416,6 +1416,8 @@ impl Backend for VulkanBackend {
                     Cmd::BindBuffer { binding, buffer, offset, size } => {
                         let Some(p) = current else { continue };
                         let pl = self.pipelines.get(p);
+                        // A binding the shader never reads is not in its reflection (a shader
+                        // pack's that skips a buffer): nothing to bind.
                         let Some(&(_, ty)) = pl.buffers.iter().find(|b| b.0 == binding) else { continue };
                         let b = self.buffers.get(buffer.0);
                         let range = if size == u64::MAX { vk::WHOLE_SIZE } else { size };

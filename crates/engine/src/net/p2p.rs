@@ -56,11 +56,10 @@ pub fn player_key(run_dir: &Path) -> String {
 /// Hash over mods and every registered name: equal hash means equal runtime ids.
 pub fn content_hash() -> u64 {
     let c = crate::content::content();
-    let mut h = 0xcbf29ce484222325u64;
+    let mut h = weft_noise::FNV;
     let mut eat = |s: &str| {
         for b in s.bytes().chain([0]) {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
+            h = weft_noise::fnv_step(h, b as u64);
         }
     };
     for m in &c.mods {
@@ -289,7 +288,7 @@ async fn connect(settings: &Settings, addr: EndpointAddr) -> Result<(Endpoint, i
     Err(last)
 }
 
-/// Connects to a host. Blocks up to 25 seconds.
+/// Connects to a host. Blocks up to 30 seconds.
 pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
     let addr = parse_ticket(ticket)?;
     let settings = settings.clone();

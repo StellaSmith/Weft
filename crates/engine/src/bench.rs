@@ -100,7 +100,7 @@ impl Bench {
         let gpu: Vec<String> = GPU_PARTS.iter().zip(self.gpu).map(|(k, v)| format!("{k} {:.2}", v / g)).collect();
         let srv_avg = self.server.iter().map(|&s| s as f64).sum::<f64>() / self.server.len().max(1) as f64;
         let srv_max = self.server.iter().copied().fold(0.0f32, f32::max);
-        let ticks = self.start.elapsed().as_secs_f64() * crate::server::TPS as f64;
+        let ticks = self.start.elapsed().as_secs_f64() * crate::world::TPS as f64;
         let mods: Vec<String> = self.mods.take().0.into_iter().map(|(id, ns, calls)| format!("{id} {:.2} ms/{:.0} calls", ns as f64 / 1e6 / ticks, calls as f64 / ticks)).collect();
         let phases: Vec<String> =
             crate::server::PHASES.iter().zip(self.phases).map(|(k, v)| format!("{k} {:.2}", v / self.server.len().max(1) as f64)).collect();

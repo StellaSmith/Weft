@@ -331,7 +331,7 @@ pub struct Stepped {
 /// One physics step (1/20 s) for a non-player entity. `block` gives states, `None` = unloaded;
 /// `bodies` are the solid bodies that moved this tick before it.
 pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl Fn(IVec3) -> Option<u32>, bodies: &[physics::Body]) -> Stepped {
-    const DT: f64 = 0.05;
+    const DT: f64 = crate::world::TICK;
     let k = &c.game.entities[e.kind as usize];
     let mut out = Stepped { land: None, crushed: false };
     if e.anchor.is_some() {
@@ -441,7 +441,7 @@ pub fn soft_push(c: &Content, list: &[Entity]) -> Vec<(usize, DVec3)> {
                 }
             }
         }
-        (push != DVec3::ZERO).then_some((i, push * 20.0))
+        (push != DVec3::ZERO).then_some((i, push * crate::world::TPS as f64))
     })
     .collect()
 }

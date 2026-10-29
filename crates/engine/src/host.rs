@@ -547,7 +547,7 @@ unsafe extern "C" fn entity_push(w: *mut abi::WorldCtx, id: u64, v: *const [f64;
         let d = dim(w);
         let Some(e) = d.entities.get_mut(id) else { return };
         if e.player {
-            let t = v / 20.0;
+            let t = v / crate::world::TPS as f64;
             d.entities.pushed.push((id, ([t.x as f32, t.y as f32, t.z as f32], false)));
         } else {
             e.vel += v;

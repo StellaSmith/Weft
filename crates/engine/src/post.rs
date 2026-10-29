@@ -105,7 +105,7 @@ impl Post {
             let target = if i + 1 == n { Target::Surface } else { Target::Texture(tex[(i + 1) % 2]) };
             list.push(Cmd::BeginPass { color: Some((target, Some([0.0; 4]))), depth: None });
             list.pipeline(pipe);
-            list.bind(0, buf);
+            list.bind(crate::gpu_layout::bind::post::PASSES, buf);
             list.push(Cmd::Draw { vertices: 3, instances: 1, first_vertex: 0, first_instance: i as u32 });
             if i + 1 < n {
                 list.push(Cmd::EndPass);

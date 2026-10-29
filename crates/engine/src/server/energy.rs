@@ -57,7 +57,7 @@ impl Grid {
         }
         for i in 0..4096usize {
             if c.states[cube.get(i) as usize].conductor {
-                self.conductors.insert(pos * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32));
+                self.conductors.insert(pos * 16 + crate::world::cube::offset(i));
             }
         }
         self.dirty = true;

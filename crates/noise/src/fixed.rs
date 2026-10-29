@@ -1,9 +1,31 @@
 //! Noise in 32-bit integers only (wrapping arithmetic, shifts, integer division), so the CPU and
 //! the GPU compute the same bits: WGSL has neither doubles nor 64-bit integers, and float
-//! results may differ between GPUs. The engine's `client/terrain_gpu.wgsl` is a line-by-line
-//! copy; keep them in step (the `gpu_terrain` test compares every cube).
+//! results may differ between GPUs. The engine's `shaders/terrain.wgsl` is a line-by-line
+//! copy; keep them in step (testkit's `gpu_terrain` and `core:terrain_check` compare cubes).
 //!
 //! Positions are in 1/16 block (`Q4`), noise values, weights and fractions in 1/4096 (`Q12`).
+
+/// What the terrain's noises are salted with, one name each: the CPU uses these and the GPU gets
+/// the seeds made from them (`gpu_layout::terrain::SEEDS`).
+pub mod salt {
+    pub const CONTINENT: u64 = 0x11;
+    pub const TEMPERATURE: u64 = 0x22;
+    pub const HUMIDITY: u64 = 0x33;
+    pub const HILLS: u64 = 0x55;
+    pub const MOUNTAINS: u64 = 0x66;
+    pub const PLATEAUS: u64 = 0x77;
+    pub const CANYONS: u64 = 0x88;
+    pub const DUNES: u64 = 0x99;
+    pub const CRATERS: u64 = 0xC7A7;
+    /// The two noodle cave fields, the cheese caverns and the cavern roof's patches.
+    pub const CAVE_A: u64 = 0xC1;
+    pub const CAVE_B: u64 = 0xC2;
+    pub const CAVERN: u64 = 0xC3;
+    pub const CAVERN_ROOF: u64 = 0xC4;
+    pub const LAVA: u64 = 0x1A7A;
+    /// Cave biome `k` uses `CAVE_BIOME ^ k`.
+    pub const CAVE_BIOME: u64 = 0xCB10;
+}
 
 /// 1.0 in Q12.
 pub const ONE: i32 = 4096;
@@ -160,15 +182,15 @@ impl Fields {
     }
 
     pub fn continent(&self, x: i32, z: i32) -> i32 {
-        ((self.fbm(0x11, x, z, 900 * 16, 4) * 6554) >> 12) + 614
+        ((self.fbm(salt::CONTINENT, x, z, 900 * 16, 4) * 6554) >> 12) + 614
     }
 
     pub fn temperature(&self, x: i32, z: i32) -> i32 {
-        (self.fbm(0x22, x, z, 1100 * 16, 3) * 5734) >> 12
+        (self.fbm(salt::TEMPERATURE, x, z, 1100 * 16, 3) * 5734) >> 12
     }
 
     pub fn humidity(&self, x: i32, z: i32) -> i32 {
-        (self.fbm(0x33, x, z, 800 * 16, 3) * 5734) >> 12
+        (self.fbm(salt::HUMIDITY, x, z, 800 * 16, 3) * 5734) >> 12
     }
 }
 
@@ -181,28 +203,28 @@ pub mod shape {
     }
 
     pub fn hills(f: &Fields, x: i32, z: i32, height: i32, size: i32) -> i32 {
-        (f.fbm(0x55, x, z, size, 4) * height) >> 12
+        (f.fbm(salt::HILLS, x, z, size, 4) * height) >> 12
     }
 
     pub fn mountains(f: &Fields, x: i32, z: i32, height: i32, width: i32) -> i32 {
-        let r = f.ridge(0x66, x, z, width);
-        ((((r * r) >> 12) * height) >> 12) + ((f.fbm(0x55, x, z, 60 * 16, 4) * height) >> 12) / 7
+        let r = f.ridge(salt::MOUNTAINS, x, z, width);
+        ((((r * r) >> 12) * height) >> 12) + ((f.fbm(salt::HILLS, x, z, 60 * 16, 4) * height) >> 12) / 7
     }
 
     pub fn plateaus(f: &Fields, x: i32, z: i32, height: i32, size: i32, step: i32) -> i32 {
-        let v = (ramp(f.fbm(0x77, x, z, size, 3), 0, 1024) * height) >> 12;
+        let v = (ramp(f.fbm(salt::PLATEAUS, x, z, size, 3), 0, 1024) * height) >> 12;
         let step = step.max(1);
         div_floor(v, step).0 * step
     }
 
     pub fn canyons(f: &Fields, x: i32, z: i32, depth: i32, width: i32) -> i32 {
-        let r = f.ridge(0x88, x, z, width.min(1 << 20) * 40);
+        let r = f.ridge(salt::CANYONS, x, z, width.min(1 << 20) * 40);
         -((ramp(r, 3994, ONE) * depth) >> 12)
     }
 
     pub fn dunes(f: &Fields, x: i32, z: i32, height: i32, wavelength: i32) -> i32 {
         let wl = wavelength.clamp(1, (1 << 18) - 1);
-        let warp = (f.fbm(0x99, x, z, wl * 4, 2) * wl) >> 12;
+        let warp = (f.fbm(salt::DUNES, x, z, wl * 4, 2) * wl) >> 12;
         let t = div_floor(x + z / 2 + warp, wl).1 * ONE / wl;
         // Gentle windward slope, steep lee side.
         let profile = if t < 3277 { t * ONE / 3277 } else { (ONE - t) * ONE / 819 };
@@ -212,7 +234,7 @@ pub mod shape {
     pub fn craters(f: &Fields, x: i32, z: i32, radius: i32, depth: i32, spacing: i32) -> i32 {
         let sp = spacing.clamp(16, 512 * 16);
         let (cx, cz) = (div_floor(x, sp).0, div_floor(z, sp).0);
-        let seed = seed32(f.seed, 0xC7A7);
+        let seed = seed32(f.seed, salt::CRATERS);
         let (bx, bz) = (x >> 4, z >> 4);
         let mut total = 0;
         for dz in -1..=1 {

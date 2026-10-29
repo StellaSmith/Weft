@@ -131,7 +131,6 @@ macro_rules! messages {
     };
 }
 
-pub const KEEP_HIDDEN: u8 = 0xFF;
 
 wire_struct! {
     #[derive(Clone, Debug)]
@@ -168,9 +167,8 @@ messages! {
     #[derive(Clone)]
     pub enum ToClient: ClientTag, to_server = false; {
         Welcome { player: u64, dim: u32, pos: DVec3, seed: u64 },
-        /// `hidden`: faces whose neighbor the server will not send (not visible from the player);
-        /// `KEEP_HIDDEN` on resends keeps what the client already knows.
-        Cube { dim: u32, pos: IVec3, cube: Arc<Cube>, hidden: u8 },
+        /// `edit`: sent again because blocks in it changed (shown whole, at once), not loading.
+        Cube { dim: u32, pos: IVec3, cube: Arc<Cube>, edit: bool },
         /// Cubes of a moving structure (entity `id`), in its own coordinates; `full`: all of them
         /// (the structure was not known), otherwise the ones that changed.
         Structure { id: u64, cubes: Vec<(IVec3, Arc<Cube>)>, full: bool },
@@ -277,6 +275,8 @@ messages! {
         Packet { channel: u32, data: Vec<u8> },
         /// The player's skin (PNG, 64 x 64 or 64 x 32).
         Skin(Vec<u8>),
+        /// The client's view distance in cubes: what the server announces edited cubes in.
+        View(u32),
     }
 }
 

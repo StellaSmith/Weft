@@ -197,7 +197,7 @@ pub enum ClientEvent {
 }
 
 /// Player physics runs at vanilla's tick rate; the camera is interpolated between ticks.
-const STEP: f64 = 1.0 / 20.0;
+const STEP: f64 = crate::world::TICK;
 /// How far behind the newest server tick bodies are shown (Sable, under Create: Aeronautics,
 /// uses 1.5): late moves still find two positions to show between.
 const INTERP_TICKS: f64 = 1.5;
@@ -394,12 +394,13 @@ impl Client {
         let entity_render = EntityRenderer::new(gpu, assets)?;
         let particles = particles::Particles::new(gpu, assets);
         conn.send(ToServer::Join { name: name.to_string(), key: key.to_string() });
+        conn.send(ToServer::View(view_radius as u32));
         if let Some(png) = skin {
             conn.send(ToServer::Skin(png));
         }
         let (gpu_tx, gpu_rx) = crossbeam_channel::unbounded();
         let gpu_on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let gpu_terrain = terrain_gpu::GpuTerrain::new(gpu, gpu_rx, gpu_on.clone());
+        let gpu_terrain = terrain_gpu::GpuTerrain::new(gpu, assets, gpu_rx, gpu_on.clone());
         Ok(Client {
             conn,
             world: ClientWorld::new(0),
@@ -545,7 +546,7 @@ impl Client {
                     self.seed = seed;
                     self.reset_terrain(dim, &mut fwd);
                 }
-                ToClient::Cube { dim, pos, cube, hidden } if dim == self.world.dim => fwd.push(terrain::In::Cube { pos, cube, edit: hidden == crate::net::KEEP_HIDDEN }),
+                ToClient::Cube { dim, pos, cube, edit } if dim == self.world.dim => fwd.push(terrain::In::Cube { pos, cube, edit }),
                 ToClient::Unload { dim, pos } if dim == self.world.dim => fwd.push(terrain::In::Unload(pos)),
                 ToClient::Blocks { dim, changes } if dim == self.world.dim => fwd.push(terrain::In::Blocks(changes)),
                 ToClient::Saved { dim, cubes } if dim == self.world.dim => fwd.push(terrain::In::Saved(cubes)),
@@ -929,7 +930,7 @@ impl Client {
         // Vanilla: amplitude follows the per-tick speed capped at 0.1, eased by 0.4 per tick.
         self.walk_dist += moved * 0.6;
         let target = if walking { (speed / 20.0).min(0.1) } else { 0.0 };
-        self.bob += (target - self.bob) * (1.0 - 0.6f32.powf(dt as f32 * 20.0));
+        self.bob += (target - self.bob) * (1.0 - 0.6f32.powf(dt as f32 * crate::world::TPS as f32));
         if let Some(p) = &mut self.hand_swing {
             *p += dt as f32 / 0.3;
             if *p >= 1.0 {
@@ -1570,6 +1571,7 @@ impl Client {
 
     pub fn set_view_distance(&mut self, r: i32) {
         self.view_radius = r;
+        self.send(ToServer::View(r as u32));
     }
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {

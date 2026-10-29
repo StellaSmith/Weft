@@ -84,7 +84,7 @@ pub trait Screen: std::any::Any {
 
 /// A screen by name (`core:` may be left out): a mod's of that name, else the engine's.
 /// Engine screens open each other through this too, so a mod's replacement is used everywhere.
-pub fn named(name: &str, settings: &Settings) -> Option<Box<dyn Screen>> {
+pub fn named(name: &str) -> Option<Box<dyn Screen>> {
     let name = if name.contains(':') { name.to_string() } else { format!("core:{name}") };
     if let Some(s) = crate::content::try_content().and_then(|c| c.game.screens.iter().rev().find(|s| s.name == name)) {
         return Some(Box::new(ModScreen(s.clone())));
@@ -101,8 +101,8 @@ pub fn named(name: &str, settings: &Settings) -> Option<Box<dyn Screen>> {
         "core:chat" => Box::new(crate::game_screens::Chat::new("")),
         "core:death" => Box::new(crate::game_screens::Death),
         "core:multiplayer" => Box::new(crate::net::screens::Multiplayer::default()),
-        "core:resource_packs" => Box::new(crate::packs::ResourcePacks::new(&settings.resource_packs())),
-        "core:shader_packs" => Box::new(crate::packs::ShaderPacks::new(settings.shader_pack().clone())),
+        "core:resource_packs" => Box::new(crate::packs::ResourcePacks),
+        "core:shader_packs" => Box::new(crate::packs::ShaderPacks),
         "core:sound" => Box::new(ConfigScreen { ns: "core".into(), title: Some("settings.sound".into()) }),
         "core:tags" => Box::new(crate::game_screens::TagList::default()),
         "core:mods" => Box::new(ModList::default()),
@@ -112,8 +112,8 @@ pub fn named(name: &str, settings: &Settings) -> Option<Box<dyn Screen>> {
 }
 
 /// An engine screen; they always exist.
-pub fn engine(name: &str, settings: &Settings) -> Box<dyn Screen> {
-    named(name, settings).unwrap_or_else(|| panic!("no screen {name}"))
+pub fn engine(name: &str) -> Box<dyn Screen> {
+    named(name).unwrap_or_else(|| panic!("no screen {name}"))
 }
 
 /// Opens a screen by name (a mod's replacement if any).
@@ -474,11 +474,11 @@ impl Screen for SettingsScreen {
             desc::frame(d, cx.in_game, "settings.title", |d| {
                 let panel = abi::UiNode { class: abi::Str::new("panel"), pad: [8.0; 4], gap: 6.0, align: abi::ui_align::STRETCH, width: 320.0, ..desc::node(abi::ui_kind::PANEL) };
                 d.open(&panel, |d| {
-                    d.slider("settings.view_distance", 4.0, 64.0, 1.0, |s| s.view_distance() as f32, |r, v| r.settings.set("view_distance", v as f64));
-                    d.slider("settings.lod_distance", 0.0, 1024.0, 16.0, |s| s.lod_distance() as f32, |r, v| r.settings.set("lod_distance", v as f64));
-                    d.slider("settings.fov", 50.0, 110.0, 1.0, |s| s.fov(), |r, v| r.settings.set("fov", v as f64));
-                    d.slider("settings.sensitivity", 20.0, 300.0, 5.0, |s| s.sensitivity() * 100.0, |r, v| r.settings.set("sensitivity", v as f64 / 100.0));
-                    d.slider("settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness() * 100.0, |r, v| r.settings.set("brightness", v as f64 / 100.0));
+                    d.slider("settings.view_distance", "core:view_distance", 1.0);
+                    d.slider("settings.lod_distance", "core:lod_distance", 1.0);
+                    d.slider("settings.fov", "core:fov", 1.0);
+                    d.slider("settings.sensitivity", "core:sensitivity", 100.0);
+                    d.slider("settings.brightness", "core:brightness", 100.0);
                     let scale = if s.gui_scale() == 0 { Arg::Key("settings.gui_scale.auto".into()) } else { Arg::Int(s.gui_scale() as i64) };
                     d.button("settings.gui_scale", &[scale], 300.0, false, |r| {
                         // Auto, then every scale the window can actually show.

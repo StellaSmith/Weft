@@ -1010,8 +1010,8 @@ impl UiRenderer {
         let time = crate::shaders::time();
         gpu.mapped(sb)[..16].copy_from_slice(bytemuck::cast_slice(&[frame.width as f32, frame.height as f32, time, gui_scale]));
         list.pipeline(self.pipeline);
-        list.bind(0, buf);
-        list.bind(1, sb);
+        list.bind(crate::gpu_layout::bind::ui::QUADS, buf);
+        list.bind(crate::gpu_layout::bind::ui::SCREEN, sb);
         list.draw(self.quads.len() as u32 * 6, 1);
     }
 

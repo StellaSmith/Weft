@@ -53,7 +53,7 @@ impl Gizmos {
         self.shapes.retain(|(s, _)| groups.binary_search(&s.group.as_str()).is_err());
         for s in shapes {
             if self.on(&s.group) {
-                let until = now + std::time::Duration::from_millis(s.ticks as u64 * 50);
+                let until = now + std::time::Duration::from_secs_f64(s.ticks as f64 * crate::world::TICK);
                 self.shapes.push((s, until));
             }
         }

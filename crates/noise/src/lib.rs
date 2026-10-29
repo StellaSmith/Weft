@@ -44,6 +44,26 @@ impl Rng {
     }
 }
 
+/// Where an FNV-1a hash starts.
+pub const FNV: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// One more value into an FNV-1a hash (whole values hashed as one step, for fingerprints).
+#[inline]
+pub const fn fnv_step(h: u64, v: u64) -> u64 {
+    (h ^ v).wrapping_mul(0x100_0000_01b3)
+}
+
+/// FNV-1a of `bytes`: stable names to salts and fingerprints.
+pub const fn fnv(bytes: &[u8]) -> u64 {
+    let mut h = FNV;
+    let mut i = 0;
+    while i < bytes.len() {
+        h = fnv_step(h, bytes[i] as u64);
+        i += 1;
+    }
+    h
+}
+
 /// Uniform in [0, 1).
 #[inline]
 pub fn unit(h: u64) -> f64 {

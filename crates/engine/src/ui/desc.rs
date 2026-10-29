@@ -102,20 +102,20 @@ impl D {
         self.open(&n, |d| d.text(abi::UiNode { class: Str::new("button"), flags: fl::NO_WRAP, ..node(k::TEXT) }, key, args));
     }
 
-    /// A labeled slider over `min..max` in `step`s of the setting `get` reads and `set` writes.
-    pub(crate) fn slider(&mut self, key: &'static str, min: f32, max: f32, step: f32, get: fn(&Settings) -> f32, set: impl Fn(&mut Running, f32) + 'static) {
-        let range = max - min;
+    /// A labeled slider of the number setting `name`, over the range its declaration gives
+    /// (snapped to its step), shown times `scale` (100 for percent).
+    pub(crate) fn slider(&mut self, key: &'static str, name: &str, scale: f64) {
+        let Some(id) = crate::config::by_name(name) else { return };
+        let def = &crate::content::content().game.configs[id as usize];
+        let (min, range) = (def.min, (def.max - def.min).max(1e-9));
         let col = abi::UiNode { align: abi::ui_align::STRETCH, gap: 2.0, self_align: abi::ui_align::STRETCH, ..node(k::CONTAINER) };
         self.open(&col, |d| {
-            d.text_bound(node(k::TEXT), move |s| (key.to_string(), vec![Arg::Int(get(s).round() as i64)]));
+            d.text_bound(node(k::TEXT), move |_| (key.to_string(), vec![Arg::Int((crate::config::get(id) * scale).round() as i64)]));
             let bind = d.keep(move |a: &mut abi::UiBindArgs| {
-                a.value = (get(&Settings::new(std::path::Path::new(""))) - min) / range;
+                a.value = ((crate::config::get(id) - min) / range) as f32;
             });
             let on_change = d.keep(move |a: &mut abi::UiChangeArgs| {
-                if let Some(r) = unsafe { crate::app::api::run(a.client) } {
-                    let v = ((min + a.value * range) / step).round() * step;
-                    set(r, v.clamp(min, max));
-                }
+                crate::config::set(id, min + a.value as f64 * range);
             });
             d.leaf(&abi::UiNode { height: 20.0, self_align: abi::ui_align::STRETCH, bind, on_change, ..node(k::SLIDER) });
         });

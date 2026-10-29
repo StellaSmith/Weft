@@ -274,7 +274,7 @@ pub mod comp {
     /// Item: the liquid (block name, `str`) it holds; with `remainder` (the empty container's
     /// name) the engine fills and empties it like a bucket.
     pub const LIQUID: &str = "liquid";
-    /// Item left behind when this one is used up (fuel, crafting, pouring): an item name, `str`.
+    /// Item left behind when this one is used up (fuel, crafting, pouring): `item`.
     pub const REMAINDER: &str = "remainder";
     /// Entity kinds and blocks: shaded by `shaders/entity/<name>.wgsl` or `shaders/block/<name>.wgsl`
     /// (`str`).

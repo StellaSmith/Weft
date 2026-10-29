@@ -101,10 +101,10 @@ pub struct RawSet {
 }
 
 /// Schemas a mod writes as text: `str` stays text; references (`block`: one block or state,
-/// `blocks`: a weighted list `name[:weight] ..`, `tag`: `#name`, `tint`: a tint kind) are
-/// resolved into ids at freeze, with errors.
+/// `blocks`: a weighted list `name[:weight] ..`, `item`: an item, `tag`: `#name`, `tint`: a tint
+/// kind) are resolved into ids at freeze, with errors.
 pub fn written_as_text(schema: &str) -> bool {
-    matches!(schema, "str" | "block" | "blocks" | "tag" | "tint")
+    matches!(schema, "str" | "block" | "blocks" | "item" | "tag" | "tint")
 }
 
 /// Byte size a schema implies, if it is a primitive.
@@ -113,7 +113,7 @@ fn primitive_size(schema: &str) -> Option<usize> {
         "" => 0,
         "u8" | "i8" | "bool" => 1,
         "u16" | "i16" => 2,
-        "u32" | "i32" | "f32" | "block" | "blocks" | "tag" | "tint" => 4,
+        "u32" | "i32" | "f32" | "block" | "blocks" | "item" | "tag" | "tint" => 4,
         "u64" | "i64" | "f64" => 8,
         "str" => size_of::<Str>(),
         _ => return None,

@@ -732,7 +732,7 @@ pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
 
 /// FNV-1a, for names stored in saves.
 pub fn name_hash(s: &str) -> u64 {
-    s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3))
+    weft_noise::fnv(s.as_bytes())
 }
 
 pub struct RawOre {

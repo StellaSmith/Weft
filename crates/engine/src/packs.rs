@@ -78,6 +78,11 @@ fn engine_source(assets: &Assets, name: &str) -> String {
     })
 }
 
+/// An engine shader no pack replaces, after `prelude`.
+pub fn engine_shader(assets: &Assets, name: &str, prelude: &str) -> Result<Shader, ShaderError> {
+    Shader::from_wgsl(name, &format!("{prelude}{}", engine_source(assets, name)))
+}
+
 /// What every engine shader starts with: its prelude (structs, bindings, constants) and
 /// `common.wgsl` (the lightmap, fog, the structs snippets get), so a shader only writes functions.
 fn with_common(assets: &Assets, name: &str, src: &str) -> String {
@@ -138,17 +143,9 @@ fn small(ui: &mut Ui, glyph: &str, action: impl Fn(&mut Ctx) + 'static) {
     });
 }
 
-/// Available and selected resource packs side by side; the top selected pack wins.
-pub struct ResourcePacks {
-    /// As when the screen opened, to reload only when something changed.
-    initial: Vec<String>,
-}
-
-impl ResourcePacks {
-    pub fn new(current: &[String]) -> ResourcePacks {
-        ResourcePacks { initial: current.to_vec() }
-    }
-}
+/// Available and selected resource packs side by side; the top selected pack wins. Put into
+/// effect when the screen closes (`app::Running::apply_settings`).
+pub struct ResourcePacks;
 
 impl Screen for ResourcePacks {
     fn name(&self) -> &str {
@@ -163,7 +160,6 @@ impl Screen for ResourcePacks {
         let dir = resource_dir(&cx.settings.run_dir);
         let all = list(&dir);
         let selected = cx.settings.resource_packs();
-        let initial = self.initial.clone();
         frame(ui, cx, "settings.resource_packs", |ui| {
             ui.container(Style::row().gap(8.0).grow().h(0.0).stretch(), |ui| {
                 ui.container(Style::default().gap(4.0).w(260.0).stretch(), |ui| {
@@ -222,27 +218,14 @@ impl Screen for ResourcePacks {
             });
             ui.container(Style::row().gap(6.0).justify(Justify::Center), |ui| {
                 button(ui, cx, "packs.open_folder", &[], 140.0, move |_| open_folder(&dir));
-                button(ui, cx, "menu.done", &[], 140.0, move |c| {
-                    if c.settings.resource_packs() != initial {
-                        c.requests.push(Request::ReloadAssets);
-                    }
-                    c.requests.push(Request::Close);
-                });
+                button(ui, cx, "menu.done", &[], 140.0, |c| c.requests.push(Request::Close));
             });
         });
     }
 }
 
 /// One shader pack or the built-in shaders.
-pub struct ShaderPacks {
-    initial: Option<String>,
-}
-
-impl ShaderPacks {
-    pub fn new(current: Option<String>) -> ShaderPacks {
-        ShaderPacks { initial: current }
-    }
-}
+pub struct ShaderPacks;
 
 impl Screen for ShaderPacks {
     fn name(&self) -> &str {
@@ -257,7 +240,6 @@ impl Screen for ShaderPacks {
         let dir = shader_dir(&cx.settings.run_dir);
         let all = list(&dir);
         let current = cx.settings.shader_pack();
-        let initial = self.initial.clone();
         frame(ui, cx, "settings.shader_packs", |ui| {
             ui.panel("panel", Style::default().pad(8.0).gap(4.0).w(320.0).h(0.0).grow().min_h(60.0).scroll().stretch(), |ui| {
                 let choices = std::iter::once((None, cx.t("packs.shaders_off", &[]), String::new()))
@@ -281,12 +263,7 @@ impl Screen for ShaderPacks {
             label(ui, cx, "packs.shaders_note", &[Arg::Text("world.wgsl, entity.wgsl, model.wgsl, particle.wgsl, post.wgsl".into())], "dim");
             ui.container(Style::row().gap(6.0).justify(Justify::Center), |ui| {
                 button(ui, cx, "packs.open_folder", &[], 140.0, move |_| open_folder(&dir));
-                button(ui, cx, "menu.done", &[], 140.0, move |c| {
-                    if c.settings.shader_pack() != initial {
-                        c.requests.push(Request::ReloadAssets);
-                    }
-                    c.requests.push(Request::Close);
-                });
+                button(ui, cx, "menu.done", &[], 140.0, |c| c.requests.push(Request::Close));
             });
         });
     }

@@ -66,15 +66,7 @@ impl Shader {
         }
         buffers.sort_by_key(|b| b.0);
 
-        Ok(Shader { module, info, hash: fnv1a(full.as_bytes()), push_constant_size, buffers })
+        Ok(Shader { module, info, hash: weft_noise::fnv(full.as_bytes()), push_constant_size, buffers })
     }
 }
 
-pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h = 0xcbf29ce484222325u64;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}

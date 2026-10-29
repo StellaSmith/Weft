@@ -165,7 +165,7 @@ impl Dim {
             for i in 0..crate::world::cube::VOLUME {
                 let s = cube.get(i);
                 if s != AIR {
-                    out.push((cp * 16 + IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32), c.state_name(s)));
+                    out.push((cp * 16 + crate::world::cube::offset(i), c.state_name(s)));
                 }
             }
         }

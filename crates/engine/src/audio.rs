@@ -66,6 +66,10 @@ pub struct Audio {
     volume_ids: Option<Vec<Option<u32>>>,
 }
 
+fn sound_path(assets: &Assets, name: &str) -> Option<std::path::PathBuf> {
+    assets.path(name, "sounds", "ogg").or_else(|| assets.path(name, "sounds", "wav"))
+}
+
 const QUICK: Tween = Tween { start_time: kira::StartTime::Immediate, duration: Duration::from_millis(400), easing: kira::Easing::Linear };
 
 fn db(volume: f64) -> Decibels {
@@ -124,13 +128,19 @@ impl Audio {
         self.rng.float()
     }
 
+    /// Forgets decoded files, for packs that changed them (F3+T).
+    pub fn reload(&mut self) {
+        self.files.clear();
+        self.globs.clear();
+    }
+
     /// Decoded once, on first use: a file is a few kilobytes and decodes in well under a
     /// millisecond, so nothing waits for a sound on a screen or in the world.
     fn file(&mut self, assets: &Assets, name: &str) -> Option<StaticSoundData> {
         if let Some(d) = self.files.get(name) {
             return d.clone();
         }
-        let path = assets.path(name, "sounds", "ogg").or_else(|| assets.path(name, "sounds", "wav"));
+        let path = sound_path(assets, name);
         let data = path.and_then(|p| match StaticSoundData::from_file(&p) {
             Ok(d) => Some(d),
             Err(e) => {
@@ -202,7 +212,7 @@ impl Audio {
         self.next_music = Instant::now() + Duration::from_secs(120 + (self.random() * 180.0) as u64);
         let Some(m) = c.game.music.iter().find(|m| fits(m) && !m.tracks.is_empty()) else { return };
         let track = m.tracks[(self.random() * m.tracks.len() as f32) as usize % m.tracks.len()].clone();
-        let Some(path) = assets.path(&track, "sounds", "ogg").or_else(|| assets.path(&track, "sounds", "wav")) else {
+        let Some(path) = sound_path(assets, &track) else {
             log::warn!("missing music {track}");
             return;
         };

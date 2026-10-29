@@ -9,6 +9,18 @@ pub const fn index(x: usize, y: usize, z: usize) -> usize {
     (y * SIZE + z) * SIZE + x
 }
 
+/// The block at `index` `i`, within its cube.
+#[inline]
+pub const fn offset(i: usize) -> glam::IVec3 {
+    glam::IVec3::new((i & 15) as i32, (i >> 8) as i32, ((i >> 4) & 15) as i32)
+}
+
+/// The cube at `i` in 0..27 of the 3 x 3 x 3 around a cube (13 is itself), as an offset.
+#[inline]
+pub const fn around(i: i32) -> glam::IVec3 {
+    glam::IVec3::new(i % 3 - 1, i / 9 - 1, i / 3 % 3 - 1)
+}
+
 /// Every bit of `around_mask`.
 pub const ALL_AROUND: u32 = (1 << 27) - 1;
 

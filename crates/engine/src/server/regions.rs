@@ -14,7 +14,7 @@ use weft_abi as abi;
 use super::dim::{Dim, section_of, section_of_cube};
 use crate::content::Content;
 use crate::host;
-use crate::world::{Cube, cube_of, hash_pos};
+use crate::world::{Cube, cube_of};
 
 pub struct DimSet {
     pub id: u32,
@@ -26,17 +26,18 @@ pub struct DimSet {
     owner: FxHashMap<IVec3, usize>,
     pub dirty: bool,
     /// Area edits made in this dimension, in order (`server::area`); saved with the world.
-    pub edits: Vec<super::area::AreaFill>,
+    /// Shared with the workers that make cubes, which apply them (`dim::prepare`).
+    pub edits: Arc<Vec<super::area::AreaFill>>,
 }
 
 impl DimSet {
     pub fn new(id: u32, seed: u64, next_id: Arc<AtomicU64>) -> DimSet {
-        DimSet { id, regions: Vec::new(), generating: FxHashSet::default(), time: 1000, seed, next_id, owner: FxHashMap::default(), dirty: false, edits: Vec::new() }
+        DimSet { id, regions: Vec::new(), generating: FxHashSet::default(), time: 1000, seed, next_id, owner: FxHashMap::default(), dirty: false, edits: Arc::default() }
     }
 
     fn new_region(&mut self, section: IVec3) -> usize {
         let mut d = Dim::new(self.id, self.seed, self.next_id.clone());
-        d.set_rng(hash_pos(self.seed ^ self.time, section));
+        d.set_rng(weft_noise::hash(self.seed ^ self.time, section.x as i64, section.y as i64, section.z as i64));
         d.time = self.time;
         self.regions.push(d);
         self.regions.len() - 1
@@ -156,6 +157,7 @@ impl DimSet {
         if self.has(pos) {
             return;
         }
+        // Edits made while it was being made.
         let edited = self.catch_up_edits(c, pos, &mut cube);
         if edited {
             prelit = false;
@@ -228,7 +230,7 @@ impl DimSet {
     pub fn area_fill(&mut self, c: &'static Content, mut fill: super::area::AreaFill, fresh: &[IVec3]) {
         let start = std::time::Instant::now();
         fill.id = self.edits.last().map_or(1, |e| e.id + 1);
-        self.edits.push(fill);
+        Arc::make_mut(&mut self.edits).push(fill);
         // Regions first (making one may merge others), then who gets what.
         for &cp in fresh {
             self.region_for(c, section_of_cube(cp));

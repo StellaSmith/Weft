@@ -533,7 +533,7 @@ fn recipe_entry(ui: &mut Ui, cx: &BuildCx, kind: &str, index: usize) {
                 let [w, h] = crate::ui::RECIPE_ARROW;
                 ui.add(Kind::Progress { class: "arrow".into(), bind: Box::new(|_: &Ctx| 0.0), value: 0.0, dir: weft_abi::ui_dir::RIGHT }, Style::default().size(w, h));
                 if r.time > 0 && def.is_none_or(|d| d.info.is_none()) {
-                    label(ui, cx, "recipes.time", &[text::Arg::Float(r.time as f64 / 20.0, 1)], "dim");
+                    label(ui, cx, "recipes.time", &[text::Arg::Float(r.time as f64 / crate::world::TPS as f64, 1)], "dim");
                 }
             });
             recipe_grid(ui, cx.lang, cx.input, kind, r, true);
@@ -552,7 +552,7 @@ fn info_args(def: &crate::registry::RecipeKindDef, r: &crate::registry::Recipe) 
         .iter()
         .map(|name| {
             if name == "time" {
-                return text::Arg::Float(r.time as f64 / 20.0, 1);
+                return text::Arg::Float(r.time as f64 / crate::world::TPS as f64, 1);
             }
             let Some(id) = c.components.id(name) else { return text::Arg::Text(String::new()) };
             let schema = c.components.schemas.get(id as usize).map_or("", String::as_str);

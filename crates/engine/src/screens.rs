@@ -475,6 +475,7 @@ impl Screen for SettingsScreen {
                 let panel = abi::UiNode { class: abi::Str::new("panel"), pad: [8.0; 4], gap: 6.0, align: abi::ui_align::STRETCH, width: 320.0, ..desc::node(abi::ui_kind::PANEL) };
                 d.open(&panel, |d| {
                     d.slider("settings.view_distance", 4.0, 64.0, 1.0, |s| s.view_distance() as f32, |r, v| r.settings.set("view_distance", v as f64));
+                    d.slider("settings.lod_distance", 0.0, 1024.0, 16.0, |s| s.lod_distance() as f32, |r, v| r.settings.set("lod_distance", v as f64));
                     d.slider("settings.fov", 50.0, 110.0, 1.0, |s| s.fov(), |r, v| r.settings.set("fov", v as f64));
                     d.slider("settings.sensitivity", 20.0, 300.0, 5.0, |s| s.sensitivity() * 100.0, |r, v| r.settings.set("sensitivity", v as f64 / 100.0));
                     d.slider("settings.brightness", 0.0, 100.0, 1.0, |s| s.brightness() * 100.0, |r, v| r.settings.set("brightness", v as f64 / 100.0));

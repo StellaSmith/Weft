@@ -297,3 +297,56 @@ fn fs_translucent(in: VOut) -> @location(0) vec4<f32> {
     let albedo = with_overlay(in, sample(in));
     return shade(in, albedo);
 }
+
+// Distant terrain (`client::lod`): a record is the `dir` face of a box in its tile, drawn in the
+// average color of its texture (the smallest mip), full sky light. Inside the view the cubes are
+// drawn: its pixels nearer than `g.extra.w` blocks (horizontally) are dropped, and it sits a
+// little lower so the cubes win where both are.
+@vertex
+fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+    let f = vi / 4u;
+    let c = vi % 4u;
+    let w0 = records[f * 4u];
+    let w1 = records[f * 4u + 1u];
+    let w2 = records[f * 4u + 2u];
+    let w3 = records[f * 4u + 3u];
+    let dir = (w0 >> 22u) & 7u;
+    let lo = vec3<f32>(f32(w0 & 2047u), f32(bitcast<i32>(w2 << 16u) >> 16u) - 0.125, f32((w0 >> 11u) & 2047u));
+    let size = vec3<f32>(f32(w3 & 65535u), f32(w2 >> 16u), f32(w3 >> 16u));
+    let local = lo + CORNERS[dir * 4u + c] * size;
+    let pos = finish(local, origins[ii]);
+    var out: VOut;
+    out.clip = scene.view_proj * pos;
+    out.dist = length(pos.xyz);
+    out.uv = pos.xz;
+    let fr = texture_frame(w1 & FACE_TEX_MASK);
+    out.layer = fr.a;
+    out.layer2 = fr.b;
+    out.blend = fr.blend;
+    out.glow = 0xffffffffu;
+    out.slot = 0u;
+    out.overlay = 0u;
+    out.light = vec4(1.0, 0.0, 0.0, 0.0);
+    let o = origins[ii] + g.cam_cube;
+    out.pos = vec3<f32>(o.xyz * 16) + local;
+    let kind = (w0 >> 25u) & TINT_MASK;
+    var tint = vec3(1.0);
+    if kind != 0u {
+        tint = unpack_rgb(biomes[(w1 >> FACE_BIOME_SHIFT) * g.extra.z + kind - 1u]);
+    }
+    out.tint = tint;
+    out.color = tint * SHADE[dir];
+    return out;
+}
+
+@fragment
+fn fs_lod(in: VOut) -> @location(0) vec4<f32> {
+    if length(in.uv) < f32(g.extra.w) {
+        discard;
+    }
+    var albedo = textureSampleLevel(textures[in.layer], linear_mipped, vec2(0.5), 16.0);
+    if in.blend > 0.0 {
+        albedo = mix(albedo, textureSampleLevel(textures[in.layer2], linear_mipped, vec2(0.5), 16.0), in.blend);
+    }
+    return vec4(shade(in, albedo).rgb, 1.0);
+}

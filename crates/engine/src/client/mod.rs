@@ -8,6 +8,7 @@ pub mod modui;
 pub mod particles;
 pub mod terrain;
 pub mod terrain_gpu;
+pub mod lod;
 pub mod textures;
 pub mod world;
 pub mod world_render;
@@ -246,6 +247,8 @@ pub struct Client {
     /// Makes the world in view from the seed (`terrain`); the server's cubes go through it.
     pub terrain: terrain::TerrainHandle,
     pub gpu_terrain: terrain_gpu::GpuTerrain,
+    /// Distant terrain beyond the view.
+    lod: lod::Lod,
     seed: u64,
     /// Resets sent to the terrain thread: batches of an older one are dropped.
     terrain_resets: u64,
@@ -396,6 +399,7 @@ impl Client {
         }
         let (gpu_tx, gpu_rx) = crossbeam_channel::unbounded();
         let gpu_on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gpu_terrain = terrain_gpu::GpuTerrain::new(gpu, gpu_rx, gpu_on.clone());
         Ok(Client {
             conn,
             world: ClientWorld::new(0),
@@ -445,7 +449,8 @@ impl Client {
             cooldown: 0.0,
             view_radius,
             terrain: terrain::spawn(gpu_tx, gpu_on.clone()),
-            gpu_terrain: terrain_gpu::GpuTerrain::new(gpu, gpu_rx, gpu_on),
+            lod: lod::Lod::new(gpu_terrain.lod_tx.clone()),
+            gpu_terrain,
             seed: 0,
             terrain_resets: 0,
             terrain_view: (IVec3::MAX, 0),
@@ -825,6 +830,12 @@ impl Client {
         for pos in std::mem::take(&mut self.world.removed) {
             self.render.remove((0, pos));
         }
+    }
+
+    /// Distant terrain: tiles shown, made, their quads, asked for and not back.
+    pub fn lod_stats(&self) -> (usize, usize, usize, usize) {
+        let (made, quads) = self.render.lod_counts();
+        (self.render.lod_draw.len(), made, quads, self.lod.pending())
     }
 
     /// Meshes still to come or to upload.
@@ -1262,6 +1273,10 @@ impl Client {
             self.render.remove_frame(id);
             self.drawn_frames.remove(&id);
         }
+        if self.joined {
+            let cam = self.render_camera().pos;
+            self.lod.update(gpu, &mut self.render, textures, self.world.dim, self.seed, cam, self.view_radius);
+        }
         self.render.set_textures(gpu, textures);
     }
 
@@ -1578,7 +1593,8 @@ impl Client {
 
     /// The frame as every world pass sees it (`gpu_layout::Scene`).
     fn scene(&self, cam: &Camera, frame: &FrameInfo) -> Scene {
-        let view_distance = self.view_radius as f32 * 16.0;
+        // Fog ends where the terrain does: the view, or the distant terrain beyond it.
+        let view_distance = (self.view_radius * 16).max(lod::Lod::distance()) as f32;
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
         let view = cam.view();
         let inv = view.inverse();

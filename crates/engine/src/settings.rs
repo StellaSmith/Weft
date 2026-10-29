@@ -46,6 +46,9 @@ impl Settings {
     pub fn view_distance(&self) -> i32 {
         number("core:view_distance") as i32
     }
+    pub fn lod_distance(&self) -> i32 {
+        number("core:lod_distance") as i32
+    }
     pub fn vsync(&self) -> bool {
         number("core:vsync") != 0.0
     }

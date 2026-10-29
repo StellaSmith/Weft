@@ -266,6 +266,11 @@ const WORLD: &[DebugLine] = &[
         let Some(cl) = c.client.as_ref() else { return vec![] };
         vec![Arg::Int(cl.render.drawn as i64), Arg::Int((cl.render.faces_drawn / 1000) as i64)]
     }),
+    ("hud.debug.lod", |c| {
+        let Some(cl) = c.client.as_ref() else { return vec![] };
+        let (shown, made, quads, pending) = cl.lod_stats();
+        vec![Arg::Int(shown as i64), Arg::Int(made as i64), Arg::Int((quads / 1000) as i64), Arg::Int(pending as i64)]
+    }),
     ("hud.debug.entities", |c| vec![Arg::Int(c.client.as_ref().map_or(0, |cl| cl.entities.len()) as i64), Arg::Int(c.client.as_ref().map_or(0, |cl| cl.particles.len()) as i64)]),
     ("hud.debug.load", |c| vec![Arg::Int(c.stats.load.0 as i64), Arg::Int(c.stats.load.1 as i64)]),
 ];

@@ -132,7 +132,7 @@ impl Camera {
     }
 }
 
-/// One indirect draw: kind (0 faces, 1 quads), layer, page, arguments, cube origin (w: offset
+/// One indirect draw: kind (0 faces, 1 quads, 3 distant terrain), layer, page, arguments, cube origin (w: offset
 /// index), cube center relative to the camera.
 type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4], Vec3);
 
@@ -212,6 +212,13 @@ pub type MeshKey = (u64, IVec3);
 pub struct WorldRenderer {
     face_pipes: [PipelineId; 3],
     quad_pipes: [PipelineId; 3],
+    lod_pipe: PipelineId,
+    /// Distant terrain tiles (`lod`): their quads (in `faces`, four words like a face), count
+    /// and the heights they span; the ones to draw this frame; and the distance (blocks) inside
+    /// which their pixels are left to the cubes.
+    lod: FxHashMap<super::lod::TileKey, (Alloc, u32, (i32, i32))>,
+    pub lod_draw: Vec<super::lod::TileKey>,
+    pub lod_hide: u32,
     faces: Pool,
     quads: Pool,
     /// Index into its region's meshes by key. A frame culls the regions, then goes through the
@@ -223,7 +230,6 @@ pub struct WorldRenderer {
     /// Per frame: camera-relative positions of the structures drawn (index 0: none, the world).
     offsets: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
-    /// `draw`'s lists, kept between frames.
     /// Of the last `draw`: its runs (kind, layer, page, first record, records), and its
     /// translucent draws, sorted far to near.
     runs: Vec<(u8, u8, u32, u32, u32)>,
@@ -300,7 +306,7 @@ fn shader_table(gpu: &mut dyn Backend, c: &Content, textures: &GameTextures, slo
 impl WorldRenderer {
     pub fn new(gpu: &mut dyn Backend, c: &Content, textures: &GameTextures, assets: &crate::assets::Assets) -> Result<WorldRenderer, String> {
         let (shader, slots) = world_shader(assets).map_err(|e| e.0)?;
-        let (face_pipes, quad_pipes) = Self::pipelines(gpu, &shader)?;
+        let (face_pipes, quad_pipes, lod_pipe) = Self::pipelines(gpu, &shader)?;
         let tex_shader = shader_table(gpu, c, textures, &slots);
 
         let (tex_info, anim, overlays) = Self::texture_info(gpu, textures);
@@ -323,6 +329,10 @@ impl WorldRenderer {
         Ok(WorldRenderer {
             face_pipes,
             quad_pipes,
+            lod_pipe,
+            lod: FxHashMap::default(),
+            lod_draw: Vec::new(),
+            lod_hide: 0,
             faces: Pool { words: FACE_WORDS, pages: Vec::new(), label: "face page" },
             quads: Pool { words: QUAD_WORDS, pages: Vec::new(), label: "quad page" },
             meshes: FxHashMap::default(),
@@ -374,7 +384,7 @@ impl WorldRenderer {
         self.tex_generation = textures.generation();
     }
 
-    fn pipelines(gpu: &mut dyn Backend, shader: &Shader) -> Result<([PipelineId; 3], [PipelineId; 3]), String> {
+    fn pipelines(gpu: &mut dyn Backend, shader: &Shader) -> Result<([PipelineId; 3], [PipelineId; 3], PipelineId), String> {
         let depth_write = Some(DepthState { write: true, compare: Compare::GreaterEqual });
         let depth_read = Some(DepthState { write: false, compare: Compare::GreaterEqual });
         let mut make = |label: &str, vs: &str, fs: &str, depth, blend, cull| {
@@ -401,18 +411,20 @@ impl WorldRenderer {
             make("quads cutout", "vs_quad", "fs_cutout", depth_write, Blend::None, true)?,
             make("quads translucent", "vs_quad", "fs_translucent", depth_read, Blend::Alpha, true)?,
         ];
-        Ok((faces, quads))
+        let lod = make("distant terrain", "vs_lod", "fs_lod", depth_write, Blend::None, true)?;
+        Ok((faces, quads, lod))
     }
 
     /// Recompiles the world shader; keeps the old pipelines when the new source has errors.
     pub fn reload_shaders(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, assets: &crate::assets::Assets) {
         match world_shader(assets).map_err(|e| e.0).and_then(|(s, slots)| Ok((Self::pipelines(gpu, &s)?, slots))) {
-            Ok(((f, q), slots)) => {
-                for p in self.face_pipes.into_iter().chain(self.quad_pipes) {
+            Ok(((f, q, l), slots)) => {
+                for p in self.face_pipes.into_iter().chain(self.quad_pipes).chain([self.lod_pipe]) {
                     gpu.destroy_pipeline(p);
                 }
                 self.face_pipes = f;
                 self.quad_pipes = q;
+                self.lod_pipe = l;
                 gpu.destroy_buffer(self.tex_shader);
                 self.tex_shader = shader_table(gpu, crate::content::content(), textures, &slots);
                 log::info!("world shader reloaded");
@@ -465,6 +477,7 @@ impl WorldRenderer {
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         self.meshes.clear();
         self.regions.clear();
+        self.lod.clear();
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
@@ -474,8 +487,34 @@ impl WorldRenderer {
         for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)).chain(self.offsets.drain(..)) {
             gpu.destroy_buffer(b);
         }
-        for p in self.face_pipes.into_iter().chain(self.quad_pipes) {
+        for p in self.face_pipes.into_iter().chain(self.quad_pipes).chain([self.lod_pipe]) {
             gpu.destroy_pipeline(p);
+        }
+    }
+
+    /// A distant terrain tile's quads (`lod::mesh`), spanning heights `y`.
+    pub fn upload_lod(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, key: super::lod::TileKey, quads: &[[u32; 4]], y: (i32, i32)) {
+        self.remove_lod(key);
+        if quads.is_empty() {
+            return;
+        }
+        let mut used: Vec<u32> = quads.iter().map(|q| q[1] & 0xFFFF).collect();
+        used.sort_unstable();
+        used.dedup();
+        textures.ensure_blocks(gpu, used);
+        let a = self.faces.alloc(gpu, quads.len() as u32);
+        gpu.write_buffer(self.faces.pages[a.page as usize].0, a.offset as u64 * 16, bytemuck::cast_slice(quads));
+        self.lod.insert(key, (a, quads.len() as u32, y));
+    }
+
+    /// Distant terrain tiles held and their quads.
+    pub fn lod_counts(&self) -> (usize, usize) {
+        (self.lod.len(), self.lod.values().map(|t| t.1 as usize).sum())
+    }
+
+    pub fn remove_lod(&mut self, key: super::lod::TileKey) {
+        if let Some((a, _, _)) = self.lod.remove(&key) {
+            self.faces.free(a);
         }
     }
 
@@ -535,7 +574,7 @@ impl WorldRenderer {
             cam_frac: [cam_frac.x, cam_frac.y, cam_frac.z, 0.0],
             ids: [0, 0, (self.biome_table.len() / crate::content::content().tint_kinds.len()) as u32, self.tint_tiles],
             cam_cube: cam_cube.extend(0).to_array(),
-            extra: [self.overlays, 0, crate::content::content().tint_kinds.len() as u32, 0],
+            extra: [self.overlays, 0, crate::content::content().tint_kinds.len() as u32, self.lod_hide],
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));
@@ -631,7 +670,25 @@ impl WorldRenderer {
         let rank = |d: &DrawRecord| if d.5.y < 0.0 { d.0 == 0 } else { d.0 == 1 };
         trans.par_sort_unstable_by_key(|d| (std::cmp::Reverse(d.5.length_squared().to_bits()), rank(d)));
 
-        let n = opaque + trans.len() as u32;
+        // Distant terrain after the cubes (nearer, they hide most of it), a run per page.
+        let mut lod: Vec<DrawRecord> = self
+            .lod_draw
+            .iter()
+            .filter_map(|key| {
+                let &(a, count, (y0, y1)) = self.lod.get(key)?;
+                let o = key.origin();
+                let half = Vec3::new(key.size() as f32, (y1 - y0) as f32, key.size() as f32) / 2.0;
+                let center = Vec3::new(o.x as f32, y0 as f32, o.y as f32) + half - (cam_cube * 16).as_vec3() - cam_frac;
+                if !planes.iter().all(|pl| pl.dot(center.extend(1.0)) > -half.length()) {
+                    return None;
+                }
+                let args = DrawIndexedArgs { indices: count * 6, instances: 1, first_index: 0, vertex_offset: (a.offset * 4) as i32, first_instance: 0 };
+                Some((3, 0, a.page, args, [o.x / 16 - cam_cube.x, -cam_cube.y, o.y / 16 - cam_cube.z, 0], center))
+            })
+            .collect();
+        lod.sort_by_key(|d| (d.2, d.5.length_squared().to_bits()));
+        let lods = lod.len() as u32;
+        let n = opaque + lods + trans.len() as u32;
         self.drawn = n;
         self.faces_drawn = faces_drawn;
         let mut runs = std::mem::take(&mut self.runs);
@@ -667,8 +724,11 @@ impl WorldRenderer {
                 at[b] += 1;
             }
         });
-        for (j, d) in trans.iter().enumerate() {
+        for (j, d) in lod.iter().enumerate() {
             put(opaque + j as u32, d);
+        }
+        for (j, d) in trans.iter().enumerate() {
+            put(opaque + lods + j as u32, d);
         }
         let mut start = 0;
         for (b, &t) in totals.iter().enumerate() {
@@ -677,11 +737,17 @@ impl WorldRenderer {
             }
             start += t;
         }
+        for (j, d) in lod.iter().enumerate() {
+            match runs.last_mut() {
+                Some(r) if r.0 == 3 && r.2 == d.2 => r.4 += 1,
+                _ => runs.push((3, 0, d.2, opaque + j as u32, 1)),
+            }
+        }
         self.translucent = runs.len();
         for (j, d) in trans.iter().enumerate() {
             match runs.last_mut() {
                 Some(r) if r.1 == 2 && (r.0, r.1, r.2) == (d.0, d.1, d.2) => r.4 += 1,
-                _ => runs.push((d.0, d.1, d.2, opaque + j as u32, 1)),
+                _ => runs.push((d.0, d.1, d.2, opaque + lods + j as u32, 1)),
             }
         }
         (self.parts, self.trans, self.runs) = (parts, trans, runs);
@@ -707,6 +773,8 @@ impl WorldRenderer {
         for &(kind, layer, page, start, count) in &self.runs[range] {
             let (pipe, buf) = if kind == 0 {
                 (self.face_pipes[layer as usize], self.faces.pages[page as usize].0)
+            } else if kind == 3 {
+                (self.lod_pipe, self.faces.pages[page as usize].0)
             } else {
                 (self.quad_pipes[layer as usize], self.quads.pages[page as usize].0)
             };

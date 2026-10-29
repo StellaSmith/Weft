@@ -25,6 +25,8 @@ const OUT_WORDS: usize = 2560;
 const CUSTOM_WORDS: usize = 281;
 /// Cubes per frame at most.
 const BATCH: usize = 4096;
+/// Distant terrain tiles per frame at most (`lod`).
+const LOD_BATCH: usize = 64;
 
 pub static GPU_CUBES: AtomicU64 = AtomicU64::new(0);
 pub static GPU_MISMATCHES: AtomicU64 = AtomicU64::new(0);
@@ -48,7 +50,7 @@ pub fn describe(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<usize
     if t.features.len() > 32 || c.states.len() > 65536 {
         return None;
     }
-    let mut w = vec![0i32; 29];
+    let mut w = vec![0i32; 30];
     w[0] = t.stone as i32;
     w[1] = t.base;
     if let Some((level, water)) = t.sea {
@@ -113,6 +115,50 @@ pub fn describe(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<usize
     w[28] = w.len() as i32;
     for (k, b) in t.cave_biomes.iter().enumerate() {
         w.extend_from_slice(&[b.biome as i32, b.depth, b.size, b.threshold, seed32(seed, 0xCB10 ^ k as u64) as i32]);
+    }
+    Some((w, custom))
+}
+
+/// `describe` for distant terrain, with the dimension's scattered things (trees) after it (its
+/// word 29 points there): per scatter its cell, reach and hash seed, then per biome the chance
+/// as a threshold on the site's bits (`dim::scatter_site`'s test, exactly), and the canopy its
+/// shape callback makes there (radius, top above the site, block), from a few sample runs.
+pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<usize>)> {
+    let (mut w, custom) = describe(c, dim, seed)?;
+    let def = &c.dims[dim as usize];
+    w[29] = w.len() as i32;
+    w.push(def.scatters.len() as i32);
+    let biomes = c.biomes.len().max(1);
+    let mut buf = vec![weft_abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
+    for sc in &def.scatters {
+        let key = seed ^ sc.salt;
+        w.extend_from_slice(&[sc.cell, sc.reach, key as u32 as i32, (key >> 32) as u32 as i32, biomes as i32]);
+        for b in 0..biomes as u32 {
+            let density = sc.density.and_then(|d| c.components.get::<f32>(crate::components::BIOME, b, d)).unwrap_or(0.0);
+            let threshold = (density as f64 * (1u64 << 53) as f64).ceil() as u64;
+            let (mut tops, mut radii, mut states) = (Vec::new(), Vec::new(), rustc_hash::FxHashMap::<u32, u32>::default());
+            for k in 0..8u64 {
+                let mut args = weft_abi::ScatterArgs { seed, dim, pos: [0, 64, 0], biome: b, random: weft_noise::mix(k), out: buf.as_mut_ptr(), cap: buf.len() as u32, len: 0 };
+                if threshold == 0 || !crate::host::invoke(sc.owner, sc.shape, &mut args) {
+                    continue;
+                }
+                let blocks = &buf[..(args.len as usize).min(buf.len())];
+                let Some(top) = blocks.iter().map(|b| b.offset[1]).max() else { continue };
+                tops.push(top);
+                radii.push(blocks.iter().filter(|b| b.offset[1] >= 1).map(|b| b.offset[0].abs().max(b.offset[2].abs())).max().unwrap_or(0));
+                for b in blocks.iter().filter(|b| b.force == 0) {
+                    *states.entry(b.state).or_default() += 1;
+                }
+            }
+            if tops.is_empty() {
+                w.extend_from_slice(&[0, 0, 0, 0, 0]);
+                continue;
+            }
+            tops.sort_unstable();
+            radii.sort_unstable();
+            let state = states.into_iter().max_by_key(|e| e.1).map_or(0, |e| e.0);
+            w.extend_from_slice(&[threshold as u32 as i32, (threshold >> 32) as u32 as i32, radii[radii.len() / 2], tops[tops.len() / 2], state as i32]);
+        }
     }
     Some((w, custom))
 }
@@ -183,6 +229,12 @@ struct Slot {
     flight: Vec<Job>,
     /// What came back, while workers still read it.
     reading: [Option<Arc<Readback>>; 2],
+    /// The same for distant terrain tiles (`lod`), read back right away (a few kilobytes each).
+    lod_desc: Option<(BufferId, usize)>,
+    lod_desc_key: Option<(u32, u64)>,
+    lod_jobs: Option<(BufferId, usize)>,
+    lod_out: Option<(BufferId, usize)>,
+    lod_flight: Vec<super::lod::LodJob>,
 }
 
 /// A frame slot's output buffer as workers read it, straight from where the GPU wrote it.
@@ -203,29 +255,38 @@ impl Readback {
 /// workers.
 pub struct GpuTerrain {
     pipeline: Option<PipelineId>,
+    lod_pipeline: Option<PipelineId>,
     rx: Receiver<Job>,
     queue: VecDeque<Job>,
+    /// Distant terrain tiles asked for (`lod::Lod`).
+    pub lod_tx: Sender<super::lod::LodJob>,
+    lod_rx: Receiver<super::lod::LodJob>,
+    lod_queue: VecDeque<super::lod::LodJob>,
     slots: Vec<Slot>,
-    /// (dim, seed) and its description and mod features.
+    /// (dim, seed) and its description and mod features, for cubes and for tiles.
     desc: Option<((u32, u64), Vec<i32>, usize)>,
+    lod_desc: Option<((u32, u64), Vec<i32>, usize)>,
     /// Set once the pipeline works: the terrain thread sends jobs here instead of to the CPU.
     pub on: Arc<AtomicBool>,
 }
 
 impl GpuTerrain {
     pub fn new(gpu: &mut dyn Backend, rx: Receiver<Job>, on: Arc<AtomicBool>) -> GpuTerrain {
-        let pipeline = Shader::from_wgsl("terrain_gpu.wgsl", include_str!("terrain_gpu.wgsl"))
-            .map_err(|e| e.0)
-            .and_then(|s| gpu.create_compute(&ComputeDesc { label: "terrain", shader: &s, entry: "generate" }).map_err(|e| e.0));
-        let pipeline = match pipeline {
-            Ok(p) => Some(p),
+        let pipelines = Shader::from_wgsl("terrain_gpu.wgsl", include_str!("terrain_gpu.wgsl")).map_err(|e| e.0).and_then(|s| {
+            let terrain = gpu.create_compute(&ComputeDesc { label: "terrain", shader: &s, entry: "generate" }).map_err(|e| e.0)?;
+            let lod = gpu.create_compute(&ComputeDesc { label: "terrain lod", shader: &s, entry: "lod" }).map_err(|e| e.0)?;
+            Ok((terrain, lod))
+        });
+        let (pipeline, lod_pipeline) = match pipelines {
+            Ok((p, l)) => (Some(p), Some(l)),
             Err(e) => {
                 log::error!("terrain on the GPU unavailable, generating on the CPU: {e}");
-                None
+                (None, None)
             }
         };
         on.store(pipeline.is_some() && enabled(), Ordering::Relaxed);
-        GpuTerrain { pipeline, rx, queue: VecDeque::new(), slots: Vec::new(), desc: None, on }
+        let (lod_tx, lod_rx) = crossbeam_channel::unbounded();
+        GpuTerrain { pipeline, lod_pipeline, rx, queue: VecDeque::new(), lod_tx, lod_rx, lod_queue: VecDeque::new(), slots: Vec::new(), desc: None, lod_desc: None, on }
     }
 
     /// Frees its buffers, once the workers reading them are done.
@@ -234,22 +295,83 @@ impl GpuTerrain {
             while s.reading.iter().flatten().any(|r| Arc::strong_count(r) > 1) {
                 std::thread::yield_now();
             }
-            for (b, _) in [s.desc, s.jobs, s.out[0], s.out[1]].into_iter().flatten() {
+            for (b, _) in [s.desc, s.jobs, s.out[0], s.out[1], s.lod_desc, s.lod_jobs, s.lod_out].into_iter().flatten() {
                 gpu.destroy_buffer(b);
             }
         }
-        if let Some(p) = self.pipeline.take() {
+        for p in [self.pipeline.take(), self.lod_pipeline.take()].into_iter().flatten() {
             gpu.destroy_pipeline(p);
         }
     }
 
-    /// Takes in what the GPU finished in this slot's last frame and records the next batch.
+    /// Takes in what the GPU finished in this slot's last frame and records the next batches.
     pub fn frame(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, slot: usize) {
         let Some(pipeline) = self.pipeline else { return };
         self.on.store(enabled(), Ordering::Relaxed);
         while self.slots.len() < gpu.frames_in_flight() {
             self.slots.push(Slot::default());
         }
+        self.cubes(gpu, list, slot, pipeline);
+        self.tiles(gpu, list, slot);
+    }
+
+    /// Distant terrain tiles: what came back goes to the workers to mesh, the next ones go up.
+    fn tiles(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, slot: usize) {
+        use super::lod::{LOD_WORDS_PER_TILE, SAMPLES};
+        let Some(pipeline) = self.lod_pipeline else { return };
+        let s = &mut self.slots[slot];
+        if !s.lod_flight.is_empty() {
+            let (out, _) = s.lod_out.unwrap();
+            let words: &[u32] = bytemuck::cast_slice(&gpu.mapped(out)[..s.lod_flight.len() * LOD_WORDS_PER_TILE * 4]);
+            for (i, job) in s.lod_flight.drain(..).enumerate() {
+                super::lod::made(job, words[i * LOD_WORDS_PER_TILE..(i + 1) * LOD_WORDS_PER_TILE].to_vec());
+            }
+        }
+        self.lod_queue.extend(self.lod_rx.try_iter());
+        let Some(first) = self.lod_queue.front() else { return };
+        let key = (first.dim, first.seed);
+        if self.lod_desc.as_ref().is_none_or(|d| d.0 != key) {
+            let Some((words, custom)) = describe_lod(content(), key.0, key.1) else {
+                self.lod_queue.clear();
+                return;
+            };
+            self.lod_desc = Some((key, words, custom.len()));
+        }
+        let (_, words, custom) = self.lod_desc.as_ref().unwrap();
+        let mut batch = Vec::new();
+        while batch.len() < LOD_BATCH && self.lod_queue.front().is_some_and(|j| (j.dim, j.seed) == key) {
+            batch.push(self.lod_queue.pop_front().unwrap());
+        }
+        let stride = 4 + custom * SAMPLES;
+        let mut jobs = vec![0i32; batch.len() * stride];
+        for (i, j) in batch.iter().enumerate() {
+            let r = i * stride;
+            let o = j.key.origin();
+            jobs[r..r + 3].copy_from_slice(&[o.x, o.y, j.key.level as i32]);
+            if j.custom.len() == custom * SAMPLES {
+                jobs[r + 4..r + stride].copy_from_slice(&j.custom);
+            }
+        }
+        let desc = sized(gpu, &mut s.lod_desc, words.len() * 4, usage::STORAGE | usage::HOST, "terrain lod desc");
+        if s.lod_desc_key != Some(key) {
+            gpu.mapped(desc)[..words.len() * 4].copy_from_slice(bytemuck::cast_slice(words));
+            s.lod_desc_key = Some(key);
+        }
+        let jobs_buf = sized(gpu, &mut s.lod_jobs, LOD_BATCH * stride * 4, usage::STORAGE | usage::HOST, "terrain lod jobs");
+        gpu.mapped(jobs_buf)[..jobs.len() * 4].copy_from_slice(bytemuck::cast_slice(&jobs));
+        let out = sized(gpu, &mut s.lod_out, LOD_BATCH * LOD_WORDS_PER_TILE * 4, usage::STORAGE | usage::READBACK, "terrain lod out");
+        list.push(Cmd::SetPipeline(pipeline));
+        list.bind(0, desc);
+        list.bind(1, jobs_buf);
+        list.bind(2, out);
+        list.push_constants(&[batch.len() as u32, *custom as u32]);
+        list.push(Cmd::Dispatch { x: batch.len() as u32, y: 1, z: 1 });
+        list.push(Cmd::Barrier);
+        s.lod_flight = batch;
+    }
+
+    /// Cubes: what came back goes to the workers to finish, the next batch goes up.
+    fn cubes(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, slot: usize, pipeline: PipelineId) {
         let s = &mut self.slots[slot];
         if !s.flight.is_empty() {
             let (out, _) = s.out[s.flight_out].unwrap();

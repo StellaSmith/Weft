@@ -2696,6 +2696,9 @@ pub struct ClientState {
     /// with `core:terrain_check` on).
     pub gpu_cubes: u64,
     pub gpu_mismatches: u64,
+    /// Distant terrain tiles made and shown, and asked for and not back yet.
+    pub lod_tiles: u32,
+    pub lod_pending: u32,
 }
 defaults!(ClientState {
     flags: 0,
@@ -2738,6 +2741,8 @@ defaults!(ClientState {
     target_frame: u64::MAX,
     gpu_cubes: 0,
     gpu_mismatches: 0,
+    lod_tiles: 0,
+    lod_pending: 0,
 });
 
 /// `Host::client_input` operations. Keys and buttons are held for `x` seconds (0 = one tap).

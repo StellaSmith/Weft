@@ -726,6 +726,42 @@ async fn edit_while_loading_at(t: &T) -> R {
     Ok(())
 }
 
+/// Past the view, distant terrain is made and drawn: tiles come, and the horizon seen from up
+/// high is land, not the sky it is with distant terrain off.
+pub async fn distant_terrain(t: T) -> R {
+    static VIEW: Config<i32> = Config::named("core:view_distance");
+    static LOD: Config<i32> = Config::named("core:lod_distance");
+    let before = (VIEW.get(), LOD.get());
+    VIEW.set(8);
+    LOD.set(256);
+    let out = distant_terrain_at(&t).await;
+    VIEW.set(before.0);
+    LOD.set(before.1);
+    out
+}
+
+async fn distant_terrain_at(t: &T) -> R {
+    static LOD: Config<i32> = Config::named("core:lod_distance");
+    t.world(5).await?;
+    t.idle().await?;
+    t.op("mode spectator").await?;
+    t.cmd("/tp ~ ~100 ~").await?;
+    t.c().look(0.0, -8.0);
+    t.until("distant terrain made", Duration::from_secs(20), |t| t.state().lod_tiles > 50 && t.state().lod_pending == 0).await?;
+    t.frames(5).await?;
+    let tiles = t.state().lod_tiles;
+    t.note(format!("{tiles} distant terrain tiles shown"));
+    let with = t.grab().await?;
+    LOD.set(0);
+    t.frames(10).await?;
+    let without = t.grab().await?;
+    let changed = T::differ(&with, &without);
+    t.note(format!("share of the picture that is distant terrain: {changed:.2}"));
+    t.check(changed > 0.1, format!("the horizon has land on it ({changed:.2} of the picture changes without it)"));
+    t.check_eq(t.state().lod_tiles, 0, "no tiles shown with it off");
+    Ok(())
+}
+
 /// Terrain the GPU makes is the CPU's to the bit (integer math on both sides): every cube of a
 /// fresh world is made again on the CPU and compared.
 pub async fn gpu_terrain(t: T) -> R {

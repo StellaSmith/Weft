@@ -241,6 +241,8 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.pending_meshes = cl.pending_meshes() as u32;
             s.gpu_cubes = crate::client::terrain_gpu::GPU_CUBES.load(std::sync::atomic::Ordering::Relaxed);
             s.gpu_mismatches = crate::client::terrain_gpu::GPU_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed);
+            let (shown, _, _, pending) = cl.lod_stats();
+            (s.lod_tiles, s.lod_pending) = (shown as u32, pending as u32);
             s.entities = cl.entities.len() as u32;
             s.particles = cl.particles.len() as u32;
         }

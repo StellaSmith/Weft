@@ -136,6 +136,20 @@ impl Camera {
 /// index), cube center relative to the camera.
 type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4], Vec3);
 
+/// A mapped buffer written from every core, each record by one.
+#[derive(Clone, Copy)]
+struct Mapped(*mut u8);
+
+unsafe impl Send for Mapped {}
+unsafe impl Sync for Mapped {}
+
+impl Mapped {
+    /// SAFETY: `off` + what is written there stays inside the buffer.
+    unsafe fn at(&self, off: usize) -> *mut u8 {
+        unsafe { self.0.add(off) }
+    }
+}
+
 /// Meshes are kept in regions of this many cubes a side (log2), culled as a whole first.
 const REGION: i32 = 3;
 
@@ -210,7 +224,10 @@ pub struct WorldRenderer {
     offsets: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
     /// `draw`'s lists, kept between frames.
-    scratch: (Vec<usize>, Vec<DrawRecord>, Vec<usize>),
+    /// Of the last `draw`: its runs (kind, layer, page, first record, records), and its
+    /// translucent draws, sorted far to near.
+    runs: Vec<(u8, u8, u32, u32, u32)>,
+    trans: Vec<DrawRecord>,
     /// Draws of each region seen, kept between frames.
     parts: Vec<Vec<DrawRecord>>,
     /// Of the last `draw`: where its translucent draws start in `scratch.2`, and the buffers
@@ -315,7 +332,8 @@ impl WorldRenderer {
             globals,
             origins: Vec::new(),
             indirect: Vec::new(),
-            scratch: Default::default(),
+            runs: Vec::new(),
+            trans: Vec::new(),
             translucent: 0,
             buffers: None,
             biomes,
@@ -523,9 +541,6 @@ impl WorldRenderer {
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));
 
         let planes = frustum_planes(view_proj);
-        let (mut buckets, mut draws, mut sorted) = std::mem::take(&mut self.scratch);
-        draws.clear();
-        sorted.clear();
         // Camera-relative offset of each structure drawn (k + 1 its index; 0 the world).
         let frame_offsets: Vec<Vec3> = frames.iter().map(|f| (f.1 - (cam_cube * 16).as_dvec3()).as_vec3()).collect();
         // Regions in view, nearest first: what is drawn first then hides what is behind it.
@@ -569,39 +584,60 @@ impl WorldRenderer {
                 faces
             })
             .sum();
-        for p in &parts[..seen.len()] {
-            draws.extend_from_slice(p);
-        }
-        self.parts = parts;
-        // Into runs of one pipeline and page, keeping the near-to-far order inside each:
-        // layer, kind, page (translucent, the last layer, at the end).
+        // Into runs of one pipeline and page (layer, kind, page; translucent last), written
+        // straight into the mapped buffers from every core: each region knows where its draws
+        // of each run go, so the near-to-far order holds inside runs without a sort.
+        let seen_parts = &parts[..seen.len()];
         let pages = self.faces.pages.len().max(self.quads.pages.len()).max(1);
+        // Opaque and cutout runs; translucent ones are sorted far to near over all of them.
+        let nb = 4 * pages;
         let bucket = |d: &DrawRecord| (d.1 as usize * 2 + d.0 as usize) * pages + d.2 as usize;
-        buckets.clear();
-        buckets.resize(6 * pages + 1, 0);
-        for d in &draws {
-            buckets[bucket(d) + 1] += 1;
+        let counts: Vec<Vec<u32>> = seen_parts
+            .par_iter()
+            .map(|p| {
+                let mut c = vec![0u32; nb];
+                for d in p.iter().filter(|d| d.1 < 2) {
+                    c[bucket(d)] += 1;
+                }
+                c
+            })
+            .collect();
+        let mut totals = vec![0u32; nb];
+        for c in &counts {
+            for (t, v) in totals.iter_mut().zip(c) {
+                *t += v;
+            }
         }
-        for b in 1..buckets.len() {
-            buckets[b] += buckets[b - 1];
+        let mut next = Vec::with_capacity(nb);
+        let mut opaque = 0u32;
+        for t in &totals {
+            next.push(opaque);
+            opaque += t;
         }
-        sorted.resize(draws.len(), 0);
-        for (i, d) in draws.iter().enumerate() {
-            let b = bucket(d);
-            sorted[buckets[b]] = i;
-            buckets[b] += 1;
+        let mut starts: Vec<Vec<u32>> = Vec::with_capacity(counts.len());
+        for c in &counts {
+            starts.push(next.clone());
+            for (n, v) in next.iter_mut().zip(c) {
+                *n += v;
+            }
         }
-        let translucent_start = sorted.iter().position(|&i| draws[i].1 == 2).unwrap_or(sorted.len());
-        // Far first; distances are positive, so their bits order like them.
+        let mut trans = std::mem::take(&mut self.trans);
+        trans.clear();
+        for p in seen_parts {
+            trans.extend(p.iter().filter(|d| d.1 == 2));
+        }
+        // Far first; distances are positive, so their bits order like them. In one cube, seen
+        // from above, the quads (liquid surfaces) go first, from below the faces.
         let rank = |d: &DrawRecord| if d.5.y < 0.0 { d.0 == 0 } else { d.0 == 1 };
-        sorted[translucent_start..].par_sort_unstable_by_key(|&i| (std::cmp::Reverse(draws[i].5.length_squared().to_bits()), rank(&draws[i])));
-        self.translucent = translucent_start;
+        trans.par_sort_unstable_by_key(|d| (std::cmp::Reverse(d.5.length_squared().to_bits()), rank(d)));
 
-        let n = draws.len() as u32;
+        let n = opaque + trans.len() as u32;
         self.drawn = n;
         self.faces_drawn = faces_drawn;
+        let mut runs = std::mem::take(&mut self.runs);
+        runs.clear();
         if n == 0 {
-            self.scratch = (buckets, draws, sorted);
+            (self.parts, self.trans, self.runs) = (parts, trans, runs);
             self.buffers = None;
             return;
         }
@@ -613,47 +649,62 @@ impl WorldRenderer {
             offs[(k + 1) * 16..(k + 1) * 16 + 12].copy_from_slice(bytemuck::cast_slice(&o.to_array()));
         }
         let ibuf = crate::gpu_layout::frame_buffer(gpu, &mut self.indirect, frame.slot, n, 20, usage::INDIRECT, "indirect");
-        // Straight into the mapped buffers.
-        for (out, &i) in gpu.mapped(obuf)[..n as usize * 16].chunks_exact_mut(16).zip(&sorted) {
-            out.copy_from_slice(bytemuck::bytes_of(&draws[i].4));
+        let origins = Mapped(gpu.mapped(obuf)[..n as usize * 16].as_mut_ptr());
+        let indirect = Mapped(gpu.mapped(ibuf)[..n as usize * 20].as_mut_ptr());
+        let put = |k: u32, d: &DrawRecord| {
+            let mut a = d.3;
+            a.first_instance = k;
+            // SAFETY: both buffers hold `n` records and every k below `n` is written once.
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytemuck::bytes_of(&d.4).as_ptr(), origins.at(k as usize * 16), 16);
+                std::ptr::copy_nonoverlapping(bytemuck::bytes_of(&a).as_ptr(), indirect.at(k as usize * 20), 20);
+            }
+        };
+        seen_parts.par_iter().zip(starts.par_iter_mut()).for_each(|(p, at)| {
+            for d in p.iter().filter(|d| d.1 < 2) {
+                let b = bucket(d);
+                put(at[b], d);
+                at[b] += 1;
+            }
+        });
+        for (j, d) in trans.iter().enumerate() {
+            put(opaque + j as u32, d);
         }
-        for (k, (out, &i)) in gpu.mapped(ibuf)[..n as usize * 20].chunks_exact_mut(20).zip(&sorted).enumerate() {
-            let mut a = draws[i].3;
-            a.first_instance = k as u32;
-            out.copy_from_slice(bytemuck::bytes_of(&a));
+        let mut start = 0;
+        for (b, &t) in totals.iter().enumerate() {
+            if t > 0 {
+                runs.push(((b / pages % 2) as u8, (b / pages / 2) as u8, (b % pages) as u32, start, t));
+            }
+            start += t;
         }
-
+        self.translucent = runs.len();
+        for (j, d) in trans.iter().enumerate() {
+            match runs.last_mut() {
+                Some(r) if r.1 == 2 && (r.0, r.1, r.2) == (d.0, d.1, d.2) => r.4 += 1,
+                _ => runs.push((d.0, d.1, d.2, opaque + j as u32, 1)),
+            }
+        }
+        (self.parts, self.trans, self.runs) = (parts, trans, runs);
         self.buffers = Some((gbuf, obuf, ibuf, fbuf, scene));
-        self.scratch = (buckets, draws, sorted);
         self.emit(list, 0..self.translucent);
     }
 
     /// The translucent part of the last `draw`, after everything that may stand behind it.
     pub fn draw_translucent(&self, list: &mut CommandList) {
-        let n = self.scratch.2.len();
+        let n = self.runs.len();
         if self.buffers.is_some() && self.translucent < n {
             self.emit(list, self.translucent..n);
         }
     }
 
+    /// Runs `range` of the last `draw`.
     fn emit(&self, list: &mut CommandList, range: std::ops::Range<usize>) {
         let Some((gbuf, obuf, ibuf, fbuf, scene)) = self.buffers else { return };
-        let (_, draws, sorted) = &self.scratch;
         if range.is_empty() {
             return;
         }
         list.push(Cmd::IndexBuffer(self.quad_index));
-        let mut k = range.start;
-        while k < range.end {
-            let (kind, layer, page) = (draws[sorted[k]].0, draws[sorted[k]].1, draws[sorted[k]].2);
-            let mut end = k + 1;
-            while end < range.end {
-                let d = &draws[sorted[end]];
-                if (d.0, d.1, d.2) != (kind, layer, page) {
-                    break;
-                }
-                end += 1;
-            }
+        for &(kind, layer, page, start, count) in &self.runs[range] {
             let (pipe, buf) = if kind == 0 {
                 (self.face_pipes[layer as usize], self.faces.pages[page as usize].0)
             } else {
@@ -670,8 +721,7 @@ impl WorldRenderer {
             list.bind(7, self.glow);
             list.bind(8, self.tex_shader);
             list.bind(9, scene);
-            list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: k as u64 * 20, count: (end - k) as u32 });
-            k = end;
+            list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: start as u64 * 20, count });
         }
     }
 }

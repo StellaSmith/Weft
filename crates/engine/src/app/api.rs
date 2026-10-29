@@ -141,7 +141,7 @@ impl Running {
     pub(super) fn load_state(&self) -> (bool, bool) {
         let loaded = self.game.as_ref().is_some_and(|g| {
             let terrain = g.client.terrain.pending.load(std::sync::atomic::Ordering::Relaxed);
-            g.client.joined && g.client.world.len() > 50 && g.client.world.pending_meshes() == 0 && terrain == 0
+            g.client.joined && g.client.world.len() > 50 && g.client.pending_meshes() == 0 && terrain == 0
         });
         let idle = loaded && self.game.as_ref().is_some_and(|g| g.server.as_ref().is_none_or(|s| s.idle()));
         (loaded, idle)
@@ -238,7 +238,7 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.mode = cl.mode as u32;
             s.health = cl.health;
             s.cubes = cl.world.len() as u32;
-            s.pending_meshes = cl.world.pending_meshes() as u32;
+            s.pending_meshes = cl.pending_meshes() as u32;
             s.gpu_cubes = crate::client::terrain_gpu::GPU_CUBES.load(std::sync::atomic::Ordering::Relaxed);
             s.gpu_mismatches = crate::client::terrain_gpu::GPU_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed);
             s.entities = cl.entities.len() as u32;

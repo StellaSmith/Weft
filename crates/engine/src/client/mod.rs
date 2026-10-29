@@ -201,6 +201,13 @@ const STEP: f64 = 1.0 / 20.0;
 /// uses 1.5): late moves still find two positions to show between.
 const INTERP_TICKS: f64 = 1.5;
 
+/// While loading, a frame takes finished terrain and uploads meshes for what is left of this
+/// after the rest of the last frame (half each), at least `MIN_BUDGET` each: loading goes as
+/// fast as the frame allows, down to about 60 frames a second.
+const FRAME_TARGET: f64 = 0.016;
+const MIN_BUDGET: f64 = 0.002;
+const MAX_BUDGET: f64 = 0.005;
+
 pub struct Client {
     conn: ClientConn,
     pub world: ClientWorld,
@@ -243,6 +250,16 @@ pub struct Client {
     /// Resets sent to the terrain thread: batches of an older one are dropped.
     terrain_resets: u64,
     terrain_view: (IVec3, i32),
+    /// The rest of a batch from the terrain thread cut at the frame's budget.
+    terrain_left: Option<terrain::Batch>,
+    /// Time each of taking terrain and uploading meshes may take this frame (`FRAME_TARGET`),
+    /// and how long they took in the last one.
+    budget: std::time::Duration,
+    spent: f64,
+    /// The rest of a frame (seconds), smoothed.
+    rest: f64,
+    /// Finished meshes not uploaded yet (the frame's budget ran out).
+    meshes: std::collections::VecDeque<world::MeshResult>,
     pub fov: f32,
     /// Brightness setting, 0 moody .. 1 bright.
     pub brightness: f32,
@@ -432,6 +449,11 @@ impl Client {
             seed: 0,
             terrain_resets: 0,
             terrain_view: (IVec3::MAX, 0),
+            meshes: std::collections::VecDeque::new(),
+            terrain_left: None,
+            budget: std::time::Duration::from_secs_f64(MIN_BUDGET),
+            spent: 0.0,
+            rest: 0.0,
             fov: 70.0,
             brightness: 0.5,
             entities: FxHashMap::default(),
@@ -498,6 +520,7 @@ impl Client {
     /// Starts the terrain over for dimension `dim` (joined, or moved to another dimension).
     fn reset_terrain(&mut self, dim: u32, fwd: &mut Vec<terrain::In>) {
         self.world.clear();
+        self.meshes.clear();
         self.world.dim = dim;
         self.terrain_resets += 1;
         self.terrain_view = (IVec3::MAX, 0);
@@ -517,7 +540,7 @@ impl Client {
                     self.seed = seed;
                     self.reset_terrain(dim, &mut fwd);
                 }
-                ToClient::Cube { dim, pos, cube, .. } if dim == self.world.dim => fwd.push(terrain::In::Cube { pos, cube }),
+                ToClient::Cube { dim, pos, cube, hidden } if dim == self.world.dim => fwd.push(terrain::In::Cube { pos, cube, edit: hidden == crate::net::KEEP_HIDDEN }),
                 ToClient::Unload { dim, pos } if dim == self.world.dim => fwd.push(terrain::In::Unload(pos)),
                 ToClient::Blocks { dim, changes } if dim == self.world.dim => fwd.push(terrain::In::Blocks(changes)),
                 ToClient::Saved { dim, cubes } if dim == self.world.dim => fwd.push(terrain::In::Saved(cubes)),
@@ -757,13 +780,26 @@ impl Client {
         if !fwd.is_empty() {
             let _ = self.terrain.tx.send(terrain::In::Many(fwd));
         }
-        // What the terrain thread finished, a batch at a time (shown together).
-        while let Ok((resets, batch)) = self.terrain.rx.try_recv() {
-            if resets != self.terrain_resets {
+        // What the terrain thread finished, a batch at a time (shown together), for a few
+        // milliseconds a frame: taking all that came at once froze frames while flying. A
+        // loading batch may be cut there (a step of the view unloads a slice of the world); one
+        // with edits is taken whole.
+        let start = Instant::now();
+        while start.elapsed() < self.budget {
+            let batch = match self.terrain_left.take() {
+                Some(b) => b,
+                None => match self.terrain.rx.try_recv() {
+                    Ok(b) => b,
+                    Err(_) => break,
+                },
+            };
+            if batch.resets != self.terrain_resets {
                 continue;
             }
-            self.world.begin_batch();
-            for o in batch {
+            let (resets, whole) = (batch.resets, batch.whole);
+            self.world.begin_batch(whole);
+            let mut items = batch.out.into_iter();
+            while let Some(o) = items.next() {
                 match o {
                     terrain::Out::Cube { pos, cube, hidden } => self.world.insert(pos, cube, hidden),
                     terrain::Out::Blocks(changes) => {
@@ -772,6 +808,13 @@ impl Client {
                         }
                     }
                     terrain::Out::Unload(pos) => self.world.remove(pos),
+                }
+                if !whole && start.elapsed() >= self.budget {
+                    let out: Vec<terrain::Out> = items.collect();
+                    if !out.is_empty() {
+                        self.terrain_left = Some(terrain::Batch { resets, whole, out });
+                    }
+                    break;
                 }
             }
             self.world.end_batch();
@@ -784,6 +827,11 @@ impl Client {
         }
     }
 
+    /// Meshes still to come or to upload.
+    pub fn pending_meshes(&self) -> usize {
+        self.world.pending_meshes() + self.meshes.len()
+    }
+
     pub fn close_menu(&mut self) {
         self.drag = None;
         if self.menu.take().is_some() {
@@ -792,7 +840,13 @@ impl Client {
     }
 
     pub fn update(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, input: &Input, dt: f64) {
+        // Smoothed: from one frame alone, a quick frame gave the next a long budget, which made
+        // it slow, and so on.
+        self.rest += (dt - self.spent - self.rest) * 0.1;
+        self.budget = std::time::Duration::from_secs_f64(((FRAME_TARGET - self.rest) / 2.0).clamp(MIN_BUDGET, MAX_BUDGET));
+        let t = Instant::now();
         self.receive();
+        self.spent = t.elapsed().as_secs_f64();
         if let Some(o) = &mut self.tick_offset {
             *o += (self.offset_target - *o).clamp(-0.05 * dt, 0.05 * dt);
         }
@@ -1174,14 +1228,27 @@ impl Client {
         // Enough jobs that meshing keeps up at 50 frames per second too (results are taken once
         // a frame), not only at hundreds.
         self.world.schedule_meshing(center, crate::meshing().current_num_threads() * 512);
-        for r in self.world.take_meshes() {
+        // Uploads too, oldest first; the rest wait for the next frame (dropped if their cube
+        // changed or left meanwhile). Edits and what is around the player go right away.
+        let (now, later) = self.world.take_meshes(center);
+        for r in now {
             self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
         }
+        self.meshes.extend(later);
+        let start = Instant::now();
+        while start.elapsed() < self.budget {
+            let Some(r) = self.meshes.pop_front() else { break };
+            if self.world.current(&r) {
+                self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
+            }
+        }
+        self.spent += start.elapsed().as_secs_f64();
         // Structures: meshed in their own coordinates, a changed cube at a time.
         for (&id, e) in self.entities.iter_mut() {
             let Some(s) = e.structure.as_mut() else { continue };
             s.schedule_meshing(IVec3::ZERO, 64);
-            for r in s.take_meshes() {
+            let (now, later) = s.take_meshes(IVec3::ZERO);
+            for r in now.into_iter().chain(later) {
                 self.render.upload(gpu, textures, (id, r.pos), &r.mesh);
             }
             for pos in std::mem::take(&mut s.removed) {

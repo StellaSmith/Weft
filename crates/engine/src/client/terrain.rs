@@ -20,8 +20,9 @@ use crate::world::light::{CubeMap, Lighter};
 pub enum In {
     Reset { dim: u32, seed: u64 },
     View { center: IVec3, radius: i32 },
-    /// A cube the server sent: it wins over generation from now on.
-    Cube { pos: IVec3, cube: Arc<Cube> },
+    /// A cube the server sent: it wins over generation from now on. `edit`: sent again because
+    /// it changed (shown whole with the rest of its round).
+    Cube { pos: IVec3, cube: Arc<Cube>, edit: bool },
     Blocks(Vec<(IVec3, u32)>),
     Unload(IVec3),
     Saved(Vec<IVec3>),
@@ -37,11 +38,20 @@ pub enum Out {
     Unload(IVec3),
 }
 
+/// What one round handed over: the resets it comes after, whether it has to be shown whole
+/// (it carries edits: the server's cubes and blocks, area edits; loading is shown as it comes),
+/// and what.
+pub struct Batch {
+    pub resets: u64,
+    pub whole: bool,
+    pub out: Vec<Out>,
+}
+
 /// The client's end: send what the server says and where the player is, take finished batches.
 pub struct TerrainHandle {
     pub tx: Sender<In>,
     /// Batches with the number of resets they come after.
-    pub rx: Receiver<(u64, Vec<Out>)>,
+    pub rx: Receiver<Batch>,
     /// Cubes to generate, generating or waiting for the one above: 0 when the view is complete.
     pub pending: Arc<AtomicU64>,
 }
@@ -80,11 +90,15 @@ fn visibility_on() -> bool {
     }
 }
 
+/// Batches the client may have waiting before no more terrain is asked for.
+const BACKLOG: usize = 8;
+
 /// Threads for lighting what arrived: the background pool's queue is long with generation and
-/// meshing while loading, and the terrain thread waits for this.
+/// meshing while loading, and the terrain thread waits for this. Below normal priority like the
+/// other bulk work: the frame's culling comes first.
 pub fn pool() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(crate::workers()).thread_name(|i| format!("terrain light {i}")).build().expect("terrain light pool"))
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(crate::workers()).thread_name(|i| format!("terrain light {i}")).start_handler(|_| crate::lower_priority()).build().expect("terrain light pool"))
 }
 
 /// The terrain as the visibility fill sees it.
@@ -250,6 +264,8 @@ struct Terrain {
     wanted_at: Option<std::time::Instant>,
     /// `visibility_on()` for this round.
     vis_on: bool,
+    /// What goes out this round carries edits (`Batch::whole`).
+    whole: bool,
 }
 
 impl Terrain {
@@ -284,10 +300,11 @@ impl Terrain {
             wanted: Vec::new(),
             wanted_at: None,
             vis_on: false,
+            whole: false,
         }
     }
 
-    fn run(&mut self, in_rx: Receiver<In>, gen_rx: Receiver<Made>, out_tx: Sender<(u64, Vec<Out>)>) {
+    fn run(&mut self, in_rx: Receiver<In>, gen_rx: Receiver<Made>, out_tx: Sender<Batch>) {
         loop {
             select! {
                 recv(in_rx) -> m => match m {
@@ -311,8 +328,12 @@ impl Terrain {
                 self.made(m);
             }
             self.insert_waiting();
-            self.request();
-            if !self.out.is_empty() && out_tx.send((self.epoch, std::mem::take(&mut self.out))).is_err() {
+            // The client takes a few milliseconds of batches a frame: while it is behind, asking
+            // for more would only queue them up (and edits behind them).
+            if out_tx.len() < BACKLOG {
+                self.request();
+            }
+            if !self.out.is_empty() && out_tx.send(Batch { resets: self.epoch, whole: std::mem::take(&mut self.whole), out: std::mem::take(&mut self.out) }).is_err() {
                 return;
             }
             crate::diag::TERRAIN_BUSY_NS.add(busy.elapsed().as_nanos() as u64);
@@ -339,7 +360,8 @@ impl Terrain {
                 self.radius = 0;
             }
             In::View { center, radius } => self.set_view(center, radius),
-            In::Cube { pos, cube } => {
+            In::Cube { pos, cube, edit } => {
+                self.whole |= edit;
                 self.server.insert(pos);
                 self.waiting.remove(&pos);
                 if self.cubes.insert(pos, cube).is_some() {
@@ -354,6 +376,7 @@ impl Terrain {
                 self.emit_all(changed);
             }
             In::Blocks(changes) => {
+                self.whole = true;
                 for &(p, s) in &changes {
                     let cp = crate::world::cube_of(p);
                     if let Some(cube) = self.cubes.get_mut(&cp) {
@@ -374,6 +397,7 @@ impl Terrain {
                 }
             }
             In::Edits { specs, all } => {
+                self.whole |= !all;
                 let parsed: Vec<AreaFill> = specs.iter().filter_map(|s| AreaFill::parse(c, s)).collect();
                 if all {
                     self.edits = Arc::new(parsed);

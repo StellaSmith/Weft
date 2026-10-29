@@ -260,7 +260,7 @@ const POSITION: &[DebugLine] = &[
 const WORLD: &[DebugLine] = &[
     ("hud.debug.world", |c| {
         let Some(cl) = c.client.as_ref() else { return vec![] };
-        vec![Arg::Int(cl.world.len() as i64), Arg::Int(cl.world.pending_meshes() as i64)]
+        vec![Arg::Int(cl.world.len() as i64), Arg::Int(cl.pending_meshes() as i64)]
     }),
     ("hud.debug.draws", |c| {
         let Some(cl) = c.client.as_ref() else { return vec![] };

@@ -80,6 +80,8 @@ struct Batch {
     /// While open: cubes touched and the ones around them to remesh (`cube::around_mask`),
     /// made into `members` at the end, on every core.
     touched: Vec<(IVec3, u32)>,
+    /// Held until all of it is meshed when it changes cubes shown (`begin_batch`).
+    whole: bool,
 }
 
 /// A batch waits no longer than this for its slowest cube.
@@ -205,9 +207,10 @@ impl ClientWorld {
         self.batches.clear();
     }
 
-    /// Starts collecting what arrives into one batch.
-    pub fn begin_batch(&mut self) {
-        self.open = Some(Batch { members: FxHashSet::default(), resent: Vec::new(), results: Vec::new(), since: Instant::now(), update: false, fresh: Vec::new(), touched: Vec::new() });
+    /// Starts collecting what arrives into one batch; `whole`: shown once all of it is meshed
+    /// (edits), else as it comes (loading, light reaching cubes shown already).
+    pub fn begin_batch(&mut self, whole: bool) {
+        self.open = Some(Batch { members: FxHashSet::default(), resent: Vec::new(), results: Vec::new(), since: Instant::now(), update: false, fresh: Vec::new(), touched: Vec::new(), whole });
     }
 
     pub fn end_batch(&mut self) {
@@ -238,11 +241,11 @@ impl ClientWorld {
             let Some(known) = known else { continue };
             self.bump(p);
             self.set_ready(p, known);
-            if b.update {
+            if b.update && b.whole {
                 b.members.insert(p);
             }
         }
-        if b.update && !b.members.is_empty() {
+        if b.update && b.whole && !b.members.is_empty() {
             self.batches.push(b);
         }
     }
@@ -325,7 +328,7 @@ impl ClientWorld {
             self.ready.remove(&pos);
             self.removed.push(pos);
             for n in around(pos, ALL_AROUND) {
-                if n != pos {
+                if n != pos && self.ready.contains(&n) {
                     self.refresh(n);
                 }
             }
@@ -467,7 +470,7 @@ impl ClientWorld {
                 }
             }
         }
-        self.start_jobs(start);
+        self.start_jobs(start, true);
         // Then updates of what is on screen, oldest first: a batch held for a cube at the back
         // of a long queue would hold everything it came with.
         let mut take = max_in_flight.saturating_sub(self.in_flight.len());
@@ -482,7 +485,7 @@ impl ClientWorld {
                 }
             }
         }
-        self.start_jobs(start.into_iter().collect());
+        self.start_jobs(start.into_iter().collect(), true);
         if self.in_flight.len() >= max_in_flight {
             return;
         }
@@ -490,7 +493,7 @@ impl ClientWorld {
         if moved || self.order.is_empty() || self.ready.len() > self.order_size + self.order_size / 4 + 64 {
             self.order.clear();
             self.order.extend(self.ready.iter().copied());
-            self.order.sort_unstable_by_key(|p| std::cmp::Reverse((*p - center).length_squared()));
+            self.order.par_sort_unstable_by_key(|p| std::cmp::Reverse((*p - center).length_squared()));
             (self.order_center, self.order_size) = (center, self.ready.len());
         }
         let mut take = max_in_flight - self.in_flight.len();
@@ -502,10 +505,11 @@ impl ClientWorld {
                 take -= 1;
             }
         }
-        self.start_jobs(start);
+        self.start_jobs(start, false);
     }
 
-    fn start_jobs(&mut self, start: Vec<IVec3>) {
+    /// `urgent`: around the player or edits, meshed apart from the loading queue (thousands long).
+    fn start_jobs(&mut self, start: Vec<IVec3>, urgent: bool) {
         for pos in &start {
             if let Some(s) = self.cubes.get_mut(pos) {
                 s.dirty = false;
@@ -528,7 +532,8 @@ impl ClientWorld {
             let tx = self.tx.clone();
             let filler = self.filler;
             let ctm = super::ctm::current();
-            crate::meshing().spawn(move || {
+            let pool = if urgent { crate::meshing_urgent() } else { crate::meshing() };
+            pool.spawn(move || {
                 let t = std::time::Instant::now();
                 let n = neighborhood(&around, hidden, filler, pos);
                 let mesh = mesher::build(content(), &n, &ctm);
@@ -539,8 +544,10 @@ impl ClientWorld {
         }
     }
 
-    /// Finished meshes that are still current, those of a batch once it is complete.
-    pub fn take_meshes(&mut self) -> Vec<MeshResult> {
+    /// Finished meshes that are still current, those of a batch once it is complete: the ones
+    /// to show now (batches of edits, cubes near `center`), and the rest.
+    pub fn take_meshes(&mut self, center: IVec3) -> (Vec<MeshResult>, Vec<MeshResult>) {
+        let mut now = Vec::new();
         let mut out = Vec::new();
         while let Ok(r) = self.rx.try_recv() {
             self.in_flight.remove(&r.pos);
@@ -567,10 +574,17 @@ impl ClientWorld {
             if !b.members.is_empty() && b.since.elapsed() < HOLD_MAX {
                 return true;
             }
-            out.extend(b.results.drain(..).filter(|r| cubes.get(&r.pos).map(|s| s.version) == Some(r.version)));
+            now.extend(b.results.drain(..).filter(|r| cubes.get(&r.pos).map(|s| s.version) == Some(r.version)));
             false
         });
-        out
+        let (near, rest): (Vec<MeshResult>, Vec<MeshResult>) = out.into_iter().partition(|r| (r.pos - center).abs().max_element() <= URGENT);
+        now.extend(near);
+        (now, rest)
+    }
+
+    /// Whether a finished mesh is still the newest for its cube.
+    pub fn current(&self, r: &MeshResult) -> bool {
+        self.cubes.get(&r.pos).is_some_and(|s| s.version == r.version)
     }
 
     /// Jobs running plus dirty cubes that could be meshed now (edge cubes wait for neighbors

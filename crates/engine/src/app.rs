@@ -1747,7 +1747,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
             gpu: r.gpu.gpu_times(),
             client_cubes: g.client.world.len(),
             client_entities: g.client.entities.len(),
-            pending_meshes: if crate::log::on(crate::log::Channel::Mesh, log::Level::Debug) { g.client.world.pending_meshes() } else { 0 },
+            pending_meshes: if crate::log::on(crate::log::Channel::Mesh, log::Level::Debug) { g.client.pending_meshes() } else { 0 },
             server: g.server.as_ref().map(|s| &*s.shared),
         });
     }

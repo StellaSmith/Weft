@@ -331,7 +331,7 @@ impl GpuTerrain {
 
 fn unpacking() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(4).thread_name(|i| format!("terrain unpack {i}")).build().expect("terrain unpack pool"))
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(4).thread_name(|i| format!("terrain unpack {i}")).start_handler(|_| crate::lower_priority()).build().expect("terrain unpack pool"))
 }
 
 fn enabled() -> bool {

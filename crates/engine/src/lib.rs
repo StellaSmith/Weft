@@ -42,7 +42,10 @@ pub use app::{BackendFactory, Options, run};
 /// Background workers (generation, meshing, region ticks) leave two cores to the render and
 /// server threads: a full pool starved the render thread during loading and frames missed vsync.
 pub fn init_workers() {
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(workers()).build_global();
+    // The frame's own parallel work (culling, taking terrain) runs here and the main thread
+    // waits for it: above the bulk pools, which keep every core busy while loading.
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(workers()).start_handler(|_| set_priority(PRIORITY_ABOVE_NORMAL)).build_global();
+    set_priority(PRIORITY_ABOVE_NORMAL);
 }
 
 fn workers() -> usize {
@@ -66,18 +69,32 @@ pub fn meshing() -> &'static rayon::ThreadPool {
     POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(workers()).thread_name(|i| format!("mesh {i}")).start_handler(|_| lower_priority()).build().expect("mesh pool"))
 }
 
+/// Meshing of what the player is looking at changing (around them, edits): a few threads of
+/// normal priority, not behind the loading queue.
+pub fn meshing_urgent() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(4).thread_name(|i| format!("mesh urgent {i}")).build().expect("urgent mesh pool"))
+}
+
 /// Bulk work runs below normal priority: with every core busy loading, the frame and the
 /// server still get theirs when they need them.
-fn lower_priority() {
+pub fn lower_priority() {
+    set_priority(PRIORITY_BELOW_NORMAL);
+}
+
+const PRIORITY_BELOW_NORMAL: i32 = -1;
+const PRIORITY_ABOVE_NORMAL: i32 = 1;
+
+/// The calling thread's scheduling priority (Windows values; elsewhere nothing yet).
+fn set_priority(_priority: i32) {
     #[cfg(windows)]
     {
         unsafe extern "system" {
             fn GetCurrentThread() -> isize;
             fn SetThreadPriority(thread: isize, priority: i32) -> i32;
         }
-        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
         unsafe {
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            SetThreadPriority(GetCurrentThread(), _priority);
         }
     }
 }

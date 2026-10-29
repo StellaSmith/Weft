@@ -269,6 +269,11 @@ impl Cube {
         self.light = Light::Uniform(v);
     }
 
+    /// Sets every light value; the same all through becomes uniform.
+    pub fn set_light_all(&mut self, l: Box<[u32; VOLUME]>) {
+        self.light = if l.iter().all(|&v| v == l[0]) { Light::Uniform(l[0]) } else { Light::Full(l) };
+    }
+
     /// Every light value, when they are not all the same.
     pub fn light_all(&self) -> Option<&[u32; VOLUME]> {
         match &self.light {
@@ -399,19 +404,26 @@ fn bits_for(n: usize) -> u32 {
     }
 }
 
+/// Values per word as a shift: widths are powers of two (`bits_for`), so a read is shifts and
+/// masks instead of a division (most of what reading a block cost).
+#[inline]
+fn per_shift(bits: u32) -> u32 {
+    6 - bits.trailing_zeros()
+}
+
 #[inline]
 fn take(words: &[u64], bits: u32, i: usize) -> u32 {
-    let per = 64 / bits as usize;
-    let w = words[i / per];
-    ((w >> ((i % per) as u32 * bits)) & ((1u64 << bits) - 1)) as u32
+    let ps = per_shift(bits);
+    let w = words[i >> ps];
+    ((w >> ((i as u32 & ((1 << ps) - 1)) * bits)) & ((1u64 << bits) - 1)) as u32
 }
 
 #[inline]
 fn put(words: &mut [u64], bits: u32, i: usize, v: u32) {
-    let per = 64 / bits as usize;
-    let shift = (i % per) as u32 * bits;
+    let ps = per_shift(bits);
+    let shift = (i as u32 & ((1 << ps) - 1)) * bits;
     let mask = ((1u64 << bits) - 1) << shift;
-    let w = &mut words[i / per];
+    let w = &mut words[i >> ps];
     *w = (*w & !mask) | ((v as u64) << shift);
 }
 

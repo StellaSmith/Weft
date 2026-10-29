@@ -1173,7 +1173,7 @@ impl Client {
         }
         // Enough jobs that meshing keeps up at 50 frames per second too (results are taken once
         // a frame), not only at hundreds.
-        self.world.schedule_meshing(center, rayon::current_num_threads() * 128);
+        self.world.schedule_meshing(center, crate::meshing().current_num_threads() * 512);
         for r in self.world.take_meshes() {
             self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
         }

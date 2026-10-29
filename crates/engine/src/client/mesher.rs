@@ -66,7 +66,6 @@ fn light16(l: u32) -> u32 {
 pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
     let mut mesh = Mesh::default();
     let states = &n.states;
-    let opaque = |i: usize| c.states[states[i] as usize].flags & bf::OPAQUE != 0;
     let looks = super::looks::current();
     // Rows along x of the padded volume (bit x + 1): blocks, and opaque ones. A block with an
     // opaque block on every side shows nothing, and underground that is nearly all of them.
@@ -76,13 +75,15 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
         for (x, &s) in states[row * PAD..(row + 1) * PAD].iter().enumerate() {
             if s != 0 {
                 *f |= 1 << x;
-                if c.states[s as usize].flags & bf::OPAQUE != 0 {
+                if c.tight[s as usize].flags & bf::OPAQUE != 0 {
                     *o |= 1 << x;
                 }
             }
         }
     }
     let row = |y: i32, z: i32| ((y + 1) as usize) * PAD + (z + 1) as usize;
+    // Padded index to its bit in `solid`.
+    let opaque = |i: usize| solid[i / PAD] >> (i % PAD) & 1 != 0;
 
     for y in 0..16i32 {
         for z in 0..16i32 {

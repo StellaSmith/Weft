@@ -387,6 +387,18 @@ fn finish(job: Job, (blocks, biomes, cols): Unpacked) {
         let want = crate::server::dim::generate(c, job.dim, job.seed, job.pos);
         let differs = (0..4096).find(|&i| cube.get(i) != want.get(i));
         let biome_differs = (0..256).find(|&i| cube.biome(i % 16, i / 16) != want.biome(i % 16, i / 16));
+        // Light too, against the way it was done before (lit as it will be below).
+        let mut lit = cube.clone();
+        area::catch_up(c, &job.edits, job.pos, &mut lit);
+        let mut old = lit.clone();
+        crate::world::light::prelight(c, &mut lit, c.dims[job.dim as usize].sky_light);
+        crate::world::light::prelight_reference(c, &mut old, c.dims[job.dim as usize].sky_light);
+        let light_differs = (0..4096).find(|&i| lit.light(i) != old.light(i));
+        if let Some(i) = light_differs {
+            if GPU_MISMATCHES.fetch_add(1, Ordering::Relaxed) < 8 {
+                log::warn!("prelight differs at cube {} block {i}: {:#x} instead of {:#x}", job.pos, lit.light(i), old.light(i));
+            }
+        }
         if differs.is_some() || biome_differs.is_some() {
             if GPU_MISMATCHES.fetch_add(1, Ordering::Relaxed) < 8 {
                 match differs {

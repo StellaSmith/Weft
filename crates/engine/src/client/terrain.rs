@@ -121,21 +121,31 @@ impl CubeMap for Read<'_> {
 /// in (read only: light toward them spreads out later, `outward`).
 struct Run<'a> {
     cubes: &'a FxHashMap<IVec3, Arc<Cube>>,
-    own: Vec<(IVec3, Cube)>,
+    /// Its cubes by height below `top` (none where one was left out).
+    own: Vec<Option<(IVec3, Cube)>>,
+    top: IVec3,
+}
+
+impl Run<'_> {
+    fn slot(&self, c: IVec3) -> Option<usize> {
+        let i = self.top.y - c.y;
+        (c.x == self.top.x && c.z == self.top.z && i >= 0 && (i as usize) < self.own.len() && self.own[i as usize].is_some()).then_some(i as usize)
+    }
 }
 
 impl CubeMap for Run<'_> {
     fn cube(&self, c: IVec3) -> Option<&Cube> {
-        match self.own.iter().find(|o| o.0 == c) {
-            Some(o) => Some(&o.1),
+        match self.slot(c) {
+            Some(i) => self.own[i].as_ref().map(|o| &o.1),
             None => self.cubes.get(&c).map(|a| &**a),
         }
     }
     fn cube_mut(&mut self, c: IVec3) -> Option<&mut Cube> {
-        self.own.iter_mut().find(|o| o.0 == c).map(|o| &mut o.1)
+        let i = self.slot(c)?;
+        self.own[i].as_mut().map(|o| &mut o.1)
     }
     fn writable(&self, c: IVec3) -> bool {
-        self.own.iter().any(|o| o.0 == c)
+        self.slot(c).is_some()
     }
 }
 
@@ -157,7 +167,8 @@ fn light_run(c: &Content, def: &crate::content::DimensionDef, cubes: &FxHashMap<
             _ => None,
         })
     };
-    let mut map = Run { cubes, own: Vec::with_capacity(run.len()) };
+    let top = run[0].0;
+    let mut map = Run { cubes, own: Vec::with_capacity((top.y - run[run.len() - 1].0.y + 1) as usize), top };
     for (pos, mut cube, lit) in run {
         let open_above = pos.y + 1 >= def.sky_cube_y || pos.y + 1 > def.max_cube_y || pos.y >= hi;
         let full = match map.cube(pos + IVec3::Y) {
@@ -169,7 +180,8 @@ fn light_run(c: &Content, def: &crate::content::DimensionDef, cubes: &FxHashMap<
         if prelit && full == Some(false) {
             cube.mask_light(!0xFF);
         }
-        map.own.push((pos, cube));
+        map.own.resize_with((top.y - pos.y) as usize, || None);
+        map.own.push(Some((pos, cube)));
         let mut lighter = Lighter::new(&mut map, c, def.sky_light);
         if prelit {
             lighter.light_prelit(pos);
@@ -177,7 +189,7 @@ fn light_run(c: &Content, def: &crate::content::DimensionDef, cubes: &FxHashMap<
             lighter.light_new(pos, open_above);
         }
     }
-    map.own
+    map.own.into_iter().flatten().collect()
 }
 
 impl CubeMap for Map<'_> {
@@ -230,8 +242,8 @@ struct Terrain {
     /// `edited`, and the fill looks at them again.
     conn: FxHashMap<IVec3, u16>,
     edited: Vec<IVec3>,
-    /// Cubes the client world has, and ones waiting for their neighbors to be handed over.
-    emitted: FxHashSet<IVec3>,
+    /// Cubes not handed to the client world yet (waiting for their neighbors, or just put
+    /// in); the others in `cubes` it has. Kept this way round: it is the small set.
     held: FxHashSet<IVec3>,
     /// What the fill wants, farthest first, and when it was gathered.
     wanted: Vec<IVec3>,
@@ -268,7 +280,6 @@ impl Terrain {
             vis: crate::server::visibility::Visibility::new(),
             conn: FxHashMap::default(),
             edited: Vec::new(),
-            emitted: FxHashSet::default(),
             held: FxHashSet::default(),
             wanted: Vec::new(),
             wanted_at: None,
@@ -334,6 +345,8 @@ impl Terrain {
                 if self.cubes.insert(pos, cube).is_some() {
                     self.conn.remove(&pos);
                     self.edited.push(pos);
+                } else {
+                    self.held.insert(pos);
                 }
                 // Its light is the server's; light from cubes made here joins it.
                 let changed = self.light_sent(pos);
@@ -422,8 +435,7 @@ impl Terrain {
             self.cubes.remove(&p);
             self.server.remove(&p);
             self.conn.remove(&p);
-            self.held.remove(&p);
-            if self.emitted.remove(&p) {
+            if !self.held.remove(&p) {
                 self.out.push(Out::Unload(p));
             }
         }
@@ -619,6 +631,7 @@ impl Terrain {
         let mut new = Vec::new();
         for (p, cube) in lit.into_iter().flatten() {
             self.cubes.insert(p, Arc::new(cube));
+            self.held.insert(p);
             new.push(p);
         }
         let read = Read(&self.cubes);
@@ -705,7 +718,7 @@ impl Terrain {
                 continue;
             }
             if self.in_view(n) && (!self.vis_on || self.vis.seen.contains(&n)) {
-                if !self.emitted.contains(&pos) {
+                if self.held.contains(&pos) {
                     return None;
                 }
             } else {
@@ -717,7 +730,6 @@ impl Terrain {
 
     fn hand_over(&mut self, pos: IVec3, hidden: u32) {
         self.held.remove(&pos);
-        self.emitted.insert(pos);
         self.out.push(Out::Cube { pos, cube: self.cubes[&pos].clone(), hidden });
     }
 

@@ -17,11 +17,24 @@ pub struct MeshResult {
     pub mesh: Mesh,
 }
 
+/// What the client keeps per cube, in one record: a lookup found it all (it was five maps, each
+/// a cache miss among a million and a half cubes).
+struct Slot {
+    cube: Arc<Cube>,
+    /// Of its newest mesh job (`next_version`).
+    version: u32,
+    /// The cubes around it that are never coming (`cube::around_mask` bits): faces toward them
+    /// are meshed as solid, and it is meshed once all 26 around it are here or never coming
+    /// (meshing it before its edge and corner neighbors came meshed it again for each of them).
+    hidden: u32,
+    /// Its mesh is out of date.
+    dirty: bool,
+}
+
 pub struct ClientWorld {
     pub dim: u32,
-    pub cubes: FxHashMap<IVec3, Arc<Cube>>,
+    cubes: FxHashMap<IVec3, Slot>,
     pub time: u64,
-    dirty: FxHashSet<IVec3>,
     /// Dirty cubes whose six neighbors are all known: meshable now. Kept up to date as cubes
     /// come and go, so a frame never walks every dirty cube (tens of thousands while loading).
     ready: FxHashSet<IVec3>,
@@ -31,17 +44,11 @@ pub struct ClientWorld {
     order: Vec<IVec3>,
     order_center: IVec3,
     order_size: usize,
-    versions: FxHashMap<IVec3, u32>,
     in_flight: FxHashSet<IVec3>,
     tx: Sender<MeshResult>,
     rx: Receiver<MeshResult>,
     pub removed: Vec<IVec3>,
     next_version: u32,
-    /// Per cube, the cubes around it that are never coming (`cube::around_mask` bits): faces
-    /// toward them are meshed as solid, and a cube is meshed once all 26 around it are here or
-    /// never coming (meshing it before its edge and corner neighbors came meshed it again for
-    /// each of them, three times per cube while loading).
-    hidden: FxHashMap<IVec3, u32>,
     /// An opaque state standing in for hidden neighbors.
     filler: u32,
     columns: FxHashMap<IVec2, Column>,
@@ -60,7 +67,7 @@ pub struct ClientWorld {
 }
 
 struct Batch {
-    /// Cubes whose new mesh it still waits for (while open: the ones touched).
+    /// Cubes whose new mesh it still waits for.
     members: FxHashSet<IVec3>,
     /// While open: cubes sent again and what they were, compared at the end on every core.
     resent: Vec<(IVec3, Arc<Cube>)>,
@@ -70,6 +77,9 @@ struct Batch {
     update: bool,
     /// Cubes it brought that were not there before.
     fresh: Vec<IVec3>,
+    /// While open: cubes touched and the ones around them to remesh (`cube::around_mask`),
+    /// made into `members` at the end, on every core.
+    touched: Vec<(IVec3, u32)>,
 }
 
 /// A batch waits no longer than this for its slowest cube.
@@ -112,18 +122,15 @@ impl ClientWorld {
             dim,
             cubes: FxHashMap::default(),
             time: 0,
-            dirty: FxHashSet::default(),
             ready: FxHashSet::default(),
             order: Vec::new(),
             order_center: IVec3::MAX,
             order_size: 0,
-            versions: FxHashMap::default(),
             in_flight: FxHashSet::default(),
             tx,
             rx,
             removed: Vec::new(),
             next_version: 0,
-            hidden: FxHashMap::default(),
             filler: content().states.iter().position(|s| s.flags & weft_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
             columns: FxHashMap::default(),
             tints_dirty: FxHashSet::default(),
@@ -141,7 +148,15 @@ impl ClientWorld {
 
     /// Recomputes `bounds` from the blocks (structures, after their cubes changed).
     pub fn scan_bounds(&mut self) {
-        self.bounds = crate::world::block_bounds(self.cubes.iter().map(|(p, c)| (p, &**c)));
+        self.bounds = crate::world::block_bounds(self.cubes.iter().map(|(p, s)| (p, &*s.cube)));
+    }
+
+    pub fn len(&self) -> usize {
+        self.cubes.len()
+    }
+
+    pub fn cube(&self, p: IVec3) -> Option<&Arc<Cube>> {
+        self.cubes.get(&p).map(|s| &s.cube)
     }
 
     /// Whether every cube around `p` is present or never coming.
@@ -150,7 +165,7 @@ impl ClientWorld {
             return true;
         }
         let def = &content().dims[self.dim as usize];
-        let hidden = self.hidden.get(&p).copied().unwrap_or(0);
+        let hidden = self.cubes.get(&p).map_or(0, |s| s.hidden);
         (0..27).all(|i| {
             let n = p + IVec3::new(i % 3 - 1, i / 9 - 1, i / 3 % 3 - 1);
             i == 13 || hidden & (1 << i) != 0 || n.y < def.min_cube_y || n.y > def.max_cube_y || self.cubes.contains_key(&n)
@@ -159,7 +174,7 @@ impl ClientWorld {
 
     /// Updates whether `p` is meshable now.
     fn refresh(&mut self, p: IVec3) {
-        let known = self.dirty.contains(&p) && self.neighbors_known(p);
+        let known = self.cubes.get(&p).is_some_and(|s| s.dirty) && self.neighbors_known(p);
         self.set_ready(p, known);
     }
 
@@ -168,10 +183,11 @@ impl ClientWorld {
         if ready {
             // Air cubes never produce faces themselves (neighbors draw the faces facing them):
             // done right away, without a job (most of a tall view is sky).
-            if self.cubes.get(&p).is_some_and(|c| c.uniform_state() == Some(AIR)) {
-                self.dirty.remove(&p);
+            if let Some(s) = self.cubes.get_mut(&p).filter(|s| s.cube.uniform_state() == Some(AIR)) {
+                s.dirty = false;
+                let version = s.version;
                 self.ready.remove(&p);
-                let _ = self.tx.send(MeshResult { pos: p, version: self.versions[&p], mesh: Mesh::default() });
+                let _ = self.tx.send(MeshResult { pos: p, version, mesh: Mesh::default() });
                 return;
             }
             self.ready.insert(p);
@@ -183,10 +199,7 @@ impl ClientWorld {
     pub fn clear(&mut self) {
         self.removed.extend(self.cubes.keys().copied());
         self.cubes.clear();
-        self.dirty.clear();
         self.ready.clear();
-        self.versions.clear();
-        self.hidden.clear();
         self.columns.clear();
         self.tints_dirty.clear();
         self.batches.clear();
@@ -194,7 +207,7 @@ impl ClientWorld {
 
     /// Starts collecting what arrives into one batch.
     pub fn begin_batch(&mut self) {
-        self.open = Some(Batch { members: FxHashSet::default(), resent: Vec::new(), results: Vec::new(), since: Instant::now(), update: false, fresh: Vec::new() });
+        self.open = Some(Batch { members: FxHashSet::default(), resent: Vec::new(), results: Vec::new(), since: Instant::now(), update: false, fresh: Vec::new(), touched: Vec::new() });
     }
 
     pub fn end_batch(&mut self) {
@@ -203,33 +216,31 @@ impl ClientWorld {
         // reach far more cubes than the edit does.
         let resent = std::mem::take(&mut b.resent);
         let cubes = &self.cubes;
-        let masks: Vec<(IVec3, u32)> = resent.par_iter().filter_map(|(p, old)| cubes.get(p).and_then(|now| now.changed_around(old)).map(|m| (*p, m))).collect();
-        for (p, mask) in masks {
-            add_around(&mut b.members, p, mask);
-        }
-        b.members.retain(|p| self.cubes.contains_key(p));
+        let masks: Vec<(IVec3, u32)> = resent.par_iter().filter_map(|(p, old)| cubes.get(p).and_then(|now| now.cube.changed_around(old)).map(|m| (*p, m))).collect();
+        b.touched.extend(masks);
+        let mut members: Vec<IVec3> = std::mem::take(&mut b.touched).into_par_iter().flat_map_iter(|(p, mask)| around(p, mask)).filter(|p| self.cubes.contains_key(p)).collect();
+        members.par_sort_unstable_by_key(|p| p.to_array());
+        members.dedup();
         // Each looks at the 26 around it: on every core, a batch while loading has thousands.
         // Air that was not there before had no mesh and never has one: nothing to do (half of
         // what loads is sky).
         let mut fresh = std::mem::take(&mut b.fresh);
         fresh.par_sort_unstable_by_key(|p| p.to_array());
         let cubes = &self.cubes;
-        let todo: Vec<(IVec3, Option<bool>)> = b
-            .members
+        let todo: Vec<(IVec3, Option<bool>)> = members
             .par_iter()
             .map(|&p| {
-                let new_air = cubes[&p].uniform_state() == Some(AIR) && fresh.binary_search_by_key(&p.to_array(), |f| f.to_array()).is_ok();
+                let new_air = cubes[&p].cube.uniform_state() == Some(AIR) && fresh.binary_search_by_key(&p.to_array(), |f| f.to_array()).is_ok();
                 (p, (!new_air).then(|| self.neighbors_known(p)))
             })
             .collect();
         for (p, known) in todo {
-            let Some(known) = known else {
-                b.members.remove(&p);
-                continue;
-            };
+            let Some(known) = known else { continue };
             self.bump(p);
-            self.dirty.insert(p);
             self.set_ready(p, known);
+            if b.update {
+                b.members.insert(p);
+            }
         }
         if b.update && !b.members.is_empty() {
             self.batches.push(b);
@@ -238,22 +249,24 @@ impl ClientWorld {
 
     /// Versions come from one counter so a mesh job of a removed cube can never match a new cube
     /// at the same position (dimension change).
+    /// Marks it dirty, for a job of a new version.
     fn bump(&mut self, pos: IVec3) {
-        self.next_version += 1;
-        self.versions.insert(pos, self.next_version);
+        if let Some(s) = self.cubes.get_mut(&pos) {
+            self.next_version += 1;
+            (s.version, s.dirty) = (self.next_version, true);
+        }
     }
 
     /// Remeshes the cubes of `mask` around `pos` (`cube::around_mask`); in a batch once at its
     /// end (a crater's cubes touch each neighbor up to 27 times).
     fn touch(&mut self, pos: IVec3, mask: u32) {
         if let Some(b) = &mut self.open {
-            add_around(&mut b.members, pos, mask);
+            b.touched.push((pos, mask));
             return;
         }
         for n in around(pos, mask) {
             if self.cubes.contains_key(&n) {
                 self.bump(n);
-                self.dirty.insert(n);
                 self.refresh(n);
             }
         }
@@ -261,8 +274,6 @@ impl ClientWorld {
 
     /// `hidden`: the cubes around it never coming (`cube::around_mask` bits).
     pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, hidden: u32) {
-        let fresh_hidden = self.hidden.get(&pos).copied().unwrap_or(0) != hidden;
-        self.hidden.insert(pos, hidden);
         let col = IVec2::new(pos.x, pos.z);
         let mut fresh = false;
         let column = self.columns.entry(col).or_insert_with(|| {
@@ -277,21 +288,25 @@ impl ClientWorld {
                 }
             }
         }
-        match self.cubes.insert(pos, cube) {
-            None => {
+        match self.cubes.entry(pos) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(Slot { cube, version: 0, hidden, dirty: false });
                 if let Some(b) = &mut self.open {
                     b.fresh.push(pos);
                 }
                 self.columns.get_mut(&col).unwrap().cubes += 1;
                 self.touch(pos, ALL_AROUND);
             }
-            Some(old) => {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let s = e.get_mut();
+                let fresh_hidden = std::mem::replace(&mut s.hidden, hidden) != hidden;
+                let old = std::mem::replace(&mut s.cube, cube);
                 if fresh_hidden {
                     self.touch(pos, ALL_AROUND);
                 } else if let Some(b) = &mut self.open {
                     b.update = true;
                     b.resent.push((pos, old));
-                } else if let Some(mask) = self.cubes[&pos].changed_around(&old) {
+                } else if let Some(mask) = self.cubes[&pos].cube.changed_around(&old) {
                     self.touch(pos, mask);
                 }
             }
@@ -307,10 +322,7 @@ impl ClientWorld {
                     self.columns.remove(&col);
                 }
             }
-            self.hidden.remove(&pos);
-            self.dirty.remove(&pos);
             self.ready.remove(&pos);
-            self.versions.remove(&pos);
             self.removed.push(pos);
             for n in around(pos, ALL_AROUND) {
                 if n != pos {
@@ -322,8 +334,8 @@ impl ClientWorld {
 
     pub fn set_block(&mut self, p: IVec3, state: u32) {
         let cp = cube_of(p);
-        let Some(cube) = self.cubes.get_mut(&cp) else { return };
-        Arc::make_mut(cube).set(local_index(p), state);
+        let Some(slot) = self.cubes.get_mut(&cp) else { return };
+        Arc::make_mut(&mut slot.cube).set(local_index(p), state);
         if let Some(b) = &mut self.open {
             b.update = true;
         }
@@ -420,7 +432,7 @@ impl ClientWorld {
 
     /// `u32::MAX` when not loaded.
     pub fn block(&self, p: IVec3) -> u32 {
-        self.cubes.get(&cube_of(p)).map_or(u32::MAX, |c| c.get(local_index(p)))
+        self.cubes.get(&cube_of(p)).map_or(u32::MAX, |s| s.cube.get(local_index(p)))
     }
 
     /// The block, `None` while its cube has not arrived; outside the dimension's height there are
@@ -436,7 +448,7 @@ impl ClientWorld {
     }
 
     pub fn light(&self, p: IVec3) -> u32 {
-        self.cubes.get(&cube_of(p)).map_or(15, |c| c.light(local_index(p)))
+        self.cubes.get(&cube_of(p)).map_or(15, |s| s.cube.light(local_index(p)))
     }
 
     /// Starts meshing jobs for dirty cubes nearest to `center` first.
@@ -495,18 +507,21 @@ impl ClientWorld {
 
     fn start_jobs(&mut self, start: Vec<IVec3>) {
         for pos in &start {
-            self.dirty.remove(pos);
+            if let Some(s) = self.cubes.get_mut(pos) {
+                s.dirty = false;
+            }
             self.ready.remove(pos);
             self.in_flight.insert(*pos);
         }
         // What each job takes from the world, gathered on every core: thousands start a frame
         // while loading.
-        let (cubes, versions, hidden) = (&self.cubes, &self.versions, &self.hidden);
+        let cubes = &self.cubes;
         let jobs: Vec<(IVec3, [Option<Arc<Cube>>; 27], u32, u32)> = start
             .par_iter()
             .map(|&pos| {
-                let around = std::array::from_fn(|i| cubes.get(&(pos + IVec3::new(i as i32 % 3 - 1, i as i32 / 9 - 1, i as i32 / 3 % 3 - 1))).cloned());
-                (pos, around, versions[&pos], hidden.get(&pos).copied().unwrap_or(0))
+                let around = std::array::from_fn(|i| cubes.get(&(pos + IVec3::new(i as i32 % 3 - 1, i as i32 / 9 - 1, i as i32 / 3 % 3 - 1))).map(|s| s.cube.clone()));
+                let s = &cubes[&pos];
+                (pos, around, s.version, s.hidden)
             })
             .collect();
         for (pos, around, version, hidden) in jobs {
@@ -529,7 +544,7 @@ impl ClientWorld {
         let mut out = Vec::new();
         while let Ok(r) = self.rx.try_recv() {
             self.in_flight.remove(&r.pos);
-            if self.versions.get(&r.pos) != Some(&r.version) {
+            if self.cubes.get(&r.pos).map(|s| s.version) != Some(r.version) {
                 continue;
             }
             // Into the oldest batch waiting for it; the others stop waiting for it too.
@@ -546,13 +561,13 @@ impl ClientWorld {
         }
         // Complete once nothing it waits for can still come now (a cube waiting for a neighbor
         // that has not arrived is not waited for).
-        let (ready, in_flight, versions) = (&self.ready, &self.in_flight, &self.versions);
+        let (ready, in_flight, cubes) = (&self.ready, &self.in_flight, &self.cubes);
         self.batches.retain_mut(|b| {
             b.members.retain(|p| ready.contains(p) || in_flight.contains(p));
             if !b.members.is_empty() && b.since.elapsed() < HOLD_MAX {
                 return true;
             }
-            out.extend(b.results.drain(..).filter(|r| versions.get(&r.pos) == Some(&r.version)));
+            out.extend(b.results.drain(..).filter(|r| cubes.get(&r.pos).map(|s| s.version) == Some(r.version)));
             false
         });
         out
@@ -568,10 +583,6 @@ impl ClientWorld {
 /// The cubes of `mask` around `pos` (`cube::around_mask`), loaded or not.
 fn around(pos: IVec3, mask: u32) -> impl Iterator<Item = IVec3> {
     (0..27).filter(move |i| mask & (1 << i) != 0).map(move |i| pos + IVec3::new(i % 3 - 1, i / 9 - 1, i / 3 % 3 - 1))
-}
-
-fn add_around(set: &mut FxHashSet<IVec3>, pos: IVec3, mask: u32) {
-    set.extend(around(pos, mask));
 }
 
 const BORDER_ROW: [i32; 18] = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];

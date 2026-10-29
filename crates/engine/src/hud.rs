@@ -239,7 +239,7 @@ const POSITION: &[DebugLine] = &[
     ("hud.debug.biome", |c| {
         let Some(cl) = c.client.as_ref() else { return vec![Arg::Text("-".into())] };
         let p = cl.player.pos.floor().as_ivec3();
-        let id = cl.world.cubes.get(&(p >> 4i32)).map_or(0, |cube| cube.biome((p.x & 15) as usize, (p.z & 15) as usize));
+        let id = cl.world.cube(p >> 4i32).map_or(0, |cube| cube.biome((p.x & 15) as usize, (p.z & 15) as usize));
         vec![Arg::Text(content().biomes.get(id as usize).map_or("-".into(), |b| b.name.clone()))]
     }),
     ("hud.debug.dimension", |c| {
@@ -260,7 +260,7 @@ const POSITION: &[DebugLine] = &[
 const WORLD: &[DebugLine] = &[
     ("hud.debug.world", |c| {
         let Some(cl) = c.client.as_ref() else { return vec![] };
-        vec![Arg::Int(cl.world.cubes.len() as i64), Arg::Int(cl.world.pending_meshes() as i64)]
+        vec![Arg::Int(cl.world.len() as i64), Arg::Int(cl.world.pending_meshes() as i64)]
     }),
     ("hud.debug.draws", |c| {
         let Some(cl) = c.client.as_ref() else { return vec![] };

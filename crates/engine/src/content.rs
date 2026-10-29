@@ -407,9 +407,23 @@ pub struct Ids {
     pub wear_per_hit: Option<u32>,
 }
 
+/// What lighting and meshing read of a state for every block they pass, packed tight: a
+/// `StateInfo` spans a few cache lines, these are 12 bytes, five to a line.
+#[derive(Clone, Copy, Default)]
+pub struct Tight {
+    pub flags: u32,
+    pub opacity: u8,
+    /// Emission per channel (r, g, b).
+    pub light: [u8; 3],
+    /// Absorption per channel (r, g, b), opacity included.
+    pub absorb: [u8; 3],
+}
+
 pub struct Content {
     pub mods: Vec<ModMeta>,
     pub states: Vec<StateInfo>,
+    /// `states`, the parts read per block (`Tight`).
+    pub tight: Vec<Tight>,
     pub blocks: Vec<BlockDef>,
     pub items: Vec<ItemDef>,
     pub biomes: Vec<BiomeDef>,
@@ -2016,9 +2030,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let mut spread_tags: Vec<u32> = states.iter().filter_map(|s| s.spread.map(|sp| sp.0)).collect();
     spread_tags.sort_unstable();
     spread_tags.dedup();
+    let tight = states.iter().map(|s| Tight { flags: s.flags, opacity: s.opacity, light: s.light, absorb: s.absorb }).collect();
     Ok(Content {
         spread_tags,
         mods,
+        tight,
         states,
         blocks: block_defs,
         items: item_defs,

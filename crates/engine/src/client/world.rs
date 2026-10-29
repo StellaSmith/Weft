@@ -72,6 +72,9 @@ pub struct ClientWorld {
     /// Heights the view spans (`terrain::Out::Range`), and columns whose cubes changed what
     /// is shown since `take_changed_columns`.
     range: (i32, i32),
+    /// The camera's cube height: cubes above it still on their way do not hide a column's ground
+    /// (`column_shown`), or rising made loaded ground flicker to distant terrain.
+    eye: i32,
     changed_columns: FxHashSet<IVec2>,
 }
 
@@ -151,6 +154,7 @@ impl ClientWorld {
             batches: Vec::new(),
             open: None,
             range: (0, -1),
+            eye: 0,
             changed_columns: FxHashSet::default(),
         }
     }
@@ -173,6 +177,13 @@ impl ClientWorld {
         }
     }
 
+    pub fn set_eye(&mut self, y: i32) {
+        if y != self.eye {
+            self.eye = y;
+            self.changed_columns.extend(self.columns.keys().copied());
+        }
+    }
+
     /// A mesh of `pos` was drawn.
     pub fn mark_shown(&mut self, pos: IVec3) {
         if let Some(s) = self.cubes.get_mut(&pos).filter(|s| !s.shown) {
@@ -183,19 +194,10 @@ impl ClientWorld {
 
     /// Whether column `col` shows its ground: from the top of the view down, every cube is here
     /// and drawn, down to the first that is not air (distant terrain stands in until then).
+    /// Above the camera a cube not here yet is taken for air: those are the new top of the view
+    /// while rising, nearly always sky.
     pub fn column_shown(&self, col: IVec2) -> bool {
-        let (lo, hi) = self.range;
-        for y in (lo..=hi).rev() {
-            match self.cubes.get(&IVec3::new(col.x, y, col.y)) {
-                Some(s) if s.shown => {
-                    if s.cube.uniform_state() != Some(AIR) {
-                        return true;
-                    }
-                }
-                _ => return false,
-            }
-        }
-        hi >= lo
+        shows_ground(self.range, self.eye, |y| self.cubes.get(&IVec3::new(col.x, y, col.y)).map(|s| (s.shown, s.cube.uniform_state() == Some(AIR))))
     }
 
     /// Columns whose `column_shown` may have changed since the last call.
@@ -719,9 +721,41 @@ fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u32, filler: u32, pos:
     Neighborhood { states, light, biomes, origin: (pos * 16).to_array() }
 }
 
+/// `column_shown` over a column's cubes by height: (drawn, all air), `None` when not here.
+fn shows_ground(range: (i32, i32), eye: i32, cube: impl Fn(i32) -> Option<(bool, bool)>) -> bool {
+    let (lo, hi) = range;
+    for y in (lo..=hi).rev() {
+        match cube(y) {
+            Some((true, air)) => {
+                if !air {
+                    return true;
+                }
+            }
+            None if y > eye => {}
+            Some((false, true)) if y > eye => {}
+            _ => return false,
+        }
+    }
+    hi >= lo
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rising, the view's new top cubes arrive after the ground is drawn: those above the camera
+    /// do not hand the column back to distant terrain, a gap below it does.
+    #[test]
+    fn column_shown_while_rising() {
+        // Ground at 0, air at 1, the rest not here yet.
+        let cube = |y: i32| match y {
+            0 => Some((true, false)),
+            1 => Some((true, true)),
+            _ => None,
+        };
+        assert!(shows_ground((0, 4), 1, cube), "missing cubes above the camera");
+        assert!(!shows_ground((0, 4), 4, cube), "missing cubes below the camera");
+    }
 
     /// The whole-cube copy gives what reading every block does.
     #[test]

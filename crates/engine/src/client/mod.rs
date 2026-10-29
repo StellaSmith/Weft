@@ -1241,6 +1241,7 @@ impl Client {
         // Enough jobs that meshing keeps up at 50 frames per second too (results are taken once
         // a frame), not only at hundreds.
         self.world.schedule_meshing(center, crate::meshing().current_num_threads() * 512);
+        self.render.update_solid(gpu, &self.world, center);
         // Uploads too, oldest first; the rest wait for the next frame (dropped if their cube
         // changed or left meanwhile). Edits and what is around the player go right away.
         let (now, later) = self.world.take_meshes(center);
@@ -1614,7 +1615,21 @@ impl Client {
             fog_color: self.fog_color(),
             params: [view_distance * 0.6, view_distance, self.daylight(), crate::shaders::time()],
             light: [content().dims[self.world.dim as usize].ambient as f32 / 15.0, self.brightness, ticks, 0.0],
+            sun: self.sun(),
         }
+    }
+
+    /// Toward the sun: it rises in +x, is highest at noon and leans a little south so that
+    /// shadows are never straight down.
+    fn sun(&self) -> [f32; 4] {
+        let d = &content().dims[self.world.dim as usize];
+        if !d.sky_light {
+            return [0.0, 1.0, 0.0, 0.0];
+        }
+        let (t, len) = if d.day_length == 0 { (d.fixed_time as f64, 24000.0) } else { ((self.world.time % d.day_length as u64) as f64, d.day_length as f64) };
+        let a = t / len * std::f64::consts::TAU;
+        let v = Vec3::new(a.cos() as f32, a.sin() as f32, 0.35).normalize();
+        [v.x, v.y, v.z, v.y.max(0.0)]
     }
 
     pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, textures: &GameTextures) {

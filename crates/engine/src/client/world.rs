@@ -31,6 +31,8 @@ struct Slot {
     dirty: bool,
     /// A mesh of it has been drawn (or it is air): its column shows it (`column_shown`).
     shown: bool,
+    /// Changes when its blocks do (not its light), from `next_rev`.
+    rev: u32,
 }
 
 pub struct ClientWorld {
@@ -51,6 +53,7 @@ pub struct ClientWorld {
     rx: Receiver<MeshResult>,
     pub removed: Vec<IVec3>,
     next_version: u32,
+    next_rev: u32,
     /// An opaque state standing in for hidden neighbors.
     filler: u32,
     columns: FxHashMap<IVec2, Column>,
@@ -139,6 +142,7 @@ impl ClientWorld {
             rx,
             removed: Vec::new(),
             next_version: 0,
+            next_rev: 0,
             filler: content().states.iter().position(|s| s.flags & weft_abi::block_flags::OPAQUE != 0).unwrap_or(0) as u32,
             columns: FxHashMap::default(),
             tints_dirty: FxHashSet::default(),
@@ -205,6 +209,11 @@ impl ClientWorld {
 
     pub fn cube(&self, p: IVec3) -> Option<&Arc<Cube>> {
         self.cubes.get(&p).map(|s| &s.cube)
+    }
+
+    /// With a number that changes whenever its blocks do (`Slot::rev`).
+    pub fn cube_rev(&self, p: IVec3) -> Option<(&Arc<Cube>, u32)> {
+        self.cubes.get(&p).map(|s| (&s.cube, s.rev))
     }
 
     /// Whether every cube around `p` is present or never coming.
@@ -343,7 +352,8 @@ impl ClientWorld {
         }
         match self.cubes.entry(pos) {
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(Slot { cube, version: 0, hidden, dirty: false, shown: false });
+                self.next_rev += 1;
+                e.insert(Slot { cube, version: 0, hidden, dirty: false, shown: false, rev: self.next_rev });
                 self.changed_columns.insert(col);
                 if let Some(b) = &mut self.open {
                     b.fresh.push(pos);
@@ -355,6 +365,10 @@ impl ClientWorld {
                 let s = e.get_mut();
                 let fresh_hidden = std::mem::replace(&mut s.hidden, hidden) != hidden;
                 let old = std::mem::replace(&mut s.cube, cube);
+                if !s.cube.same_blocks(&old) {
+                    self.next_rev += 1;
+                    s.rev = self.next_rev;
+                }
                 if fresh_hidden {
                     self.touch(pos, ALL_AROUND);
                 } else if let Some(b) = &mut self.open {
@@ -391,6 +405,8 @@ impl ClientWorld {
         let cp = cube_of(p);
         let Some(slot) = self.cubes.get_mut(&cp) else { return };
         Arc::make_mut(&mut slot.cube).set(local_index(p), state);
+        self.next_rev += 1;
+        slot.rev = self.next_rev;
         if let Some(b) = &mut self.open {
             b.update = true;
         }

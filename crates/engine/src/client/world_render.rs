@@ -209,6 +209,48 @@ fn mesh_draws(m: &GpuMesh, key: MeshKey, lo: Vec3, k: i32, cam_cube: IVec3, out:
 /// A mesh's place: the structure (entity) it belongs to, 0 for the world, and its cube.
 pub type MeshKey = (u64, IVec3);
 
+/// Which blocks around the camera cast shadows, kept on the GPU for shader packs (`solid_at`
+/// in the world shader's prelude); only while the chosen pack's world shader uses it. 16^3 cube
+/// slots addressed by cube position modulo 16: first a tag per slot (cube x y z, 1 when
+/// filled), then 128 words of bits per slot in `cube::index` order.
+struct Solid {
+    buf: BufferId,
+    on: bool,
+    /// Per slot: the cube it holds and the `cube_rev` of its blocks then.
+    held: Vec<Option<(IVec3, u32)>>,
+    /// The tags as uploaded: sent whole when one changes, since copies within a frame have no
+    /// order between them and a slot's tag must never lose to an older write.
+    tags: Vec<[u32; 4]>,
+    /// Per block state: casts a shadow.
+    casts: Vec<bool>,
+}
+
+const SOLID_SLOTS: usize = 4096;
+/// Cubes rebuilt per frame at most; the rest follow in the next frames.
+const SOLID_PER_FRAME: usize = 192;
+
+impl Solid {
+    fn new(gpu: &mut dyn Backend, c: &Content) -> Solid {
+        let casts = c.states.iter().map(|st| st.opacity > 0 && st.liquid.is_none()).collect();
+        let mut s = Solid { buf: gpu.create_buffer(4, usage::STORAGE, "solid"), on: false, held: Vec::new(), tags: Vec::new(), casts };
+        s.set_on(gpu, crate::packs::pack_uses("world.wgsl", "solid_at"));
+        s
+    }
+
+    fn set_on(&mut self, gpu: &mut dyn Backend, on: bool) {
+        if on == self.on {
+            return;
+        }
+        gpu.destroy_buffer(self.buf);
+        self.on = on;
+        self.held = vec![None; if on { SOLID_SLOTS } else { 0 }];
+        self.tags = vec![[0; 4]; if on { SOLID_SLOTS } else { 0 }];
+        let words = if on { SOLID_SLOTS * (4 + 128) } else { 1 };
+        self.buf = gpu.create_buffer(words as u64 * 4, usage::STORAGE, "solid");
+        gpu.write_buffer(self.buf, 0, &vec![0u8; words * 4]);
+    }
+}
+
 pub struct WorldRenderer {
     face_pipes: [PipelineId; 3],
     quad_pipes: [PipelineId; 3],
@@ -259,6 +301,7 @@ pub struct WorldRenderer {
     /// (0 1 2)(0 2 3) for as many quads as one draw can hold; every face and quad draw shares it
     /// so each corner is shaded once instead of once per triangle.
     quad_index: BufferId,
+    solid: Solid,
     pub drawn: u32,
     pub faces_drawn: u64,
 }
@@ -358,6 +401,7 @@ impl WorldRenderer {
             tex_shader,
             tex_generation: textures.generation(),
             quad_index,
+            solid: Solid::new(gpu, c),
             drawn: 0,
             faces_drawn: 0,
         })
@@ -429,6 +473,7 @@ impl WorldRenderer {
                 self.lod_pipe = l;
                 gpu.destroy_buffer(self.tex_shader);
                 self.tex_shader = shader_table(gpu, crate::content::content(), textures, &slots);
+                self.solid.set_on(gpu, crate::packs::pack_uses("world.wgsl", "solid_at"));
                 log::info!("world shader reloaded");
             }
             Err(e) => log::error!("world shader: {e}"),
@@ -483,7 +528,7 @@ impl WorldRenderer {
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
-        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index, self.tex_shader, self.lod_mask.0]) {
+        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index, self.tex_shader, self.lod_mask.0, self.solid.buf]) {
             gpu.destroy_buffer(b);
         }
         for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)).chain(self.offsets.drain(..)) {
@@ -491,6 +536,61 @@ impl WorldRenderer {
         }
         for p in self.face_pipes.into_iter().chain(self.quad_pipes).chain([self.lod_pipe]) {
             gpu.destroy_pipeline(p);
+        }
+    }
+
+    /// Brings `Solid` up to date for the cubes within 7 of `center` (their slots are distinct).
+    pub fn update_solid(&mut self, gpu: &mut dyn Backend, world: &super::world::ClientWorld, center: IVec3) {
+        let s = &mut self.solid;
+        if !s.on {
+            return;
+        }
+        let mut rebuilt = 0;
+        let mut bits = [0u32; 128];
+        // Nearest first, so a frame out of budget has fixed what is close.
+        'shells: for r in 0i32..=7 {
+            for dy in -r..=r {
+                for dz in -r..=r {
+                    for dx in -r..=r {
+                        if dx.abs().max(dy.abs()).max(dz.abs()) != r {
+                            continue;
+                        }
+                        let p = center + IVec3::new(dx, dy, dz);
+                        let slot = ((p.y & 15) * 256 + (p.z & 15) * 16 + (p.x & 15)) as usize;
+                        let now = world.cube_rev(p);
+                        let key = now.map(|(_, v)| (p, v));
+                        if s.held[slot] == key {
+                            continue;
+                        }
+                        if rebuilt >= SOLID_PER_FRAME {
+                            break 'shells;
+                        }
+                        rebuilt += 1;
+                        s.held[slot] = key;
+                        let Some((cube, _)) = now else {
+                            s.tags[slot] = [0; 4];
+                            continue;
+                        };
+                        let casts = |st: u32| s.casts.get(st as usize).copied().unwrap_or(false);
+                        match cube.uniform_state() {
+                            Some(st) => bits.fill(if casts(st) { !0 } else { 0 }),
+                            None => {
+                                bits.fill(0);
+                                for i in 0..crate::world::cube::VOLUME {
+                                    if casts(cube.get(i)) {
+                                        bits[i / 32] |= 1 << (i % 32);
+                                    }
+                                }
+                            }
+                        }
+                        gpu.write_buffer(s.buf, ((SOLID_SLOTS * 4 + slot * 128) * 4) as u64, bytemuck::cast_slice(&bits));
+                        s.tags[slot] = [p.x as u32, p.y as u32, p.z as u32, 1];
+                    }
+                }
+            }
+        }
+        if rebuilt > 0 {
+            gpu.write_buffer(s.buf, 0, bytemuck::cast_slice(&s.tags));
         }
     }
 
@@ -802,6 +902,7 @@ impl WorldRenderer {
             list.bind(b::TEX_SHADER, self.tex_shader);
             list.bind(b::SCENE, scene);
             list.bind(b::LOD_MASK, self.lod_mask.0);
+            list.bind(b::SOLID, self.solid.buf);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: start as u64 * 20, count });
         }
     }

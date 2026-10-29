@@ -42,7 +42,7 @@ pub fn around_mask(x: i32, y: i32, z: i32) -> u32 {
     mask
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Blocks {
     Uniform(u32),
     Packed { palette: Vec<u32>, bits: u32, words: Box<[u64]> },
@@ -69,6 +69,11 @@ pub struct Cube {
 }
 
 impl Cube {
+    /// Same blocks in the same encoding (light and the rest aside).
+    pub fn same_blocks(&self, other: &Cube) -> bool {
+        self.blocks == other.blocks
+    }
+
     pub fn uniform(state: u32, light: u32) -> Cube {
         Cube { blocks: Blocks::Uniform(state), light: Light::Uniform(light), biomes: None, ticked: 0, edits: 0 }
     }

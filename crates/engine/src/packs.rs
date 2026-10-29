@@ -63,6 +63,11 @@ pub fn set_shader_pack(dir: Option<PathBuf>) {
     *SHADER_PACK.write().unwrap() = dir;
 }
 
+/// The chosen pack's `name` mentions `what` (features the engine only pays for when used).
+pub fn pack_uses(name: &str, what: &str) -> bool {
+    pack_source(name).is_some_and(|s| s.contains(what))
+}
+
 fn pack_source(name: &str) -> Option<String> {
     let path = SHADER_PACK.read().unwrap().as_ref().map(|d| d.join(name))?;
     std::fs::read_to_string(path).ok()

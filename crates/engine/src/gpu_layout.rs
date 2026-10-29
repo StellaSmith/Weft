@@ -384,6 +384,9 @@ gpu_struct! {
         /// (bright), z game ticks with the fraction of the current one (animated textures;
         /// wraps every 2^20).
         pub light: [f32; 4],
+        /// xyz toward the sun (unit), w how far it is above the horizon (0 under it or in a
+        /// dimension without sky light). For shader packs: the engine draws no sun.
+        pub sun: [f32; 4],
     }
 }
 
@@ -587,6 +590,9 @@ bindings! {
         // A bit per cube column around the camera's, addressed modulo 2 * g.extra.w + 1:
         // its cubes show its ground, distant terrain is not drawn there (`client::lod`).
         LOD_MASK "lod_mask": "array<u32>",
+        // Which blocks around the camera cast shadows, for shader packs that call `solid_at`
+        // (`client::world_render::Solid`); a single word otherwise.
+        SOLID "solid": "array<u32>",
     }
     // `item_boxes`: item models in their own space, kept between frames
     // (`EntityRenderer::item_model`); an item instance is a box in `boxes` whose rows place
@@ -617,6 +623,25 @@ bindings! {
     }
 }
 
+/// Whether the block at `p` (block coordinates) casts a shadow, as far as the client has it
+/// within about 112 blocks of the camera; false beyond, for unloaded cubes and while no shader
+/// pack asks (`client::world_render::Solid`).
+const SOLID_AT: &str = "
+fn solid_at(p: vec3<i32>) -> bool {
+    if arrayLength(&solid) < 4096u * 132u {
+        return false;
+    }
+    let c = p >> vec3(4u);
+    let s = u32(c.y & 15) * 256u + u32(c.z & 15) * 16u + u32(c.x & 15);
+    if solid[s * 4u + 3u] == 0u || bitcast<i32>(solid[s * 4u]) != c.x || bitcast<i32>(solid[s * 4u + 1u]) != c.y || bitcast<i32>(solid[s * 4u + 2u]) != c.z {
+        return false;
+    }
+    let l = p & vec3(15);
+    let i = u32((l.y * 16 + l.z) * 16 + l.x);
+    return ((solid[4096u * 4u + s * 128u + i / 32u] >> (i % 32u)) & 1u) != 0u;
+}
+";
+
 /// Every GPU struct as WGSL.
 fn structs() -> String {
     [Scene::wgsl(), Globals::wgsl(), GpuBox::wgsl(), Instance::wgsl(), GpuCuboid::wgsl(), GpuCorner::wgsl(), GpuBone::wgsl(), GpuParticle::wgsl(), Quad::wgsl(), Screen::wgsl(), Pass::wgsl()].concat()
@@ -631,6 +656,9 @@ pub fn prelude(shader: &str, common: &str) -> String {
     s.push_str(&structs());
     for (i, (name, ty)) in bindings(shader).iter().enumerate() {
         s.push_str(&format!("@group(1) @binding({i}) var<storage, read> {name}: {ty};\n"));
+    }
+    if shader == "world.wgsl" {
+        s.push_str(SOLID_AT);
     }
     s.push_str(common);
     s.push('\n');

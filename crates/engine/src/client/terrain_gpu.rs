@@ -35,7 +35,7 @@ pub struct Job {
     pub dim: u32,
     pub seed: u64,
     pub pos: IVec3,
-    pub custom: Vec<i32>,
+    pub custom: Arc<Vec<i32>>,
     pub edits: Arc<Vec<AreaFill>>,
     pub done: Sender<super::terrain::Made>,
 }
@@ -152,19 +152,23 @@ fn postfix(m: &Mask, seed: u64, w: &mut Vec<i32>, depth: usize) -> Option<usize>
     })
 }
 
-/// Heights of the mod features `custom` at the cube's columns and corners, for its job.
-pub fn custom_heights(c: &Content, dim: u32, seed: u64, pos: IVec3, custom: &[usize]) -> Vec<i32> {
-    let Some(t) = c.dims[dim as usize].terrain.as_ref() else { return Vec::new() };
-    let f = Fields { seed };
-    let (ox, oz) = (pos.x * 16, pos.z * 16);
-    let mut out = Vec::with_capacity(custom.len() * CUSTOM_WORDS);
-    for &i in custom {
-        for ci in 0..CUSTOM_WORDS as i32 {
-            let (x, z) = if ci < 256 { (ox + ci % 16, oz + ci / 16) } else { (ox + (ci - 256) % 5 * 4, oz + (ci - 256) / 5 * 4) };
-            out.push(t.features[i].height_at(&f, x * 16, z * 16));
+/// Heights of the mod features `custom` at the columns and corners of cube column (`x`, `z`),
+/// for its jobs.
+pub fn custom_heights(c: &Content, dim: u32, seed: u64, x: i32, z: i32, custom: &[usize]) -> Arc<Vec<i32>> {
+    let def = &c.dims[dim as usize];
+    def.custom_cache.get(seed, x, z, || {
+        let Some(t) = def.terrain.as_ref() else { return Vec::new() };
+        let f = Fields { seed };
+        let (ox, oz) = (x * 16, z * 16);
+        let mut out = Vec::with_capacity(custom.len() * CUSTOM_WORDS);
+        for &i in custom {
+            for ci in 0..CUSTOM_WORDS as i32 {
+                let (x, z) = if ci < 256 { (ox + ci % 16, oz + ci / 16) } else { (ox + (ci - 256) % 5 * 4, oz + (ci - 256) / 5 * 4) };
+                out.push(t.features[i].height_at(&f, x * 16, z * 16));
+            }
         }
-    }
-    out
+        out
+    })
 }
 
 #[derive(Default)]
@@ -172,8 +176,27 @@ struct Slot {
     desc: Option<(BufferId, usize)>,
     desc_key: Option<(u32, u64)>,
     jobs: Option<(BufferId, usize)>,
-    out: Option<(BufferId, usize)>,
+    /// Two, so the next batch goes into one while what came back in the other is read.
+    out: [Option<(BufferId, usize)>; 2],
+    /// Which `out` the batch in flight writes.
+    flight_out: usize,
     flight: Vec<Job>,
+    /// What came back, while workers still read it.
+    reading: [Option<Arc<Readback>>; 2],
+}
+
+/// A frame slot's output buffer as workers read it, straight from where the GPU wrote it.
+struct Readback(*const u32, usize);
+
+// The buffer is neither written nor freed while anyone holds this (`Slot::reading`).
+unsafe impl Send for Readback {}
+unsafe impl Sync for Readback {}
+
+impl Readback {
+    fn cube(&self, i: usize) -> &[u32] {
+        assert!((i + 1) * OUT_WORDS <= self.1);
+        unsafe { std::slice::from_raw_parts(self.0.add(i * OUT_WORDS), OUT_WORDS) }
+    }
 }
 
 /// The main thread's end: dispatches batches into the frame and hands what came back to the
@@ -205,6 +228,21 @@ impl GpuTerrain {
         GpuTerrain { pipeline, rx, queue: VecDeque::new(), slots: Vec::new(), desc: None, on }
     }
 
+    /// Frees its buffers, once the workers reading them are done.
+    pub fn destroy(&mut self, gpu: &mut dyn Backend) {
+        for s in self.slots.drain(..) {
+            while s.reading.iter().flatten().any(|r| Arc::strong_count(r) > 1) {
+                std::thread::yield_now();
+            }
+            for (b, _) in [s.desc, s.jobs, s.out[0], s.out[1]].into_iter().flatten() {
+                gpu.destroy_buffer(b);
+            }
+        }
+        if let Some(p) = self.pipeline.take() {
+            gpu.destroy_pipeline(p);
+        }
+    }
+
     /// Takes in what the GPU finished in this slot's last frame and records the next batch.
     pub fn frame(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, slot: usize) {
         let Some(pipeline) = self.pipeline else { return };
@@ -214,13 +252,35 @@ impl GpuTerrain {
         }
         let s = &mut self.slots[slot];
         if !s.flight.is_empty() {
-            let (out, _) = s.out.unwrap();
+            let (out, _) = s.out[s.flight_out].unwrap();
             let words: &[u32] = bytemuck::cast_slice(&gpu.mapped(out)[..s.flight.len() * OUT_WORDS * 4]);
+            let back = Arc::new(Readback(words.as_ptr(), words.len()));
+            // A column's cubes come together: what they share is worked out first, once.
+            let mut columns: rustc_hash::FxHashMap<(i32, i32), Vec<(usize, Job)>> = Default::default();
             for (i, job) in s.flight.drain(..).enumerate() {
-                let w = words[i * OUT_WORDS..(i + 1) * OUT_WORDS].to_vec();
-                crate::background().spawn(move || finish(job, w));
+                columns.entry((job.pos.x, job.pos.z)).or_default().push((i, job));
+            }
+            // Unpacked on threads of their own (the other pools are busy while loading): the
+            // slot waits for it.
+            for ((x, z), jobs) in columns {
+                let back = back.clone();
+                unpacking().spawn(move || {
+                    let made: Vec<(Job, Vec<u32>)> = jobs.into_iter().map(|(i, job)| (job, back.cube(i).to_vec())).collect();
+                    drop(back);
+                    crate::server::dim::warm_scatters(content(), made[0].0.dim, made[0].0.seed, x, z);
+                    for (job, words) in made {
+                        crate::background().spawn(move || finish(job, unpack(&words)));
+                    }
+                });
+            }
+            s.reading[s.flight_out] = Some(back);
+        }
+        for r in &mut s.reading {
+            if r.as_ref().is_some_and(|r| Arc::strong_count(r) == 1) {
+                *r = None;
             }
         }
+        let Some(next) = (0..2).find(|&k| s.reading[k].is_none()) else { return };
         self.queue.extend(self.rx.try_iter());
         let Some(first) = self.queue.front() else { return };
         let key = (first.dim, first.seed);
@@ -255,16 +315,23 @@ impl GpuTerrain {
         }
         let jobs_buf = sized(gpu, &mut s.jobs, BATCH * stride * 4, usage::STORAGE | usage::HOST, "terrain jobs");
         gpu.mapped(jobs_buf)[..jobs.len() * 4].copy_from_slice(bytemuck::cast_slice(&jobs));
-        let out = sized(gpu, &mut s.out, BATCH * OUT_WORDS * 4, usage::STORAGE | usage::READBACK, "terrain out");
+        let out = sized(gpu, &mut s.out[next], BATCH * OUT_WORDS * 4, usage::STORAGE | usage::READBACK, "terrain out");
+        s.flight_out = next;
         list.push(Cmd::SetPipeline(pipeline));
         list.bind(0, desc);
         list.bind(1, jobs_buf);
         list.bind(2, out);
         list.push_constants(&[batch.len() as u32, *custom as u32]);
         list.push(Cmd::Dispatch { x: batch.len() as u32, y: 1, z: 1 });
+        crate::diag::TERRAIN_GPU.add(batch.len() as u64);
         list.push(Cmd::Barrier);
         s.flight = batch;
     }
+}
+
+fn unpacking() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(4).thread_name(|i| format!("terrain unpack {i}")).build().expect("terrain unpack pool"))
 }
 
 fn enabled() -> bool {
@@ -300,12 +367,20 @@ fn cpu(job: Job) {
 }
 
 /// Unpacks what the GPU made and finishes the cube like the CPU would.
-fn finish(job: Job, w: Vec<u32>) {
-    let c = content();
+/// A cube as the GPU made it: blocks, biomes, columns.
+type Unpacked = (Vec<u32>, [u16; 256], [TerrainColumn; 256]);
+
+fn unpack(w: &[u32]) -> Unpacked {
     let blocks: Vec<u32> = (0..4096).map(|i| (w[i / 2] >> ((i & 1) * 16)) & 0xFFFF).collect();
     let half = |at: usize, i: usize| ((w[at + i / 2] >> ((i & 1) * 16)) & 0xFFFF) as u16;
     let biomes: [u16; 256] = std::array::from_fn(|i| half(2048, i));
     let cols: [TerrainColumn; 256] = std::array::from_fn(|i| TerrainColumn { height: w[2176 + i] as i32, biome: half(2432, i) as u32 });
+    (blocks, biomes, cols)
+}
+
+fn finish(job: Job, (blocks, biomes, cols): Unpacked) {
+    let t = std::time::Instant::now();
+    let c = content();
     let mut cube = crate::server::dim::finish_generated(c, job.dim, job.seed, job.pos, blocks, biomes, Some(Arc::new(cols)), false);
     GPU_CUBES.fetch_add(1, Ordering::Relaxed);
     if checking() {
@@ -322,6 +397,8 @@ fn finish(job: Job, w: Vec<u32>) {
         }
     }
     done(c, job, &mut cube);
+    crate::diag::TERRAIN_FINISHED.add(1);
+    crate::diag::TERRAIN_FINISH_NS.add(t.elapsed().as_nanos() as u64);
 }
 
 /// Edits made since it was asked for, then its light on its own (as generation workers do).

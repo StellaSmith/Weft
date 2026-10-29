@@ -68,15 +68,32 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
     let states = &n.states;
     let opaque = |i: usize| c.states[states[i] as usize].flags & bf::OPAQUE != 0;
     let looks = super::looks::current();
+    // Rows along x of the padded volume (bit x + 1): blocks, and opaque ones. A block with an
+    // opaque block on every side shows nothing, and underground that is nearly all of them.
+    let mut filled = [0u32; PAD * PAD];
+    let mut solid = [0u32; PAD * PAD];
+    for (row, (f, o)) in filled.iter_mut().zip(solid.iter_mut()).enumerate() {
+        for (x, &s) in states[row * PAD..(row + 1) * PAD].iter().enumerate() {
+            if s != 0 {
+                *f |= 1 << x;
+                if c.states[s as usize].flags & bf::OPAQUE != 0 {
+                    *o |= 1 << x;
+                }
+            }
+        }
+    }
+    let row = |y: i32, z: i32| ((y + 1) as usize) * PAD + (z + 1) as usize;
 
     for y in 0..16i32 {
         for z in 0..16i32 {
-            for x in 0..16i32 {
+            let o = solid[row(y, z)];
+            let enclosed = (o << 1) & (o >> 1) & solid[row(y - 1, z)] & solid[row(y + 1, z)] & solid[row(y, z - 1)] & solid[row(y, z + 1)];
+            let mut todo = filled[row(y, z)] & !enclosed & 0x1FFFE;
+            while todo != 0 {
+                let x = todo.trailing_zeros() as i32 - 1;
+                todo &= todo - 1;
                 let i = pidx(x, y, z);
                 let s = states[i];
-                if s == 0 {
-                    continue;
-                }
                 let info = &c.states[s as usize];
                 let biome = n.biomes[(z * 16 + x) as usize] as u32;
                 if info.liquid.is_some() {

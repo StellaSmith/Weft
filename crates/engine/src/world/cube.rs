@@ -224,9 +224,20 @@ impl Cube {
             self.light = light;
             (self.biomes, self.ticked, self.edits) = (biomes, ticked, edits);
         }
-        if let Light::Full(l) = &self.light {
-            if l.iter().all(|&v| v == l[0]) {
-                self.light = Light::Uniform(l[0]);
+        self.mask_light(!0);
+    }
+
+    /// Keeps only the light bits in `keep`; light the same all through becomes uniform again.
+    pub fn mask_light(&mut self, keep: u32) {
+        match &mut self.light {
+            Light::Uniform(v) => *v &= keep,
+            Light::Full(l) => {
+                if keep != !0 {
+                    l.iter_mut().for_each(|v| *v &= keep);
+                }
+                if l.iter().all(|&v| v == l[0]) {
+                    self.light = Light::Uniform(l[0]);
+                }
             }
         }
     }
@@ -256,6 +267,14 @@ impl Cube {
 
     pub fn fill_light(&mut self, v: u32) {
         self.light = Light::Uniform(v);
+    }
+
+    /// Every light value, when they are not all the same.
+    pub fn light_all(&self) -> Option<&[u32; VOLUME]> {
+        match &self.light {
+            Light::Uniform(_) => None,
+            Light::Full(l) => Some(l),
+        }
     }
 
     pub fn uniform_light(&self) -> Option<u32> {

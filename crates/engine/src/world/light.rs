@@ -14,7 +14,11 @@ use crate::content::Content;
 
 pub trait CubeMap {
     fn cube(&self, c: IVec3) -> Option<&Cube>;
+    /// `None` for cubes that may be read but not written (light toward them is left for later).
     fn cube_mut(&mut self, c: IVec3) -> Option<&mut Cube>;
+    fn writable(&self, _c: IVec3) -> bool {
+        true
+    }
 }
 
 const DIRS: [IVec3; 6] = [IVec3::NEG_X, IVec3::X, IVec3::NEG_Y, IVec3::Y, IVec3::NEG_Z, IVec3::Z];
@@ -89,15 +93,16 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         self.lookup(cp).map(|cube| ch(cube.light(i), c))
     }
 
+    /// Whether the value there is `v` now.
     #[inline]
-    fn put(&mut self, p: IVec3, c: usize, v: u8) {
+    fn put(&mut self, p: IVec3, c: usize, v: u8) -> bool {
         let (cp, i) = split(p);
-        let Some(cube) = self.lookup(cp) else { return };
+        let Some(cube) = self.lookup(cp) else { return false };
         let old = cube.light(i);
         let new = with(old, c, v);
         if new != old {
             // Writing may give the map a fresh copy of a shared cube; keep the cache on it.
-            let cube = self.map.cube_mut(cp).unwrap();
+            let Some(cube) = self.map.cube_mut(cp) else { return false };
             cube.set_light(i, new);
             self.cache.set((cp, cube as *const Cube));
             if cp != self.last_changed {
@@ -105,6 +110,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                 self.changed.insert(cp);
             }
         }
+        true
     }
 
     #[inline]
@@ -133,8 +139,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
                     continue;
                 }
                 let nv = if c == SKY && d == 2 && v == SKY_FULL && op == 0 { SKY_FULL } else { v.saturating_sub(op.max(1)) };
-                if nv > ch(light, c) {
-                    self.put(n, c, nv);
+                if nv > ch(light, c) && self.put(n, c, nv) {
                     self.add.push_back((n, nv));
                     steps += 1;
                 }
@@ -334,7 +339,7 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
     /// Whether cube `n` may still gain light on channel `c` from a neighbor at `level`: loaded,
     /// not solid all through, and not already uniformly at that level.
     fn accepts(&self, n: IVec3, c: usize, level: u8) -> bool {
-        let Some(cube) = self.map.cube(n) else { return false };
+        let Some(cube) = self.map.cube(n).filter(|_| self.map.writable(n)) else { return false };
         if cube.uniform_light().is_some_and(|l| ch(l, c) >= level) {
             return false;
         }
@@ -370,6 +375,12 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
         }
     }
 
+    /// Spreads light on channel `c` from cells already holding it (`outward`'s seeds).
+    pub fn spread(&mut self, c: usize, seeds: impl Iterator<Item = (IVec3, u8)>) {
+        self.add.extend(seeds);
+        self.propagate(c);
+    }
+
     /// Relights after the block at `p` changed from `old` to the state now stored there.
     pub fn block_changed(&mut self, p: IVec3, old: u32) {
         let Some((new, _)) = self.read(p) else { return };
@@ -399,6 +410,55 @@ impl<'a, M: CubeMap> Lighter<'a, M> {
     }
 }
 
+/// Cells of cube `cp` whose light would raise a neighbor across its faces: (cell, channel,
+/// value), for `Lighter::spread`. Only reads, so cubes lit apart can be looked at side by side.
+pub fn outward<M: CubeMap>(map: &M, c: &Content, sky: bool, cp: IVec3, out: &mut Vec<(IVec3, u8, u8)>) {
+    let Some(cube) = map.cube(cp) else { return };
+    let opaque = |cube: &Cube| cube.palette().iter().all(|&s| c.states[s as usize].opacity >= 15);
+    if opaque(cube) {
+        return;
+    }
+    let base = cp * 16;
+    let uniform = cube.uniform_light();
+    let channels: &[usize] = if sky { &[0, 1, 2, 3] } else { &[1, 2, 3] };
+    for d in 0..6 {
+        let Some(n) = map.cube(cp + DIRS[d]) else { continue };
+        if opaque(n) {
+            continue;
+        }
+        let nu = n.uniform_light();
+        for &ch_ in channels {
+            // Straight down sky keeps full strength, anything else loses at least one.
+            let most = if ch_ == SKY && d == 2 { SKY_FULL } else { SKY_FULL - 1 };
+            if uniform.is_some_and(|l| ch(l, ch_) <= 1) || nu.is_some_and(|l| ch(l, ch_) >= most) {
+                continue;
+            }
+            for a in 0..16 {
+                for b in 0..16 {
+                    let local = match d {
+                        0 => IVec3::new(0, a, b),
+                        1 => IVec3::new(15, a, b),
+                        2 => IVec3::new(a, 0, b),
+                        3 => IVec3::new(a, 15, b),
+                        4 => IVec3::new(a, b, 0),
+                        _ => IVec3::new(a, b, 15),
+                    };
+                    let v = ch(cube.light(index(local.x as usize, local.y as usize, local.z as usize)), ch_);
+                    if v <= 1 {
+                        continue;
+                    }
+                    let reach = if ch_ == SKY && d == 2 && v == SKY_FULL { SKY_FULL } else { v - 1 };
+                    let q = (local + DIRS[d]) & 15;
+                    let i = index(q.x as usize, q.y as usize, q.z as usize);
+                    if ch(n.light(i), ch_) < reach && c.states[n.get(i) as usize].opacity < 15 {
+                        out.push((base + local, ch_ as u8, v));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Lights a cube alone, as if open sky were above it and nothing beside it: the expensive
 /// inside part of `light_new`, done on a generation worker.
 pub fn prelight(c: &Content, cube: &mut Cube, sky: bool) {
@@ -413,6 +473,8 @@ pub fn prelight(c: &Content, cube: &mut Cube, sky: bool) {
     }
     let mut one = One(cube);
     Lighter::new(&mut one, c, sky).light_new(IVec3::ZERO, true);
+    // Uniform light lets joins skip it (dark neighbors have nothing to give).
+    cube.mask_light(!0);
 }
 
 #[cfg(test)]

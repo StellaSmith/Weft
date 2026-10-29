@@ -283,6 +283,9 @@ pub struct DimensionDef {
     /// Per cube column, the scattered things that may reach into it (`dim::scatter_sites`):
     /// worked out once for the whole column instead of once per cube.
     pub scatter_cache: crate::server::terrain::ColumnCache<Vec<crate::server::dim::Site>>,
+    /// Per cube column, the heights of mods' own features the GPU's terrain takes
+    /// (`terrain_gpu::custom_heights`): their code runs once per column.
+    pub custom_cache: crate::server::terrain::ColumnCache<Vec<i32>>,
 }
 
 pub struct ScatterDef {
@@ -854,6 +857,7 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 decorations: Vec::new(),
                 column_cache: crate::server::terrain::ColumnCache::new(4096),
                 scatter_cache: crate::server::terrain::ColumnCache::new(32768),
+                custom_cache: crate::server::terrain::ColumnCache::new(32768),
             },
             d.cell as usize,
             RawValue::list(d.components),
@@ -894,6 +898,7 @@ fn void_dimension() -> DimensionDef {
         decorations: Vec::new(),
         column_cache: crate::server::terrain::ColumnCache::new(1),
         scatter_cache: crate::server::terrain::ColumnCache::new(1),
+        custom_cache: crate::server::terrain::ColumnCache::new(1),
     }
 }
 

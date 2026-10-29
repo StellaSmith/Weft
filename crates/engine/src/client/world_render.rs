@@ -136,8 +136,12 @@ impl Camera {
 /// index), cube center relative to the camera.
 type DrawRecord = (u8, u8, u32, DrawIndexedArgs, [i32; 4], Vec3);
 
-/// Meshes a worker culls and turns into draws at a time.
-const MESH_CHUNK: usize = 2048;
+/// Meshes are kept in regions of this many cubes a side (log2), culled as a whole first.
+const REGION: i32 = 3;
+
+fn region_of(key: MeshKey) -> (u64, IVec3) {
+    (key.0, key.1 >> REGION)
+}
 
 /// The draws of one visible mesh (its corner `lo` relative to the camera, `k` its structure or
 /// 0), returning the faces drawn. A face direction can be seen only from the side its normal
@@ -196,17 +200,19 @@ pub struct WorldRenderer {
     quad_pipes: [PipelineId; 3],
     faces: Pool,
     quads: Pool,
-    /// Index into `entries` by key. The meshes themselves lie side by side, so a frame goes
-    /// through them in parallel chunks.
+    /// Index into its region's meshes by key. A frame culls the regions, then goes through the
+    /// meshes of the ones seen, nearest first, in parallel.
     meshes: FxHashMap<MeshKey, usize>,
-    entries: Vec<(MeshKey, GpuMesh)>,
+    regions: FxHashMap<(u64, IVec3), Vec<(MeshKey, GpuMesh)>>,
     globals: Vec<BufferId>,
     origins: Vec<(BufferId, u32)>,
     /// Per frame: camera-relative positions of the structures drawn (index 0: none, the world).
     offsets: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
     /// `draw`'s lists, kept between frames.
-    scratch: (Vec<Vec<DrawRecord>>, Vec<DrawRecord>, Vec<usize>),
+    scratch: (Vec<usize>, Vec<DrawRecord>, Vec<usize>),
+    /// Draws of each region seen, kept between frames.
+    parts: Vec<Vec<DrawRecord>>,
     /// Of the last `draw`: where its translucent draws start in `scratch.2`, and the buffers
     /// they use (globals, origins, indirect, offsets, the frame's scene).
     translucent: usize,
@@ -303,7 +309,8 @@ impl WorldRenderer {
             faces: Pool { words: FACE_WORDS, pages: Vec::new(), label: "face page" },
             quads: Pool { words: QUAD_WORDS, pages: Vec::new(), label: "quad page" },
             meshes: FxHashMap::default(),
-            entries: Vec::new(),
+            regions: FxHashMap::default(),
+            parts: Vec::new(),
             offsets: Vec::new(),
             globals,
             origins: Vec::new(),
@@ -420,9 +427,14 @@ impl WorldRenderer {
 
     pub fn remove(&mut self, key: MeshKey) {
         let Some(i) = self.meshes.remove(&key) else { return };
-        let (_, m) = self.entries.swap_remove(i);
-        if let Some(&(moved, _)) = self.entries.get(i) {
+        let r = region_of(key);
+        let list = self.regions.get_mut(&r).unwrap();
+        let (_, m) = list.swap_remove(i);
+        if let Some(&(moved, _)) = list.get(i) {
             self.meshes.insert(moved, i);
+        }
+        if list.is_empty() {
+            self.regions.remove(&r);
         }
         if let Some(a) = m.faces {
             self.faces.free(a);
@@ -434,7 +446,7 @@ impl WorldRenderer {
 
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         self.meshes.clear();
-        self.entries.clear();
+        self.regions.clear();
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
@@ -451,7 +463,7 @@ impl WorldRenderer {
 
     /// Every cube of structure `frame` goes (it left).
     pub fn remove_frame(&mut self, frame: u64) {
-        let keys: Vec<MeshKey> = self.entries.iter().map(|e| e.0).filter(|k| k.0 == frame).collect();
+        let keys: Vec<MeshKey> = self.regions.iter().filter(|(r, _)| r.0 == frame).flat_map(|(_, l)| l.iter().map(|e| e.0)).collect();
         for k in keys {
             self.remove(k);
         }
@@ -489,8 +501,9 @@ impl WorldRenderer {
             gpu.write_buffer(self.quads.pages[a.page as usize].0, a.offset as u64 * 32, bytemuck::cast_slice(&data));
             a
         });
-        self.meshes.insert(key, self.entries.len());
-        self.entries.push((key, GpuMesh { faces, face_counts, quads, quad_counts }));
+        let list = self.regions.entry(region_of(key)).or_default();
+        self.meshes.insert(key, list.len());
+        list.push((key, GpuMesh { faces, face_counts, quads, quad_counts }));
     }
 
     /// `frames`: structures to draw and where their block (0, 0, 0) is in the world.
@@ -510,22 +523,38 @@ impl WorldRenderer {
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));
 
         let planes = frustum_planes(view_proj);
-        let (mut parts, mut draws, mut sorted) = std::mem::take(&mut self.scratch);
+        let (mut buckets, mut draws, mut sorted) = std::mem::take(&mut self.scratch);
         draws.clear();
         sorted.clear();
         // Camera-relative offset of each structure drawn (k + 1 its index; 0 the world).
         let frame_offsets: Vec<Vec3> = frames.iter().map(|f| (f.1 - (cam_cube * 16).as_dvec3()).as_vec3()).collect();
-        // Culling and the draws of what is left, a chunk of meshes per worker (at a view of 64
-        // there are some 300k meshes and 100k draws a frame).
-        parts.resize_with(self.entries.len().div_ceil(MESH_CHUNK), Vec::new);
-        let faces_drawn: u64 = self
-            .entries
-            .par_chunks(MESH_CHUNK)
+        // Regions in view, nearest first: what is drawn first then hides what is behind it.
+        let side = (16 << REGION) as f32;
+        let mut seen: Vec<(f32, &Vec<(MeshKey, GpuMesh)>)> = self
+            .regions
+            .iter()
+            .filter_map(|(&(f, r), list)| {
+                if f != 0 {
+                    return Some((0.0, list));
+                }
+                let center = ((r << REGION) - cam_cube).as_vec3() * 16.0 - cam_frac + Vec3::splat(side / 2.0);
+                planes.iter().all(|pl| pl.dot(center.extend(1.0)) > -side * 0.8661).then(|| (center.length_squared(), list))
+            })
+            .collect();
+        seen.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        
+        
+        // A list per region seen, kept between frames: allocating them anew on every core each
+        // frame cost more than the culling.
+        let mut parts = std::mem::take(&mut self.parts);
+        parts.resize_with(seen.len().max(parts.len()), Vec::new);
+        let faces_drawn: u64 = seen
+            .par_iter()
             .zip(parts.par_iter_mut())
-            .map(|(chunk, out)| {
+            .map(|((_, list), out)| {
                 out.clear();
                 let mut faces = 0u64;
-                for &(key, m) in chunk {
+                for &(key, m) in list.iter() {
                     let (lo, k) = if key.0 == 0 {
                         ((key.1 - cam_cube).as_vec3() * 16.0 - cam_frac, 0)
                     } else {
@@ -540,33 +569,39 @@ impl WorldRenderer {
                 faces
             })
             .sum();
-        for p in &parts {
+        for p in &parts[..seen.len()] {
             draws.extend_from_slice(p);
         }
-        // Opaque/cutout front to back (early depth rejection) within each run of one pipeline
-        // and page, translucent back to front across faces and quads (ice in front of water must
-        // come after it). In one cube, seen from above, the quads (liquid surfaces) go first,
-        // from below the faces.
-        let dist = |d: &DrawRecord| d.5.length_squared().to_bits();
-        sorted.extend(0..draws.len());
-        sorted.par_sort_unstable_by_key(|&i| {
-            let d = &draws[i];
-            (d.1 == 2, d.1, d.0, d.2, if d.1 == 2 { 0 } else { dist(d) })
-        });
+        self.parts = parts;
+        // Into runs of one pipeline and page, keeping the near-to-far order inside each:
+        // layer, kind, page (translucent, the last layer, at the end).
+        let pages = self.faces.pages.len().max(self.quads.pages.len()).max(1);
+        let bucket = |d: &DrawRecord| (d.1 as usize * 2 + d.0 as usize) * pages + d.2 as usize;
+        buckets.clear();
+        buckets.resize(6 * pages + 1, 0);
+        for d in &draws {
+            buckets[bucket(d) + 1] += 1;
+        }
+        for b in 1..buckets.len() {
+            buckets[b] += buckets[b - 1];
+        }
+        sorted.resize(draws.len(), 0);
+        for (i, d) in draws.iter().enumerate() {
+            let b = bucket(d);
+            sorted[buckets[b]] = i;
+            buckets[b] += 1;
+        }
         let translucent_start = sorted.iter().position(|&i| draws[i].1 == 2).unwrap_or(sorted.len());
-        let center = |d: &DrawRecord| d.5;
-        sorted[translucent_start..].sort_by(|&a, &b| {
-            let (ca, cb) = (center(&draws[a]), center(&draws[b]));
-            let rank = |d: &DrawRecord, c: Vec3| if c.y < 0.0 { d.0 == 0 } else { d.0 == 1 };
-            cb.length_squared().total_cmp(&ca.length_squared()).then(rank(&draws[a], ca).cmp(&rank(&draws[b], cb)))
-        });
+        // Far first; distances are positive, so their bits order like them.
+        let rank = |d: &DrawRecord| if d.5.y < 0.0 { d.0 == 0 } else { d.0 == 1 };
+        sorted[translucent_start..].par_sort_unstable_by_key(|&i| (std::cmp::Reverse(draws[i].5.length_squared().to_bits()), rank(&draws[i])));
         self.translucent = translucent_start;
 
         let n = draws.len() as u32;
         self.drawn = n;
         self.faces_drawn = faces_drawn;
         if n == 0 {
-            self.scratch = (parts, draws, sorted);
+            self.scratch = (buckets, draws, sorted);
             self.buffers = None;
             return;
         }
@@ -589,7 +624,7 @@ impl WorldRenderer {
         }
 
         self.buffers = Some((gbuf, obuf, ibuf, fbuf, scene));
-        self.scratch = (parts, draws, sorted);
+        self.scratch = (buckets, draws, sorted);
         self.emit(list, 0..self.translucent);
     }
 

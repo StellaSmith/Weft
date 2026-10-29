@@ -178,6 +178,10 @@ use weft_noise::hash;
 /// does not depend on which cube is generated first.
 fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32], biomes: &[u16; 256]) {
     let o = pos * 16;
+    let air = c.states[AIR as usize].block;
+    if blocks.iter().all(|&b| b == AIR) && def.ores.iter().all(|ore| ore.replace.binary_search(&air).is_err()) {
+        return;
+    }
     for ore in &def.ores {
         let reach = ore.size as i32;
         if o.y > ore.max_y.saturating_add(reach) || o.y + 15 < ore.min_y.saturating_sub(reach) {
@@ -189,7 +193,9 @@ fn place_ores(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: I
                     for v in 0..ore.veins {
                         let h = hash(seed ^ ore.salt, nx as i64, ny as i64 * 31 + v as i64, nz as i64);
                         let mut p = IVec3::new(nx * 16 + (h % 16) as i32, ny * 16 + ((h >> 4) % 16) as i32, nz * 16 + ((h >> 8) % 16) as i32);
-                        if p.y > ore.max_y || p.y < ore.min_y {
+                        // A step moves a block at most: veins starting farther away never get here.
+                        let far = (o - p).max(p - o - IVec3::splat(15)).max_element();
+                        if p.y > ore.max_y || p.y < ore.min_y || far > reach {
                             continue;
                         }
                         for k in 0..ore.size {
@@ -247,33 +253,49 @@ pub fn scatter_site(def: &crate::content::DimensionDef, c: &Content, s: &crate::
 const SCATTER_UP: i32 = 32;
 const SCATTER_DOWN: i32 = 16;
 
-/// A scattered thing's site: which scatter, where it stands, its biome and random value.
-#[derive(Clone, Copy)]
+/// A scattered thing: where it stands and its blocks (the shape callback's, made once and
+/// shared by every cube it reaches), with the corners of the box around them.
 pub struct Site {
-    scatter: usize,
     pos: IVec3,
-    biome: u32,
-    random: u64,
+    blocks: Vec<abi::ScatterBlock>,
+    lo: IVec3,
+    hi: IVec3,
 }
 
 /// Every site whose thing may reach into cube column (`x`, `z`), from this and neighboring
 /// cells: the same for every cube of the column, so worked out once for it.
-fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, seed: u64, x: i32, z: i32) -> std::sync::Arc<Vec<Site>> {
+fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed: u64, x: i32, z: i32) -> std::sync::Arc<Vec<Site>> {
     def.scatter_cache.get(seed, x, z, || {
         let o = IVec3::new(x, 0, z) * 16;
         let mut out = Vec::new();
-        for (i, s) in def.scatters.iter().enumerate() {
+        let mut buf = vec![abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
+        let states = c.states.len() as u32;
+        for s in &def.scatters {
             let cells = |lo: i32| (lo - s.reach).div_euclid(s.cell)..=(lo + 15 + s.reach).div_euclid(s.cell);
             for cz in cells(o.z) {
                 for cx in cells(o.x) {
-                    if let Some((pos, biome, random)) = scatter_site(def, c, s, seed, (cx, cz)) {
-                        out.push(Site { scatter: i, pos, biome, random });
+                    let Some((pos, biome, random)) = scatter_site(def, c, s, seed, (cx, cz)) else { continue };
+                    let mut args = abi::ScatterArgs { seed, dim, pos: pos.to_array(), biome, random, out: buf.as_mut_ptr(), cap: buf.len() as u32, len: 0 };
+                    host::invoke(s.owner, s.shape, &mut args);
+                    let blocks: Vec<abi::ScatterBlock> = buf[..(args.len as usize).min(buf.len())].iter().filter(|b| b.state < states && (-SCATTER_DOWN..=SCATTER_UP).contains(&b.offset[1])).copied().collect();
+                    let (lo, hi) = blocks.iter().fold((IVec3::MAX, IVec3::MIN), |(lo, hi), b| (lo.min(pos + IVec3::from_array(b.offset)), hi.max(pos + IVec3::from_array(b.offset))));
+                    if !blocks.is_empty() {
+                        out.push(Site { pos, blocks, lo, hi });
                     }
                 }
             }
         }
         out
     })
+}
+
+/// Works out the scattered things of cube column (`x`, `z`) ahead of its cubes: they all need
+/// them, and the ones finished meanwhile waited for whichever was working them out.
+pub fn warm_scatters(c: &Content, dim: u32, seed: u64, x: i32, z: i32) {
+    let def = &c.dims[dim as usize];
+    if !def.scatters.is_empty() {
+        scatter_sites(c, def, dim, seed, x, z);
+    }
 }
 
 /// The parts of scattered things (trees) that fall into this cube, from sites in this and
@@ -283,21 +305,12 @@ fn place_scatters(c: &Content, def: &crate::content::DimensionDef, dim: u32, see
         return;
     }
     let o = pos * 16;
-    let sites = scatter_sites(c, def, seed, pos.x, pos.z);
-    // Most cubes (sky, deep ground) are out of every thing's reach.
-    let reaching = |site: &&Site| site.pos.y - SCATTER_DOWN <= o.y + 15 && site.pos.y + SCATTER_UP >= o.y;
-    if !sites.iter().any(|s| reaching(&s)) {
-        return;
-    }
-    let mut out = vec![abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
-    let states = c.states.len() as u32;
-    for site in sites.iter().filter(reaching) {
-        let (s, p) = (&def.scatters[site.scatter], site.pos);
-        let mut args = abi::ScatterArgs { seed, dim, pos: p.to_array(), biome: site.biome, random: site.random, out: out.as_mut_ptr(), cap: out.len() as u32, len: 0 };
-        host::invoke(s.owner, s.shape, &mut args);
-        for b in &out[..(args.len as usize).min(out.len())] {
+    let sites = scatter_sites(c, def, dim, seed, pos.x, pos.z);
+    for site in sites.iter().filter(|s| s.lo.cmple(o + 15).all() && s.hi.cmpge(o).all()) {
+        let p = site.pos;
+        for b in &site.blocks {
             let l = p + IVec3::from_array(b.offset) - o;
-            if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() && b.state < states {
+            if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
                 let i = (l.y * 256 + l.z * 16 + l.x) as usize;
                 if b.force != 0 || blocks[i] == AIR {
                     blocks[i] = b.state;

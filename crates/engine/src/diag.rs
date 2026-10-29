@@ -1,7 +1,7 @@
 //! Diagnostics that cost nothing until switched on through the log channels (`log::CHANNELS`):
 //! counters, periodic reports, the allocation counter and crash reports.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -40,6 +40,13 @@ pub static LIGHT_CUBES: Counter = Counter::new();
 pub static LIGHT_STEPS: Counter = Counter::new();
 pub static MESHED: Counter = Counter::new();
 pub static MESH_NS: Counter = Counter::new();
+/// Client terrain: cubes the GPU made, time finishing cubes on workers, cubes the terrain thread
+/// put in and the time it was busy.
+pub static TERRAIN_GPU: Counter = Counter::new();
+pub static TERRAIN_FINISHED: Counter = Counter::new();
+pub static TERRAIN_FINISH_NS: Counter = Counter::new();
+pub static TERRAIN_JOINED: Counter = Counter::new();
+pub static TERRAIN_BUSY_NS: Counter = Counter::new();
 
 /// Messages and bytes per message kind: `[0]` to clients, `[1]` to the server.
 static NET: [[(AtomicU64, AtomicU64); 64]; 2] = [const { [const { (AtomicU64::new(0), AtomicU64::new(0)) }; 64] }; 2];
@@ -61,8 +68,12 @@ static COUNT_ALLOCS: AtomicBool = AtomicBool::new(false);
 static ALLOCS: Counter = Counter::new();
 static ALLOC_BYTES: Counter = Counter::new();
 
-/// The executable's global allocator: the system one, counting while the `alloc` channel is on.
+/// The executable's global allocator: mimalloc (the system one on Windows serialized the
+/// workers allocating cubes and meshes by the thousand while loading), counting while the
+/// `alloc` channel is on.
 pub struct CountingAlloc;
+
+static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 unsafe impl GlobalAlloc for CountingAlloc {
     #[inline]
@@ -71,7 +82,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
             ALLOCS.add(1);
             ALLOC_BYTES.add(layout.size() as u64);
         }
-        unsafe { System.alloc(layout) }
+        unsafe { INNER.alloc(layout) }
     }
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -79,11 +90,11 @@ unsafe impl GlobalAlloc for CountingAlloc {
             ALLOCS.add(1);
             ALLOC_BYTES.add(layout.size() as u64);
         }
-        unsafe { System.alloc_zeroed(layout) }
+        unsafe { INNER.alloc_zeroed(layout) }
     }
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { INNER.dealloc(ptr, layout) }
     }
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -91,7 +102,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
             ALLOCS.add(1);
             ALLOC_BYTES.add(new_size as u64);
         }
-        unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe { INNER.realloc(ptr, layout, new_size) }
     }
 }
 
@@ -315,6 +326,17 @@ impl Reporter {
             let (cubes, steps) = (LIGHT_CUBES.take(), LIGHT_STEPS.take());
             if cubes + steps > 0 {
                 log::debug!(target: "light", "{cubes} cubes lit, {steps} flood steps in {secs:.1} s");
+            }
+        }
+        if on(Channel::Load, Level::Debug) {
+            let (gpu, fin, fin_ns, joined, busy) = (TERRAIN_GPU.take(), TERRAIN_FINISHED.take(), TERRAIN_FINISH_NS.take(), TERRAIN_JOINED.take(), TERRAIN_BUSY_NS.take());
+            if gpu + fin + joined > 0 {
+                log::debug!(
+                    target: "load",
+                    "terrain per {secs:.1} s: {gpu} from the GPU, {fin} finished ({:.0} us each on a worker), {joined} put in, terrain thread busy {:.0}%",
+                    fin_ns as f64 / fin.max(1) as f64 / 1000.0,
+                    busy as f64 / secs / 1e7
+                );
             }
         }
         if on(Channel::Mesh, Level::Debug) {

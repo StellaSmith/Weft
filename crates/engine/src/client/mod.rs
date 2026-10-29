@@ -1494,6 +1494,7 @@ impl Client {
         self.render.destroy(gpu);
         self.entity_render.destroy(gpu);
         self.particles.destroy(gpu);
+        self.gpu_terrain.destroy(gpu);
     }
 
     /// Fraction of full daylight for the current dimension and time.

@@ -54,5 +54,30 @@ fn workers() -> usize {
 /// behind a full generation backlog there, a tick or a frame waited for all of it.
 pub fn background() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(workers()).thread_name(|i| format!("background {i}")).build().expect("background pool"))
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new().num_threads(workers()).thread_name(|i| format!("background {i}")).start_handler(|_| lower_priority()).build().expect("background pool")
+    })
+}
+
+/// Meshing: queued by the thousand while loading, so apart from the global pool, where the
+/// frame's culling waited behind it.
+pub fn meshing() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(workers()).thread_name(|i| format!("mesh {i}")).start_handler(|_| lower_priority()).build().expect("mesh pool"))
+}
+
+/// Bulk work runs below normal priority: with every core busy loading, the frame and the
+/// server still get theirs when they need them.
+fn lower_priority() {
+    #[cfg(windows)]
+    {
+        unsafe extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+        }
+        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+    }
 }

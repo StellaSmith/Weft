@@ -743,7 +743,7 @@ const SHARDS: usize = 32;
 /// share of the capacity drops a quarter of its entries (clearing it whole made a view of 64,
 /// some 13k columns, compute most columns twice).
 pub struct ColumnCache<T> {
-    shards: [Mutex<FxHashMap<(u64, i32, i32), Arc<T>>>; SHARDS],
+    shards: [Mutex<FxHashMap<(u64, i32, i32), Arc<std::sync::OnceLock<Arc<T>>>>>; SHARDS],
     per_shard: usize,
 }
 
@@ -752,32 +752,36 @@ impl<T> ColumnCache<T> {
         ColumnCache { shards: std::array::from_fn(|_| Mutex::new(FxHashMap::default())), per_shard: capacity.div_ceil(SHARDS).max(1) }
     }
 
-    fn shard(&self, x: i32, z: i32) -> &Mutex<FxHashMap<(u64, i32, i32), Arc<T>>> {
+    fn shard(&self, x: i32, z: i32) -> &Mutex<FxHashMap<(u64, i32, i32), Arc<std::sync::OnceLock<Arc<T>>>>> {
         let h = weft_noise::hash(0, x as i64, 0, z as i64) as u32;
         &self.shards[(h >> 27) as usize % SHARDS]
     }
 
     fn peek(&self, seed: u64, x: i32, z: i32) -> Option<Arc<T>> {
-        self.shard(x, z).lock().get(&(seed, x, z)).cloned()
+        self.shard(x, z).lock().get(&(seed, x, z)).and_then(|c| c.get().cloned())
     }
 
     /// The value for cube column (`x`, `z`) under `seed`, computing it with `make` on a miss.
-    /// Two threads missing together may both compute; the result is the same.
+    /// Threads asking while it is computed wait for it: the cubes of a column come together,
+    /// and each computed it again.
     pub fn get(&self, seed: u64, x: i32, z: i32, make: impl FnOnce() -> T) -> Arc<T> {
-        if let Some(v) = self.peek(seed, x, z) {
-            return v;
-        }
-        let v = Arc::new(make());
-        let mut map = self.shard(x, z).lock();
-        if map.len() >= self.per_shard {
-            let mut n = 0usize;
-            map.retain(|_, _| {
-                n += 1;
-                n % 4 != 0
-            });
-        }
-        map.insert((seed, x, z), v.clone());
-        v
+        let cell = {
+            let mut map = self.shard(x, z).lock();
+            match map.get(&(seed, x, z)) {
+                Some(cell) => cell.clone(),
+                None => {
+                    if map.len() >= self.per_shard {
+                        let mut n = 0usize;
+                        map.retain(|_, _| {
+                            n += 1;
+                            n % 4 != 0
+                        });
+                    }
+                    map.entry((seed, x, z)).or_default().clone()
+                }
+            }
+        };
+        cell.get_or_init(|| Arc::new(make())).clone()
     }
 }
 

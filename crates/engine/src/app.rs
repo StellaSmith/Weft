@@ -289,6 +289,11 @@ fn mod_ids() -> Vec<String> {
     mods.iter().map(|m| m.id.clone()).collect()
 }
 
+/// `--record`: a script run on screen for filming (full screen, animated time, no cursor).
+fn recording() -> bool {
+    api::launch_options().contains_key("record")
+}
+
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
         // Mods first: the engine's settings are `core:` configs like theirs.
@@ -309,7 +314,10 @@ impl App {
             .with_inner_size(winit::dpi::PhysicalSize::new(self.opts.size.0, self.opts.size.1));
         // Automated runs work in the background: no focus taken, under other windows, off the
         // desktop (still rendered at full size, so screenshots are the same).
-        if self.opts.automated {
+        if recording() {
+            // Sized to what the owner's OBS scene keeps of the left monitor (crops 30 px above, 50 below).
+            attrs = attrs.with_decorations(false).with_window_level(winit::window::WindowLevel::AlwaysOnTop).with_inner_size(winit::dpi::PhysicalSize::new(2560, 1360)).with_position(winit::dpi::PhysicalPosition::new(0, 30));
+        } else if self.opts.automated {
             attrs = attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom).with_position(winit::dpi::PhysicalPosition::new(-32000, -32000));
         }
         let window = Arc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
@@ -344,7 +352,7 @@ impl App {
         }
         settings.apply_binds(&mut input);
         settings.read_only = self.opts.automated;
-        crate::shaders::pin_time(self.opts.automated);
+        crate::shaders::pin_time(self.opts.automated && !recording());
         let depth = make_depth(&mut *gpu, size.width, size.height);
         let gpu_name = gpu.device_name().to_string();
         let mut r = Running {
@@ -522,7 +530,9 @@ impl Running {
     fn set_capture(&mut self, on: bool) {
         let on = on && self.screens.is_empty() && self.game.is_some();
         // Automated runs (read-only settings) never take the real mouse: they run in the background.
-        if self.settings.read_only {
+        if recording() {
+            self.window.set_cursor_visible(false);
+        } else if self.settings.read_only {
         } else if on {
             let _ = self.window.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
             self.window.set_cursor_visible(false);
@@ -1623,7 +1633,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let preview_tex = r.preview_tex;
         let mut layers: Vec<&Ui> = Vec::new();
         let mut animated = Vec::new();
-        if r.game.is_some() {
+        if r.game.is_some() && api::launch_options().get("record").map(String::as_str) != Some("nohud") {
             layers.push(&r.hud.ui);
         }
         // Only the top screen shows, like vanilla: the ones under it are not drawn through its

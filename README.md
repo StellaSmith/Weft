@@ -1,5 +1,3 @@
-<p align="center"><img src="docs/img/icon.png" alt="Weft" width="128"></p>
-
 <h1 align="center">Weft</h1>
 
 <p align="center">
@@ -21,15 +19,21 @@ Weft is a voxel sandbox engine written in Rust. The game itself is a mod, `mods/
 
 > Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft. Weft contains no Minecraft code or assets.
 
-## What works today
+## Features
 
-- **World:** cubic 16³ chunks with no height or depth limit, terrain generated on the GPU, distant terrain drawn past the view distance, caves, biomes with blended colors, several dimensions.
-- **Simulation:** the world is split into regions ticked in parallel; plants, furnaces and other timed blocks catch up on time nobody was there for, instead of random ticks.
-- **Rendering:** RGB block light, connected and random texture variants, animated and glowing textures, Blockbench models with keyframe animations, resource packs and shader packs.
-- **Gameplay:** survival and creative, crafting and smelting, mobs with pathfinding, liquids and buckets for any liquid, machines with energy, moving structures you can stand and build on.
-- **Multiplayer:** peer to peer. Open to Friends in the pause menu gives a ticket, a friend joins with it; no server or port forwarding.
-- **Mods:** native libraries behind a C ABI, packed as zip files and loaded in parallel. Content is registered with builders, behavior hooks in through events, interceptors and value chains, and recipes, loot and worldgen are driven by tags. See [Modding](#modding).
-- **Tools:** textures, translations, shaders and UI reload in game, debug overlays, a recipe viewer, crash reports that name the mod that was running.
+- The world is made of cubic 16x16x16 chunks, so there is no limit on height or depth, and the terrain is generated on the GPU, which allows distant terrain to be drawn far past the view distance. World generation is deterministic and includes caves, several dimensions, and biomes whose colors blend into each other on the borders.
+
+- Instead of random ticks, the world is split into regions that are ticked in parallel, and plants, furnaces and other timed blocks catch up on the time nobody was there for, so crops keep growing and furnaces keep smelting even while their chunks are not loaded.
+
+- Blocks can emit colored RGB light and use connected or randomized texture variants, textures can be animated or glowing, and models are made in Blockbench with keyframe animations. The look of the game can be changed with resource packs and shader packs.
+
+- As for gameplay, there are survival and creative modes, crafting and smelting, mobs with pathfinding, liquids that can be picked up with a bucket regardless of which liquid it is, machines powered by energy, and moving structures that you can stand and build on.
+
+- Multiplayer works peer to peer: Open to Friends in the pause menu gives you a ticket, and a friend can join with it without any server or port forwarding.
+
+- Mods are native libraries behind a C ABI, packed as zip files and loaded in parallel. Content is registered through builders, behavior hooks into the game through events, interceptors and value chains, and recipes, loot and world generation are driven by tags, which is described in more detail in [Modding](#modding).
+
+- For development, textures, translations, shaders and UI can be reloaded in game, and there are debug overlays, a recipe viewer, and crash reports that name the mod which was running at the moment of the crash.
 
 ## Download
 
@@ -61,8 +65,6 @@ Early. The mod interface and the save format can still change between versions. 
 
 Issues and pull requests are welcome, for the engine, mods, textures or docs.
 
-## License
-
-[MPL-2.0](LICENSE). Minecraft is a trademark of Mojang Synergies AB.
+## License - [MPL-2.0](LICENSE)
 
 Made by [VortexSo4](https://github.com/VortexSo4).

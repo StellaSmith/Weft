@@ -412,7 +412,7 @@ impl Screen for Title {
             });
             ui.container(Style::default().grow().pad(16.0).gap(8.0).justify(Justify::End).align(crate::ui::Align::End), |ui| {
                 if cx.lang.has("menu.news") && !cx.lang.get("menu.news").is_empty() {
-                    ui.panel("news", Style::default().pad(8.0).w(280.0), |ui| {
+                    ui.panel("news", Style::default().pad(8.0).w(150.0), |ui| {
                         ui.text(cx.t("menu.news", &[]), "default");
                     });
                 }

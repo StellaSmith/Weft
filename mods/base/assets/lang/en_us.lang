@@ -170,5 +170,4 @@ mod.base.description = The game itself: blocks, items, mobs, the overworld and i
 mod.base.authors = vortex_so
 menu.news = {align:center}{img:base:icon_settings 16x16}{/align}
     {align:center}Weft is in development.{/align}
-    Everything here, the game included, is a mod: see the Mods button.
 command.base.feed = food set to {0}

@@ -107,7 +107,7 @@ fn items(r: &mut Registry) {
 fn recipes(_r: &mut Registry) {
     // static CRAFTING: RecipeKind = RecipeKind::named("base:crafting");
     // static SMELTING: RecipeKind = RecipeKind::named("base:smelting");
-    // r.shaped(&CRAFTING, "ruby_pickaxe", 1, &["rrr", " s ", " s "], &[('r', "#gems/ruby"), ('s', "base:stick")]);
+    // r.shaped(&CRAFTING, "ruby_pickaxe", 1, &["rrr", " s ", " s "], &[('r', "#gems/ruby"), ('s', "#stick")]);
     // r.shapeless(&CRAFTING, "ruby", 9, &["ruby_block"], 0);
     // r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200);    // 200 ticks in a furnace
 }

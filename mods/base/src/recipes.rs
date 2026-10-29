@@ -18,8 +18,8 @@ pub fn register(r: &mut Registry) {
     r.shaped(C, "crafting_table", 1, &["##", "##"], &[('#', "#planks")]);
     r.shaped(C, "furnace", 1, &["###", "# #", "###"], &[('#', "cobblestone")]);
     r.shaped(C, "chest", 1, &["###", "# #", "###"], &[('#', "#planks")]);
-    r.shaped(C, "torch", 4, &["c", "s"], &[('c', "coal"), ('s', "stick")]);
-    r.shaped(C, "ladder", 3, &["s s", "sss", "s s"], &[('s', "stick")]);
+    r.shaped(C, "torch", 4, &["c", "s"], &[('c', "coal"), ('s', "#stick")]);
+    r.shaped(C, "ladder", 3, &["s s", "sss", "s s"], &[('s', "#stick")]);
     r.shaped(C, "bread", 1, &["www"], &[('w', "wheat")]);
     r.shaped(C, "stone_bricks", 4, &["##", "##"], &[('#', "stone")]);
     r.shaped(C, "wool", 1, &["ss", "ss"], &[('s', "string")]);
@@ -49,7 +49,7 @@ pub fn register(r: &mut Registry) {
         ("hoes", &["XX", " #", " #"]),
         ("swords", &["X", "X", "#"]),
     ] {
-        r.shaped(C, &format!("#{tool}/{{m}}"), 1, pattern, &[('X', "#materials/{m}"), ('#', "stick")]);
+        r.shaped(C, &format!("#{tool}/{{m}}"), 1, pattern, &[('X', "#materials/{m}"), ('#', "#stick")]);
     }
     for (slot, pattern) in crate::items::ARMOR_SLOTS.iter().zip([&["XXX", "X X"][..], &["X X", "XXX", "XXX"], &["XXX", "X X", "X X"], &["X X", "X X"]]) {
         r.shaped(C, &format!("#{slot}/{{m}}"), 1, pattern, &[('X', "#materials/{m}")]);

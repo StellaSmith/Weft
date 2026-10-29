@@ -287,7 +287,7 @@ Mars in testmod is built from presets only.\
 It works on other mods' dimensions too, so adding a biome to base's overworld is a `biome_before("base:desert", ..)` away.
 
 ### Recipes
-- `r.shaped(&KIND, out, count, &["iii", " s ", " s "], &[('i', "#ingots/iron"), ('s', "base:stick")])`
+- `r.shaped(&KIND, out, count, &["iii", " s ", " s "], &[('i', "#ingots/iron"), ('s', "#stick")])`
 - `r.shapeless(..)`
 
 Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with stations.

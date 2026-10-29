@@ -30,7 +30,7 @@ const MATERIALS: [Material; 5] = [
 ];
 
 pub fn register(r: &mut Registry) {
-    r.item(&STICK).set(&FUEL, 100).tab(&crate::tabs::INGREDIENTS);
+    r.item(&STICK).tag("stick").set(&FUEL, 100).tab(&crate::tabs::INGREDIENTS);
     r.item(&COAL).tag("gems/coal").set(&FUEL, 1600).tab(&crate::tabs::INGREDIENTS);
     r.item(&IRON_INGOT).tag("ingots/iron").tag("materials/iron").tab(&crate::tabs::INGREDIENTS);
     r.item(&GOLD_INGOT).tag("ingots/gold").tag("materials/gold").tab(&crate::tabs::INGREDIENTS);

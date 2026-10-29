@@ -22,7 +22,7 @@ use std::ops::{Bound, RangeBounds};
 use crate::abi::{self, Slice, Str, rule_field as rf, terrain_op as op};
 use crate::{Dimension, Gen, Registry, Scatter, callback, host, qualify};
 
-pub use crate::noise::Fields;
+pub use crate::noise::fixed::{Fields, ONE};
 
 /// Surface `height` and `biome` id of a column.
 pub type Column = abi::TerrainColumn;
@@ -96,10 +96,12 @@ pub struct Feature {
 }
 
 impl Feature {
-    /// A feature of your own: the height it adds at (x, z). It runs for every column, on many
-    /// threads at once, and like a generator it must be a pure function of its input.
-    pub fn new(height: impl Fn(&Fields, f64, f64) -> f64 + Send + Sync + 'static) -> Feature {
-        let height = callback(move |a: &mut abi::FeatureArgs| a.height = height(&Fields::new(a.seed), a.x, a.z));
+    /// A feature of your own: the height it adds at (x, z). Positions and the height are in
+    /// 1/16 block and noise values in 1/4096 (`ONE`): terrain is integers only, so every
+    /// machine and the GPU agree. It runs for every column, on many threads at once, and like a
+    /// generator it must be a pure function of its input.
+    pub fn new(height: impl Fn(&Fields, i32, i32) -> i32 + Send + Sync + 'static) -> Feature {
+        let height = callback(move |a: &mut abi::FeatureArgs| a.height = height(&Fields { seed: a.seed }, a.x, a.z));
         Feature { name: String::new(), preset: abi::terrain_preset::CUSTOM, params: [0.0; 4], height, mask: None }
     }
 
@@ -120,8 +122,8 @@ impl Feature {
     }
 }
 
-/// Ready-made features. Their code is in `weft_noise::shape`; copy one into a `Feature::new` to
-/// make a new kind.
+/// Ready-made features. Their code is in `weft_noise::fixed::shape`; copy one into a
+/// `Feature::new` to make a new kind.
 pub mod preset {
     use super::*;
     use crate::abi::terrain_preset as p;

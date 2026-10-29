@@ -140,7 +140,7 @@ A feature adds height to every column. These come ready:
 | `dunes(height, wavelength)` | parallel sand waves |
 | `craters(radius, depth, spacing)` | bowls with a raised rim |
 
-Your own is `Feature::new(|fields, x, z| height)`. `fields` hands out noise (`fbm`, `ridge` for river-like lines) and the climate (`continent`, `temperature`, `humidity`). The easiest start is copying a preset from `shape` in `crates/noise/src/lib.rs` and changing it. Testmod's needle is one, a column of rock 90 blocks high at one spot of base's overworld.
+Your own is `Feature::new(|fields, x, z| height)`. Terrain is integers only, so the GPU and every machine get exactly the same world: `x`, `z` and the height you return are in 1/16 block (`16` is one block), and noise values are in 1/4096 (`ONE` is 1.0). `fields` hands out noise (`fbm`, `ridge` for river-like lines) and the climate (`continent`, `temperature`, `humidity`). The easiest start is copying a preset from `shape` in `crates/noise/src/fixed.rs` and changing it. Testmod's needle is one, a column of rock 90 blocks high at one spot of base's overworld.
 
 ### Masks
 `.mask(..)` limits a feature to some places, with a strength from 0 to 1 that fades in between. `Mask::noise(scale, from, to)` makes patches about `scale` blocks across, and `Mask::Temperature`, `Humidity` and `Continent` take a `(from, to)` range of the climate (swap the two to turn the ramp around). Masks combine with `.and(..)` and flip with `.not()`.
@@ -203,7 +203,7 @@ for z in 0..16usize { for x in 0..16usize {
 ```rust
 r.terrain(&OVERWORLD)
     .biome_before("base:desert", BiomeRule::new("scorched"))
-    .feature(Feature::new(|_, x, z| if (x - 1000.0).abs().max((z - 1000.0).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"));
+    .feature(Feature::new(|_, x, z| if (x - 1000 * 16).abs().max((z - 1000 * 16).abs()) < 3 * 16 { 90 * 16 } else { 0 }).named("needle"));
 r.decorate(boulders).dimension(&OVERWORLD);
 ```
 Because rules are tried in order, a new biome goes in next to the rule it takes space from: `biome_before` takes the place where both would fit, `biome_after` only what the other leaves. The rest of the edits:
@@ -239,4 +239,4 @@ That's `void` from testmod, a round island in an empty dimension.
 
 With `.column(f)` the generator doesn't work the surface out again: `g.columns()` hands it the heights and biomes `f` gave, the same ones structures and trees stand on.
 
-Two rules to keep, in generators and decorations alike. A cube only writes its own blocks, so anything bigger than a cube (a tree) is better a [scatter](#trees-and-other-scattered-things), where the engine does the asking around. And stay away from `sin`, `cos`, `exp` and the like in terrain, since they give slightly different results on different platforms and neighboring cubes would stop matching. `sqrt` and plain arithmetic are safe, and `noise` (`hash`, `unit`, `perlin2`, `perlin3`, `fbm2`) was written for this.
+Two rules to keep, in generators and decorations alike. A cube only writes its own blocks, so anything bigger than a cube (a tree) is better a [scatter](#trees-and-other-scattered-things), where the engine does the asking around. And keep floats out of terrain: `sin`, `cos`, `exp` and even plain float math can come out slightly differently on another platform or a GPU, and neighboring cubes would stop matching. Use integers; `noise::hash` and the integer noise in `noise::fixed` (`perlin2`, `perlin3`, `fbm`) were written for this.

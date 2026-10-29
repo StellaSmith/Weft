@@ -122,24 +122,34 @@ pub fn generate(c: &Content, dim: u32, seed: u64, pos: IVec3) -> Cube {
     }
     let mut blocks = vec![0u32; VOLUME];
     let mut biomes = [0u16; 256];
-    match (def.builtin, &def.terrain, def.generator) {
-        (Some(f), _, _) => f(c, pos, &mut blocks),
+    let cols = match (def.builtin, &def.terrain, def.generator) {
+        (Some(f), _, _) => {
+            f(c, pos, &mut blocks);
+            return finish_generated(c, dim, seed, pos, blocks, biomes, None, true);
+        }
         (None, None, None) => return Cube::uniform(AIR, 0),
-        (None, terrain, generator) => {
-            let cols = match terrain {
-                Some(t) => Some(Arc::new(t.generate(seed, pos.to_array(), &mut blocks, &mut biomes).cols)),
-                None => def.columns(seed, pos.x, pos.z),
-            };
-            let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-            let mut args = abi::GenArgs { seed, cube: pos.to_array(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
-            if let Some(cb) = generator {
-                host::invoke(def.owner, cb, &mut args);
-            }
-            place_scatters(c, def, dim, seed, pos, &mut blocks);
-            let mut args = abi::GenArgs { blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), ..args };
-            for &(owner, cb) in &def.decorations {
-                host::invoke(owner, cb, &mut args);
-            }
+        (None, Some(t), _) => Some(Arc::new(t.generate(seed, pos.to_array(), &mut blocks, &mut biomes).cols)),
+        (None, None, Some(_)) => def.columns(seed, pos.x, pos.z),
+    };
+    finish_generated(c, dim, seed, pos, blocks, biomes, cols, false)
+}
+
+/// Everything generation does after the terrain (which the GPU may have made): the
+/// dimension's generator, scattered things, decorations, ores and structures. `builtin`: the
+/// blocks came from a built-in dimension, which has none of the first three.
+#[allow(clippy::too_many_arguments)]
+pub fn finish_generated(c: &Content, dim: u32, seed: u64, pos: IVec3, mut blocks: Vec<u32>, mut biomes: [u16; 256], cols: Option<Arc<[abi::TerrainColumn; 256]>>, builtin: bool) -> Cube {
+    let def = &c.dims[dim as usize];
+    if !builtin {
+        let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+        let mut args = abi::GenArgs { seed, cube: pos.to_array(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
+        if let Some(cb) = def.generator {
+            host::invoke(def.owner, cb, &mut args);
+        }
+        place_scatters(c, def, dim, seed, pos, &mut blocks);
+        let mut args = abi::GenArgs { blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), ..args };
+        for &(owner, cb) in &def.decorations {
+            host::invoke(owner, cb, &mut args);
         }
     }
     let max = c.states.len() as u32;

@@ -2915,13 +2915,14 @@ pub struct FeatureDesc {
 }
 defaults!(FeatureDesc { name: Str::EMPTY, preset: 0, params: [0.0; 4], height: Callback::NONE, mask: Slice::EMPTY });
 
+/// Positions and the height in 1/16 block: terrain is integers only (`weft_noise::fixed`).
 #[repr(C)]
 pub struct FeatureArgs {
     pub seed: u64,
-    pub x: f64,
-    pub z: f64,
+    pub x: i32,
+    pub z: i32,
     /// Output: the height added at (x, z) at full strength.
-    pub height: f64,
+    pub height: i32,
 }
 
 /// Which fields of a `BiomeRuleDesc` are given (all of them count for a new rule; an edit

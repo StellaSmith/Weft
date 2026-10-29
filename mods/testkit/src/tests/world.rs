@@ -627,8 +627,18 @@ pub async fn worldgen(t: T) -> R {
     t.check(inside > 0, format!("glow crystals grow in deep caves ({inside})"));
     t.check_eq(outside, 0, "glow crystals outside deep caves");
 
-    // Birch forests of seed 5 (found from the base generator's columns), then plains.
-    for ([x, y, z], forest) in [([100, 83, 0], true), ([-550, 87, 550], true), ([0, 90, 0], false), ([-400, 90, -400], false)] {
+    // Birch forests and plains of seed 5, found from the generator's columns: the middle of
+    // a patch of the biome, above ground.
+    let patch = |biome: &str, skip: usize| {
+        (-40..40)
+            .flat_map(|i| (-40..40).map(move |j| (i * 48, j * 48)))
+            .filter(|&(x, z)| [(0, 0), (24, 0), (-24, 0), (0, 24), (0, -24)].iter().all(|&(dx, dz)| name_of(ek::BIOME, OVERWORLD.column(5, x + dx, z + dz).biome) == biome))
+            .nth(skip)
+            .map(|(x, z)| [x, OVERWORLD.column(5, x, z).height + 6, z])
+    };
+    let spots = [(patch("base:birch_forest", 0), true), (patch("base:birch_forest", 3), true), (patch("base:plains", 0), false), (patch("base:plains", 3), false)];
+    for (spot, forest) in spots {
+        let [x, y, z] = spot.ok_or(format!("no {} patch", if forest { "birch forest" } else { "plains" }))?;
         t.cmd(&format!("/tp {x} {y} {z}")).await?;
         t.secs(0.5).await?;
         t.loaded().await?;

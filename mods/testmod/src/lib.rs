@@ -182,7 +182,7 @@ fn init(r: &mut Registry) {
     // from a feature of this mod's own, and boulders on the new biome.
     r.terrain(&OVERWORLD)
         .biome_before("base:desert", BiomeRule::new("scorched"))
-        .feature(Feature::new(|_, x, z| if (x - NEEDLE[0]).abs().max((z - NEEDLE[1]).abs()) < 3.0 { 90.0 } else { 0.0 }).named("needle"));
+        .feature(Feature::new(|_, x, z| if (x - NEEDLE[0] * 16).abs().max((z - NEEDLE[1] * 16).abs()) < 3 * 16 { 90 * 16 } else { 0 }).named("needle"));
     r.decorate(boulders).dimension(&OVERWORLD);
     // One ore for every dimension: base's stone and Mars' basalt both take it.
     r.ore(&TIN_ORE).y(-64, 90).veins(5).size(8).replace("#stone_ore_replaceables");
@@ -523,7 +523,7 @@ fn recipe_showcase(r: &mut Registry) {
 }
 
 /// Where the needle stands in base's overworld.
-pub const NEEDLE: [f64; 2] = [1000.0, 1000.0];
+pub const NEEDLE: [i32; 2] = [1000, 1000];
 
 /// Basalt boulders on the scorched biome of base's overworld.
 fn boulders(g: &mut Gen) {

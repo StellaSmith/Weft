@@ -19,6 +19,7 @@
 //! host ticket.txt     # host, write the join ticket there
 //! join ticket.txt     # join with the ticket from that file (waits for it)
 //! origin              # later via points are relative to where the player stands now
+//! where label        # logs the player's position
 //! rec start|stop     # logs a marker; tools/rec.ps1 presses the OBS hotkeys on it
 //! via x y z yaw pitch # a camera waypoint (eye position), or: via x y z @ tx ty tz (look at a point)
 //! travel 8            # fly through the waypoints in 8 s: spline, eased, a little hand shake
@@ -113,6 +114,10 @@ pub async fn run(t: T, src: String) -> R {
                 t.c().join(&ticket);
             }
             "origin" => origin = t.state().pos,
+            "where" => {
+                let s = t.state();
+                weft_sdk::info!("script: where {:.3} {:.3} {:.3} {rest}", s.pos[0], s.pos[1], s.pos[2]);
+            }
             "rec" => weft_sdk::info!("REC {rest}"),
             "via" => match waypoint(origin, rest) {
                 Some(mut w) => {

@@ -116,6 +116,7 @@ pub fn all() -> Vec<TestDef> {
         bodies::ride_frames,
         bodies::skiff,
         bodies::skiff_smooth,
+        bodies::skiff_pause,
         bodies::skiff_blocks,
         bodies::natural_spawning,
         bodies::zombie_chases,

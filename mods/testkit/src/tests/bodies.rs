@@ -146,6 +146,27 @@ pub async fn skiff(t: T) -> R {
     Ok(())
 }
 
+/// Pausing on a flying skiff and going on: a paused server keeps sending the skiff at the same
+/// tick, which once made it (and its rider) fly off at an endless speed on resuming.
+pub async fn skiff_pause(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let id = spawn(&t, "testmod:skiff", add(f, [0, 3, 0])).await?;
+    t.op(&format!("onto {id} 1.0")).await?;
+    t.secs(0.5).await?;
+    for _ in 0..3 {
+        t.c().key("Escape", 0.0);
+        t.screen("core:pause").await?;
+        t.secs(2.0).await?;
+        t.c().key("Escape", 0.0);
+        t.no_screen().await?;
+        t.secs(1.0).await?;
+    }
+    let (me, skiff) = (t.state().pos, pos_of(&t, &format!("{id}")).await?);
+    t.check((me[0] - skiff[0]).abs() < 3.0 && (me[2] - skiff[2]).abs() < 3.0, format!("the player stays on the skiff (x {:.2}, skiff {:.2})", me[0], skiff[0]));
+    Ok(())
+}
+
 /// Natural spawning runs from rules: at night monsters appear around the player (in the
 /// overworld; the flatlands stay at noon), and the rule switch stops it.
 pub async fn natural_spawning(t: T) -> R {

@@ -162,7 +162,7 @@ impl ClientEntity {
                 1 => last,
                 _ => {
                     let (pt, prev) = self.track[n - 2];
-                    last + (last - prev) / (last_t - pt).max(1e-6) * (tick - last_t).min(1.0)
+                    last + (last - prev) / (last_t - pt).max(1.0) * (tick - last_t).min(1.0)
                 }
             };
         }
@@ -620,7 +620,17 @@ impl Client {
                             e.pitch = pitch;
                             e.frame = frame;
                             if solid(e.kind) {
-                                e.track.push_back((tick as f64, pos));
+                                // A paused server keeps sending the same tick: one sample per
+                                // tick, or two at the same time make an endless speed.
+                                let t = tick as f64;
+                                match e.track.back_mut() {
+                                    Some(last) if last.0 == t => last.1 = pos,
+                                    Some(last) if last.0 > t => {
+                                        e.track.clear();
+                                        e.track.push_back((t, pos));
+                                    }
+                                    _ => e.track.push_back((t, pos)),
+                                }
                                 while e.track.len() > 8 {
                                     e.track.pop_front();
                                 }
@@ -1242,6 +1252,7 @@ impl Client {
         // a frame), not only at hundreds.
         self.world.schedule_meshing(center, crate::meshing().current_num_threads() * 512);
         self.render.update_solid(gpu, &self.world, center);
+        self.world.set_eye(center.y);
         // Uploads too, oldest first; the rest wait for the next frame (dropped if their cube
         // changed or left meanwhile). Edits and what is around the player go right away.
         let (now, later) = self.world.take_meshes(center);

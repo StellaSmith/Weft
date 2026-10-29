@@ -29,6 +29,8 @@ struct Slot {
     hidden: u32,
     /// Its mesh is out of date.
     dirty: bool,
+    /// A mesh of it has been drawn (or it is air): its column shows it (`column_shown`).
+    shown: bool,
 }
 
 pub struct ClientWorld {
@@ -64,6 +66,10 @@ pub struct ClientWorld {
     batches: Vec<Batch>,
     /// The batch being collected (`begin_batch` .. `end_batch`).
     open: Option<Batch>,
+    /// Heights the view spans (`terrain::Out::Range`), and columns whose cubes changed what
+    /// is shown since `take_changed_columns`.
+    range: (i32, i32),
+    changed_columns: FxHashSet<IVec2>,
 }
 
 struct Batch {
@@ -140,6 +146,8 @@ impl ClientWorld {
             bounds: None,
             batches: Vec::new(),
             open: None,
+            range: (0, -1),
+            changed_columns: FxHashSet::default(),
         }
     }
 
@@ -151,6 +159,44 @@ impl ClientWorld {
     /// Recomputes `bounds` from the blocks (structures, after their cubes changed).
     pub fn scan_bounds(&mut self) {
         self.bounds = crate::world::block_bounds(self.cubes.iter().map(|(p, s)| (p, &*s.cube)));
+    }
+
+    /// Heights the view spans now.
+    pub fn set_range(&mut self, lo: i32, hi: i32) {
+        if (lo, hi) != self.range {
+            self.range = (lo, hi);
+            self.changed_columns.extend(self.columns.keys().copied());
+        }
+    }
+
+    /// A mesh of `pos` was drawn.
+    pub fn mark_shown(&mut self, pos: IVec3) {
+        if let Some(s) = self.cubes.get_mut(&pos).filter(|s| !s.shown) {
+            s.shown = true;
+            self.changed_columns.insert(IVec2::new(pos.x, pos.z));
+        }
+    }
+
+    /// Whether column `col` shows its ground: from the top of the view down, every cube is here
+    /// and drawn, down to the first that is not air (distant terrain stands in until then).
+    pub fn column_shown(&self, col: IVec2) -> bool {
+        let (lo, hi) = self.range;
+        for y in (lo..=hi).rev() {
+            match self.cubes.get(&IVec3::new(col.x, y, col.y)) {
+                Some(s) if s.shown => {
+                    if s.cube.uniform_state() != Some(AIR) {
+                        return true;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        hi >= lo
+    }
+
+    /// Columns whose `column_shown` may have changed since the last call.
+    pub fn take_changed_columns(&mut self) -> Vec<IVec2> {
+        self.changed_columns.drain().collect()
     }
 
     pub fn len(&self) -> usize {
@@ -202,6 +248,7 @@ impl ClientWorld {
         self.removed.extend(self.cubes.keys().copied());
         self.cubes.clear();
         self.ready.clear();
+        self.changed_columns.clear();
         self.columns.clear();
         self.tints_dirty.clear();
         self.batches.clear();
@@ -238,7 +285,10 @@ impl ClientWorld {
             })
             .collect();
         for (p, known) in todo {
-            let Some(known) = known else { continue };
+            let Some(known) = known else {
+                self.mark_shown(p);
+                continue;
+            };
             self.bump(p);
             self.set_ready(p, known);
             if b.update && b.whole {
@@ -293,7 +343,8 @@ impl ClientWorld {
         }
         match self.cubes.entry(pos) {
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(Slot { cube, version: 0, hidden, dirty: false });
+                e.insert(Slot { cube, version: 0, hidden, dirty: false, shown: false });
+                self.changed_columns.insert(col);
                 if let Some(b) = &mut self.open {
                     b.fresh.push(pos);
                 }
@@ -327,6 +378,7 @@ impl ClientWorld {
             }
             self.ready.remove(&pos);
             self.removed.push(pos);
+            self.changed_columns.insert(col);
             for n in around(pos, ALL_AROUND) {
                 if n != pos && self.ready.contains(&n) {
                     self.refresh(n);

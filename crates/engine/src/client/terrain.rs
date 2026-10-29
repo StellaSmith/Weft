@@ -36,6 +36,8 @@ pub enum Out {
     Cube { pos: IVec3, cube: Arc<Cube>, hidden: u32 },
     Blocks(Vec<(IVec3, u32)>),
     Unload(IVec3),
+    /// The view now spans cubes `lo..=hi` up and down.
+    Range { lo: i32, hi: i32 },
 }
 
 /// What one round handed over: the resets it comes after, whether it has to be shown whole
@@ -442,6 +444,9 @@ impl Terrain {
         let hi = if def.sky_light && def.sky_cube_y != i32::MAX { top.max((def.sky_cube_y - 1).min(top + 12)) } else { top }.min(def.max_cube_y);
         if (lo, hi) != (self.lo, self.hi) {
             self.done.clear();
+        }
+        if (lo, hi) != (self.lo, self.hi) {
+            self.out.push(Out::Range { lo, hi });
         }
         (self.center, self.radius, self.lo, self.hi) = (center, radius, lo, hi);
         self.cursor = 0;

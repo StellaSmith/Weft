@@ -3,8 +3,9 @@
 //! for a few kilobytes a tile. A tile is 32x32 cells of 2^level blocks; each cell is the column
 //! at its middle: its top block, the one under it, its biome (no caves, trees or edits yet).
 //! Tiles are picked by distance, nearer ones split into the four of the level below; one is
-//! shown once made, its parent or children standing in until then. Inside the view the real
-//! cubes are drawn and the tiles' pixels are dropped (`fs_lod`).
+//! shown once made, its parent or children standing in until then. Where a column of real cubes
+//! shows its ground the tiles' pixels are dropped (`fs_lod`, `Lod::mask`), so they fill in for
+//! cubes not made or meshed yet (flying fast), and nowhere stand through them.
 
 use std::sync::Arc;
 
@@ -170,11 +171,35 @@ pub struct Lod {
     /// Tiles wanted, nearest first, and where the camera was then.
     wanted: Vec<TileKey>,
     wanted_at: Option<(glam::DVec2, i32, i32)>,
+    /// A bit per cube column around the camera's (`MASK_MARGIN` past the view, addressed
+    /// modulo the window's width so it does not move with the camera): its cubes show its
+    /// ground. Its half width and center, and whether it changed since uploaded.
+    mask: Vec<u32>,
+    half: i32,
+    center: IVec2,
+    mask_changed: bool,
 }
+
+/// Columns the mask reaches past the view radius (cubes are kept that far).
+const MASK_MARGIN: i32 = 3;
 
 impl Lod {
     pub fn new(jobs: Sender<LodJob>) -> Lod {
-        Lod { jobs, done: unbounded(), dim: u32::MAX, seed: 0, custom: None, ready: FxHashSet::default(), pending: FxHashSet::default(), wanted: Vec::new(), wanted_at: None }
+        Lod {
+            jobs,
+            done: unbounded(),
+            dim: u32::MAX,
+            seed: 0,
+            custom: None,
+            ready: FxHashSet::default(),
+            pending: FxHashSet::default(),
+            wanted: Vec::new(),
+            wanted_at: None,
+            mask: Vec::new(),
+            half: 0,
+            center: IVec2::ZERO,
+            mask_changed: false,
+        }
     }
 
     /// Tiles asked for and not back yet.
@@ -190,8 +215,10 @@ impl Lod {
 
     /// Picks, asks for and hands the renderer this frame's tiles. `view`: the view radius in
     /// cubes (inside it the real cubes are drawn).
-    pub fn update(&mut self, gpu: &mut dyn weft_render::Backend, render: &mut super::world_render::WorldRenderer, textures: &super::textures::GameTextures, dim: u32, seed: u64, cam: DVec3, view: i32) {
+    pub fn update(&mut self, gpu: &mut dyn weft_render::Backend, render: &mut super::world_render::WorldRenderer, world: &mut super::world::ClientWorld, textures: &super::textures::GameTextures, seed: u64, cam: DVec3, view: i32) {
         let c = content();
+        let dim = world.dim;
+        self.update_mask(gpu, render, world, cam, view);
         let reach = Self::distance();
         if (dim, seed) != (self.dim, self.seed) || reach == 0 {
             for key in self.ready.drain() {
@@ -205,10 +232,9 @@ impl Lod {
             (self.dim, self.seed) = (dim, seed);
             self.custom = super::terrain_gpu::describe(c, dim, seed).map(|(_, custom)| Arc::new(custom));
         }
-        // The view's cubes are columns around the camera's cube, not a circle around the camera:
-        // a cube short of the radius they may end, and the tiles show from there.
-        let hide = ((view - 2) * 16).max(0);
-        render.lod_hide = hide as u32;
+        // Tiles stand in for cubes not shown yet; the inner half of the view is shown long
+        // before the edge, where flying outruns the cubes.
+        let hide = (view / 2 * 16).max(0);
         while let Ok(m) = self.done.1.try_recv() {
             if (m.dim, m.seed) != (self.dim, self.seed) || !self.pending.remove(&m.key) {
                 continue;
@@ -260,8 +286,59 @@ impl Lod {
         self.request();
     }
 
+    /// Keeps the mask of columns shown by cubes current: columns that changed, and the ones
+    /// coming into the window when the camera moved to another column.
+    fn update_mask(&mut self, gpu: &mut dyn weft_render::Backend, render: &mut super::world_render::WorldRenderer, world: &mut super::world::ClientWorld, cam: DVec3, view: i32) {
+        let half = view + MASK_MARGIN;
+        let w = 2 * half + 1;
+        let center = IVec2::new((cam.x / 16.0).floor() as i32, (cam.z / 16.0).floor() as i32);
+        let slot = |col: IVec2| (col.y.rem_euclid(w) * w + col.x.rem_euclid(w)) as usize;
+        let set = |mask: &mut Vec<u32>, col: IVec2, on: bool| {
+            let i = slot(col);
+            let (word, bit) = (i / 32, 1u32 << (i % 32));
+            let old = mask[word];
+            mask[word] = if on { old | bit } else { old & !bit };
+            old != mask[word]
+        };
+        let changed = world.take_changed_columns();
+        let inside = |col: IVec2, at: IVec2| (col - at).abs().max_element() <= half;
+        if half != self.half || self.mask.is_empty() {
+            self.half = half;
+            self.mask = vec![0; ((w * w) as usize).div_ceil(32)];
+            self.center = center;
+            for z in -half..=half {
+                for x in -half..=half {
+                    let col = center + IVec2::new(x, z);
+                    set(&mut self.mask, col, world.column_shown(col));
+                }
+            }
+            self.mask_changed = true;
+        } else if center != self.center {
+            let old = self.center;
+            self.center = center;
+            for z in -half..=half {
+                for x in -half..=half {
+                    let col = center + IVec2::new(x, z);
+                    if !inside(col, old) {
+                        self.mask_changed |= set(&mut self.mask, col, world.column_shown(col));
+                    }
+                }
+            }
+        }
+        for col in changed {
+            if inside(col, center) {
+                self.mask_changed |= set(&mut self.mask, col, world.column_shown(col));
+            }
+        }
+        render.lod_half = half as u32;
+        if self.mask_changed {
+            self.mask_changed = false;
+            render.set_lod_mask(gpu, &self.mask);
+        }
+    }
+
     /// The tiles to show: level 5 tiles within `reach`, split while near, leaving out what
-    /// lies inside `hide` (the view's own cubes).
+    /// lies inside `hide` (where the view's cubes are always shown).
     fn pick(&mut self, p: glam::DVec2, hide: f64, reach: f64) {
         let top = CELLS << MAX_LEVEL;
         let (lo, hi) = (((p - reach) / top as f64).floor().as_ivec2(), ((p + reach) / top as f64).floor().as_ivec2());

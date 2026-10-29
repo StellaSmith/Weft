@@ -214,11 +214,12 @@ pub struct WorldRenderer {
     quad_pipes: [PipelineId; 3],
     lod_pipe: PipelineId,
     /// Distant terrain tiles (`lod`): their quads (in `faces`, four words like a face), count
-    /// and the heights they span; the ones to draw this frame; and the distance (blocks) inside
-    /// which their pixels are left to the cubes.
+    /// and the heights they span; the ones to draw this frame; and the columns whose cubes show
+    /// their ground (`Lod::mask`, half its width), where their pixels are left to the cubes.
     lod: FxHashMap<super::lod::TileKey, (Alloc, u32, (i32, i32))>,
     pub lod_draw: Vec<super::lod::TileKey>,
-    pub lod_hide: u32,
+    pub lod_half: u32,
+    lod_mask: (BufferId, usize),
     faces: Pool,
     quads: Pool,
     /// Index into its region's meshes by key. A frame culls the regions, then goes through the
@@ -332,7 +333,8 @@ impl WorldRenderer {
             lod_pipe,
             lod: FxHashMap::default(),
             lod_draw: Vec::new(),
-            lod_hide: 0,
+            lod_half: 0,
+            lod_mask: (gpu.create_buffer(4, usage::STORAGE, "lod mask"), 1),
             faces: Pool { words: FACE_WORDS, pages: Vec::new(), label: "face page" },
             quads: Pool { words: QUAD_WORDS, pages: Vec::new(), label: "quad page" },
             meshes: FxHashMap::default(),
@@ -481,7 +483,7 @@ impl WorldRenderer {
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
         }
-        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index, self.tex_shader]) {
+        for b in self.globals.drain(..).chain([self.biomes, self.tex_info, self.anim, self.quad_index, self.tex_shader, self.lod_mask.0]) {
             gpu.destroy_buffer(b);
         }
         for (b, _) in self.origins.drain(..).chain(self.indirect.drain(..)).chain(self.offsets.drain(..)) {
@@ -505,6 +507,15 @@ impl WorldRenderer {
         let a = self.faces.alloc(gpu, quads.len() as u32);
         gpu.write_buffer(self.faces.pages[a.page as usize].0, a.offset as u64 * 16, bytemuck::cast_slice(quads));
         self.lod.insert(key, (a, quads.len() as u32, y));
+    }
+
+    /// The columns shown by cubes (`Lod::mask`).
+    pub fn set_lod_mask(&mut self, gpu: &mut dyn Backend, mask: &[u32]) {
+        if self.lod_mask.1 < mask.len() {
+            gpu.destroy_buffer(self.lod_mask.0);
+            self.lod_mask = (gpu.create_buffer((mask.len() * 4) as u64, usage::STORAGE, "lod mask"), mask.len());
+        }
+        gpu.write_buffer(self.lod_mask.0, 0, bytemuck::cast_slice(mask));
     }
 
     /// Distant terrain tiles held and their quads.
@@ -574,7 +585,7 @@ impl WorldRenderer {
             cam_frac: [cam_frac.x, cam_frac.y, cam_frac.z, 0.0],
             ids: [0, 0, (self.biome_table.len() / crate::content::content().tint_kinds.len()) as u32, self.tint_tiles],
             cam_cube: cam_cube.extend(0).to_array(),
-            extra: [self.overlays, 0, crate::content::content().tint_kinds.len() as u32, self.lod_hide],
+            extra: [self.overlays, 0, crate::content::content().tint_kinds.len() as u32, self.lod_half],
         };
         let gbuf = self.globals[frame.slot];
         gpu.mapped(gbuf)[..size_of::<Globals>()].copy_from_slice(bytemuck::bytes_of(&globals));
@@ -789,6 +800,7 @@ impl WorldRenderer {
             list.bind(7, self.glow);
             list.bind(8, self.tex_shader);
             list.bind(9, scene);
+            list.bind(10, self.lod_mask.0);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: start as u64 * 20, count });
         }
     }

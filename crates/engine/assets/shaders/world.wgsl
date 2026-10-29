@@ -299,9 +299,9 @@ fn fs_translucent(in: VOut) -> @location(0) vec4<f32> {
 }
 
 // Distant terrain (`client::lod`): a record is the `dir` face of a box in its tile, drawn in the
-// average color of its texture (the smallest mip), full sky light. Inside the view the cubes are
-// drawn: its pixels nearer than `g.extra.w` blocks (horizontally) are dropped, and it sits a
-// little lower so the cubes win where both are.
+// average color of its texture (the smallest mip), full sky light. Its pixels in columns whose
+// cubes show their ground are dropped (`lod_mask`); it sits a little lower so the cubes win
+// along the edges.
 @vertex
 fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     let f = vi / 4u;
@@ -341,8 +341,15 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
 
 @fragment
 fn fs_lod(in: VOut) -> @location(0) vec4<f32> {
-    if length(in.uv) < f32(g.extra.w) {
-        discard;
+    let half = i32(g.extra.w);
+    let col = vec2<i32>(floor(in.pos.xz / 16.0));
+    let d = col - g.cam_cube.xz;
+    if abs(d.x) <= half && abs(d.y) <= half {
+        let w = 2 * half + 1;
+        let i = u32(((col.y % w) + w) % w * w + ((col.x % w) + w) % w);
+        if ((lod_mask[i / 32u] >> (i % 32u)) & 1u) != 0u {
+            discard;
+        }
     }
     var albedo = textureSampleLevel(textures[in.layer], linear_mipped, vec2(0.5), 16.0);
     if in.blend > 0.0 {

@@ -813,6 +813,7 @@ impl Client {
                         }
                     }
                     terrain::Out::Unload(pos) => self.world.remove(pos),
+                    terrain::Out::Range { lo, hi } => self.world.set_range(lo, hi),
                 }
                 if !whole && start.elapsed() >= self.budget {
                     let out: Vec<terrain::Out> = items.collect();
@@ -1244,6 +1245,7 @@ impl Client {
         let (now, later) = self.world.take_meshes(center);
         for r in now {
             self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
+            self.world.mark_shown(r.pos);
         }
         self.meshes.extend(later);
         let start = Instant::now();
@@ -1251,6 +1253,7 @@ impl Client {
             let Some(r) = self.meshes.pop_front() else { break };
             if self.world.current(&r) {
                 self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
+                self.world.mark_shown(r.pos);
             }
         }
         self.spent += start.elapsed().as_secs_f64();
@@ -1275,7 +1278,7 @@ impl Client {
         }
         if self.joined {
             let cam = self.render_camera().pos;
-            self.lod.update(gpu, &mut self.render, textures, self.world.dim, self.seed, cam, self.view_radius);
+            self.lod.update(gpu, &mut self.render, &mut self.world, textures, self.seed, cam, self.view_radius);
         }
         self.render.set_textures(gpu, textures);
     }

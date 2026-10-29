@@ -141,7 +141,7 @@ gpu_struct! {
         /// Origins are relative to this cube.
         pub cam_cube: [i32; 4],
         /// x start of the overlay table in `frames` (per texture: overlay texture + 1, or 0),
-        /// z tint kinds.
+        /// z tint kinds, w half the width of `lod_mask`.
         pub extra: [u32; 4],
     }
 }
@@ -307,6 +307,9 @@ fn bindings(shader: &str) -> &'static [(&'static str, &'static str)] {
             // Block shader slot (`shaders/block/<name>.wgsl`) per texture id, 0 none.
             ("tex_shader", "array<u32>"),
             ("scene", "Scene"),
+            // A bit per cube column around the camera's, addressed modulo 2 * g.extra.w + 1:
+            // its cubes show its ground, distant terrain is not drawn there (`client::lod`).
+            ("lod_mask", "array<u32>"),
         ],
         // `item_boxes`: item models in their own space, kept between frames
         // (`EntityRenderer::item_model`); an item instance is a box in `boxes` whose rows place

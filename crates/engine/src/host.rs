@@ -121,6 +121,7 @@ pub static HOST: Host = Host {
     client_text: crate::app::api::client_text,
     client_command_reply: crate::app::api::client_command_reply,
     client_block: crate::app::api::client_block,
+    client_light: crate::app::api::client_light,
     client_slot: crate::app::api::client_slot,
     client_menu: crate::app::api::client_menu,
     client_entities: crate::app::api::client_entities,

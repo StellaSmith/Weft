@@ -1706,6 +1706,9 @@ pub struct Host {
     pub client_command_reply: unsafe extern "C" fn(client: *mut ClientCtx, id: u32, out: *mut Str) -> u32,
     /// Block the client has at `pos`, `u32::MAX` if that cube is not loaded there.
     pub client_block: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
+    /// Light the client has at `pos` (sky level in the low byte, then block red, green, blue),
+    /// `u32::MAX` if that cube is not loaded there.
+    pub client_light: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
     /// Group `name` of the player inventory (`reg_player_inventory`, equipment slots,
     /// `core:equipment`): first slot and count.
     pub player_group: unsafe extern "C" fn(name: Str, out: *mut [u32; 2]) -> u32,

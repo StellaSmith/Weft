@@ -217,7 +217,6 @@ impl Dim {
             self.grid.cube_unloaded(cp);
             self.grid.cube_loaded(c, cp, &cube);
             self.cubes.insert(cp, Arc::new(cube));
-            self.modified.insert(cp);
             self.edited.insert(cp);
             self.conn.remove(&cp);
             // Clients get the blocks now, whatever the light does.
@@ -235,12 +234,7 @@ impl Dim {
         }
         stats.apply_ms = start.elapsed().as_secs_f64() * 1000.0;
         let start = std::time::Instant::now();
-        let st = &c.states[fill.state as usize];
-        if st.opacity == 0 && st.light == [0; 3] && st.liquid.is_none() {
-            self.relight_opened(c, &relight, &lost_light, &mut stats);
-        } else {
-            self.relight_around(c, &relight, &mut stats);
-        }
+        stats.relit = relight_after(c, self.id, fill.state, &mut self.cubes, &mut self.light_dirty, &relight, &lost_light);
         stats.light_ms = start.elapsed().as_secs_f64() * 1000.0;
         // Lit for good: they go out to players like any loaded cube.
         let mut fresh = fresh.to_vec();
@@ -250,126 +244,184 @@ impl Dim {
         }
         stats
     }
+}
 
-    /// Light for cubes that only lost blocks (a crater): light around them can only grow, so
-    /// only they are lit again and push it out, except around lost light sources. Cubes open to
-    /// full sky above need no flood fill: whole air ones are set to full sky, partial ones are
-    /// lit alone in parallel (as generation does) and joined to their neighbors.
-    fn relight_opened(&mut self, c: &'static Content, changed: &[IVec3], lost_light: &[IVec3], stats: &mut FillStats) {
-        let def = &c.dims[self.id as usize];
-        let full = crate::world::light::SKY_FULL as u32;
-        let mut order = changed.to_vec();
-        order.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
-        let open_above = |cp: IVec3| cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y;
-        // Full sky across the bottom of the cube above (or open sky).
-        let sky_above = |cubes: &rustc_hash::FxHashMap<IVec3, Arc<Cube>>, cp: IVec3| match cubes.get(&(cp + IVec3::Y)) {
-            Some(a) => match a.uniform_light() {
-                Some(l) => l & 0xFF == full,
-                None => (0..256).all(|i| a.light(crate::world::cube::index(i % 16, 0, i / 16)) & 0xFF == full),
-            },
-            None => open_above(cp),
-        };
-        let mut whole = Vec::new();
-        let mut alone = Vec::new();
-        let mut flood = Vec::new();
-        for &cp in &order {
-            let air = self.cubes[&cp].uniform_state().is_some();
-            if !def.sky_light || !sky_above(&self.cubes, cp) {
-                flood.push(cp);
-            } else if air {
-                Arc::make_mut(self.cubes.get_mut(&cp).unwrap()).fill_light(full);
-                whole.push(cp);
-            } else {
-                alone.push(cp);
+/// Gives a cube coming from storage or generation the area `edits` made while it was away (or
+/// before it was ever generated), once each. Whether that changed it.
+pub fn catch_up(c: &Content, edits: &[AreaFill], pos: IVec3, cube: &mut Cube) -> bool {
+    let Some(last) = edits.last().map(|e| e.id).filter(|&l| cube.edits < l) else { return false };
+    let had = cube.edits;
+    let mut edited = false;
+    for e in edits.iter().filter(|e| e.id > had && e.touches(pos)) {
+        if let Some((next, _)) = e.apply(c, pos, cube) {
+            *cube = next;
+            edited = true;
+        }
+    }
+    cube.edits = last;
+    edited
+}
+
+/// `fill` made on cubes held outside a region (a client's own world): applied on every core to
+/// the ones it reaches and lit; every cube changed, in blocks or light, goes into `dirty`.
+pub fn fill_cubes(c: &'static Content, dim: u32, fill: &AreaFill, cubes: &mut FxHashMap<IVec3, Arc<Cube>>, dirty: &mut FxHashSet<IVec3>) {
+    let targets: Vec<(IVec3, Arc<Cube>)> = cubes.iter().filter(|(cp, _)| fill.touches(**cp)).map(|(cp, cube)| (*cp, cube.clone())).collect();
+    let done: Vec<(IVec3, Option<Cube>, bool)> =
+        targets.par_iter().map(|(cp, cube)| (*cp, fill.apply(c, *cp, cube).map(|r| r.0), cube.palette().iter().any(|&s| c.states[s as usize].light != [0; 3]))).collect();
+    let (mut changed, mut lost) = (Vec::new(), Vec::new());
+    for (cp, result, emitted) in done {
+        match result {
+            Some(mut cube) => {
+                cube.edits = fill.id;
+                cubes.insert(cp, Arc::new(cube));
+                dirty.insert(cp);
+                changed.push(cp);
+                if emitted {
+                    lost.push(cp);
+                }
+            }
+            None => {
+                if let Some(cube) = cubes.get_mut(&cp) {
+                    Arc::make_mut(cube).edits = fill.id;
+                }
             }
         }
-        let lit: Vec<(IVec3, Cube)> = alone
-            .par_iter()
-            .map(|&cp| {
-                let mut cube = (*self.cubes[&cp]).clone();
-                crate::world::light::prelight(c, &mut cube, true);
-                (cp, cube)
+    }
+    relight_after(c, dim, fill.state, cubes, dirty, &changed, &lost);
+}
+
+/// Light after `state` was filled into the `changed` cubes (`lost_light`: those of them that
+/// had a light source), every cube whose light changed going into `dirty`. Returns how many
+/// cubes were relit.
+pub fn relight_after(c: &'static Content, dim: u32, state: u32, cubes: &mut FxHashMap<IVec3, Arc<Cube>>, dirty: &mut FxHashSet<IVec3>, changed: &[IVec3], lost_light: &[IVec3]) -> usize {
+    let st = &c.states[state as usize];
+    if st.opacity == 0 && st.light == [0; 3] && st.liquid.is_none() {
+        relight_opened(c, dim, cubes, dirty, changed, lost_light)
+    } else {
+        relight_around(c, dim, cubes, dirty, changed)
+    }
+}
+
+/// Light for cubes that only lost blocks (a crater): light around them can only grow, so
+/// only they are lit again and push it out, except around lost light sources. Cubes open to
+/// full sky above need no flood fill: whole air ones are set to full sky, partial ones are
+/// lit alone in parallel (as generation does) and joined to their neighbors.
+fn relight_opened(c: &'static Content, dim: u32, cubes: &mut FxHashMap<IVec3, Arc<Cube>>, dirty: &mut FxHashSet<IVec3>, changed: &[IVec3], lost_light: &[IVec3]) -> usize {
+    let def = &c.dims[dim as usize];
+    let full = crate::world::light::SKY_FULL as u32;
+    let mut order = changed.to_vec();
+    order.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
+    let open_above = |cp: IVec3| cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y;
+    // Full sky across the bottom of the cube above (or open sky).
+    let sky_above = |cubes: &rustc_hash::FxHashMap<IVec3, Arc<Cube>>, cp: IVec3| match cubes.get(&(cp + IVec3::Y)) {
+        Some(a) => match a.uniform_light() {
+            Some(l) => l & 0xFF == full,
+            None => (0..256).all(|i| a.light(crate::world::cube::index(i % 16, 0, i / 16)) & 0xFF == full),
+        },
+        None => open_above(cp),
+    };
+    let mut whole = Vec::new();
+    let mut alone = Vec::new();
+    let mut flood = Vec::new();
+    for &cp in &order {
+        let air = cubes[&cp].uniform_state().is_some();
+        if !def.sky_light || !sky_above(cubes, cp) {
+            flood.push(cp);
+        } else if air {
+            Arc::make_mut(cubes.get_mut(&cp).unwrap()).fill_light(full);
+            whole.push(cp);
+        } else {
+            alone.push(cp);
+        }
+    }
+    let lit: Vec<(IVec3, Cube)> = alone
+        .par_iter()
+        .map(|&cp| {
+            let mut cube = (*cubes[&cp]).clone();
+            crate::world::light::prelight(c, &mut cube, true);
+            (cp, cube)
+        })
+        .collect();
+    for (cp, cube) in lit {
+        cubes.insert(cp, Arc::new(cube));
+    }
+    // Around lost light sources, the cubes left as they were may be too bright now.
+    let mut dimmed: Vec<IVec3> = lost_light
+        .iter()
+        .flat_map(|&cp| (-1..=1).flat_map(move |y| (-1..=1).flat_map(move |z| (-1..=1).map(move |x| cp + IVec3::new(x, y, z)))))
+        .filter(|p| cubes.contains_key(p) && !changed.contains(p))
+        .collect();
+    dimmed.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
+    dimmed.dedup();
+    let relit = changed.len() + dimmed.len();
+    // Whole air cubes among others like them have nothing to push or pull.
+    let full: FxHashSet<IVec3> = whole.iter().copied().collect();
+    let mut jobs: Vec<LightJob> = alone.iter().map(|&cp| LightJob::Join(cp)).collect();
+    jobs.extend(flood.iter().chain(&dimmed).map(|&cp| LightJob::New(cp, open_above(cp))));
+    jobs.extend(whole.iter().filter(|&&cp| crate::world::DIRS.iter().any(|d| !full.contains(&(cp + *d)))).map(|&cp| LightJob::Join(cp)));
+    run_light_jobs(c, dim, cubes, dirty, jobs);
+    relit
+}
+
+/// Runs light jobs on every core. Light leaves a cube by at most 15 blocks (less than a
+/// cube) except full sky going straight down, so jobs are grouped by column and columns
+/// three apart are done at once, each seeing only the 3x3 columns around it (`Overlay`);
+/// nine rounds cover every column. Within a column the jobs keep their order (top down).
+fn run_light_jobs(c: &'static Content, dim: u32, cubes: &mut FxHashMap<IVec3, Arc<Cube>>, dirty: &mut FxHashSet<IVec3>, jobs: Vec<LightJob>) {
+    let def = &c.dims[dim as usize];
+    let mut columns: FxHashMap<IVec2, Vec<LightJob>> = FxHashMap::default();
+    for job in jobs {
+        let p = job.pos();
+        columns.entry(IVec2::new(p.x, p.z)).or_default().push(job);
+    }
+    let opaque = |cube: &Cube| cube.palette().iter().all(|&s| c.states[s as usize].opacity >= 15);
+    for round in 0..9 {
+        let keys: Vec<IVec2> = columns.keys().copied().filter(|k| k.x.rem_euclid(3) + 3 * k.y.rem_euclid(3) == round).collect();
+        let mut work: Vec<(IVec2, Vec<LightJob>, i32, i32)> = Vec::with_capacity(keys.len());
+        for key in keys {
+            let jobs = columns.remove(&key).unwrap();
+            let top = jobs.iter().map(|j| j.pos().y).max().unwrap() + 1;
+            // Full sky goes on down whatever shaft is below, and sideways from there.
+            let mut low = jobs.iter().map(|j| j.pos().y).min().unwrap();
+            while cubes.get(&IVec3::new(key.x, low - 1, key.y)).is_some_and(|cube| !opaque(cube)) {
+                low -= 1;
+            }
+            work.push((key, jobs, low - 1, top));
+        }
+        let base = &*cubes;
+        let done: Vec<(FxHashMap<IVec3, Box<Cube>>, FxHashSet<IVec3>)> = work
+            .into_par_iter()
+            .map(|(key, jobs, low, top)| {
+                let mut map = Overlay { base, own: FxHashMap::default(), key, low, top };
+                let mut lighter = Lighter::new(&mut map, c, def.sky_light);
+                for job in jobs {
+                    match job {
+                        LightJob::Join(cp) => lighter.light_prelit(cp),
+                        LightJob::New(cp, open) => lighter.light_new(cp, open),
+                    }
+                }
+                let changed = std::mem::take(&mut lighter.changed);
+                (map.own, changed)
             })
             .collect();
-        for (cp, cube) in lit {
-            self.cubes.insert(cp, Arc::new(cube));
-        }
-        // Around lost light sources, the cubes left as they were may be too bright now.
-        let mut dimmed: Vec<IVec3> = lost_light
-            .iter()
-            .flat_map(|&cp| (-1..=1).flat_map(move |y| (-1..=1).flat_map(move |z| (-1..=1).map(move |x| cp + IVec3::new(x, y, z)))))
-            .filter(|p| self.cubes.contains_key(p) && !changed.contains(p))
-            .collect();
-        dimmed.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
-        dimmed.dedup();
-        stats.relit = changed.len() + dimmed.len();
-        // Whole air cubes among others like them have nothing to push or pull.
-        let full: FxHashSet<IVec3> = whole.iter().copied().collect();
-        let mut jobs: Vec<LightJob> = alone.iter().map(|&cp| LightJob::Join(cp)).collect();
-        jobs.extend(flood.iter().chain(&dimmed).map(|&cp| LightJob::New(cp, open_above(cp))));
-        jobs.extend(whole.iter().filter(|&&cp| crate::world::DIRS.iter().any(|d| !full.contains(&(cp + *d)))).map(|&cp| LightJob::Join(cp)));
-        self.run_light_jobs(c, jobs);
-    }
-
-    /// Runs light jobs on every core. Light leaves a cube by at most 15 blocks (less than a
-    /// cube) except full sky going straight down, so jobs are grouped by column and columns
-    /// three apart are done at once, each seeing only the 3x3 columns around it (`Overlay`);
-    /// nine rounds cover every column. Within a column the jobs keep their order (top down).
-    fn run_light_jobs(&mut self, c: &'static Content, jobs: Vec<LightJob>) {
-        let def = &c.dims[self.id as usize];
-        let mut columns: FxHashMap<IVec2, Vec<LightJob>> = FxHashMap::default();
-        for job in jobs {
-            let p = job.pos();
-            columns.entry(IVec2::new(p.x, p.z)).or_default().push(job);
-        }
-        let opaque = |cube: &Cube| cube.palette().iter().all(|&s| c.states[s as usize].opacity >= 15);
-        for round in 0..9 {
-            let keys: Vec<IVec2> = columns.keys().copied().filter(|k| k.x.rem_euclid(3) + 3 * k.y.rem_euclid(3) == round).collect();
-            let mut work: Vec<(IVec2, Vec<LightJob>, i32, i32)> = Vec::with_capacity(keys.len());
-            for key in keys {
-                let jobs = columns.remove(&key).unwrap();
-                let top = jobs.iter().map(|j| j.pos().y).max().unwrap() + 1;
-                // Full sky goes on down whatever shaft is below, and sideways from there.
-                let mut low = jobs.iter().map(|j| j.pos().y).min().unwrap();
-                while self.cubes.get(&IVec3::new(key.x, low - 1, key.y)).is_some_and(|cube| !opaque(cube)) {
-                    low -= 1;
-                }
-                work.push((key, jobs, low - 1, top));
+        for (own, changed) in done {
+            for (p, cube) in own {
+                cubes.insert(p, Arc::from(cube));
             }
-            let cubes = &self.cubes;
-            let done: Vec<(FxHashMap<IVec3, Box<Cube>>, FxHashSet<IVec3>)> = work
-                .into_par_iter()
-                .map(|(key, jobs, low, top)| {
-                    let mut map = Overlay { base: cubes, own: FxHashMap::default(), key, low, top };
-                    let mut lighter = Lighter::new(&mut map, c, def.sky_light);
-                    for job in jobs {
-                        match job {
-                            LightJob::Join(cp) => lighter.light_prelit(cp),
-                            LightJob::New(cp, open) => lighter.light_new(cp, open),
-                        }
-                    }
-                    let changed = std::mem::take(&mut lighter.changed);
-                    (map.own, changed)
-                })
-                .collect();
-            for (own, changed) in done {
-                for (p, cube) in own {
-                    self.cubes.insert(p, Arc::from(cube));
-                }
-                self.light_dirty.extend(changed);
-            }
+            dirty.extend(changed);
         }
     }
+}
 
-    /// Light once per cube, the changed ones and those around them (light reaches 15 blocks:
-    /// less than a cube), from the top down so sky light comes from cubes already done.
-    fn relight_around(&mut self, c: &'static Content, relight: &[IVec3], stats: &mut FillStats) {
-        let mut around: Vec<IVec3> = relight.iter().flat_map(|&cp| (-1..=1).flat_map(move |y| (-1..=1).flat_map(move |z| (-1..=1).map(move |x| cp + IVec3::new(x, y, z))))).filter(|p| self.cubes.contains_key(p)).collect();
-        around.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
-        around.dedup();
-        stats.relit = around.len();
-        let def = &c.dims[self.id as usize];
-        let jobs = around.iter().map(|&cp| LightJob::New(cp, cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y)).collect();
-        self.run_light_jobs(c, jobs);
-    }
+/// Light once per cube, the changed ones and those around them (light reaches 15 blocks:
+/// less than a cube), from the top down so sky light comes from cubes already done.
+fn relight_around(c: &'static Content, dim: u32, cubes: &mut FxHashMap<IVec3, Arc<Cube>>, dirty: &mut FxHashSet<IVec3>, relight: &[IVec3]) -> usize {
+    let mut around: Vec<IVec3> = relight.iter().flat_map(|&cp| (-1..=1).flat_map(move |y| (-1..=1).flat_map(move |z| (-1..=1).map(move |x| cp + IVec3::new(x, y, z))))).filter(|p| cubes.contains_key(p)).collect();
+    around.sort_unstable_by_key(|p| (-p.y, p.x, p.z));
+    around.dedup();
+    let relit = around.len();
+    let def = &c.dims[dim as usize];
+    let jobs = around.iter().map(|&cp| LightJob::New(cp, cp.y + 1 >= def.sky_cube_y || cp.y + 1 > def.max_cube_y)).collect();
+    run_light_jobs(c, dim, cubes, dirty, jobs);
+    relit
 }

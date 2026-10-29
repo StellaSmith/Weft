@@ -15,6 +15,8 @@ Examples to copy from:
 ## How generation works
 The world is made of 16x16x16 cubes, and each one is generated on its own, whenever somebody needs it. That's why a generator has to be a **pure function**: the same seed and position must always give the same blocks, on every machine and in any order. Don't use random numbers, clock, something remembered between cubes for worldgen.
 
+It matters more than it sounds: the server only generates what it simulates around players (`core:simulation_distance`, 8 cubes by default), and everything further away the client generates itself from the seed with your generator. If the two ever disagree, players see one thing and walk into another. The server only sends what differs from generation: blocks players changed and area edits like a crater.
+
 A cube is made in steps: the dimension's terrain (or its generator) first, then scattered things like trees, then decorations (plants), then ores and structures, and spawns happen later in the finished world. None of these steps cares about the others, which is also what lets a mod add any of them to a dimension that belongs to someone else. Ores, scatters and decorations go into every dimension by default: a tree follows its biome, an ore follows the stone it replaces.
 
 Cube coordinates are block coordinates divided by 16, so cube `y = 4` holds the blocks from 64 to 79.

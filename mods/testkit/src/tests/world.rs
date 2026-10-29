@@ -241,9 +241,11 @@ pub async fn crater_view(t: T) -> R {
     t.secs(1.0).await?;
     t.loaded().await?;
     t.idle().await?;
+    // Beyond what the server simulates: the client made the crater on its own terrain and lit it.
     let bottom = add(f, [0, -140, 0]);
-    let light: u32 = t.op(&format!("light {} {} {}", bottom[0], bottom[1], bottom[2])).await?.parse().unwrap_or(0);
+    let light = t.c().light(bottom).unwrap_or(0);
     t.check_eq(light & 255, 15, "the crater's bottom, seen from beyond the rim, is loaded and lit");
+    t.check_eq(t.c().block(bottom), Some(0), "the crater's bottom is air on the client");
     t.c().look(0.0, -30.0);
     t.frames(20).await?;
     t.shot("from_rim").await?;

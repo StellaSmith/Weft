@@ -139,7 +139,10 @@ fn text_out(s: &str) -> Str {
 impl Running {
     /// Whether the world around the player is loaded and meshed, and whether everything is idle.
     pub(super) fn load_state(&self) -> (bool, bool) {
-        let loaded = self.game.as_ref().is_some_and(|g| g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0);
+        let loaded = self.game.as_ref().is_some_and(|g| {
+            let terrain = g.client.terrain.pending.load(std::sync::atomic::Ordering::Relaxed);
+            g.client.joined && g.client.world.cubes.len() > 50 && g.client.world.pending_meshes() == 0 && terrain == 0
+        });
         let idle = loaded && self.game.as_ref().is_some_and(|g| g.server.as_ref().is_none_or(|s| s.idle()));
         (loaded, idle)
     }
@@ -436,6 +439,13 @@ pub unsafe extern "C" fn client_text(c: *mut abi::ClientCtx, which: u32, index: 
 
 pub unsafe extern "C" fn client_block(c: *mut abi::ClientCtx, pos: *const [i32; 3]) -> u32 {
     unsafe { client(c).map_or(u32::MAX, |cl| cl.world.block(IVec3::from_array(*pos))) }
+}
+
+pub unsafe extern "C" fn client_light(c: *mut abi::ClientCtx, pos: *const [i32; 3]) -> u32 {
+    unsafe {
+        let p = IVec3::from_array(*pos);
+        client(c).map_or(u32::MAX, |cl| if cl.world.block(p) == u32::MAX { u32::MAX } else { cl.world.light(p) })
+    }
 }
 
 pub unsafe extern "C" fn client_slot(c: *mut abi::ClientCtx, container: u32, slot: u32) -> ItemStack {

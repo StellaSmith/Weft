@@ -175,6 +175,12 @@ messages! {
         /// (the structure was not known), otherwise the ones that changed.
         Structure { id: u64, cubes: Vec<(IVec3, Arc<Cube>)>, full: bool },
         Unload { dim: u32, pos: IVec3 },
+        /// Cubes in view that differ from generation (saved, or changed while loaded): the
+        /// client does not generate them and waits for them to be sent.
+        Saved { dim: u32, cubes: Vec<IVec3> },
+        /// Area edits of the dimension (`AreaFill::spec`): `all` replaces what the client has,
+        /// otherwise they come after it. Clients make them on what they generate.
+        Edits { dim: u32, specs: Vec<String>, all: bool },
         Blocks { dim: u32, changes: Vec<(IVec3, u32)> },
         Time { dim: u32, time: u64 },
         /// `frame`: the solid body it was put on and the position relative to that body (clients

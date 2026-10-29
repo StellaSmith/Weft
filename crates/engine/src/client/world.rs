@@ -224,6 +224,7 @@ impl ClientWorld {
     }
 
     pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, hidden: u8) {
+        let fresh_hidden = hidden != crate::net::KEEP_HIDDEN && self.hidden.get(&pos).copied().unwrap_or(0) != hidden;
         if hidden != crate::net::KEEP_HIDDEN {
             self.hidden.insert(pos, hidden);
         }
@@ -241,7 +242,6 @@ impl ClientWorld {
                 }
             }
         }
-        let fresh_hidden = hidden != crate::net::KEEP_HIDDEN;
         match self.cubes.insert(pos, cube) {
             None => {
                 self.columns.get_mut(&col).unwrap().cubes += 1;

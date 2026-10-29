@@ -156,21 +156,10 @@ impl DimSet {
         if self.has(pos) {
             return;
         }
-        // Area edits made while it was away (or before it was ever generated), once each.
-        let mut edited = false;
-        if let Some(last) = self.edits.last().map(|e| e.id).filter(|&l| cube.edits < l) {
-            let had = cube.edits;
-            for e in self.edits.iter().filter(|e| e.id > had && e.touches(pos)) {
-                if let Some((next, _)) = e.apply(c, pos, &cube) {
-                    cube = next;
-                    edited = true;
-                }
-            }
-            cube.edits = last;
-            if edited {
-                prelit = false;
-                conn = super::dim::see_through(c, &cube);
-            }
+        let edited = self.catch_up_edits(c, pos, &mut cube);
+        if edited {
+            prelit = false;
+            conn = super::dim::see_through(c, &cube);
         }
         let r = self.region_for(c, section_of_cube(pos));
         let d = &mut self.regions[r];
@@ -197,6 +186,17 @@ impl DimSet {
             d.entities.insert_with(c, e, inv, comps);
         }
         d.add_missing_block_entities(c, pos);
+    }
+
+    /// Gives a cube coming from storage or generation the area edits made while it was away
+    /// (or before it was ever generated), once each. Whether that changed it.
+    pub fn catch_up_edits(&self, c: &Content, pos: IVec3, cube: &mut Cube) -> bool {
+        super::area::catch_up(c, &self.edits, pos, cube)
+    }
+
+    /// Loaded cubes changed since they were generated or loaded (saved when they unload).
+    pub fn modified(&self) -> impl Iterator<Item = IVec3> + '_ {
+        self.regions.iter().flat_map(|r| r.modified.iter().copied())
     }
 
     pub fn connectivity(&mut self, c: &Content, pos: IVec3) -> Option<u16> {

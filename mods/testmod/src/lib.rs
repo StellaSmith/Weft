@@ -96,7 +96,7 @@ fn init(r: &mut Registry) {
     r.block(&SOUL_TORCH)
         .replacing()
         .retexture("base:torch", "soul_torch")
-        .light_rgb(3, 9, 15)
+        .light_rgb(3, 9, 35)
         .hardness(0.0);
 
     // Machines: block, entity with the machine and energy components, menu, all in one builder.

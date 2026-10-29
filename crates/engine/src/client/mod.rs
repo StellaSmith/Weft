@@ -6,6 +6,7 @@ pub mod mesher;
 pub mod models;
 pub mod modui;
 pub mod particles;
+pub mod terrain;
 pub mod textures;
 pub mod world;
 pub mod world_render;
@@ -234,6 +235,12 @@ pub struct Client {
     pub disconnected: Option<String>,
     cooldown: f32,
     pub view_radius: i32,
+    /// Makes the world in view from the seed (`terrain`); the server's cubes go through it.
+    pub terrain: terrain::TerrainHandle,
+    seed: u64,
+    /// Resets sent to the terrain thread: batches of an older one are dropped.
+    terrain_resets: u64,
+    terrain_view: (IVec3, i32),
     pub fov: f32,
     /// Brightness setting, 0 moody .. 1 bright.
     pub brightness: f32,
@@ -416,6 +423,10 @@ impl Client {
             disconnected: None,
             cooldown: 0.0,
             view_radius,
+            terrain: terrain::spawn(),
+            seed: 0,
+            terrain_resets: 0,
+            terrain_view: (IVec3::MAX, 0),
             fov: 70.0,
             brightness: 0.5,
             entities: FxHashMap::default(),
@@ -479,35 +490,40 @@ impl Client {
         self.inventory.get(self.selected).copied().unwrap_or_default()
     }
 
+    /// Starts the terrain over for dimension `dim` (joined, or moved to another dimension).
+    fn reset_terrain(&mut self, dim: u32, fwd: &mut Vec<terrain::In>) {
+        self.world.clear();
+        self.world.dim = dim;
+        self.terrain_resets += 1;
+        self.terrain_view = (IVec3::MAX, 0);
+        fwd.push(terrain::In::Reset { dim, seed: self.seed });
+    }
+
     fn receive(&mut self) {
-        self.world.begin_batch();
+        // World messages go to the terrain thread, all of a frame together.
+        let mut fwd = Vec::new();
         while let Some(msg) = self.conn.recv() {
             match msg {
-                ToClient::Welcome { player, dim, pos, .. } => {
+                ToClient::Welcome { player, dim, pos, seed } => {
                     self.player_id = player;
                     self.joined = true;
                     self.player.pos = pos;
                     self.player.prev = pos;
-                    if dim != self.world.dim {
-                        self.world.clear();
-                        self.world.dim = dim;
-                    }
+                    self.seed = seed;
+                    self.reset_terrain(dim, &mut fwd);
                 }
-                ToClient::Cube { dim, pos, cube, hidden } if dim == self.world.dim => self.world.insert(pos, cube, hidden),
-                ToClient::Unload { dim, pos } if dim == self.world.dim => self.world.remove(pos),
-                ToClient::Blocks { dim, changes } if dim == self.world.dim => {
-                    for (p, s) in changes {
-                        self.world.set_block(p, s);
-                    }
-                }
+                ToClient::Cube { dim, pos, cube, .. } if dim == self.world.dim => fwd.push(terrain::In::Cube { pos, cube }),
+                ToClient::Unload { dim, pos } if dim == self.world.dim => fwd.push(terrain::In::Unload(pos)),
+                ToClient::Blocks { dim, changes } if dim == self.world.dim => fwd.push(terrain::In::Blocks(changes)),
+                ToClient::Saved { dim, cubes } if dim == self.world.dim => fwd.push(terrain::In::Saved(cubes)),
+                ToClient::Edits { dim, specs, all } if dim == self.world.dim => fwd.push(terrain::In::Edits { specs, all }),
                 ToClient::Time { dim, time } if dim == self.world.dim => {
                     self.world.time = time;
                     self.since_time = 0;
                 }
                 ToClient::Teleport { dim, pos, frame } => {
                     if dim != self.world.dim {
-                        self.world.clear();
-                        self.world.dim = dim;
+                        self.reset_terrain(dim, &mut fwd);
                         self.entities.clear();
                     }
                     let at = self.body_tick(self.body_clock);
@@ -733,7 +749,28 @@ impl Client {
                 _ => {}
             }
         }
-        self.world.end_batch();
+        if !fwd.is_empty() {
+            let _ = self.terrain.tx.send(terrain::In::Many(fwd));
+        }
+        // What the terrain thread finished, a batch at a time (shown together).
+        while let Ok((resets, batch)) = self.terrain.rx.try_recv() {
+            if resets != self.terrain_resets {
+                continue;
+            }
+            self.world.begin_batch();
+            for o in batch {
+                match o {
+                    terrain::Out::Cube { pos, cube, hidden } => self.world.insert(pos, cube, hidden),
+                    terrain::Out::Blocks(changes) => {
+                        for (p, s) in changes {
+                            self.world.set_block(p, s);
+                        }
+                    }
+                    terrain::Out::Unload(pos) => self.world.remove(pos),
+                }
+            }
+            self.world.end_batch();
+        }
         if self.conn.is_closed() && self.disconnected.is_none() {
             self.disconnected = Some("connection lost".into());
         }
@@ -1124,6 +1161,10 @@ impl Client {
         }
         for (col, tints) in self.world.take_tints(glam::IVec2::new(center.x, center.z), reach) {
             self.render.upload_tints(gpu, col, &tints);
+        }
+        if self.joined && self.terrain_view != (center, self.view_radius) {
+            self.terrain_view = (center, self.view_radius);
+            let _ = self.terrain.tx.send(terrain::In::View { center, radius: self.view_radius });
         }
         // Enough jobs that meshing keeps up at 60 frames per second too, not only at thousands.
         self.world.schedule_meshing(center, rayon::current_num_threads() * 32);

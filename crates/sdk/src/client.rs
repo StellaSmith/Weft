@@ -222,6 +222,13 @@ impl Client {
         (b != u32::MAX).then_some(b)
     }
 
+    /// The light the client has at `pos` (sky level in the low byte, then block red, green,
+    /// blue), `None` while that cube is not loaded.
+    pub fn light(&self, pos: [i32; 3]) -> Option<u32> {
+        let l = unsafe { (host().client_light)(self.raw, &pos) };
+        (l != u32::MAX).then_some(l)
+    }
+
     /// Own inventory slot by index (the engine lays the inventory out from its groups; with the
     /// base game the hotbar comes first).
     pub fn inventory_slot(&self, slot: u32) -> ItemStack {

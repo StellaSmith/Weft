@@ -293,6 +293,7 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<ConfigDef> {
         ConfigDef::text("core:resource_packs", ""),
         ConfigDef::text("core:shader_pack", ""),
         ConfigDef { scope: scope::WORLD, ..ConfigDef::number("core:mob_spawning", ck::BOOL, 1.0, 0.0, 1.0, 0.0) },
+        ConfigDef { scope: scope::WORLD, ..ConfigDef::number("core:simulation_distance", ck::INT, 8.0, 2.0, 64.0, 1.0) },
     ];
     out.extend(keys.iter().map(|(action, key)| ConfigDef::text(&format!("core:key.{action}"), key)));
     out

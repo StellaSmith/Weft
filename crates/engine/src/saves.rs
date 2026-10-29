@@ -256,6 +256,9 @@ pub struct Storage {
     /// Region files on disk, listed once: most cubes were never saved, and asking the file
     /// system about each of them costs far more than generating it.
     on_disk: FxHashSet<(u32, IVec3)>,
+    /// Per dimension, the cubes saved: what differs from generation (clients generate the
+    /// rest themselves).
+    saved: Vec<FxHashSet<IVec3>>,
 }
 
 fn region_of(cube: IVec3) -> (IVec3, usize) {
@@ -270,16 +273,28 @@ impl Storage {
         let ids = IdTable::load(&meta.dir, c);
         let dim_dirs: Vec<PathBuf> = c.dims.iter().map(|d| meta.dir.join("dims").join(d.name.replace(':', "_"))).collect();
         let mut on_disk = FxHashSet::default();
+        let mut saved = vec![FxHashSet::default(); dim_dirs.len()];
         for (dim, dir) in dim_dirs.iter().enumerate() {
             for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let parts: Vec<i32> = name.strip_prefix("r.").and_then(|n| n.strip_suffix(".bin")).map_or(Vec::new(), |n| n.split('.').filter_map(|v| v.parse().ok()).collect());
                 if let [x, y, z] = parts[..] {
-                    on_disk.insert((dim as u32, IVec3::new(x, y, z)));
+                    let r = IVec3::new(x, y, z);
+                    on_disk.insert((dim as u32, r));
+                    // The header says which of its cubes are there.
+                    let mut raw = vec![0u8; ENTRIES * 8];
+                    if std::fs::File::open(e.path()).and_then(|mut f| f.read_exact(&mut raw)).is_ok() {
+                        for i in 0..ENTRIES {
+                            if raw[i * 8 + 4..i * 8 + 8] != [0; 4] {
+                                let i = i as i32;
+                                saved[dim].insert(r * REGION + IVec3::new(i % REGION, i / (REGION * REGION), i / REGION % REGION));
+                            }
+                        }
+                    }
                 }
             }
         }
-        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk }
+        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved }
     }
 
     fn region(&mut self, dim: u32, r: IVec3) -> Option<&mut Region> {
@@ -304,6 +319,11 @@ impl Storage {
 
     fn region_exists(&self, dim: u32, r: IVec3) -> bool {
         self.on_disk.contains(&(dim, r))
+    }
+
+    /// Cubes of dimension `dim` that were saved.
+    pub fn saved(&self, dim: u32) -> &FxHashSet<IVec3> {
+        &self.saved[dim as usize]
     }
 
     /// The cube and the serialized entities that were in it.
@@ -346,6 +366,7 @@ impl Storage {
                 log::error!("saving cube {pos}: {e}");
             }
         }
+        self.saved[dim as usize].insert(pos);
     }
 
     pub fn flush(&mut self) {

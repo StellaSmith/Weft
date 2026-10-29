@@ -65,6 +65,9 @@ pub struct Player {
     pub dim: u32,
     pub entity: u64,
     sent: FxHashSet<IVec3>,
+    /// Cubes told about in `ToClient::Saved`, and the ones of them still to send, nearest last.
+    announced: FxHashSet<IVec3>,
+    to_send_far: Vec<IVec3>,
     known: FxHashSet<u64>,
     joined: bool,
     menu: Option<OpenMenu>,
@@ -104,6 +107,9 @@ pub struct Generated {
 /// Cubes around a player that are loaded whether visible or not, so digging and walking into
 /// sealed ground always finds blocks there.
 const NEAR: i32 = 2;
+
+/// Saved cubes beyond what is loaded sent to a player per tick (each read from disk).
+const FAR_PER_TICK: usize = 256;
 
 /// State the client thread may read or poke while the server runs.
 #[derive(Default)]
@@ -275,6 +281,48 @@ pub fn spawn(cfg: ServerConfig, storage: Option<Storage>) -> ServerHandle {
 /// Cubes kept loaded around a view: the visible range plus, above it, the column up to where the
 /// generator guarantees open sky (capped), so sky light reaches the visible cubes without having
 /// to send or render those extra cubes.
+/// The cubes in a player's view that differ from generation: told about first (the client
+/// does not generate them), then sent, loaded ones as they are and the rest from storage with
+/// the area edits made since they were saved.
+fn send_far(c: &'static Content, p: &mut Player, dim: &mut DimSet, storage: Option<&Arc<Mutex<Storage>>>, (center, r, h, down): (IVec3, i32, i32, i32), tick: u64) {
+    let in_view = |q: IVec3| {
+        let d = q - center;
+        d.x * d.x + d.z * d.z <= r * r && d.y <= h && d.y >= -down
+    };
+    if tick % 10 == 0 || p.announced.is_empty() {
+        let mut new: Vec<IVec3> = dim.modified().filter(|&q| in_view(q) && !p.announced.contains(&q)).collect();
+        if let Some(s) = storage {
+            new.extend(s.lock().saved(p.dim).iter().copied().filter(|&q| in_view(q) && !p.announced.contains(&q)));
+        }
+        new.sort_unstable_by_key(|q| (q.x, q.y, q.z));
+        new.dedup();
+        if !new.is_empty() {
+            p.announced.extend(new.iter().copied());
+            p.conn.send(ToClient::Saved { dim: p.dim, cubes: new.clone() });
+            p.to_send_far.extend(new);
+            p.to_send_far.sort_unstable_by_key(|q| std::cmp::Reverse((*q - center).length_squared()));
+        }
+    }
+    let mut n = 0;
+    while n < FAR_PER_TICK {
+        let Some(pos) = p.to_send_far.pop() else { break };
+        if p.sent.contains(&pos) || !in_view(pos) {
+            continue;
+        }
+        let cube = match dim.snapshot(pos) {
+            Some(cube) => cube,
+            None => {
+                n += 1;
+                let Some((mut cube, _)) = storage.and_then(|s| s.lock().load(p.dim, pos)) else { continue };
+                dim.catch_up_edits(c, pos, &mut cube);
+                Arc::new(cube)
+            }
+        };
+        p.conn.send(ToClient::Cube { dim: p.dim, pos, cube, hidden: 0 });
+        p.sent.insert(pos);
+    }
+}
+
 fn loaded_y_range(def: &DimensionDef, center_y: i32, h: i32, down: i32) -> (i32, i32) {
     let lo = (center_y - down).max(def.min_cube_y);
     let top = center_y + h;
@@ -397,6 +445,8 @@ impl Server {
                 dim: 0,
                 entity: 0,
                 sent: FxHashSet::default(),
+                announced: FxHashSet::default(),
+                to_send_far: Vec::new(),
                 known: FxHashSet::default(),
                 joined: false,
                 menu: None,
@@ -1178,6 +1228,7 @@ impl Server {
         p.first_sync = true;
         log::info!("{} joined", p.name);
         p.conn.send(ToClient::Welcome { player: id, dim, pos, seed: self.cfg.seed });
+        p.conn.send(ToClient::Edits { dim, specs: self.dims[dim as usize].edits.iter().map(|e| e.spec(c)).collect(), all: true });
         p.conn.send(ToClient::Configs(crate::config::synced()));
         p.conn.send(ToClient::Time { dim, time });
         p.conn.send(ToClient::GameMode(mode));
@@ -1235,6 +1286,8 @@ impl Server {
         if p.dim != to {
             p.dim = to;
             p.sent.clear();
+            p.announced.clear();
+            p.to_send_far.clear();
             p.gen_done = None;
             p.unsent.clear();
             p.sync_range = None;
@@ -1245,6 +1298,7 @@ impl Server {
         p.fall = 0.0;
         p.teleported = Some(pos);
         p.conn.send(ToClient::Teleport { dim: to, pos, frame });
+        p.conn.send(ToClient::Edits { dim: to, specs: dims[to as usize].edits.iter().map(|e| e.spec(c)).collect(), all: true });
         p.conn.send(ToClient::Time { dim: to, time: dims[to as usize].time });
         if to == c.void_dim && from != to as usize {
             p.conn.send(ToClient::Chat(void_note(c)));
@@ -1385,17 +1439,24 @@ impl Server {
         }
     }
 
-    /// Center cube, radius, cubes above and cubes below. Flying higher than the radius, the view
-    /// reaches down to the ground and a little into it, so the ground shows (over a deep crater
-    /// that changes nothing: adding the air below everywhere loaded caves under the whole view).
-    fn view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
+    /// What a player sees (the client generates it): center cube, radius, cubes above and
+    /// below. As far up and down as sideways; flying higher than that, down to the ground and
+    /// a little into it, so the ground shows.
+    fn full_view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
         let dim = &self.dims[p.dim as usize];
         let pos = dim.entity_region_ref(p.entity).and_then(|r| r.entities.get(p.entity)).map_or(DVec3::ZERO, |e| e.pos);
         let center = (pos.floor().as_ivec3()) >> 4;
-        // As far up and down as sideways: a crater or a cave is seen whole from beside it, not
-        // only from above (the visibility fill keeps unseen ground from loading).
         let r = self.cfg.view_radius;
         (center, r, r, r.max(dim.air_below(center, 2 * r) + 8))
+    }
+
+    /// What the server loads, simulates and sends whole around a player: the view cut to the
+    /// simulation distance. Beyond it clients generate the world themselves and get only what
+    /// differs from generation (`send_far`).
+    fn view(&self, p: &Player) -> (IVec3, i32, i32, i32) {
+        let (center, r, _, down) = self.full_view(p);
+        let s = (crate::config::get(content().game.simulation_distance) as i32).min(r);
+        (center, s, s, down.min(s))
     }
 
     /// An area edit, with the cubes it opens up to players' views loaded first on every core:
@@ -1454,6 +1515,12 @@ impl Server {
         }
         log::info!("area fill r {:.0}: loaded {loaded} cubes it opens up, made {} it fills whole, {:.0} ms", fill.radius, whole.len(), start.elapsed().as_secs_f64() * 1000.0);
         self.dims[dim as usize].area_fill(c, fill, &whole);
+        if let Some(e) = self.dims[dim as usize].edits.last() {
+            let spec = e.spec(c);
+            for p in self.players.iter_mut().filter(|p| p.joined && p.dim == dim) {
+                p.conn.send(ToClient::Edits { dim, specs: vec![spec.clone()], all: false });
+            }
+        }
     }
 
     /// Cubes players need, nearest columns first and each column top-down; loading and
@@ -1638,10 +1705,12 @@ impl Server {
                 continue;
             }
             let (center, r, h, down) = self.view(&self.players[pi]);
-            let Server { players, dims, tick, .. } = self;
+            let full = self.full_view(&self.players[pi]);
+            let Server { players, dims, tick, storage, .. } = self;
             let p = &mut players[pi];
             let dim = &mut dims[p.dim as usize];
             let def = &c.dims[p.dim as usize];
+            send_far(c, p, dim, storage.as_ref(), full, *tick);
 
             for reg in &dim.regions {
                 for (pos, cube) in &reg.resend {
@@ -1850,15 +1919,13 @@ impl Server {
             if !moved {
                 continue;
             }
-            let far: Vec<IVec3> = p
-                .sent
-                .iter()
-                .copied()
-                .filter(|&pos| {
-                    let d = pos - center;
-                    d.x * d.x + d.z * d.z > (r + 2) * (r + 2) || d.y > h + 2 || d.y < -down - 2
-                })
-                .collect();
+            let (fc, fr, fh, fdown) = full;
+            let gone = |pos: IVec3| {
+                let d = pos - fc;
+                d.x * d.x + d.z * d.z > (fr + 2) * (fr + 2) || d.y > fh + 2 || d.y < -fdown - 2
+            };
+            p.announced.retain(|&q| !gone(q));
+            let far: Vec<IVec3> = p.sent.iter().copied().filter(|&q| gone(q)).collect();
             for pos in far {
                 p.sent.remove(&pos);
                 p.conn.send(ToClient::Unload { dim: p.dim, pos });
@@ -1910,9 +1977,9 @@ impl Server {
                 .iter()
                 .filter(|p| p.joined && p.dim as usize == di)
                 .map(|p| {
-                    let (center, _, h, down) = self.view(p);
+                    let (center, r, h, down) = self.view(p);
                     let (lo, hi) = loaded_y_range(def, center.y, h, down);
-                    (center, self.cfg.view_radius + 3, lo - 3, hi + 3)
+                    (center, r + 3, lo - 3, hi + 3)
                 })
                 .collect();
             let storage = self.storage.clone();

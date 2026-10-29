@@ -289,6 +289,12 @@ fn mod_ids() -> Vec<String> {
     mods.iter().map(|m| m.id.clone()).collect()
 }
 
+/// `--hide-hud` (or `--record nohud`): the world without the HUD, for screenshots and footage.
+fn hud_hidden() -> bool {
+    let o = api::launch_options();
+    o.contains_key("hide-hud") || o.get("record").is_some_and(|v| v == "nohud")
+}
+
 /// `--record`: a script run on screen for filming (full screen, animated time, no cursor).
 fn recording() -> bool {
     api::launch_options().contains_key("record")
@@ -309,8 +315,10 @@ impl App {
             crate::config::override_for_run("core:view_distance", &v.to_string());
         }
         let mut settings = Settings::new(&self.opts.run_dir);
+        let icon = crate::assets::decode_png_file(&engine_assets(self.opts.dev).join("icon.png")).and_then(|(w, h, px)| winit::window::Icon::from_rgba(px, w, h).ok());
         let mut attrs = Window::default_attributes()
             .with_title("Weft")
+            .with_window_icon(icon)
             .with_inner_size(winit::dpi::PhysicalSize::new(self.opts.size.0, self.opts.size.1));
         // Automated runs work in the background: no focus taken, under other windows, off the
         // desktop (still rendered at full size, so screenshots are the same).
@@ -333,6 +341,14 @@ impl App {
 
         let mut roots: Vec<(String, PathBuf)> = vec![("core".into(), engine_assets(self.opts.dev))];
         roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
+        // Not in automated runs: their pictures are compared against fixed expectations.
+        if !self.opts.automated && crate::minecraft::ensure_pack(&self.opts.run_dir, &roots) {
+            let mut packs = settings.resource_packs();
+            if !packs.iter().any(|p| p == crate::minecraft::PACK) {
+                packs.insert(0, crate::minecraft::PACK.to_string());
+                settings.set_resource_packs(&packs);
+            }
+        }
         let packs_now = (settings.resource_packs(), settings.shader_pack());
         let packs = crate::packs::enabled(&self.opts.run_dir, &settings.resource_packs());
         crate::packs::set_shader_pack(settings.shader_pack().as_ref().map(|p| crate::packs::shader_dir(&self.opts.run_dir).join(p)));
@@ -1633,7 +1649,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         let preview_tex = r.preview_tex;
         let mut layers: Vec<&Ui> = Vec::new();
         let mut animated = Vec::new();
-        if r.game.is_some() && api::launch_options().get("record").map(String::as_str) != Some("nohud") {
+        if r.game.is_some() && !hud_hidden() {
             layers.push(&r.hud.ui);
         }
         // Only the top screen shows, like vanilla: the ones under it are not drawn through its

@@ -9,3 +9,6 @@ weft_engine.workspace = true
 weft_vulkan.workspace = true
 weft_render.workspace = true
 log.workspace = true
+
+[build-dependencies]
+winresource = "0.1"

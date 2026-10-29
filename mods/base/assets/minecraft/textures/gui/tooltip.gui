@@ -1,0 +1,4 @@
+# vanilla draws both 9 pixels larger than the text box on each side
+border = 9
+size = 100 100
+outset = 9

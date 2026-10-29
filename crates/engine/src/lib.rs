@@ -19,6 +19,7 @@ pub mod hud;
 pub mod input;
 pub mod log;
 pub mod loot;
+pub mod minecraft;
 pub mod model;
 pub mod modloader;
 pub mod net;

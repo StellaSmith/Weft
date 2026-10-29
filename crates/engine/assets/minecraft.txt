@@ -1,0 +1,13 @@
+# The engine's textures in a pack made from the player's own Minecraft (minecraft.rs).
+
+block/destroy_0 = block/destroy_stage_0
+block/destroy_1 = block/destroy_stage_1
+block/destroy_2 = block/destroy_stage_2
+block/destroy_3 = block/destroy_stage_3
+block/destroy_4 = block/destroy_stage_4
+block/destroy_5 = block/destroy_stage_5
+block/destroy_6 = block/destroy_stage_6
+block/destroy_7 = block/destroy_stage_7
+block/destroy_8 = block/destroy_stage_8
+block/destroy_9 = block/destroy_stage_9
+entity/player = entity/player/wide/steve crop 0 0 64 32

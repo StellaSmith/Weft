@@ -75,6 +75,7 @@ fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone:
         .hardness(2.0)
         .mineable("axe")
         .tag("logs")
+        .tag(&format!("logs/{wood}"))
         .set(&FLAMMABLE, 5)
         .set(&FUEL, 300)
         .prop("axis", ["y", "x", "z"])
@@ -111,8 +112,8 @@ fn plant(r: &mut Registry, handle: &'static Block, tex: &str) {
 
 /// Sand and gravel: with nothing under them they fall as an entity and land as a block.
 pub fn register(r: &mut Registry) {
-    r.block(&STONE).sound_group("stone").hardness(1.5).mineable("pickaxe").needs_tool(0).drops("cobblestone", 1).tag("stone").tag("stone_ore_replaceables").tab(&crate::tabs::BUILDING);
-    r.block(&COBBLESTONE).sound_group("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tag("stone").tag("materials/stone").tab(&crate::tabs::BUILDING);
+    r.block(&STONE).sound_group("stone").hardness(1.5).mineable("pickaxe").needs_tool(0).drops("cobblestone", 1).tag("stone").tag("smooth_stone").tag("stone_ore_replaceables").tab(&crate::tabs::BUILDING);
+    r.block(&COBBLESTONE).sound_group("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tag("stone").tag("cobblestone").tag("materials/stone").tab(&crate::tabs::BUILDING);
     r.block(&MOSSY_COBBLESTONE).sound_group("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tab(&crate::tabs::BUILDING);
     r.block(&DIRT).sound_group("gravel").hardness(0.5).mineable("shovel").tag("dirt").tab(&crate::tabs::NATURAL);
     r.block(&GRASS).sound_group("grass")
@@ -129,10 +130,11 @@ pub fn register(r: &mut Registry) {
     r.block(&SNOWY_GRASS).sound_group("grass").textures("snow", "grass_snow_side", "dirt").hardness(0.6).mineable("shovel").drops("dirt", 1).tag("dirt").tab(&crate::tabs::NATURAL);
     r.block(&SAND).sound_group("sand").hardness(0.5).mineable("shovel").tag("sand").falling().tab(&crate::tabs::NATURAL);
     r.block(&GRAVEL).sound_group("gravel").hardness(0.6).mineable("shovel").falling().tab(&crate::tabs::NATURAL);
-    r.block(&CLAY).sound_group("gravel").hardness(0.6).mineable("shovel").tab(&crate::tabs::NATURAL);
+    r.block(&CLAY).sound_group("gravel").hardness(0.6).mineable("shovel").tag("clay").tab(&crate::tabs::NATURAL);
     r.block(&SANDSTONE).sound_group("stone").textures("sandstone_top", "sandstone_side", "sandstone_bottom").hardness(0.8).mineable("pickaxe").needs_tool(0).tab(&crate::tabs::BUILDING);
     r.block(&SNOW).sound_group("sand").hardness(0.2).mineable("shovel").tab(&crate::tabs::NATURAL);
-    r.block(&ICE).sound_group("glass").hardness(0.5).translucent().opacity(2).friction(0.98).mineable("pickaxe").drops_nothing().tab(&crate::tabs::NATURAL);
+    // Blue lamps and glass are made with it.
+    r.block(&ICE).sound_group("glass").tag("ice").tag("dyes/blue").hardness(0.5).translucent().opacity(2).friction(0.98).mineable("pickaxe").drops_nothing().tab(&crate::tabs::NATURAL);
     r.block(&OBSIDIAN).sound_group("stone").hardness(50.0).mineable("pickaxe").needs_tool(tool_tier::DIAMOND).tab(&crate::tabs::NATURAL);
     r.block(&COAL_ORE).sound_group("stone").hardness(3.0).mineable("pickaxe").needs_tool(0).drops("coal", 1).tag("ores").tag("ores/coal").tab(&crate::tabs::NATURAL);
     r.block(&IRON_ORE).sound_group("stone").hardness(3.0).mineable("pickaxe").needs_tool(tool_tier::STONE).drops("raw_iron", 1).tag("ores").tag("ores/iron").tab(&crate::tabs::NATURAL);
@@ -142,8 +144,8 @@ pub fn register(r: &mut Registry) {
     log(r, &OAK_LOG, "oak", "oak_leaves", false);
     log(r, &BIRCH_LOG, "birch", "birch_leaves", false);
     log(r, &SPRUCE_LOG, "spruce", "spruce_leaves", true);
-    for (h, tex) in [(&OAK_PLANKS, "planks_oak"), (&BIRCH_PLANKS, "planks_birch"), (&SPRUCE_PLANKS, "planks_spruce")] {
-        r.block(h).sound_group("wood").texture(tex).hardness(2.0).mineable("axe").tag("planks").tag("materials/wood").set(&FLAMMABLE, 5).set(&FUEL, 300).tab(&crate::tabs::BUILDING);
+    for (h, wood) in [(&OAK_PLANKS, "oak"), (&BIRCH_PLANKS, "birch"), (&SPRUCE_PLANKS, "spruce")] {
+        r.block(h).sound_group("wood").texture(&format!("planks_{wood}")).hardness(2.0).mineable("axe").tag("planks").tag(&format!("planks/{wood}")).tag("materials/wood").set(&FLAMMABLE, 5).set(&FUEL, 300).tab(&crate::tabs::BUILDING);
     }
     leaves(r, &OAK_LEAVES, "leaves_oak");
     leaves(r, &BIRCH_LEAVES, "leaves_birch");
@@ -183,12 +185,12 @@ pub fn register(r: &mut Registry) {
         .drops("dirt", 1)
         .tab(&crate::tabs::NATURAL);
 
-    r.block(&GLASS).sound_group("glass").cutout().cull_same().hardness(0.3).drops_nothing().tab(&crate::tabs::BUILDING);
+    r.block(&GLASS).sound_group("glass").tag("glass").cutout().cull_same().hardness(0.3).drops_nothing().tab(&crate::tabs::BUILDING);
     for (name, col) in [("red", [0u8, 12, 12]), ("green", [12, 0, 12]), ("blue", [12, 12, 0])] {
-        r.block(Block::generated(format!("{name}_stained_glass"))).sound_group("glass").texture(&format!("glass_{name}")).translucent().filter(col[0], col[1], col[2]).hardness(0.3).tab(&crate::tabs::COLORED);
+        r.block(Block::generated(format!("{name}_stained_glass"))).sound_group("glass").tag(&format!("stained_glass/{name}")).texture(&format!("glass_{name}")).translucent().filter(col[0], col[1], col[2]).hardness(0.3).tab(&crate::tabs::COLORED);
     }
     for (name, rgb) in [("red", [15u8, 3, 2]), ("green", [2, 15, 4]), ("blue", [3, 6, 15])] {
-        r.block(Block::generated(format!("{name}_lamp"))).sound_group("glass").texture(&format!("lamp_{name}")).light_rgb(rgb[0], rgb[1], rgb[2]).hardness(0.3).tab(&crate::tabs::COLORED);
+        r.block(Block::generated(format!("{name}_lamp"))).sound_group("glass").tag(&format!("lamps/{name}")).texture(&format!("lamp_{name}")).light_rgb(rgb[0], rgb[1], rgb[2]).hardness(0.3).tab(&crate::tabs::COLORED);
     }
     r.block(&CRAFTING_TABLE).sound_group("wood")
         .faces(["crafting_table_side", "crafting_table_side", "planks_oak", "crafting_table_top", "crafting_table_front", "crafting_table_front"])
@@ -221,7 +223,7 @@ pub fn register(r: &mut Registry) {
         .not_solid()
         .hardness(0.4)
         .tab(&crate::tabs::FUNCTIONAL);
-    r.block(&GLOWSTONE).sound_group("glass").light(15).hardness(0.3).tab(&crate::tabs::NATURAL);
+    r.block(&GLOWSTONE).sound_group("glass").tag("glowstone").light(15).hardness(0.3).tab(&crate::tabs::NATURAL);
     r.block(&BRICKS).sound_group("stone").hardness(2.0).mineable("pickaxe").needs_tool(0).tab(&crate::tabs::BUILDING);
     r.block(&STONE_BRICKS).sound_group("stone").texture("stonebrick").hardness(1.5).mineable("pickaxe").needs_tool(0).tab(&crate::tabs::BUILDING);
     r.block(&IRON_BLOCK).sound_group("stone").hardness(5.0).mineable("pickaxe").needs_tool(tool_tier::STONE).tag("ore_blocks/iron").tab(&crate::tabs::BUILDING);
@@ -233,6 +235,10 @@ pub fn register(r: &mut Registry) {
     // What may grow or stand where, from the common `dirt` and `sand` tags like modern vanilla:
     // a mod's sand tagged `sand` gets cactus and sugar cane, in the world and from players.
     r.tag("plant_soil", &["#dirt"]);
+    r.tag("dyes/red", &["rose"]);
+    r.tag("dyes/green", &["cactus"]);
+    r.tag("torches", &["torch"]);
+    r.tag("furnaces", &["furnace"]);
     r.tag("plant_soil", &["farmland"]);
     r.tag("sugar_cane_soil", &["#dirt"]);
     r.tag("sugar_cane_soil", &["#sand"]);

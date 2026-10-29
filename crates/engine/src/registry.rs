@@ -1016,6 +1016,7 @@ pub fn freeze(
     dim_names: &FxHashMap<String, u32>,
     c: &Components,
     tag_items: &FxHashMap<u32, Vec<u32>>,
+    block_of_tag: &dyn Fn(&str) -> Option<String>,
     order: &dyn Fn(ModId) -> u32,
     errors: &mut Vec<String>,
 ) -> Game {
@@ -1399,7 +1400,14 @@ pub fn freeze(
     }
     let ing = |s: &str, errors: &mut Vec<String>| -> Ingredient {
         if let Some(f) = s.strip_prefix("fluid:") {
-            return Ingredient::Fluid(f.to_string());
+            let Some(tag) = f.strip_prefix('#') else { return Ingredient::Fluid(f.to_string()) };
+            return match block_of_tag(tag) {
+                Some(name) => Ingredient::Fluid(name),
+                None => {
+                    errors.push(format!("recipe: no block has the tag {f}"));
+                    Ingredient::Empty
+                }
+            };
         }
         if s.is_empty() {
             return Ingredient::Empty;

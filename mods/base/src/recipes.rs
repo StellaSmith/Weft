@@ -1,5 +1,5 @@
-//! Crafting and smelting recipes. Ingredients are item names (this mod's namespace by default) or
-//! `#tag` so other mods' planks and ingots work too.
+//! Crafting and smelting recipes. Every ingredient is a `#tag`, so another mod's planks, coal or
+//! dyes work in all of them without a recipe of its own.
 
 use weft_sdk::*;
 
@@ -11,26 +11,20 @@ pub fn register(r: &mut Registry) {
     // A crafting table's grid is 3 x 3 in the recipe viewer, whatever a recipe fills of it.
     r.recipe_kind(C).inputs(3, 3).outputs(1, 1);
     r.recipe_kind(S).inputs(1, 1).outputs(1, 1);
-    for wood in ["oak", "birch", "spruce"] {
-        r.shapeless(C, &format!("{wood}_planks"), 4, &[&format!("{wood}_log")], 0);
-    }
+    r.shapeless(C, "#planks/{m}", 4, &["#logs/{m}"], 0);
     r.shaped(C, "stick", 4, &["#", "#"], &[('#', "#planks")]);
     r.shaped(C, "crafting_table", 1, &["##", "##"], &[('#', "#planks")]);
-    r.shaped(C, "furnace", 1, &["###", "# #", "###"], &[('#', "cobblestone")]);
+    r.shaped(C, "furnace", 1, &["###", "# #", "###"], &[('#', "#cobblestone")]);
     r.shaped(C, "chest", 1, &["###", "# #", "###"], &[('#', "#planks")]);
-    r.shaped(C, "torch", 4, &["c", "s"], &[('c', "coal"), ('s', "#stick")]);
+    r.shaped(C, "torch", 4, &["c", "s"], &[('c', "#gems/coal"), ('s', "#stick")]);
     r.shaped(C, "ladder", 3, &["s s", "sss", "s s"], &[('s', "#stick")]);
-    r.shaped(C, "bread", 1, &["www"], &[('w', "wheat")]);
-    r.shaped(C, "stone_bricks", 4, &["##", "##"], &[('#', "stone")]);
-    r.shaped(C, "wool", 1, &["ss", "ss"], &[('s', "string")]);
-    r.shaped(C, "bucket", 1, &["i i", " i "], &[('i', "iron_ingot")]);
-    r.shaped(C, "glowstone", 1, &["ttt", "tgt", "ttt"], &[('t', "torch"), ('g', "glass")]);
-    r.shapeless(C, "red_lamp", 1, &["glowstone", "rose"], 0);
-    r.shapeless(C, "green_lamp", 1, &["glowstone", "cactus"], 0);
-    r.shapeless(C, "blue_lamp", 1, &["glowstone", "ice"], 0);
-    r.shapeless(C, "red_stained_glass", 1, &["glass", "rose"], 0);
-    r.shapeless(C, "green_stained_glass", 1, &["glass", "cactus"], 0);
-    r.shapeless(C, "blue_stained_glass", 1, &["glass", "ice"], 0);
+    r.shaped(C, "bread", 1, &["www"], &[('w', "#crops/wheat")]);
+    r.shaped(C, "stone_bricks", 4, &["##", "##"], &[('#', "#smooth_stone")]);
+    r.shaped(C, "wool", 1, &["ss", "ss"], &[('s', "#string")]);
+    r.shaped(C, "bucket", 1, &["i i", " i "], &[('i', "#ingots/iron")]);
+    r.shaped(C, "glowstone", 1, &["ttt", "tgt", "ttt"], &[('t', "#torches"), ('g', "#glass")]);
+    r.shapeless(C, "#lamps/{m}", 1, &["#glowstone", "#dyes/{m}"], 0);
+    r.shapeless(C, "#stained_glass/{m}", 1, &["#glass", "#dyes/{m}"], 0);
 
     // Every mod's `ore_blocks/<m>` packs its `ingots/<m>` or `gems/<m>`, and its ores smelt into them.
     for kind in ["#ingots/{m}", "#gems/{m}"] {
@@ -56,10 +50,10 @@ pub fn register(r: &mut Registry) {
     }
 
     for (input, output, ticks) in [
-        ("sand", "glass", 200),
-        ("cobblestone", "stone", 200),
+        ("#sand", "glass", 200),
+        ("#cobblestone", "stone", 200),
         ("#logs", "coal", 200),
-        ("clay", "bricks", 200),
+        ("#clay", "bricks", 200),
     ] {
         r.shapeless(S, output, 1, &[input], ticks);
     }

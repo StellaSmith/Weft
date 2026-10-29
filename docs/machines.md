@@ -128,7 +128,7 @@ r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
     .chance_output("base:diamond", 1, 0.05)       // and a diamond now and then
     .value(&ENERGY_PER_TICK, 32);                 // data the machine reads
 ```
-Inputs and outputs can be fluids, `fluid:base:water` with the count in millibuckets, and `hidden()` keeps a recipe out of the viewer. A machine with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances, the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out.
+Inputs and outputs can be fluids, `fluid:#water` (the first liquid with the tag) or `fluid:base:water`, with the count in millibuckets, and `hidden()` keeps a recipe out of the viewer. A machine with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances, the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out.
 
 A kind of your own is registered with `r.recipe_kind(&KIND)`, and recipes that name a kind nobody registered fail at load. The same call says how the recipe viewer shows it:
 ```rust

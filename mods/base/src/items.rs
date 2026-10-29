@@ -39,7 +39,7 @@ pub fn register(r: &mut Registry) {
     r.item(Item::generated("raw_gold".into())).tag("raw_ores/gold").tab(&crate::tabs::INGREDIENTS);
     r.item(&DIAMOND).tag("gems/diamond").tag("materials/diamond").tab(&crate::tabs::INGREDIENTS);
     r.item(&WHEAT_SEEDS).placed_block(&crate::blocks::WHEAT).tab(&crate::tabs::NATURAL);
-    r.item(&WHEAT).tab(&crate::tabs::INGREDIENTS);
+    r.item(&WHEAT).tag("crops/wheat").tab(&crate::tabs::INGREDIENTS);
     // Filled buckets come with their liquids (blocks.rs); the engine fills and pours them.
     r.item(&BUCKET).max_stack(16).tab(&crate::tabs::TOOLS);
     r.set("lava_bucket", &FUEL, 20000);
@@ -60,7 +60,7 @@ pub fn register(r: &mut Registry) {
     }
     r.item(Item::generated("leather".into())).tag("materials/leather").tab(&crate::tabs::INGREDIENTS);
     for name in ["bone", "string", "sugar"] {
-        r.item(Item::generated(name.into())).tab(&crate::tabs::INGREDIENTS);
+        r.item(Item::generated(name.into())).tag(name).tab(&crate::tabs::INGREDIENTS);
     }
 
     for m in &MATERIALS {

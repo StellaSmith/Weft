@@ -19,6 +19,7 @@ block.testmod.regolith = Regolith
 block.testmod.basalt = Red Basalt
 block.testmod.tin_ore = Tin Ore
 item.testmod.tin_ingot = Tin Ingot
+item.testmod.another_stick = A Cooler Stick
 block.testmod.oil = Oil
 item.testmod.oil_bucket = Oil Bucket
 block.testmod.red_sand = Red Sand

@@ -57,6 +57,7 @@ static REGOLITH: Block = Block::named("regolith");
 static BASALT: Block = Block::named("basalt");
 static TIN_ORE: Block = Block::named("tin_ore");
 static TIN_INGOT: Item = Item::named("tin_ingot");
+static ANOTHER_STICK: Item = Item::named("another_stick");
 
 value! {
     /// A generator's fire.
@@ -86,7 +87,7 @@ fn init(r: &mut Registry) {
     about_screen(r);
     morph(r);
     dynamite(r);
-    r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor").hardness(0.5);
+    r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor").tag("cables").hardness(0.5);
     // Faces the file leaves to the block (`#top`, `#side`) show these.
     r.block(&PEDESTAL).textures("machine_top", "generator", "machine_top").hardness(1.0).tab(&BASE_BUILDING);
 
@@ -149,8 +150,8 @@ fn init(r: &mut Registry) {
     // The base game's kinds, by name: no code dependency on it.
     use base_api::CRAFTING;
     recipe_showcase(r);
-    r.shaped(&CRAFTING, "generator", 1, &["iii", "ifi", "iii"], &[('i', "#ingots/iron"), ('f', "base:furnace")]);
-    r.shaped(&CRAFTING, "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "base:furnace"), ('c', "cable")]);
+    r.shaped(&CRAFTING, "generator", 1, &["iii", "ifi", "iii"], &[('i', "#ingots/iron"), ('f', "#furnaces")]);
+    r.shaped(&CRAFTING, "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "#furnaces"), ('c', "#cables")]);
     r.shaped(&CRAFTING, "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
 
     r.block(&REGOLITH).hardness(0.5).mineable("shovel");
@@ -160,6 +161,11 @@ fn init(r: &mut Registry) {
     // Only tags: the base game's `#ores/*` smelting recipe and tools pick these up.
     r.block(&TIN_ORE).hardness(3.0).mineable("pickaxe").needs_tool(0).tag("ores/tin");
     r.item(&TIN_INGOT).tag("ingots/tin");
+
+
+    r.item(&ANOTHER_STICK).tag("stick");
+
+
     // A tier between vanilla's iron (200) and diamond (300): mines everything iron does plus
     // reinforced stone, which iron cannot.
     r.item(&STEEL_PICKAXE).tool("pickaxe").tool_level(250).mining_speed(7.0).durability(800).attack_damage(4.0).set(&WEAR_PER_HIT, 2).tab(&BASE_TOOLS);
@@ -503,7 +509,7 @@ static ENERGY_PER_TICK: Component<u32> = Component::named("testmod:energy_per_ti
 /// from the recipe's values and a result that comes by chance, one laid out by hand with a fluid.
 fn recipe_showcase(r: &mut Registry) {
     r.recipe_kind(&ALLOYING).inputs(2, 1).outputs(2, 1).info_line("recipe.testmod.alloying.info", &["testmod:energy_per_tick", "time"]);
-    r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
+    r.shapeless(&ALLOYING, "tin_ingot", 2, &["#ingots/iron", "#gems/coal"], 100)
         .input_amounts(&[3, 1])
         .chance_output("base:diamond", 1, 0.05)
         .value(&ENERGY_PER_TICK, 32);
@@ -519,7 +525,7 @@ fn recipe_showcase(r: &mut Registry) {
             ui.text_args("testmod.infusing.time", &[Arg::Int(recipe.time() as i64 / 20)]);
         });
     });
-    r.shapeless(&INFUSING, "glow_crystal", 1, &["base:diamond", "fluid:base:water"], 200).input_amounts(&[1, 1000]);
+    r.shapeless(&INFUSING, "glow_crystal", 1, &["#gems/diamond", "fluid:#water"], 200).input_amounts(&[1, 1000]);
 }
 
 /// Where the needle stands in base's overworld.

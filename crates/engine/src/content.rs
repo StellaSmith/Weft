@@ -1935,7 +1935,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             }
         }
     }
-    let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &order_of, &mut errors);
+    // The first block with a tag, for `fluid:#tag` in recipes.
+    let block_of_tag = |tag: &str| components.id(tag).and_then(|t| block_defs[1..].iter().find(|b| components.has(crate::components::BLOCK, b.first_state, t))).map(|b| b.name.clone());
+    let mut game = crate::registry::freeze(games, entities, &block_names, &item_names, &item_defs, &dim_names, &components, &tag_items, &block_of_tag, &order_of, &mut errors);
     for p in &mut game.particles {
         for f in &mut p.frames {
             *f = intern(&mut textures, &mut tex_index, &game.particle_textures[*f as usize]);

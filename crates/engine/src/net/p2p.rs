@@ -264,18 +264,39 @@ async fn pump_out<T: Send + crate::net::Message + 'static>(rx: crossbeam_channel
     }
 }
 
-/// Connects to a host. Blocks up to 20 seconds.
+/// Connects to `addr`: every address at once first; if the handshake does not finish soon, again
+/// from a new endpoint through the relay alone. With several network adapters (VPNs, virtual
+/// switches) the host may take the handshake's first packet from an address its answers never
+/// get back to, and the attempt hangs on it whatever else the client tries (about one in six
+/// on a machine with Radmin VPN and Hyper-V). The relay always gets through; iroh moves the
+/// connection to a direct path afterwards when one works.
+async fn connect(settings: &Settings, addr: EndpointAddr) -> Result<(Endpoint, iroh::endpoint::Connection), String> {
+    let relayed = EndpointAddr::from_parts(addr.id, addr.relay_urls().cloned().map(TransportAddr::Relay).collect::<Vec<_>>());
+    let attempts = [(addr, Duration::from_secs(3)), (relayed, Duration::from_secs(20))];
+    let mut last = String::new();
+    for (i, (addr, wait)) in attempts.into_iter().enumerate() {
+        let ep = endpoint(settings, false).await?;
+        match tokio::time::timeout(wait, ep.connect(addr, ALPN)).await {
+            Ok(Ok(conn)) => return Ok((ep, conn)),
+            Ok(Err(e)) => last = e.to_string(),
+            Err(_) => last = "timed out".into(),
+        }
+        if i == 0 {
+            log::info!("connecting directly failed ({last}), trying through the relay");
+        }
+        ep.close().await;
+    }
+    Err(last)
+}
+
+/// Connects to a host. Blocks up to 25 seconds.
 pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
     let addr = parse_ticket(ticket)?;
     let settings = settings.clone();
     let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<ClientConn, String>>(1);
     runtime().spawn(async move {
         let result = async {
-            let ep = endpoint(&settings, false).await?;
-            let conn = tokio::time::timeout(Duration::from_secs(20), ep.connect(addr, ALPN))
-                .await
-                .map_err(|_| "timed out".to_string())?
-                .map_err(|e| e.to_string())?;
+            let (ep, conn) = connect(&settings, addr).await?;
             let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
             let mut hello = codec::W::default();
             codec::Wire::put(&(PROTOCOL, content_hash()), &mut hello);
@@ -311,7 +332,7 @@ pub fn join(ticket: &str, settings: &Settings) -> Result<ClientConn, String> {
             }
         }
     });
-    ready_rx.recv_timeout(Duration::from_secs(25)).map_err(|_| "timed out".to_string())?
+    ready_rx.recv_timeout(Duration::from_secs(30)).map_err(|_| "timed out".to_string())?
 }
 
 #[cfg(test)]

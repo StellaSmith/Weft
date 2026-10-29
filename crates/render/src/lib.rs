@@ -40,6 +40,9 @@ pub mod usage {
     /// GPU may still read (use one range per frame in flight).
     pub const HOST: u32 = 8;
     pub const INDEX: u32 = 16;
+    /// Written by the GPU and read by the CPU through `mapped`, once the frame that wrote it is
+    /// done (the next time its frame slot comes round).
+    pub const READBACK: u32 = 32;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

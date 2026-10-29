@@ -17,7 +17,7 @@ pub mod regions;
 pub mod structure;
 pub mod terrain;
 pub use structure::origin as structure_origin;
-mod visibility;
+pub mod visibility;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};

@@ -37,8 +37,11 @@ pub struct ClientWorld {
     rx: Receiver<MeshResult>,
     pub removed: Vec<IVec3>,
     next_version: u32,
-    /// Per cube, faces whose neighbor the server is not going to send: meshed as solid.
-    hidden: FxHashMap<IVec3, u8>,
+    /// Per cube, the cubes around it that are never coming (`cube::around_mask` bits): faces
+    /// toward them are meshed as solid, and a cube is meshed once all 26 around it are here or
+    /// never coming (meshing it before its edge and corner neighbors came meshed it again for
+    /// each of them, three times per cube while loading).
+    hidden: FxHashMap<IVec3, u32>,
     /// An opaque state standing in for hidden neighbors.
     filler: u32,
     columns: FxHashMap<IVec2, Column>,
@@ -138,16 +141,16 @@ impl ClientWorld {
         self.bounds = crate::world::block_bounds(self.cubes.iter().map(|(p, c)| (p, &**c)));
     }
 
-    /// Whether the neighbor of `p` in direction `d` is present or never coming.
-    fn neighbor_known(&self, p: IVec3, d: usize, min_y: i32, max_y: i32) -> bool {
-        let n = p + crate::world::DIRS[d];
-        self.bounded || self.cubes.contains_key(&n) || n.y < min_y || n.y > max_y || self.hidden.get(&p).is_some_and(|h| h & (1 << d) != 0)
+    /// Whether the cube `i` around `p` (`cube::around_mask` bit) is present or never coming.
+    fn neighbor_known(&self, p: IVec3, i: u32, min_y: i32, max_y: i32) -> bool {
+        let n = p + IVec3::new(i as i32 % 3 - 1, i as i32 / 9 - 1, i as i32 / 3 % 3 - 1);
+        self.bounded || self.cubes.contains_key(&n) || n.y < min_y || n.y > max_y || self.hidden.get(&p).is_some_and(|h| h & (1 << i) != 0)
     }
 
     /// Updates whether `p` is meshable now.
     fn refresh(&mut self, p: IVec3) {
         let def = &content().dims[self.dim as usize];
-        if self.dirty.contains(&p) && (0..6).all(|d| self.neighbor_known(p, d, def.min_cube_y, def.max_cube_y)) {
+        if self.dirty.contains(&p) && (0..27).all(|i| i == 13 || self.neighbor_known(p, i, def.min_cube_y, def.max_cube_y)) {
             // Air cubes never produce faces themselves (neighbors draw the faces facing them):
             // done right away, without a job (most of a tall view is sky).
             if self.cubes.get(&p).is_some_and(|c| c.uniform_state() == Some(AIR)) {
@@ -223,11 +226,10 @@ impl ClientWorld {
         }
     }
 
-    pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, hidden: u8) {
-        let fresh_hidden = hidden != crate::net::KEEP_HIDDEN && self.hidden.get(&pos).copied().unwrap_or(0) != hidden;
-        if hidden != crate::net::KEEP_HIDDEN {
-            self.hidden.insert(pos, hidden);
-        }
+    /// `hidden`: the cubes around it never coming (`cube::around_mask` bits).
+    pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, hidden: u32) {
+        let fresh_hidden = self.hidden.get(&pos).copied().unwrap_or(0) != hidden;
+        self.hidden.insert(pos, hidden);
         let col = IVec2::new(pos.x, pos.z);
         let mut fresh = false;
         let column = self.columns.entry(col).or_insert_with(|| {
@@ -274,8 +276,10 @@ impl ClientWorld {
             self.ready.remove(&pos);
             self.versions.remove(&pos);
             self.removed.push(pos);
-            for d in crate::world::DIRS {
-                self.refresh(pos + d);
+            for n in around(pos, ALL_AROUND) {
+                if n != pos {
+                    self.refresh(n);
+                }
             }
         }
     }
@@ -532,7 +536,7 @@ fn add_around(set: &mut FxHashSet<IVec3>, pos: IVec3, mask: u32) {
     set.extend(around(pos, mask));
 }
 
-fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32, pos: IVec3) -> Neighborhood {
+fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u32, filler: u32, pos: IVec3) -> Neighborhood {
     let mut states = Box::new([AIR; PAD_VOLUME]);
     let mut light = Box::new([15u32; PAD_VOLUME]);
     let mut biomes = [0u16; 256];
@@ -549,17 +553,9 @@ fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u8, filler: u32, pos: 
             for x in -1..17i32 {
                 let cx = if x < 0 { 0 } else if x > 15 { 2 } else { 1 };
                 let Some(cube) = &around[cy * 9 + cz * 3 + cx] else {
-                    // A face neighbor that will never be sent is solid ground: no faces toward it.
-                    let face = match (cx, cy, cz) {
-                        (0, 1, 1) => Some(0),
-                        (2, 1, 1) => Some(1),
-                        (1, 0, 1) => Some(2),
-                        (1, 2, 1) => Some(3),
-                        (1, 1, 0) => Some(4),
-                        (1, 1, 2) => Some(5),
-                        _ => None,
-                    };
-                    if face.is_some_and(|f| hidden & (1 << f) != 0) {
+                    // A face neighbor that is never coming is solid ground: no faces toward it.
+                    let face = [cx, cy, cz].iter().filter(|&&v| v != 1).count() == 1;
+                    if face && hidden & (1 << (cy * 9 + cz * 3 + cx)) != 0 {
                         let pi = pidx(x, y, z);
                         states[pi] = filler;
                         light[pi] = 0;

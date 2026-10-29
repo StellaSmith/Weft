@@ -725,3 +725,25 @@ async fn edit_while_loading_at(t: &T) -> R {
     t.check(ms < 500.0, format!("shown after {ms:.0} ms"));
     Ok(())
 }
+
+/// Terrain the GPU makes is the CPU's to the bit (integer math on both sides): every cube of a
+/// fresh world is made again on the CPU and compared.
+pub async fn gpu_terrain(t: T) -> R {
+    static CHECK: Config<i32> = Config::named("core:terrain_check");
+    let before = CHECK.get();
+    CHECK.set(1);
+    let start = t.state().gpu_cubes;
+    let out = async {
+        t.world(5).await?;
+        t.idle().await?;
+        let s = t.state();
+        let made = s.gpu_cubes - start;
+        t.note(format!("{made} cubes made on the GPU, {} differing", s.gpu_mismatches));
+        t.check(made > 1000, format!("the GPU made the terrain ({made} cubes)"));
+        t.check_eq(s.gpu_mismatches, 0, "cubes the GPU made differently from the CPU");
+        Ok(())
+    }
+    .await;
+    CHECK.set(before);
+    out
+}

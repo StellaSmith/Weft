@@ -7,6 +7,7 @@ pub mod models;
 pub mod modui;
 pub mod particles;
 pub mod terrain;
+pub mod terrain_gpu;
 pub mod textures;
 pub mod world;
 pub mod world_render;
@@ -237,6 +238,7 @@ pub struct Client {
     pub view_radius: i32,
     /// Makes the world in view from the seed (`terrain`); the server's cubes go through it.
     pub terrain: terrain::TerrainHandle,
+    pub gpu_terrain: terrain_gpu::GpuTerrain,
     seed: u64,
     /// Resets sent to the terrain thread: batches of an older one are dropped.
     terrain_resets: u64,
@@ -375,6 +377,8 @@ impl Client {
         if let Some(png) = skin {
             conn.send(ToServer::Skin(png));
         }
+        let (gpu_tx, gpu_rx) = crossbeam_channel::unbounded();
+        let gpu_on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         Ok(Client {
             conn,
             world: ClientWorld::new(0),
@@ -423,7 +427,8 @@ impl Client {
             disconnected: None,
             cooldown: 0.0,
             view_radius,
-            terrain: terrain::spawn(),
+            terrain: terrain::spawn(gpu_tx, gpu_on.clone()),
+            gpu_terrain: terrain_gpu::GpuTerrain::new(gpu, gpu_rx, gpu_on),
             seed: 0,
             terrain_resets: 0,
             terrain_view: (IVec3::MAX, 0),
@@ -1166,8 +1171,9 @@ impl Client {
             self.terrain_view = (center, self.view_radius);
             let _ = self.terrain.tx.send(terrain::In::View { center, radius: self.view_radius });
         }
-        // Enough jobs that meshing keeps up at 60 frames per second too, not only at thousands.
-        self.world.schedule_meshing(center, rayon::current_num_threads() * 32);
+        // Enough jobs that meshing keeps up at 50 frames per second too (results are taken once
+        // a frame), not only at hundreds.
+        self.world.schedule_meshing(center, rayon::current_num_threads() * 128);
         for r in self.world.take_meshes() {
             self.render.upload(gpu, textures, (0, r.pos), &r.mesh);
         }

@@ -50,8 +50,10 @@ pub async fn run(t: T, src: String) -> R {
                 let s = t.state();
                 weft_sdk::info!("script: idle at {:.2} s", started.elapsed().as_secs_f32());
                 weft_sdk::info!(
-                    "load: {} cubes on client, generated {} ({:.0} us each on a worker), inserted {} ({:.0} us each on the server thread)",
+                    "load: {} cubes on client ({} of them made on the GPU, {} differing from the CPU), server generated {} ({:.0} us each on a worker), inserted {} ({:.0} us each on the server thread)",
                     s.cubes,
+                    s.gpu_cubes,
+                    s.gpu_mismatches,
                     s.generated,
                     s.gen_us,
                     s.inserted,

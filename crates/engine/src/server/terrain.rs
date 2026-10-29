@@ -225,9 +225,9 @@ impl Feature {
         }
     }
 
-    /// Whether the GPU can compute it (mods' own heights run their code).
-    pub fn gpu(&self) -> bool {
-        matches!(self.height, Height::Preset(..))
+    /// Its height (Q4) at (`x`, `z`) (Q4).
+    pub fn height_at(&self, f: &Fields, x: i32, z: i32) -> i32 {
+        self.height(f, x, z)
     }
 }
 

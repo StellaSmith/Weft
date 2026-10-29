@@ -2692,6 +2692,10 @@ pub struct ClientState {
     /// `target_frame` `u64::MAX` when nothing is looked at.
     pub target: [i32; 3],
     pub target_frame: u64,
+    /// Cubes whose terrain the GPU made, and how many of them differed from the CPU's (counted
+    /// with `core:terrain_check` on).
+    pub gpu_cubes: u64,
+    pub gpu_mismatches: u64,
 }
 defaults!(ClientState {
     flags: 0,
@@ -2732,6 +2736,8 @@ defaults!(ClientState {
     shown: [0.0; 3],
     target: [0; 3],
     target_frame: u64::MAX,
+    gpu_cubes: 0,
+    gpu_mismatches: 0,
 });
 
 /// `Host::client_input` operations. Keys and buttons are held for `x` seconds (0 = one tap).

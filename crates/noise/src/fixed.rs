@@ -1,7 +1,7 @@
 //! Noise in 32-bit integers only (wrapping arithmetic, shifts, integer division), so the CPU and
 //! the GPU compute the same bits: WGSL has neither doubles nor 64-bit integers, and float
-//! results may differ between GPUs. `shaders/terrain.wgsl` is a line-by-line copy; keep them
-//! in step (the `gpu_check` test compares them).
+//! results may differ between GPUs. The engine's `client/terrain_gpu.wgsl` is a line-by-line
+//! copy; keep them in step (the `gpu_terrain` test compares every cube).
 //!
 //! Positions are in 1/16 block (`Q4`), noise values, weights and fractions in 1/4096 (`Q12`).
 

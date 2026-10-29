@@ -735,8 +735,8 @@ impl VulkanBackend {
         let b = [vk::MemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
             .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)];
+            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS | vk::PipelineStageFlags2::HOST)
+            .dst_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::HOST_READ)];
         unsafe { self.device.cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().memory_barriers(&b)) };
     }
 
@@ -982,7 +982,13 @@ impl Backend for VulkanBackend {
         if usage & usage::UNIFORM != 0 {
             flags |= vk::BufferUsageFlags::UNIFORM_BUFFER;
         }
-        let location = if usage & usage::HOST != 0 { MemoryLocation::CpuToGpu } else { MemoryLocation::GpuOnly };
+        let location = if usage & usage::READBACK != 0 {
+            MemoryLocation::GpuToCpu
+        } else if usage & usage::HOST != 0 {
+            MemoryLocation::CpuToGpu
+        } else {
+            MemoryLocation::GpuOnly
+        };
         let (raw, alloc) = raw_buffer(&self.device, &mut self.allocator, size, flags, location, label);
         BufferId(self.buffers.insert(Buffer { raw, alloc, size }))
     }

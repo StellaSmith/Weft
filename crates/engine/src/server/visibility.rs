@@ -11,7 +11,21 @@
 use glam::IVec3;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::regions::DimSet;
+/// The world a fill goes through: the server's regions, or the client's own terrain.
+pub trait Cubes {
+    fn has(&self, pos: IVec3) -> bool;
+    /// Which faces of the loaded cube at `pos` see each other (`cube::exits`).
+    fn connectivity(&mut self, c: &Content, pos: IVec3) -> Option<u16>;
+}
+
+impl Cubes for super::regions::DimSet {
+    fn has(&self, pos: IVec3) -> bool {
+        super::regions::DimSet::has(self, pos)
+    }
+    fn connectivity(&mut self, c: &Content, pos: IVec3) -> Option<u16> {
+        super::regions::DimSet::connectivity(self, c, pos)
+    }
+}
 use crate::content::Content;
 use crate::world::DIRS;
 
@@ -56,7 +70,7 @@ impl Visibility {
     /// its center are always wanted), re-explores `edited` cubes and goes on from waiting cubes
     /// that got loaded. Returns the loaded cubes the fill entered for the first time and the
     /// cubes that left the range.
-    pub fn update(&mut self, dim: &mut DimSet, c: &Content, range: Range, in_range: &impl Fn(IVec3) -> bool, near: i32, edited: &[IVec3]) -> (Vec<IVec3>, Vec<IVec3>) {
+    pub fn update(&mut self, dim: &mut impl Cubes, c: &Content, range: Range, in_range: &impl Fn(IVec3) -> bool, near: i32, edited: &[IVec3]) -> (Vec<IVec3>, Vec<IVec3>) {
         let mut queue = Vec::new();
         let mut left = Vec::new();
         let center = range.0;
@@ -128,7 +142,7 @@ impl Visibility {
     }
 
     /// Reaches `n` through its face `from`.
-    fn reach(&mut self, dim: &mut DimSet, n: IVec3, from: u8, queue: &mut Vec<(IVec3, u8)>) {
+    fn reach(&mut self, dim: &mut impl Cubes, n: IVec3, from: u8, queue: &mut Vec<(IVec3, u8)>) {
         self.seen.insert(n);
         if dim.has(n) {
             queue.push((n, from));
@@ -138,7 +152,7 @@ impl Visibility {
     }
 
     /// Returns the cubes entered for the first time.
-    fn fill(&mut self, dim: &mut DimSet, c: &Content, in_range: &impl Fn(IVec3) -> bool, mut queue: Vec<(IVec3, u8)>) -> Vec<IVec3> {
+    fn fill(&mut self, dim: &mut impl Cubes, c: &Content, in_range: &impl Fn(IVec3) -> bool, mut queue: Vec<(IVec3, u8)>) -> Vec<IVec3> {
         let mut fresh = Vec::new();
         while let Some((pos, from)) = queue.pop() {
             let Some(conn) = dim.connectivity(c, pos) else { continue };

@@ -52,9 +52,11 @@ impl Cuboid {
         }
         let [w, h, d] = self.size;
         let [u, v] = self.uv;
+        // The sides run from the back to the front edge, as they lie beside the front in the
+        // unwrap, so they are read right to left.
         let mut r = [
-            [u, v + d, d, h],
-            [u + d + w, v + d, d, h],
+            [u + d, v + d, -d, h],
+            [u + d * 2.0 + w, v + d, -d, h],
             [u + d + w, v, w, d],
             [u + d, v, w, d],
             [u + d, v + d, w, h],

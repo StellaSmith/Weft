@@ -19,8 +19,9 @@ fn face_rect(face: u32, d: vec3<f32>, o: vec2<f32>) -> vec4<f32> {
     let h = d.y;
     let z = d.z;
     switch face {
-        case 0u: { return vec4(o.x, o.y + z, z, h); }
-        case 1u: { return vec4(o.x + z + w, o.y + z, z, h); }
+        // Sides read right to left, like `Cuboid::face_rects`.
+        case 0u: { return vec4(o.x + z, o.y + z, -z, h); }
+        case 1u: { return vec4(o.x + z * 2.0 + w, o.y + z, -z, h); }
         case 2u: { return vec4(o.x + z + w, o.y, w, z); }
         case 3u: { return vec4(o.x + z, o.y, w, z); }
         case 4u: { return vec4(o.x + z, o.y + z, w, h); }

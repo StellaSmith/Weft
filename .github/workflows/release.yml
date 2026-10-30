@@ -27,6 +27,12 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - uses: actions/checkout@v4
+        with:
+          path: notes
+          sparse-checkout: .github/release-notes.md
+          ref: ${{ github.sha }}
+
       - name: Tag matches the version
         shell: bash
         run: |
@@ -55,4 +61,4 @@ jobs:
         run: |
           gh release create "$TAG" "Weft-$TAG-windows-x64.zip" \
             --verify-tag --title "Weft ${TAG#v}" \
-            --notes-file .github/release-notes.md --generate-notes
+            --notes-file notes/.github/release-notes.md --generate-notes
